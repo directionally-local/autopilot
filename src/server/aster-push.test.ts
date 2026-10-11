@@ -26,10 +26,26 @@ describe("Aster push", () => {
 
       await push.notify({ title: "Fix the login page\nplease", body: "✅ Opened PR #12", conversationId: "conv-1" });
       assert.deepEqual(sent.map((s) => s.host).sort(), ["api.push.apple.com", "api.sandbox.push.apple.com"]);
-      const payload = JSON.parse(sent[0]!.payload) as { aps: { alert: { title: string; body: string } }; conversationId: string };
+      const payload = JSON.parse(sent[0]!.payload) as { aps: { alert: { title: string; body: string }; category?: string }; conversationId: string; approvalId?: string };
       assert.equal(payload.conversationId, "conv-1");
       assert.equal(payload.aps.alert.title, "Fix the login page please");
+      assert.equal(payload.aps.category, undefined);
+      assert.equal(payload.approvalId, undefined);
       assert.equal(sent[0]!.headers["apns-topic"], "com.aster.ai");
+
+      await push.notify({
+        title: "Approval required",
+        body: "write: Edit src/example.ts in this workspace",
+        conversationId: "conv-1",
+        category: "APPROVAL",
+        approvalId: "approval-1",
+      });
+      const approvalPayload = JSON.parse(sent.at(-1)!.payload) as typeof payload;
+      assert.equal(approvalPayload.aps.category, "APPROVAL");
+      assert.equal(approvalPayload.aps.alert.body, "write: Edit src/example.ts in this workspace");
+      assert.equal(approvalPayload.conversationId, "conv-1");
+      assert.equal(approvalPayload.approvalId, "approval-1");
+      assert.deepEqual(Object.keys(approvalPayload).filter((key) => key !== "aps").sort(), ["approvalId", "conversationId"]);
 
       const jwt = sent[0]!.headers.authorization!.replace(/^bearer /, "");
       const [header, claims, signature] = jwt.split(".");

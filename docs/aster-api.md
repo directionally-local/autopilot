@@ -186,7 +186,7 @@ All conversation routes require the creating credential: another credential scop
 
 ### Events and reconnect
 
-`GET /api/v1/conversations/{conversationId}/events` is SSE. Supply `Last-Event-ID: <sequence>` (or `?after=<sequence>`) to replay only later events. IDs are monotonic per conversation. Delivery is at-least-once: clients should de-duplicate by event ID. Reconnect with the last fully processed ID; replayed events are followed by live polling.
+`GET /api/v1/conversations/{conversationId}/events` is SSE. Supply `Last-Event-ID: <sequence>` (or `?after=<sequence>`) to replay only later events. IDs are monotonic per conversation. Delivery is at-least-once: clients should de-duplicate by event ID. Reconnect with the last fully processed ID; replayed events are followed by live polling. A `usage` event follows each model step and reports cumulative totals for the current run as `{inputTokens, outputTokens, costUsd, cumulative: true}`. A `todo.updated` event is emitted whenever the agent's task list changes and always contains the full list as `{items: [{title, status}] }`, where status is `pending`, `in_progress`, or `done`.
 
 Example frames:
 
@@ -205,9 +205,13 @@ data: {"approvalId":"<uuid>","tool":"edit","explanation":"Edit src/example.ts in
 
 id: 10
 event: usage
-data: {"promptTokens":500,"completionTokens":40,"totalTokens":540,"costUsd":0.002}
+data: {"inputTokens":500,"outputTokens":40,"costUsd":0.002,"cumulative":true}
 
 id: 11
+event: todo.updated
+data: {"items":[{"title":"Run tests","status":"in_progress"},{"title":"Review diff","status":"pending"}]}
+
+id: 12
 event: completed
 data: {}
 ```
@@ -216,7 +220,9 @@ Tool events contain only names/status summaries, not raw arguments/results. Appr
 
 ### Human approvals
 
-`GET /api/v1/approvals/{approvalId}` returns the exact reviewable action/arguments and expiry. Secret-like payloads and paths outside the conversation worktree are rejected before an approval is created. The SSE `approval.required` event contains only the stable ID, tool name, concise explanation, and expiry.
+`GET /api/v1/approvals/{approvalId}` returns the exact reviewable action/arguments and expiry. Secret-like payloads and paths outside the conversation worktree are rejected before an approval is created. The SSE `approval.required` event contains only the stable ID, tool name, concise explanation, and expiry. An unanswered approval keeps the run paused while the service is up, regardless of whether an SSE client is connected. Closing the app does not cancel it: the conversation remains `waiting_approval`, and `approval.required` is journaled and replayed after reconnect until a decision or `expiresAt`. Server restarts still follow the recovery behavior described above.
+
+When APNs is configured, an approval sends a push with `aps.category = "APPROVAL"`, alert text `"<tool>: <explanation>"`, and custom data `{conversationId, approvalId}`. Completed and failed runs send custom data `{conversationId}` only when no client is connected to that conversation's SSE stream at the moment the run ends.
 
 `POST /api/v1/approvals/{approvalId}`
 

@@ -15,6 +15,7 @@ import { makeLspTools } from "../tools/lsp.js";
 import { saveSession, loadSession, makeSessionId, sessionsDir } from "../sessions.js";
 import type { SessionFile } from "../sessions.js";
 import { recordUsage } from "../usage-tracker.js";
+import { calculateCost } from "../pricing.js";
 import type { OpenRouterProviderPrefs } from "../agent/client.js";
 import { llmAuthFromConfig, usesRequesty } from "../agent/llm-auth.js";
 import { ensureOpenRouterCatalog } from "../models/openrouter-catalog.js";
@@ -545,10 +546,19 @@ class InternalSession implements KimiFlareSession {
         });
       },
       onUsage: (usage) => {
+        const estimatedCost = calculateCost(
+          usage.prompt_tokens,
+          usage.completion_tokens,
+          usage.prompt_tokens_details?.cached_tokens ?? 0,
+          this.model,
+        ).total;
         this.emit({
           type: "usage",
           inputTokens: usage.prompt_tokens,
           outputTokens: usage.completion_tokens,
+          cost: typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0
+            ? usage.cost
+            : estimatedCost,
         });
       },
       onUsageFinal: (usage, gatewayMeta) => {

@@ -309,6 +309,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     let outcome: { status: "completed" | "failed" | "cancelled"; reason: string } | undefined;
 
     let artifactsBefore: AsterArtifact[] = [];
+    const usageTotals = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
     try {
       if (options.resume) throw new Error("resume");
       // An idle cell may have been paused (cold-stopped on the container driver):
@@ -403,9 +404,39 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
             turn.publishEvent("tool.activity", { tool: event.toolName, activity: decision === "allow" ? "approved" : "rejected" });
             break;
           }
-          case "usage":
-            turn.publishEvent("usage", { usage: event.usage });
+          case "usage": {
+            const inputTokens = typeof event.inputTokens === "number" && Number.isFinite(event.inputTokens) && event.inputTokens >= 0
+              ? event.inputTokens
+              : 0;
+            const outputTokens = typeof event.outputTokens === "number" && Number.isFinite(event.outputTokens) && event.outputTokens >= 0
+              ? event.outputTokens
+              : 0;
+            const cost = typeof event.cost === "number" && Number.isFinite(event.cost) && event.cost >= 0
+              ? event.cost
+              : 0;
+            usageTotals.inputTokens += inputTokens;
+            usageTotals.outputTokens += outputTokens;
+            usageTotals.costUsd += cost;
+            turn.publishEvent("usage", { ...usageTotals, cumulative: true });
             break;
+          }
+          case "tasks.update": {
+            const items = Array.isArray(event.tasks)
+              ? event.tasks.flatMap((task) => {
+                  if (typeof task !== "object" || task === null) return [];
+                  const item = task as Record<string, unknown>;
+                  if (typeof item.title !== "string") return [];
+                  const status = item.status === "completed"
+                    ? "done"
+                    : item.status === "in_progress"
+                      ? "in_progress"
+                      : "pending";
+                  return [{ title: item.title, status }];
+                })
+              : [];
+            turn.publishEvent("todo.updated", { items });
+            break;
+          }
           case "session.end":
             outcome = {
               status: event.reason === "aborted" ? "cancelled" : event.reason === "complete" ? "completed" : "failed",

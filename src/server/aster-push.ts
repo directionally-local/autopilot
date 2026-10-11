@@ -21,6 +21,8 @@ export interface AsterPushMessage {
   title: string;
   body: string;
   conversationId: string;
+  category?: string;
+  approvalId?: string;
 }
 
 interface DeviceRow {
@@ -99,8 +101,10 @@ export class AsterPush {
         alert: { title: truncate(message.title, 80), body: truncate(message.body, 180) },
         sound: "default",
         "thread-id": message.conversationId,
+        ...(message.category ? { category: message.category } : {}),
       },
       conversationId: message.conversationId,
+      ...(message.approvalId ? { approvalId: message.approvalId } : {}),
     });
     await Promise.all(devices.map(async (device) => {
       const host = device.environment === "development" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
