@@ -1,0 +1,17 @@
+{
+  "id": "hotcell-chunked-control-writes",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "fc389544021e7403f787c64ae5b01a91e4685ccb",
+  "prompt": "Large turns fail inside Aster's Hotcell sandbox: the cell runtime (`src/server/aster-cell-runtime.ts`) writes control JSON through Hotcell's writeFile, which base64-encodes the whole content into one shell argument, and Linux per-argument limits make the write fail with HTTP 500 for ~150k-character prompts. Write large cell-control payloads as bounded 32 KiB base64 chunks, reassemble them inside the cell, clean up the temporary parts, and use the same safe writer for potentially large memory snapshots. A 150k-character Unicode prompt must arrive intact.\n\nThe regression test(s) for this change are already in the worktree: `src/server/aster-cell-runtime.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/server/aster-cell-runtime.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/server/aster-cell-runtime.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "server",
+    "hotcell",
+    "pr-762"
+  ],
+  "files": {
+    "src/server/aster-cell-runtime.test.ts": "files/hotcell-chunked-control-writes/src/server/aster-cell-runtime.test.ts"
+  }
+}

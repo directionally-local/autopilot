@@ -8,6 +8,7 @@ import { getAppVersion } from "./util/version.js";
 import { createRemoteCommand } from "./remote/cli.js";
 import { renderLogo } from "./ui/logo.js";
 import { runPrintMode } from "./print-mode.js";
+import { registerEvalCommand } from "./eval/cli.js";
 import type { PrintFormat } from "./print-mode.js";
 
 const program = new Command();
@@ -85,6 +86,7 @@ program
   });
 
 program.addCommand(createRemoteCommand());
+registerEvalCommand(program);
 
 const asterCommand = program.command("aster").description("Manage the Aster mobile API");
 const asterTokenCommand = asterCommand.command("token").description("Manage scoped Aster API credentials");

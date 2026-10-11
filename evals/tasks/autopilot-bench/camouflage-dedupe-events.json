@@ -1,0 +1,17 @@
+{
+  "id": "camouflage-dedupe-events",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "0d438eab7490ca7fc332de2d691bc78a56ee2615",
+  "prompt": "The Camouflage UI bridge (`src/camouflage-view.ts`) emits redundant events. Send slash-command registrations only when the rendered command payload actually changes; deduplicate repeated generic subagent-policy notices while still showing explicit user-directed notices; and for `!` shell commands keep the status (exit code) in the tool summary rather than in the displayed output, stripping it from the output text.\n\nThe regression test(s) for this change are already in the worktree: `src/camouflage-view.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/camouflage-view.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/camouflage-view.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "ui",
+    "camouflage",
+    "pr-712"
+  ],
+  "files": {
+    "src/camouflage-view.test.ts": "files/camouflage-dedupe-events/src/camouflage-view.test.ts"
+  }
+}

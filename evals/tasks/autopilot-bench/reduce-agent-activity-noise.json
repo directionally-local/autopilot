@@ -1,0 +1,17 @@
+{
+  "id": "reduce-agent-activity-noise",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "7819b2f68a273509d3f4987a3fcc685e1a75b7f4",
+  "prompt": "Reduce noise in the agent activity views. In `src/ui/narrator.ts`, summarize `execute_code` tool calls with a concise \"Running code batch\" label instead of the serialized arguments. In `src/ui/worker-list.tsx`, hide routine worker log lines while keeping task/step status and errors visible, and show one normalized, truncated log line when a worker fails.\n\nThe regression test(s) for this change are already in the worktree: `src/ui/narrator.test.ts`, `src/ui/worker-list.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/ui/narrator.test.ts src/ui/worker-list.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/ui/narrator.test.ts src/ui/worker-list.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "ui",
+    "pr-761"
+  ],
+  "files": {
+    "src/ui/narrator.test.ts": "files/reduce-agent-activity-noise/src/ui/narrator.test.ts",
+    "src/ui/worker-list.test.ts": "files/reduce-agent-activity-noise/src/ui/worker-list.test.ts"
+  }
+}

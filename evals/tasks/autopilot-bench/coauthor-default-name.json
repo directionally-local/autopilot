@@ -1,0 +1,17 @@
+{
+  "id": "coauthor-default-name",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "268a6309d51ad6aa4f81f611a5af3513b51ce7c6",
+  "prompt": "Rename the default git co-author from `kimiflare` to `autopilot` everywhere the default is applied: the resolved config (`loadConfig` in `src/config.ts`), the interactive app, print mode, the `/init` flow, the SDK session, and the ACP agent. The default email stays `kimiflare@proton.me`. Update the agent instruction in the system prompt so generated commit trailers read `autopilot <kimiflare@proton.me>`.\n\nThe regression test(s) for this change are already in the worktree: `src/config.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/config.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/config.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "config",
+    "rename",
+    "pr-680"
+  ],
+  "files": {
+    "src/config.test.ts": "files/coauthor-default-name/src/config.test.ts"
+  }
+}

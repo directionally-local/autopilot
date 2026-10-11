@@ -1,0 +1,17 @@
+{
+  "id": "bash-coauthor-injection-safety",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "6e094a8313e1e5fa84b260497b7954e1e42c798a",
+  "prompt": "`injectCoauthor()` in `src/tools/bash.ts` splices the configured co-author name and email into a double-quoted shell argument, so quotes, `$()`, backticks, or `;` in either value run arbitrary commands whenever a git commit goes through the bash tool, and line breaks can forge extra trailers. Make the generated shell static: pass the trailer and the temp message path through environment variables (`KF_COAUTHOR_TRAILER`, `KF_COAUTHOR_MSG`) referenced only as `\"$VAR\"`, with no `eval`. Add `buildCoauthorTrailer()` that rejects line breaks, control characters, U+2028/U+2029, and `<`/`>` in the email; an invalid value skips injection with a warning while the user's command still runs. The temp message file must be removed whether the amend succeeds or fails. Keep detection of commit-producing commands, rebase continuation, the HEAD-change safety net, duplicate-trailer detection, and non-git behaviour unchanged.\n\nThe regression test(s) for this change are already in the worktree: `src/tools/bash.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/tools/bash.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/tools/bash.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "tools",
+    "security",
+    "pr-735"
+  ],
+  "files": {
+    "src/tools/bash.test.ts": "files/bash-coauthor-injection-safety/src/tools/bash.test.ts"
+  }
+}

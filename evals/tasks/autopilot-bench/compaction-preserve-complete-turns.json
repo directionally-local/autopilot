@@ -1,0 +1,18 @@
+{
+  "id": "compaction-preserve-complete-turns",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "c013c5ce54bfbc7415b71c703f21c7145b817715",
+  "prompt": "Artifact compaction (`src/agent/artifact-compaction.ts`) splits conversation history by message count, which can cut a turn in half: interstitial system messages and multiple assistant/tool cycles belonging to one user message get separated, and tool results lose their calls. Group history by user-message boundaries so a turn keeps its system messages and all of its assistant/tool cycles, preserve complete retained turns when compacting, and match tool results to calls across assistant cycles. Also add one line to the system prompt instructing the agent to answer the newest user message while using history only to interpret follow-ups. A 501-message session must compact correctly.\n\nThe regression test(s) for this change are already in the worktree: `src/agent/artifact-compaction.test.ts`, `src/agent/system-prompt.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/agent/artifact-compaction.test.ts src/agent/system-prompt.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/agent/artifact-compaction.test.ts src/agent/system-prompt.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "agent",
+    "compaction",
+    "pr-719"
+  ],
+  "files": {
+    "src/agent/artifact-compaction.test.ts": "files/compaction-preserve-complete-turns/src/agent/artifact-compaction.test.ts",
+    "src/agent/system-prompt.test.ts": "files/compaction-preserve-complete-turns/src/agent/system-prompt.test.ts"
+  }
+}

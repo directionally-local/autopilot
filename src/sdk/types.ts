@@ -104,6 +104,9 @@ export interface KimiFlareSession {
   readonly cwd: string;
   readonly isStreaming: boolean;
   readonly messages: ChatMessage[];
+  /** The session's trace recorder (a no-op unless `config.trace.enabled`). Hosts
+   *  such as the eval runner append their own outcome events to it. */
+  readonly trace: import("../trace/recorder.js").TraceRecorder;
 
   // Prompting
   /** Run a turn. Called while a turn is streaming, the text is treated as a steer. */
@@ -130,5 +133,6 @@ export interface KimiFlareSession {
   getUsage(): SessionUsage;
   getStatus(): SessionStatus;
   save(): Promise<void>;
-  dispose(): void;
+  /** Release resources. `traceEndReason` sets the `session_end` reason recorded on the trace (default "exit"). */
+  dispose(options?: { traceEndReason?: import("../trace/types.js").SessionEndReason }): void;
 }

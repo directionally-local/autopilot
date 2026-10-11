@@ -1,0 +1,18 @@
+{
+  "id": "quiet-loop-guardrail-feedback",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "76608378e3d8b65f80b149fbaac7d490ccc5edfe",
+  "prompt": "Two guardrail changes in the agent loop and the tool view. First, in `src/agent/loop.ts`, the web-fetch spiral guardrail treats repeated requests to the same host as a loop; allow distinct `web_fetch` URLs on the same host while keeping the per-turn and per-session request caps. Second, loop and research guardrail feedback should stay in the agent's context but be quiet in the interactive chat: mark such blocked results so the tool view (`src/ui/tool-view.tsx`) renders them as quiet skips, and stop showing internal loop-recovery notices in the chat.\n\nThe regression test(s) for this change are already in the worktree: `src/agent/loop-guardrails.test.ts`, `src/ui/tool-view.test.tsx`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/agent/loop-guardrails.test.ts src/ui/tool-view.test.tsx` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/agent/loop-guardrails.test.ts src/ui/tool-view.test.tsx",
+  "timeout_s": 1800,
+  "tags": [
+    "agent",
+    "ui",
+    "pr-741"
+  ],
+  "files": {
+    "src/agent/loop-guardrails.test.ts": "files/quiet-loop-guardrail-feedback/src/agent/loop-guardrails.test.ts",
+    "src/ui/tool-view.test.tsx": "files/quiet-loop-guardrail-feedback/src/ui/tool-view.test.tsx"
+  }
+}
