@@ -25,6 +25,8 @@ import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/con
 import { resolveSdkConfig } from "./config.js";
 import type { CreateSessionOptions, KimiFlareSession, SessionEvent, SessionUsage, SessionStatus, PromptOptions } from "./types.js";
 import { createDefaultPermissionHandler } from "./permissions.js";
+import { createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
+import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 
 export async function createAgentSession(
@@ -124,6 +126,20 @@ export async function createAgentSession(
   ];
 
   const isNewSession = sessionFile.messages.length === 0;
+  // Session trace (no-op unless `config.trace.enabled`).
+  const trace = createRecorder({
+    enabled: config.trace?.enabled === true,
+    sessionId: sessionFile.id,
+    root: config.trace?.root,
+  });
+  await emitSessionStart(trace, {
+    cwd,
+    model: config.model,
+    mode: "sdk",
+    config,
+    tools: toOpenAIToolDefs(allTools),
+    systemPrompt,
+  });
   const session = new InternalSession({
     sessionFile,
     cwd,
@@ -138,6 +154,7 @@ export async function createAgentSession(
     onKimiMdStale: opts.onKimiMdStale,
     hooks,
     provider: opts.provider,
+    trace,
   });
 
   // Persist new sessions immediately so hosts can rely on the file existing
@@ -167,6 +184,7 @@ interface InternalSessionOpts {
   /** M6.1: optional. When provided, the loop fires Stop at end-of-turn.
    *  PreToolUse / PostToolUse fire via the executor regardless. */
   hooks?: import("../hooks/manager.js").HooksManager;
+  trace: TraceRecorder;
 }
 
 class InternalSession implements KimiFlareSession {
@@ -185,6 +203,8 @@ class InternalSession implements KimiFlareSession {
   private onKimiMdStale?: () => void;
   private provider?: OpenRouterProviderPrefs;
   private hooks?: import("../hooks/manager.js").HooksManager;
+  private readonly trace: TraceRecorder;
+  private traceCostUsd = 0;
 
   private listeners = new Set<(event: SessionEvent) => void>();
   private steerQueue: string[] = [];
@@ -228,6 +248,7 @@ class InternalSession implements KimiFlareSession {
     this.onKimiMdStale = opts.onKimiMdStale;
     this.provider = opts.provider;
     this.hooks = opts.hooks;
+    this.trace = opts.trace;
 
     this.permissionHandler =
       opts.permissionHandler ??
@@ -295,6 +316,14 @@ class InternalSession implements KimiFlareSession {
 
     const userMessage: ChatMessage = { role: "user", content: userContent };
     this.messages.push(userMessage);
+    const turnId = makeTurnId();
+    if (this.trace.enabled) {
+      this.trace.emit(
+        "user_message",
+        { content_blob: this.trace.blob(text) ?? "", source: "sdk", attachments: options?.images?.length ?? 0 },
+        turnId,
+      );
+    }
 
     this.emit({ type: "message.start", messageId, role: "user" });
     this.emit({ type: "message.end", messageId });
@@ -306,7 +335,7 @@ class InternalSession implements KimiFlareSession {
 
     let succeeded = false;
     try {
-      await this.runTurn(mode, options?.maxToolIterations);
+      await this.runTurn(mode, options?.maxToolIterations, turnId);
       succeeded = true;
       this.isStreaming = false;
       this.emit({ type: "status", status: "idle" });
@@ -425,6 +454,9 @@ class InternalSession implements KimiFlareSession {
 
   dispose(): void {
     this.disposed = true;
+    if (this.trace.enabled) {
+      this.trace.emit("session_end", { reason: "exit", ...(this.traceCostUsd > 0 ? { total_cost_usd: this.traceCostUsd } : {}) }, null);
+    }
     this.denyPendingPermissions();
     this.abortController?.abort();
     this.lspManager?.stopAll().catch(() => {});
@@ -432,7 +464,7 @@ class InternalSession implements KimiFlareSession {
     this.listeners.clear();
   }
 
-  private async runTurn(mode: Mode, maxToolIterations?: number): Promise<void> {
+  private async runTurn(mode: Mode, maxToolIterations?: number, turnId: string = makeTurnId()): Promise<void> {
     const signal = this.abortController!.signal;
     const coauthor =
       this.config.coauthor !== false
@@ -510,6 +542,7 @@ class InternalSession implements KimiFlareSession {
         });
       },
       onUsageFinal: (usage, gatewayMeta) => {
+        if (typeof usage.cost === "number") this.traceCostUsd += usage.cost;
         this.usage.totalInputTokens += usage.prompt_tokens;
         this.usage.totalOutputTokens += usage.completion_tokens;
         this.usage.turnCount += 1;
@@ -596,6 +629,8 @@ class InternalSession implements KimiFlareSession {
       compaction: this.compaction,
       allowDirectPush: this.config.allowDirectPush,
       preferPullRequests: this.config.preferPullRequests,
+      trace: this.trace,
+      turnId,
       // Steering lands at the next tool boundary, or before the final answer
       // ends the turn (the loop continues so the model can respond to it).
       drainPendingInput: () => {
@@ -604,6 +639,9 @@ class InternalSession implements KimiFlareSession {
           const messageId = `msg_${this.nextMessageId++}`;
           this.emit({ type: "message.start", messageId, role: "user" });
           this.emit({ type: "message.end", messageId });
+          if (this.trace.enabled) {
+            this.trace.emit("user_message", { content_blob: this.trace.blob(text) ?? "", source: "continuation", attachments: 0 }, turnId);
+          }
           return { role: "user" as const, content: text };
         });
       },

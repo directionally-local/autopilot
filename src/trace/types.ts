@@ -63,7 +63,7 @@ export interface SessionStartPayload {
   system_prompt_sha: string;
 }
 
-export type UserMessageSource = "typed" | "deny_feedback" | "continuation" | "eval" | "sdk" | "print";
+export type UserMessageSource = "typed" | "deny_feedback" | "continuation" | "eval" | "sdk" | "print" | "server";
 
 export interface UserMessagePayload {
   content_blob: string;
@@ -166,7 +166,15 @@ export interface CompactionPayload {
   summary_blob?: string;
 }
 
-export type GuardrailKind = "loop_recovery" | "loop_stopped" | "limit_ceiling" | "code_mode_redirect_cap";
+export type GuardrailKind =
+  | "loop_recovery"
+  | "loop_stopped"
+  | "limit_ceiling"
+  | "code_mode_redirect_cap"
+  /** `maxToolIterations` reached and the counter reset automatically. */
+  | "limit_reset"
+  /** `maxToolIterations` reached with `toolLimitBehavior: "stop"`. */
+  | "limit_stopped";
 
 export interface GuardrailPayload {
   kind: GuardrailKind;

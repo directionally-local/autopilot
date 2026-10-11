@@ -26,7 +26,7 @@ import { evaluatePermissionRules } from "./permissions-evaluator.js";
 import { classifyIntent } from "./intent/classify.js";
 import { allowsSubagentDispatch, resolveSubagentGuidance } from "./intent/subagent-policy.js";
 import type { KimiConfig, PermissionRules, ReasoningEffort } from "./config.js";
-import { createRecorder, emitSessionStart, type SessionEndReason } from "./trace/index.js";
+import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 
 export type PrintFormat = "text" | "json" | "stream-json";
@@ -277,6 +277,14 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   const files = opts.files ? await resolveFiles(opts.files, cwd) : [];
   const { content: userContent } = await buildUserMessage(opts.prompt, files, cwd);
   messages.push({ role: "user", content: userContent });
+  const turnId = makeTurnId();
+  if (trace.enabled) {
+    trace.emit(
+      "user_message",
+      { content_blob: trace.blob(opts.prompt) ?? "", source: "print", attachments: files.length },
+      turnId,
+    );
+  }
 
   const controller = new AbortController();
   process.on("SIGINT", () => controller.abort());
@@ -458,6 +466,8 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       // session file (saved below) instead of failing on context size.
       compaction: sessionFileCompactionTarget(sessionFile),
       callbacks,
+      trace,
+      turnId,
     });
   } catch (err) {
     if (err instanceof BudgetExhaustedError) {

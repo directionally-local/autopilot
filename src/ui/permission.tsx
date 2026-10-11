@@ -70,7 +70,9 @@ export function PermissionModal({ tool, args, onDecide, onFeedback }: Props) {
 
   const handleFeedbackSubmit = useCallback(
     (text: string) => {
-      onDecide(DENY);
+      // The feedback rides on the decision (for the session trace) and is
+      // also submitted as the next user message.
+      onDecide(text.trim() ? { ...DENY, feedback: text.trim() } : DENY);
       if (text.trim()) {
         onFeedback?.(text);
       }

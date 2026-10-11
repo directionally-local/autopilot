@@ -119,6 +119,8 @@ import { runInit as runInitImpl } from "./init/run-init.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
+import { makeTurnId, traceCompiledCompaction, traceLlmCompaction } from "./trace/index.js";
+import { toOpenAIToolDefs } from "./tools/registry.js";
 import { distillSessionPlan } from "./agent/distill.js";
 import { resolvePlanForFresh } from "./agent/plan-resolver.js";
 import { writeToClipboard } from "./util/clipboard.js";
@@ -439,6 +441,10 @@ function App({
   }, []);
   const sessionStartRecallRef = useRef<Promise<import("./memory/schema.js").HybridResult[]> | null>(null);
   const kimiMdStaleNudgedRef = useRef(false);
+  /** Trace turn id of the turn in flight (set by processMessage). */
+  const currentTurnIdRef = useRef<string | null>(null);
+  /** Set when the next submitted message is the feedback typed into a permission deny box. */
+  const denyFeedbackRef = useRef(false);
   /** Stores the plan distilled from a plan-mode session so it survives follow-up discussion. */
   const sessionPlanRef = useRef<string | null>(null);
   /**
@@ -478,6 +484,8 @@ function App({
     handleResumePick,
     handleCheckpointPick,
     resetSession,
+    traceRef,
+    ensureTraceStarted,
   } = sessionMgr;
 
   // Batched streaming delta refs to reduce React re-render frequency
@@ -826,6 +834,7 @@ function App({
           store,
         });
         if (result.metrics.rawTurnsRemoved > 0) {
+          traceCompiledCompaction(traceRef.current, result, currentTurnIdRef.current);
           sessionStateRef.current = result.newState;
           setEvents((e) => [
             ...e,
@@ -875,6 +884,7 @@ function App({
             signal,
           });
           if (result.replacedCount > 0) {
+            traceLlmCompaction(traceRef.current, messages, result, currentTurnIdRef.current);
             setEvents((e) => [
               ...e,
               {
@@ -1081,6 +1091,7 @@ function App({
       hooks: hooksManagerRef.current,
       sessionId: sessionIdRef.current,
       supervisorRef,
+      trace: traceRef.current,
     });
   }, [cfg, busy, saveSessionSafe]);
 
@@ -1592,6 +1603,8 @@ function App({
       }
 
       messagesRef.current.push({ role: "user", content });
+      const traceUserSource: "typed" | "deny_feedback" = denyFeedbackRef.current ? "deny_feedback" : "typed";
+      denyFeedbackRef.current = false;
 
       // Pre-turn save: ensure session exists even if user exits mid-turn
       await saveSessionSafe();
@@ -1951,6 +1964,32 @@ function App({
         guidance: delegationGuidance.kind,
       });
 
+      // Session trace: `session_start` once per session (with the exact tools
+      // and system prompt), then this turn's `user_message`.
+      const turnId = makeTurnId();
+      currentTurnIdRef.current = turnId;
+      const trace = await ensureTraceStarted({
+        tools: toOpenAIToolDefs(turnTools),
+        systemPrompt: messagesRef.current
+          .filter((m) => m.role === "system" && typeof m.content === "string")
+          .map((m) => m.content as string)
+          .join("\n\n"),
+        model: overrideModel ?? cfg.model,
+        mode: "tui",
+        config: cfg,
+      });
+      if (trace.enabled) {
+        trace.emit(
+          "user_message",
+          {
+            content_blob: trace.blob(typeof content === "string" ? content : trimmed) ?? "",
+            source: traceUserSource,
+            attachments: Array.isArray(content) ? content.filter((p) => p.type !== "text").length : 0,
+          },
+          turnId,
+        );
+      }
+
       supervisorRef.current.startTurn(
         {
           ...llmAuthFromConfig(cfg),
@@ -2000,6 +2039,8 @@ function App({
           },
           mode: modeRef.current,
           cacheStable: cacheStableRef.current,
+          trace,
+          turnId,
           onFileChange: (path, content) => {
             if (content) {
               lspManagerRef.current.notifyChange(path, content);
@@ -2054,6 +2095,7 @@ function App({
                     store,
                   });
                   if (result.metrics.rawTurnsRemoved > 0) {
+                    traceCompiledCompaction(traceRef.current, result, turnId);
                     messagesRef.current = result.newMessages;
                     sessionStateRef.current = result.newState;
                     setEvents((e) => [
@@ -2069,6 +2111,7 @@ function App({
                   }
                 } else {
                   try {
+                    const before = messagesRef.current;
                     const result = await summarizeMessagesViaLlm({
                       ...llmAuthFromConfig(cfg),
                       model: cfg.model,
@@ -2076,6 +2119,7 @@ function App({
                       signal: turnScope.signal,
                     });
                     if (result.replacedCount > 0) {
+                      traceLlmCompaction(traceRef.current, before, result, turnId);
                       messagesRef.current = result.newMessages;
                       setEvents((e) => [
                         ...e,
@@ -2154,6 +2198,7 @@ function App({
                     keepLastTurns: 1,
                   });
                   if (result.metrics.rawTurnsRemoved > 0) {
+                    traceCompiledCompaction(traceRef.current, result, turnId);
                     messagesRef.current = result.newMessages;
                     sessionStateRef.current = result.newState;
                     setEvents((e) => [
@@ -2169,6 +2214,7 @@ function App({
                   }
                 } else {
                   try {
+                    const before = messagesRef.current;
                     const result = await summarizeMessagesViaLlm({
                       ...llmAuthFromConfig(cfg),
                       model: cfg.model,
@@ -2177,6 +2223,7 @@ function App({
                       signal: turnScope.signal,
                     });
                     if (result.replacedCount > 0) {
+                      traceLlmCompaction(traceRef.current, before, result, turnId);
                       messagesRef.current = result.newMessages;
                       setEvents((e) => [
                         ...e,
@@ -2318,7 +2365,7 @@ function App({
         },
       );
     },
-    [cfg, handleSlash, updateAssistant, updateTool, saveSessionSafe, updateResponseMeta, setShowPlanCompletePicker, runUserShellCommand],
+    [cfg, handleSlash, updateAssistant, updateTool, saveSessionSafe, updateResponseMeta, setShowPlanCompletePicker, runUserShellCommand, ensureTraceStarted],
   );
 
   useEffect(() => {
@@ -3040,6 +3087,7 @@ function App({
             args={perm.args}
             onDecide={decidePermission}
             onFeedback={(text) => {
+              denyFeedbackRef.current = true;
               submitRef.current(text);
             }}
           />

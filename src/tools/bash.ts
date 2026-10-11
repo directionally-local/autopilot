@@ -480,6 +480,7 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
         content: raw,
         rawBytes: Buffer.byteLength(raw, "utf8"),
         reducedBytes: Buffer.byteLength(raw, "utf8"),
+        meta: { exitCode: code, timedOut: killedByTimeout },
       });
     });
   });

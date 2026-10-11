@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
-import type { ChatMessage, ToolDef, Usage } from "../agent/messages.js";
+import type { ChatMessage, ReasoningDetail, ToolDef, Usage } from "../agent/messages.js";
 import { approxTokens } from "../agent/artifact-compaction.js";
 
 /**
@@ -82,9 +82,13 @@ export interface LlmDumpBreakdown {
 export interface LlmDumpResponse {
   text: string;
   reasoning: string;
-  toolCalls: Array<{ name: string; arguments: string }>;
+  /** Structured reasoning blocks merged from streamed `reasoning_details` deltas. */
+  reasoningDetails: ReasoningDetail[];
+  toolCalls: Array<{ id: string; name: string; arguments: string }>;
   finishReason: string | null;
   usage: Usage | null;
+  /** OpenRouter generation id from the stream, when present. */
+  generationId?: string;
 }
 
 export interface LlmDumpRecord {
