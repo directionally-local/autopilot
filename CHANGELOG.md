@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.21.0](https://github.com/sinameraji/autopilot/compare/v1.20.1...v1.21.0) (2026-10-11)
+
+
+### Features
+
+* **aster:** stream progress events ([#773](https://github.com/sinameraji/autopilot/issues/773)) ([6884196](https://github.com/sinameraji/autopilot/commit/68841963f7d7a55243bff6798b2aea293b77d0ba))
+* **eval:** headless task runner, autopilot-bench seed set, paired compare ([#774](https://github.com/sinameraji/autopilot/issues/774)) ([d7c04a4](https://github.com/sinameraji/autopilot/commit/d7c04a4e5d834728bedebea7cc8feb7b14b9705c))
+
 ## [1.20.1](https://github.com/sinameraji/autopilot/compare/v1.20.0...v1.20.1) (2026-10-11)
 
 
