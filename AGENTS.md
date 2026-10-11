@@ -37,6 +37,7 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - src/lsp/, src/mcp/ — Language Server Protocol and Model Context Protocol integrations.
 - src/sdk/, src/server/ — programmatic session SDK and RPC/server integration.
 - src/runs/, src/jobs/ — durable run/job lifecycle and unattended execution.
+- src/trace/ — opt-in local session tracing (KIMIFLARE_TRACE=1): append-only trace.jsonl plus content-addressed blobs per session, redacted at write time; see docs/plans/trace-and-dataset-dev-plan.md.
 - src/code-mode/ — generated TypeScript tool execution and sandboxing.
 - src/hooks/, src/intent/, src/cost-attribution/, src/util/ — lifecycle hooks, intent routing, cost reporting, and shared utilities.
 - src/remote/ — remote command implementation; remote/agent/ is a separate package.

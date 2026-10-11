@@ -21,6 +21,12 @@ export const RETENTION = {
   memoryMaxAgeDays: 90,
   /** Max memories per repo. */
   memoryMaxEntries: 1000,
+  /** Session trace directories older than this (days) are pruned. */
+  traceMaxAgeDays: 90,
+  /** Max total size of all session traces (bytes). Oldest sessions go first. */
+  traceMaxTotalBytes: 2 * 1024 * 1024 * 1024,
+  /** Max size of a single session trace (bytes); recording stops at the cap. */
+  traceMaxSessionBytes: 200 * 1024 * 1024,
 } as const;
 
 /** Return files sorted by mtime descending (newest first). */

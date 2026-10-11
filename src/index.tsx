@@ -455,6 +455,8 @@ async function main() {
       title: opts.title,
       permissions: cfg.permissions,
       workerProfile: opts.workerProfile as "research" | undefined,
+      trace: cfg.trace,
+      traceConfigSnapshot: cfg,
     });
     return;
   }

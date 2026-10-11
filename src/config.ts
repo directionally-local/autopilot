@@ -36,6 +36,11 @@ export type PermissionRule = "allow" | "deny" | "ask";
 /** Per-tool permission rules keyed by glob pattern. */
 export type PermissionRules = Record<string, PermissionRule>;
 
+export interface TraceConfig {
+  enabled: boolean;
+  root?: string;
+}
+
 export interface KimiConfig {
   /**
    * The user's own OpenRouter API key (`sk-or-…`; env: OPENROUTER_API_KEY or
@@ -210,6 +215,13 @@ export interface KimiConfig {
    *  branch. When false (default), such pushes are blocked and the model is
    *  directed to open a PR instead. */
   allowDirectPush?: boolean;
+  /**
+   * Local session tracing (docs/plans/trace-and-dataset-dev-plan.md). Off by
+   * default; writes `trace.jsonl` + blobs per session under `root`
+   * (default `${XDG_DATA_HOME:-~/.local/share}/kimiflare/traces`).
+   * Env: KIMIFLARE_TRACE=1|0, KIMIFLARE_TRACE_DIR=<path>.
+   */
+  trace?: TraceConfig;
 }
 
 export const DEFAULT_MODEL = "moonshotai/kimi-k2.6";
@@ -260,6 +272,17 @@ function readNumberEnv(name: string): number | undefined {
   if (!raw) return undefined;
   const parsed = parseInt(raw, 10);
   return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/** Env (KIMIFLARE_TRACE, KIMIFLARE_TRACE_DIR) wins over the file; default off. */
+function resolveTraceConfig(persisted: Partial<TraceConfig> | undefined): TraceConfig | undefined {
+  const envEnabled = readBooleanEnv("KIMIFLARE_TRACE");
+  const envRoot = process.env.KIMIFLARE_TRACE_DIR?.trim() || undefined;
+  if (envEnabled === undefined && envRoot === undefined && persisted === undefined) return undefined;
+  const trace: TraceConfig = { enabled: envEnabled ?? persisted?.enabled ?? false };
+  const root = envRoot ?? persisted?.root;
+  if (root) trace.root = root;
+  return trace;
 }
 
 export async function loadConfig(): Promise<KimiConfig | null> {
@@ -394,6 +417,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     permissions: persisted.permissions,
     preferPullRequests: readBooleanEnv("KIMIFLARE_PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,
     allowDirectPush: readBooleanEnv("KIMIFLARE_ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
+    trace: resolveTraceConfig(persisted.trace),
   };
 
   // One-time cleanup of a Cloudflare-era config file: rewrite it without the
