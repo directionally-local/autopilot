@@ -89,6 +89,8 @@ import { resolvePlanForFresh } from "../agent/plan-resolver.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
 import { writeToClipboard } from "../util/clipboard.js";
 import type { Task } from "../tools/registry.js";
+import type { TraceRecorder } from "../trace/recorder.js";
+import type { TurnRecord } from "./use-session-manager.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -180,6 +182,10 @@ export interface SlashContext {
   lastApiErrorRef: React.MutableRefObject<{ httpStatus?: number; code?: number; message: string } | null>;
   activeScopeRef: React.MutableRefObject<AbortScope | null>;
   sessionPlanRef: React.MutableRefObject<string | null>;
+  /** Session trace recorder (src/trace); a no-op unless tracing is enabled. */
+  traceRef: React.MutableRefObject<TraceRecorder>;
+  /** Turns of this session that have ended, oldest first (for /good, /bad, and revert signals). */
+  turnHistoryRef: React.MutableRefObject<TurnRecord[]>;
 }
 
 type Handler = (ctx: SlashContext, rest: string[], arg: string) => boolean | Promise<boolean>;
@@ -1884,6 +1890,34 @@ const handleChangelogImage: Handler = (ctx, rest) => {
   return true;
 };
 
+/** `/good` and `/bad [reason]`: an explicit rating of the most recent turn,
+ *  recorded as `outcome{rating}` on the session trace. */
+function rateLastTurn(ctx: SlashContext, value: "good" | "bad", reason: string): boolean {
+  const { mkKey, setEvents } = ctx;
+  const last = ctx.turnHistoryRef.current.at(-1);
+  if (!last) {
+    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "nothing to rate yet — finish a turn first" }]);
+    return true;
+  }
+  const trace = ctx.traceRef.current;
+  if (!trace.enabled) {
+    setEvents((e) => [
+      ...e,
+      { kind: "info", key: mkKey(), text: "session tracing is off, so the rating was not recorded (enable with KIMIFLARE_TRACE=1)" },
+    ]);
+    return true;
+  }
+  trace.emit("outcome", { kind: "rating", turn_id: last.turnId, value, ...(reason ? { reason } : {}) }, last.turnId);
+  setEvents((e) => [
+    ...e,
+    { kind: "info", key: mkKey(), text: `recorded ${value === "good" ? "👍 good" : "👎 bad"} for the last turn${reason ? `: ${reason}` : ""}` },
+  ]);
+  return true;
+}
+
+const handleGood: Handler = (ctx, rest) => rateLastTurn(ctx, "good", rest.join(" ").trim());
+const handleBad: Handler = (ctx, rest) => rateLastTurn(ctx, "bad", rest.join(" ").trim());
+
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const handlers: Record<string, Handler> = {
@@ -1909,6 +1943,8 @@ const handlers: Record<string, Handler> = {
   "/resume": handleResume,
   "/checkpoint": handleCheckpoint,
   "/compact": handleCompact,
+  "/good": handleGood,
+  "/bad": handleBad,
   "/init": handleInit,
   "/update": handleUpdate,
   "/mcp": handleMcp,

@@ -119,7 +119,7 @@ import { runInit as runInitImpl } from "./init/run-init.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
-import { makeTurnId, traceCompiledCompaction, traceLlmCompaction } from "./trace/index.js";
+import { classifyNextMessage, makeTurnId, traceCompiledCompaction, traceLlmCompaction } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 import { distillSessionPlan } from "./agent/distill.js";
 import { resolvePlanForFresh } from "./agent/plan-resolver.js";
@@ -486,6 +486,8 @@ function App({
     resetSession,
     traceRef,
     ensureTraceStarted,
+    turnHistoryRef,
+    noteTurnEnded,
   } = sessionMgr;
 
   // Batched streaming delta refs to reduce React re-render frequency
@@ -1276,6 +1278,8 @@ function App({
     lastApiErrorRef,
     activeScopeRef,
     sessionPlanRef,
+    traceRef,
+    turnHistoryRef,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage, setResponseMeta,
@@ -1979,6 +1983,15 @@ function App({
         config: cfg,
       });
       if (trace.enabled) {
+        // How the user followed up is a signal about the previous turn.
+        const previousTurn = turnHistoryRef.current.at(-1);
+        if (previousTurn) {
+          trace.emit(
+            "outcome",
+            { kind: "next_message", turn_id: previousTurn.turnId, classification: classifyNextMessage(trimmed), classifier: "regex" },
+            previousTurn.turnId,
+          );
+        }
         trace.emit(
           "user_message",
           {
@@ -2056,6 +2069,7 @@ function App({
         },
         {
           onDone: () => {
+            noteTurnEnded(turnId);
             // Fire-and-forget all post-turn housekeeping so the UI returns to
             // idle immediately and the user can type the next message without
             // waiting for compaction, memory recall, or session persistence.
@@ -2326,6 +2340,7 @@ function App({
             }
           },
           onError: async (e) => {
+            noteTurnEnded(turnId);
             if (e.name === "AbortError") {
               // Inject synthetic tool results for any pending tool calls so message
               // history remains valid (assistant msg with tool_calls needs 1:1 results).

@@ -14,3 +14,6 @@ export { traceRoot, defaultTraceRoot, sessionTraceDir, traceFilePath, blobsDir, 
 export { pruneTraces, listTraceSessions, type PruneTracesOptions, type PruneTracesResult } from "./retention.js";
 export { collectSessionStart, emitSessionStart, resolveHarnessCommit, type CollectSessionStartOptions } from "./session-start.js";
 export { traceCompiledCompaction, traceLlmCompaction } from "./compaction.js";
+export { classifyVerification } from "./verification.js";
+export { classifyNextMessage } from "./next-message.js";
+export { beginGitDelta, diffNumstat, detectGitRevert, rememberGitDelta, MAX_PATCH_BYTES, type GitDeltaTracker } from "./git-delta.js";

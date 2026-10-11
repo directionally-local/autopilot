@@ -67,6 +67,8 @@ export const CATEGORIES: Category[] = [
       { command: "/compact", description: "summarize old turns to free context" },
       { command: "/clear", description: "clear current conversation" },
       { command: "/fresh", description: "reset session and start fresh with the last plan" },
+      { command: "/good", description: "rate the last turn good (local session trace)" },
+      { command: "/bad [reason]", description: "rate the last turn bad (local session trace)", selectable: false },
     ],
   },
   {

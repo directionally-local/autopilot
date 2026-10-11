@@ -2,6 +2,8 @@ import type { ToolSpec, ToolContext, ToolOutput, RunWaitRequest } from "./regist
 import { wrapAsToolError, type ToolErrorCode } from "./tool-error.js";
 import type { HooksManager } from "../hooks/manager.js";
 import type { TraceRecorder } from "../trace/recorder.js";
+import { classifyVerification } from "../trace/verification.js";
+import { detectGitRevert } from "../trace/git-delta.js";
 import type { PermissionDecision as TracePermissionDecision, ToolCallPayload, ToolResultPayload } from "../trace/types.js";
 import { readTool } from "./read.js";
 import { writeTool } from "./write.js";
@@ -602,8 +604,10 @@ class ToolTrace {
   private readonly startedAt = performance.now();
   private readonly turnId: string | null;
   private readonly parentId: string | undefined;
+  private readonly sessionId: string | undefined;
   private rawOutput: ToolOutput | null = null;
   private argsBlob = "";
+  private args: Record<string, unknown> | null = null;
 
   constructor(
     private readonly trace: TraceRecorder,
@@ -612,10 +616,12 @@ class ToolTrace {
   ) {
     this.turnId = ctx.turnId ?? null;
     this.parentId = ctx.codeModeParentToolCallId;
+    this.sessionId = ctx.sessionId;
   }
 
   /** The call was parsed (args null when the arguments were not valid JSON). */
   call(args: Record<string, unknown> | null, needsPermission: boolean): void {
+    this.args = args;
     this.argsBlob = this.trace.blob(this.invocation.arguments) ?? "";
     if (this.parentId) return;
     const payload: ToolCallPayload = {
@@ -651,6 +657,7 @@ class ToolTrace {
     const durationMs = Math.round(performance.now() - this.startedAt);
     const rawContent = this.rawOutput?.content ?? result.content;
     const rawBlob = this.trace.blob(rawContent) ?? "";
+    this.outcomes(result);
     if (this.parentId) {
       this.trace.emit(
         "code_mode_call",
@@ -682,6 +689,35 @@ class ToolTrace {
       duration_ms: durationMs,
     };
     this.trace.emit("tool_result", payload, this.turnId);
+  }
+
+  /** Outcome signals a bash call carries: a verification exit code, or a git revert of the last delta. */
+  private outcomes(result: ToolResult): void {
+    if (this.invocation.name !== "bash") return;
+    const command = this.args?.command;
+    if (typeof command !== "string" || !command.trim()) return;
+    const exitCode = this.rawOutput?.meta?.exitCode;
+    const category = classifyVerification(command);
+    if (category && typeof exitCode === "number") {
+      this.trace.emit(
+        "outcome",
+        {
+          kind: "verification",
+          turn_id: this.turnId ?? "",
+          tool_call_id: this.invocation.id,
+          command,
+          category,
+          exit_code: exitCode,
+        },
+        this.turnId,
+      );
+    }
+    if (result.ok && this.sessionId) {
+      const reverted = detectGitRevert(this.sessionId, command);
+      if (reverted) {
+        this.trace.emit("outcome", { kind: "reverted", turn_id: reverted.turnId, how: "git_checkout" }, this.turnId);
+      }
+    }
   }
 }
 

@@ -143,6 +143,16 @@ export interface SessionManager {
   ensureTraceStarted: (info: TraceStartInfo) => Promise<TraceRecorder>;
   /** Emit `session_end` (if a session was started) and drop the recorder. */
   endTrace: (reason: SessionEndReason) => void;
+  /** Ended turns of the current session, oldest first. */
+  turnHistoryRef: React.MutableRefObject<TurnRecord[]>;
+  /** Record that a turn ended (for /good, /bad, next-message, and revert signals). */
+  noteTurnEnded: (turnId: string) => void;
+}
+
+/** A turn that has ended, for outcome signals that arrive after the fact. */
+export interface TurnRecord {
+  turnId: string;
+  endedAt: number;
 }
 
 export interface TraceStartInfo {
@@ -216,11 +226,24 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   const traceRef = useRef<TraceRecorder>(createNoopRecorder());
   const traceStartedRef = useRef(false);
 
+  const turnHistoryRef = useRef<TurnRecord[]>([]);
+  const noteTurnEnded = useCallback((turnId: string) => {
+    turnHistoryRef.current.push({ turnId, endedAt: Date.now() });
+    if (turnHistoryRef.current.length > 100) turnHistoryRef.current.shift();
+  }, []);
+
   const endTrace = useCallback((reason: SessionEndReason) => {
     const trace = traceRef.current;
     if (trace.enabled && traceStartedRef.current) trace.emit("session_end", { reason }, null);
     traceStartedRef.current = false;
     traceRef.current = createNoopRecorder();
+  }, []);
+
+  /** `outcome{reverted}` for the turns a /clear or checkpoint restore throws away. */
+  const traceReverted = useCallback((how: "clear" | "restore_checkpoint", turns: TurnRecord[]) => {
+    const trace = traceRef.current;
+    if (!trace.enabled) return;
+    for (const turn of turns) trace.emit("outcome", { kind: "reverted", turn_id: turn.turnId, how }, turn.turnId);
   }, []);
 
   const ensureTrace = useCallback((): TraceRecorder => {
@@ -306,15 +329,21 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         setResumeProgress(0);
         setResumeStage("Loading session file…");
         startSmoothProgress(0, 10, 400);
-        const file = checkpointId
-          ? (await loadSessionFromCheckpoint(filePath, checkpointId)).file
-          : await loadSession(filePath);
+        const loaded = checkpointId ? await loadSessionFromCheckpoint(filePath, checkpointId) : null;
+        const file = loaded ? loaded.file : await loadSession(filePath);
 
         setResumeProgress(10);
         setResumeStage("Restoring artifact store…");
         startSmoothProgress(10, 20, 400);
         d.messagesRef.current = file.messages;
+        // Restoring a checkpoint of the current session discards the turns
+        // that ended after it: a negative signal for those turns.
+        if (loaded && file.id === sessionIdRef.current) {
+          const since = Date.parse(loaded.checkpoint.timestamp);
+          traceReverted("restore_checkpoint", turnHistoryRef.current.filter((t) => Number.isNaN(since) || t.endedAt > since));
+        }
         endTrace(checkpointId ? "restore_checkpoint" : "exit");
+        turnHistoryRef.current = [];
         sessionIdRef.current = file.id;
         setLogSessionId(file.id);
         sessionCreatedAtRef.current = file.createdAt;
@@ -518,6 +547,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   );
 
   const resetSession = useCallback(() => {
+    // A /clear within two turns of a turn is a negative signal for it.
+    traceReverted("clear", turnHistoryRef.current.slice(-2));
+    turnHistoryRef.current = [];
     endTrace("clear");
     sessionIdRef.current = null;
     setLogSessionId(null);
@@ -526,7 +558,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     const d = depsRef.current;
     d.sessionStateRef.current = emptySessionState();
     d.artifactStoreRef.current = new ArtifactStore();
-  }, [endTrace]);
+  }, [endTrace, traceReverted]);
 
   return {
     sessionIdRef,
@@ -551,5 +583,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     ensureTrace,
     ensureTraceStarted,
     endTrace,
+    turnHistoryRef,
+    noteTurnEnded,
   };
 }

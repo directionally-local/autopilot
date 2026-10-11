@@ -25,7 +25,7 @@ import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/con
 import { resolveSdkConfig } from "./config.js";
 import type { CreateSessionOptions, KimiFlareSession, SessionEvent, SessionUsage, SessionStatus, PromptOptions } from "./types.js";
 import { createDefaultPermissionHandler } from "./permissions.js";
-import { createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
+import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
 import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 
@@ -205,6 +205,8 @@ class InternalSession implements KimiFlareSession {
   private hooks?: import("../hooks/manager.js").HooksManager;
   private readonly trace: TraceRecorder;
   private traceCostUsd = 0;
+  /** Turn id of the last turn that ran, for next-message outcome signals. */
+  private lastTurnId: string | null = null;
 
   private listeners = new Set<(event: SessionEvent) => void>();
   private steerQueue: string[] = [];
@@ -318,12 +320,20 @@ class InternalSession implements KimiFlareSession {
     this.messages.push(userMessage);
     const turnId = makeTurnId();
     if (this.trace.enabled) {
+      if (this.lastTurnId) {
+        this.trace.emit(
+          "outcome",
+          { kind: "next_message", turn_id: this.lastTurnId, classification: classifyNextMessage(text), classifier: "regex" },
+          this.lastTurnId,
+        );
+      }
       this.trace.emit(
         "user_message",
         { content_blob: this.trace.blob(text) ?? "", source: "sdk", attachments: options?.images?.length ?? 0 },
         turnId,
       );
     }
+    this.lastTurnId = turnId;
 
     this.emit({ type: "message.start", messageId, role: "user" });
     this.emit({ type: "message.end", messageId });
