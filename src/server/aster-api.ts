@@ -102,6 +102,7 @@ export class AsterApi {
   private store: AsterStore | undefined;
   private recovery: Promise<void> | undefined;
   private readonly waiters = new Map<string, AsterWaiter>();
+  private readonly connectedEventStreams = new Map<string, number>();
   private readonly runtime: AsterApiRuntime;
   private readonly config: KimiConfig;
 
@@ -109,11 +110,18 @@ export class AsterApi {
 
   private memory: AsterMemory | undefined;
 
-  constructor(config: KimiConfig, runtime: AsterApiRuntime, github: AsterGitHub = new AsterGitHub(), memory?: AsterMemory) {
+  constructor(
+    config: KimiConfig,
+    runtime: AsterApiRuntime,
+    github: AsterGitHub = new AsterGitHub(),
+    memory?: AsterMemory,
+    push?: Pick<AsterPush, "configured" | "notify" | "close" | "register" | "unregister">,
+  ) {
     this.config = config;
     this.runtime = runtime;
     this.github = github;
     this.memory = memory;
+    this.push = push;
   }
 
   private githubProxy: AsterGitHubProxy | undefined;
@@ -136,9 +144,9 @@ export class AsterApi {
     this.githubProxyUrl = publicUrl.replace(/\/+$/, "");
   }
 
-  private push: AsterPush | undefined;
+  private push: Pick<AsterPush, "configured" | "notify" | "close" | "register" | "unregister"> | undefined;
 
-  private getPush(): AsterPush | undefined {
+  private getPush(): Pick<AsterPush, "configured" | "notify" | "close" | "register" | "unregister"> | undefined {
     try {
       return this.push ??= new AsterPush();
     } catch {
@@ -149,6 +157,7 @@ export class AsterApi {
   /** "Your task finished" (or failed) on the user's devices; cancelled turns stay silent. */
   private notifyTurnEnd(store: AsterStore, conversationId: string, runId: string, status: string, reason: string | undefined, userText: string, after: number): void {
     if (status !== "completed" && status !== "failed") return;
+    if ((this.connectedEventStreams.get(conversationId) ?? 0) > 0) return;
     const push = this.getPush();
     if (!push?.configured) return;
     const reply = status === "completed" ? collectAssistantText(store, conversationId, runId, after).trim() : "";
@@ -902,6 +911,16 @@ export class AsterApi {
     }
     store.updateConversationStatus(conversation.id, runId, "waiting_approval", { approvalId: approval.id });
     publish("approval.required", { approvalId: approval.id, tool: approval.toolName, explanation: approval.explanation, expiresAt: approval.expiresAt });
+    const push = this.getPush();
+    if (push?.configured) {
+      void push.notify({
+        title: "Approval required",
+        body: approval.toolName + ": " + approval.explanation,
+        conversationId: conversation.id,
+        category: "APPROVAL",
+        approvalId: approval.id,
+      });
+    }
 
     return new Promise<PermissionDecision>((resolveDecision) => {
       const timer = setTimeout(() => { void this.expireApproval(store, approval.id); }, config.approvalTtlMs);
@@ -1119,6 +1138,16 @@ export class AsterApi {
     let last = cursor;
     let closed = false;
     let polling = false;
+    let released = false;
+    const connected = this.connectedEventStreams.get(conversationId) ?? 0;
+    this.connectedEventStreams.set(conversationId, connected + 1);
+    const release = () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.connectedEventStreams.get(conversationId) ?? 1) - 1;
+      if (remaining > 0) this.connectedEventStreams.set(conversationId, remaining);
+      else this.connectedEventStreams.delete(conversationId);
+    };
     let lastHeartbeat = Date.now();
     const pump = async () => {
       if (closed || polling) return;
@@ -1136,13 +1165,15 @@ export class AsterApi {
         }
       } catch {
         closed = true;
+        release();
         res.end();
       } finally {
         polling = false;
         if (!closed) setTimeout(() => { void pump(); }, 500).unref();
       }
     };
-    res.on("close", () => { closed = true; });
+    res.on("close", () => { closed = true; release(); });
+    res.on("finish", release);
     void pump();
   }
 

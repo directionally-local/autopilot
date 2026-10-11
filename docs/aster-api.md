@@ -220,7 +220,9 @@ Tool events contain only names/status summaries, not raw arguments/results. Appr
 
 ### Human approvals
 
-`GET /api/v1/approvals/{approvalId}` returns the exact reviewable action/arguments and expiry. Secret-like payloads and paths outside the conversation worktree are rejected before an approval is created. The SSE `approval.required` event contains only the stable ID, tool name, concise explanation, and expiry.
+`GET /api/v1/approvals/{approvalId}` returns the exact reviewable action/arguments and expiry. Secret-like payloads and paths outside the conversation worktree are rejected before an approval is created. The SSE `approval.required` event contains only the stable ID, tool name, concise explanation, and expiry. An unanswered approval keeps the run paused while the service is up, regardless of whether an SSE client is connected. Closing the app does not cancel it: the conversation remains `waiting_approval`, and `approval.required` is journaled and replayed after reconnect until a decision or `expiresAt`. Server restarts still follow the recovery behavior described above.
+
+When APNs is configured, an approval sends a push with `aps.category = "APPROVAL"`, alert text `"<tool>: <explanation>"`, and custom data `{conversationId, approvalId}`. Completed and failed runs send custom data `{conversationId}` only when no client is connected to that conversation's SSE stream at the moment the run ends.
 
 `POST /api/v1/approvals/{approvalId}`
 
