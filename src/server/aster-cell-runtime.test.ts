@@ -27,6 +27,7 @@ interface FakeCellState {
   commands?: string[];
   writeSizes?: number[];
   activeRunId?: string | null;
+  promptEvents?: Array<Record<string, unknown>>;
 }
 
 function fakeSandbox(state: FakeCellState) {
@@ -71,7 +72,10 @@ function fakeSandbox(state: FakeCellState) {
         if (body.type === "prompt") {
           state.prompts.push({ id: String(body.id), message: String(body.message) });
           queueMicrotask(() => {
-            state.events.push({ cursor: state.events.length + 1, runId: String(body.id), event: { type: "message.delta", text: "cell reply" } });
+            const promptEvents = state.promptEvents ?? [{ type: "message.delta", text: "cell reply" }];
+            for (const event of promptEvents) {
+              state.events.push({ cursor: state.events.length + 1, runId: String(body.id), event });
+            }
             state.events.push({ cursor: state.events.length + 1, runId: String(body.id), event: { type: "session.end", reason: "complete" } });
           });
           return respond({ type: "ok", id: body.id });
@@ -306,14 +310,39 @@ describe("Aster Hotcell runtime", () => {
       conversationId, sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
     });
+    const state = [...cells.values()][0]!;
+    state.promptEvents = [
+      { type: "message.delta", text: "cell reply" },
+      { type: "usage", inputTokens: 10, outputTokens: 2, cost: 0.01 },
+      { type: "usage", inputTokens: 5, outputTokens: 3, cost: 0.02 },
+      {
+        type: "tasks.update",
+        tasks: [
+          { id: "1", title: "Implement progress events", status: "in_progress" },
+          { id: "2", title: "Verify replay", status: "pending" },
+          { id: "3", title: "Inspect result", status: "completed" },
+        ],
+      },
+    ];
     const turn = fakeTurn({ cellId });
     runtime.startTurn(turn);
     await new Promise((resolve) => setTimeout(resolve, 200));
-    const state = [...cells.values()][0]!;
     assert.deepEqual(state.prompts, [{ id: turn.runId, message: "hello cell" }]);
     assert.ok(turn.events.some((event) => event.type === "assistant.delta"));
+    assert.deepEqual(turn.events.filter((event) => event.type === "usage"), [
+      { type: "usage", data: { inputTokens: 10, outputTokens: 2, costUsd: 0.01, cumulative: true } },
+      { type: "usage", data: { inputTokens: 15, outputTokens: 5, costUsd: 0.03, cumulative: true } },
+    ]);
+    assert.deepEqual(turn.events.filter((event) => event.type === "todo.updated"), [{
+      type: "todo.updated",
+      data: { items: [
+        { title: "Implement progress events", status: "in_progress" },
+        { title: "Verify replay", status: "pending" },
+        { title: "Inspect result", status: "done" },
+      ] },
+    }]);
     assert.deepEqual(turn.finished, ["completed"]);
-    assert.deepEqual(turn.cursors, [1, 2]);
+    assert.deepEqual(turn.cursors, [1, 2, 3, 4, 5]);
   });
 
   it("sends 150k prompts through bounded Hotcell control-file writes", async () => {

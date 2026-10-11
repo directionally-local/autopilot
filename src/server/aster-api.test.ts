@@ -69,6 +69,10 @@ describe("Aster control-plane API", () => {
           turns.push(turn);
           const text = turns.length === 1 ? "FIRST_REPLIED" : "SECOND_REPLIED";
           setTimeout(() => {
+            if (text === "FIRST_REPLIED") {
+              turn.publishEvent("usage", { inputTokens: 42, outputTokens: 7, costUsd: 0.001, cumulative: true });
+              turn.publishEvent("todo.updated", { items: [{ title: "Run the suite", status: "in_progress" }] });
+            }
             turn.publishEvent("assistant.delta", { text });
             turn.onCellCursor?.(turn.cellEventCursor + 1);
             turn.finish("completed");
@@ -136,8 +140,17 @@ describe("Aster control-plane API", () => {
       const firstEvents = await firstEventsPromise;
       assert.match(firstEvents, /event: assistant\.delta/);
       assert.match(firstEvents, /FIRST_REPLIED/);
+      assert.match(firstEvents, /event: usage\r?\ndata: \{"inputTokens":42,"outputTokens":7,"costUsd":0.001,"cumulative":true\}/);
+      assert.match(firstEvents, /event: todo\.updated\r?\ndata: \{"items":\[\{"title":"Run the suite","status":"in_progress"\}\]\}/);
       assert.match(firstEvents, /id: \d+/);
       assert.doesNotMatch(firstEvents, /arguments|tool\.result/);
+
+      const replayUrl = base + "/api/v1/conversations/" + conversation.conversationId + "/events?after=" + conversation.lastEventId;
+      const replayedProgress = await readUntil(await fetch(replayUrl, {
+        headers: { Authorization: "Bearer " + credential.token },
+      }), "event: completed");
+      assert.match(replayedProgress, /event: usage/);
+      assert.match(replayedProgress, /event: todo\.updated/);
 
       const firstState = await fetch(`${base}/api/v1/conversations/${conversation.conversationId}`, { headers: { Authorization: `Bearer ${credential.token}` } });
       const cursor = (await firstState.json() as { lastEventId: number }).lastEventId;

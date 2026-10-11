@@ -393,7 +393,7 @@ export function getOpenApiSpec(): string {
             { name: "Last-Event-ID", in: "header", schema: { type: "integer" }, description: "Replay events with larger sequence IDs." },
             { name: "after", in: "query", schema: { type: "integer", minimum: 0 }, description: "Alternative replay cursor." },
           ],
-          responses: { "200": { description: "Typed SSE events with monotonic IDs: status, assistant.delta, tool.activity, approval.required, approval.resolved, approval.expired, usage, completed, cancelled, failed." } },
+          responses: { "200": { description: "Typed SSE events with monotonic IDs: status, assistant.delta, tool.activity, approval.required, approval.resolved, approval.expired, usage (cumulative per-run inputTokens, outputTokens, costUsd), todo.updated (full items list), completed, cancelled, failed." } },
         },
       },
       "/api/v1/conversations/{conversationId}/cancel": {

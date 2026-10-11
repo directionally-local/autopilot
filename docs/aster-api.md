@@ -186,7 +186,7 @@ All conversation routes require the creating credential: another credential scop
 
 ### Events and reconnect
 
-`GET /api/v1/conversations/{conversationId}/events` is SSE. Supply `Last-Event-ID: <sequence>` (or `?after=<sequence>`) to replay only later events. IDs are monotonic per conversation. Delivery is at-least-once: clients should de-duplicate by event ID. Reconnect with the last fully processed ID; replayed events are followed by live polling.
+`GET /api/v1/conversations/{conversationId}/events` is SSE. Supply `Last-Event-ID: <sequence>` (or `?after=<sequence>`) to replay only later events. IDs are monotonic per conversation. Delivery is at-least-once: clients should de-duplicate by event ID. Reconnect with the last fully processed ID; replayed events are followed by live polling. A `usage` event follows each model step and reports cumulative totals for the current run as `{inputTokens, outputTokens, costUsd, cumulative: true}`. A `todo.updated` event is emitted whenever the agent's task list changes and always contains the full list as `{items: [{title, status}] }`, where status is `pending`, `in_progress`, or `done`.
 
 Example frames:
 
@@ -205,9 +205,13 @@ data: {"approvalId":"<uuid>","tool":"edit","explanation":"Edit src/example.ts in
 
 id: 10
 event: usage
-data: {"promptTokens":500,"completionTokens":40,"totalTokens":540,"costUsd":0.002}
+data: {"inputTokens":500,"outputTokens":40,"costUsd":0.002,"cumulative":true}
 
 id: 11
+event: todo.updated
+data: {"items":[{"title":"Run tests","status":"in_progress"},{"title":"Review diff","status":"pending"}]}
+
+id: 12
 event: completed
 data: {}
 ```
