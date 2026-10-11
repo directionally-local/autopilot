@@ -226,3 +226,56 @@ export function stripOldImages(messages: ChatMessage[], keepLastTurns: number): 
     };
   });
 }
+
+/** Placeholder result for a tool call the user interrupted before it finished. */
+export const STOPPED_TOOL_RESULT = "(stopped)";
+
+/**
+ * Append a `(stopped)` tool result for each of `calls` that has no result in
+ * `messages` yet. Idempotent: the interrupt handler and the abort handler can
+ * both call it. Returns the number of results appended.
+ */
+export function appendStoppedToolResults(messages: ChatMessage[], calls: Iterable<[id: string, name: string]>): number {
+  const answered = new Set(messages.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
+  let added = 0;
+  for (const [id, name] of calls) {
+    if (answered.has(id)) continue;
+    messages.push({ role: "tool", tool_call_id: id, content: STOPPED_TOOL_RESULT, name });
+    answered.add(id);
+    added++;
+  }
+  return added;
+}
+
+/**
+ * Make a message history valid for the API again: every assistant
+ * `tool_calls` entry must be followed by a tool result before the next
+ * non-tool message. Missing results (a turn interrupted mid-tool-call and
+ * persisted that way) are inserted as `(stopped)` right after their
+ * assistant message. Mutates in place; returns the number inserted.
+ */
+export function repairDanglingToolCalls(messages: ChatMessage[]): number {
+  let inserted = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.role !== "assistant" || !m.tool_calls?.length) continue;
+    // Results directly following this assistant message.
+    let j = i + 1;
+    const answered = new Set<string>();
+    while (j < messages.length && messages[j]!.role === "tool") {
+      const id = messages[j]!.tool_call_id;
+      if (id) answered.add(id);
+      j++;
+    }
+    const missing = m.tool_calls.filter((tc) => !answered.has(tc.id));
+    if (missing.length === 0) continue;
+    messages.splice(
+      j,
+      0,
+      ...missing.map((tc) => ({ role: "tool" as const, tool_call_id: tc.id, content: STOPPED_TOOL_RESULT, name: tc.function.name })),
+    );
+    inserted += missing.length;
+    i = j + missing.length - 1;
+  }
+  return inserted;
+}
