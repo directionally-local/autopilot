@@ -8,6 +8,9 @@ import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
+import { createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
+import { toOpenAIToolDefs } from "../tools/registry.js";
+import type { ToolSpec } from "../tools/registry.js";
 import { runAgentTurn } from "../agent/loop.js";
 import type { AgentCallbacks } from "../agent/loop.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
@@ -62,6 +65,42 @@ interface ActiveSession {
   askAsterPermission?: (request: PermissionRequest) => Promise<PermissionDecision>;
   publishAsterEvent?: (type: string, data: Record<string, unknown>) => void;
   finishAsterTurn?: (status: "completed" | "failed" | "cancelled", reason?: string) => void;
+  /** Session trace (no-op unless `config.trace.enabled`). */
+  trace?: TraceRecorder;
+  /** Turn id minted with the pending user message, consumed by the next turn. */
+  nextTurnId?: string;
+}
+
+/** Create the session trace and record `session_start`; a no-op recorder when tracing is off. */
+async function startSessionTrace(
+  config: KimiConfig,
+  sessionFile: SessionFile,
+  tools: ToolSpec[],
+  messages: ChatMessage[],
+): Promise<TraceRecorder> {
+  const trace = createRecorder({
+    enabled: config.trace?.enabled === true,
+    sessionId: sessionFile.id,
+    root: config.trace?.root,
+  });
+  const systemPrompt = messages
+    .filter((m) => m.role === "system" && typeof m.content === "string")
+    .map((m) => m.content as string)
+    .join("\n\n");
+  await emitSessionStart(trace, {
+    cwd: sessionFile.cwd,
+    model: sessionFile.model,
+    mode: "server",
+    config,
+    tools: toOpenAIToolDefs(tools),
+    systemPrompt,
+  });
+  return trace;
+}
+
+function traceUserMessage(trace: TraceRecorder | undefined, text: string, attachments: number, turnId: string): void {
+  if (!trace?.enabled) return;
+  trace.emit("user_message", { content_blob: trace.blob(text) ?? "", source: "server", attachments }, turnId);
 }
 
 const activeSessions = new Map<string, ActiveSession>();
@@ -193,6 +232,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       sseClients: new Set(),
       runId: run.id,
       allowedTools,
+      trace: await startSessionTrace(config, sessionFile, tools, sessionFile.messages),
     };
     activeSessions.set(run.sessionId, active);
     activeRuns.set(run.id, active);
@@ -442,7 +482,10 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
           }
           throw error;
         }
+        const runTrace = await startSessionTrace(config, sessionFile, tools, messages);
+        traceUserMessage(runTrace, task, 0, makeTurnId());
         const active: ActiveSession = {
+          trace: runTrace,
           sessionFile,
           messages,
           executor,
@@ -634,11 +677,16 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         const userContent = await buildUserMessage(prompt, resolvedFiles, cwd);
         messages.push({ role: "user", content: userContent });
 
+        const trace = await startSessionTrace(config, sessionFile, ALL_TOOLS, messages);
+        const firstTurnId = makeTurnId();
+        traceUserMessage(trace, prompt, resolvedFiles.length, firstTurnId);
         const active: ActiveSession = {
           sessionFile,
           messages,
           executor,
           sseClients: new Set(),
+          trace,
+          nextTurnId: firstTurnId,
         };
         activeSessions.set(sessionId, active);
 
@@ -676,6 +724,8 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         const resolvedFiles = await resolveFiles(files, active.sessionFile.cwd);
         const userContent = await buildUserMessage(prompt, resolvedFiles, active.sessionFile.cwd);
         active.messages.push({ role: "user", content: userContent });
+        active.nextTurnId = makeTurnId();
+        traceUserMessage(active.trace, prompt, resolvedFiles.length, active.nextTurnId);
 
         launchAgentTurnForSession(active, config, allowAll);
 
@@ -695,6 +745,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
     wakeScheduler.dispose();
     for (const [, active] of activeSessions) {
       active.shuttingDown = true;
+      if (active.trace?.enabled) active.trace.emit("session_end", { reason: "exit" }, null);
       active.controller?.abort(new Error("server_shutdown"));
       for (const client of active.sseClients) {
         client.close();
@@ -875,6 +926,8 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
 
   // Archived turns land on the session file, so every save below persists them.
   const compaction = sessionFileCompactionTarget(sessionFile);
+  const turnId = active.nextTurnId ?? makeTurnId();
+  active.nextTurnId = undefined;
   try {
     if (run && runStore) {
 
@@ -897,6 +950,8 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         preferPullRequests: config.preferPullRequests,
         compaction,
         callbacks,
+        trace: active.trace,
+        turnId,
         onIterationEnd: async (updatedMessages) => {
           sessionFile.messages = updatedMessages;
           sessionFile.updatedAt = new Date().toISOString();
@@ -924,6 +979,8 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         preferPullRequests: config.preferPullRequests,
         compaction,
         callbacks,
+        trace: active.trace,
+        turnId,
       });
     }
 

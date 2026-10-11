@@ -25,6 +25,9 @@ import { compactToFit, ContextBudgetError, effectiveInputBudget, type Compaction
 import { withTurnDirective } from "./turn-directive.js";
 import { CONTINUE_NUDGE, INCOMPLETE_THRESHOLD, shouldCheckCompletion, toolsUsedSince, type CompletionCheck } from "./completion-check.js";
 import type { Mode } from "../mode.js";
+import { createNoopRecorder, makeTurnId } from "../trace/recorder.js";
+import type { TraceRecorder } from "../trace/recorder.js";
+import type { TurnEndReason } from "../trace/types.js";
 
 export interface AgentCallbacks {
   onAssistantStart?: () => void;
@@ -168,6 +171,11 @@ export interface AgentTurnOpts extends LlmAuth {
   /** Once the first byte arrives, tighten the idle timeout to this value.
    *  Default 30000 — a live stream stalling mid-flight should surface fast. */
   postFirstByteIdleTimeoutMs?: number;
+  /** Session trace recorder (src/trace). Every emit point in the turn goes
+   *  through it; absent or disabled means no-op and zero behaviour change. */
+  trace?: TraceRecorder;
+  /** Turn id for trace events. Minted here when the host does not supply one. */
+  turnId?: string;
 }
 
 export type ToolLimitBehavior = "continue" | "stop" | "throw";
@@ -315,8 +323,105 @@ function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T>
   ]);
 }
 
+/** Per-turn trace bookkeeping shared by the loop body and the `turn_end` emit. */
+interface TurnTrace {
+  trace: TraceRecorder;
+  turnId: string;
+  startedAt: number;
+  /** Tool names the model issued, in order (including blocked calls). */
+  toolsUsed: string[];
+  /** Assistant text of the in-flight response (for `turn_end{aborted}`). */
+  partialText: string;
+  /** Text of the last assistant message appended to history. */
+  finalText: string | null;
+  costUsd: number;
+  /** Set by the loop body when the turn ends for a reason other than a plain completion. */
+  endReason: TurnEndReason | null;
+}
+
 export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
-  const turnStart = performance.now();
+  const tr: TurnTrace = {
+    trace: opts.trace ?? createNoopRecorder(opts.sessionId ?? ""),
+    turnId: opts.turnId ?? makeTurnId(),
+    startedAt: performance.now(),
+    toolsUsed: [],
+    partialText: "",
+    finalText: null,
+    costUsd: 0,
+    endReason: null,
+  };
+  const endTurn = (reason: TurnEndReason, finalText: string | null): void => {
+    if (!tr.trace.enabled) return;
+    const finalBlob = finalText ? tr.trace.blob(finalText) : null;
+    tr.trace.emit(
+      "turn_end",
+      {
+        reason,
+        tools_used: tr.toolsUsed,
+        ...(tr.costUsd > 0 ? { cost_usd: tr.costUsd } : {}),
+        duration_ms: Math.round(performance.now() - tr.startedAt),
+        ...(finalBlob ? { final_text_blob: finalBlob } : {}),
+      },
+      tr.turnId,
+    );
+  };
+  try {
+    await runAgentTurnInner(opts, tr);
+    endTurn(tr.endReason ?? "complete", tr.finalText);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      endTurn("aborted", tr.partialText || tr.finalText);
+    } else if (err instanceof AgentLoopError || err instanceof BudgetExhaustedError) {
+      endTurn("guardrail", tr.finalText);
+    } else {
+      endTurn("error", tr.partialText || tr.finalText);
+    }
+    throw err;
+  }
+}
+
+async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<void> {
+  const turnStart = tr.startedAt;
+  const { trace, turnId } = tr;
+  const notifyGuardrail = (ev: GuardrailEvent): void => {
+    // completion_nudge is recorded as its own `completion_check` event.
+    if (ev.kind !== "completion_nudge") trace.emit("guardrail", { kind: ev.kind, message: ev.message }, turnId);
+    opts.callbacks.onGuardrail?.(ev);
+  };
+  /** Trace a tool call the loop answered itself (guardrail, redirect, unavailable). */
+  const traceBlocked = (tc: ToolCall, result: ToolResult, errorCode: string, redirected = false): void => {
+    if (!trace.enabled) return;
+    const argsBlob = trace.blob(tc.function.arguments) ?? "";
+    trace.emit(
+      "tool_call",
+      {
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        args_blob: argsBlob,
+        ...(tc.function.arguments.length <= 2048 ? { args_inline: parseArgsObject(tc.function.arguments) } : {}),
+        needs_permission: false,
+        code_mode_redirected: redirected,
+      },
+      turnId,
+    );
+    const blob = trace.blob(result.content) ?? "";
+    const bytes = Buffer.byteLength(result.content, "utf8");
+    trace.emit(
+      "tool_result",
+      {
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        ok: false,
+        error_code: errorCode,
+        raw_blob: blob,
+        raw_bytes: bytes,
+        reduced_blob: blob,
+        reduced_bytes: bytes,
+        duration_ms: 0,
+      },
+      turnId,
+    );
+  };
   logger.info("turn:start", { sessionId: opts.sessionId, codeMode: opts.codeMode ?? false });
   const max = opts.maxToolIterations ?? 200;
   const limitBehavior: ToolLimitBehavior =
@@ -536,6 +641,18 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
   let webFetchesThisTurn = 0;
   // Per-turn counter of Code Mode redirect nudges (capped by MAX_CODE_MODE_REDIRECTS).
   let codeModeRedirects = 0;
+  const noteCodeModeRedirect = (): void => {
+    if (codeModeRedirects === MAX_CODE_MODE_REDIRECTS) {
+      trace.emit(
+        "guardrail",
+        {
+          kind: "code_mode_redirect_cap",
+          message: `Code Mode redirect cap (${MAX_CODE_MODE_REDIRECTS}) reached — direct tool calls now execute normally.`,
+        },
+        turnId,
+      );
+    }
+  };
   const MAX_WEB_FETCH_PER_TURN = 5;
 
   let cumulativePromptTokens = 0;
@@ -589,7 +706,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           "Do not call any more tools. Summarize what you accomplished, what remains unfinished, " +
           "and the concrete next steps needed to complete the task.",
       });
-      opts.callbacks.onGuardrail?.({
+      notifyGuardrail({
         kind: "limit_ceiling",
         message: `Tool-iteration ceiling (${hardCeiling}) reached — wrapping up the turn with a summary.`,
         totalIterations: totalIter,
@@ -603,17 +720,18 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
             "The counter has been reset so you can continue working. Please proceed with your task.",
         });
         iter = 0;
-        opts.callbacks.onGuardrail?.({
+        notifyGuardrail({
           kind: "limit_reset",
           message: `Tool-call limit (${max}) reached — counter reset automatically (${totalIter}/${hardCeiling} total).`,
           totalIterations: totalIter,
         });
       } else if (limitBehavior === "stop") {
-        opts.callbacks.onGuardrail?.({
+        notifyGuardrail({
           kind: "limit_stopped",
           message: `Tool-call limit (${max}) reached — turn stopped.`,
           totalIterations: totalIter,
         });
+        tr.endReason = "guardrail";
         await fireStopHook();
         return;
       } else {
@@ -631,6 +749,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
     let reasoning = "";
     let responseMeta: ResponseMeta | undefined;
     let reasoningDetails: ReasoningDetail[] = [];
+    tr.partialText = "";
     opts.callbacks.onAssistantStart?.();
 
     const stripReasoning = process.env.KIMIFLARE_STRIP_REASONING === "1";
@@ -694,6 +813,17 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           budgetTokens: maxPromptTokens,
         };
         logger.info("context:compacted", { sessionId: opts.sessionId, ...info });
+        trace.emit(
+          "compaction",
+          {
+            method: "preflight",
+            tokens_before: info.tokensBefore,
+            tokens_after: info.tokensAfter,
+            turns_removed: info.turnsRemoved,
+            artifacts_archived: info.artifactsArchived,
+          },
+          turnId,
+        );
         opts.callbacks.onCompacted?.(info);
       }
     }
@@ -715,6 +845,8 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
       sessionId: opts.sessionId,
       idleTimeoutMs: opts.idleTimeoutMs ?? 60_000,
       postFirstByteIdleTimeoutMs: opts.postFirstByteIdleTimeoutMs,
+      trace,
+      turnId,
     });
 
     let gotFirstChunk = false;
@@ -737,6 +869,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           break;
         case "text":
           content += ev.delta;
+          tr.partialText = content;
           opts.callbacks.onTextDelta?.(ev.delta);
           break;
         case "tool_call_start":
@@ -753,6 +886,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
             function: { name: normalizeToolName(ev.name, opts.tools), arguments: safeArgs },
           };
           toolCalls.push(call);
+          tr.toolsUsed.push(call.function.name);
           opts.callbacks.onToolCallFinalized?.(call);
           break;
         }
@@ -768,6 +902,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
     if (opts.signal.aborted) throw new DOMException("aborted", "AbortError");
 
     if (lastUsage) {
+      if (typeof lastUsage.cost === "number") tr.costUsd += lastUsage.cost;
       opts.callbacks.onUsageFinal?.(lastUsage, responseMeta);
       cumulativePromptTokens += lastUsage.prompt_tokens;
       // Flip the budget flag regardless of whether this turn produced tool
@@ -813,9 +948,11 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
       }
     }
     opts.messages.push(assistantMsg);
+    tr.finalText = typeof assistantMsg.content === "string" ? assistantMsg.content : null;
     opts.callbacks.onAssistantFinal?.(assistantMsg);
 
     if (finalizeReason !== null) {
+      tr.endReason = "guardrail";
       logger.info("turn:finalized", { sessionId: opts.sessionId, reason: finalizeReason, totalIter });
       if (budgetExhausted) throw new BudgetExhaustedError();
       await fireStopHook();
@@ -859,11 +996,12 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
         if (shouldCheckCompletion(input, opts.intentClassification?.tier)) {
           const p = await opts.completionCheck(input, opts.signal).catch(() => null);
           if (opts.signal.aborted) throw new DOMException("aborted", "AbortError");
+          if (p !== null) trace.emit("completion_check", { probability: p, nudged: p < INCOMPLETE_THRESHOLD }, turnId);
           if (p !== null && p < INCOMPLETE_THRESHOLD) {
             completionNudges++;
             logger.info("turn:completion_nudge", { sessionId: opts.sessionId, probability: p });
             opts.messages.push({ role: "system", content: CONTINUE_NUDGE });
-            opts.callbacks.onGuardrail?.({
+            notifyGuardrail({
               kind: "completion_nudge",
               message: "The agent stopped before finishing — asked it to continue.",
               probability: p,
@@ -915,7 +1053,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
         toolCalls.map((tc) => ({ name: tc.function.name, args: parseArgsObject(tc.function.arguments) })),
       );
       type ParallelItem =
-        | { kind: "blocked"; tc: ToolCall; loopSignature: string; result: ToolResult }
+        | { kind: "blocked"; tc: ToolCall; loopSignature: string; result: ToolResult; errorCode: string; redirected?: boolean }
         | { kind: "run"; tc: ToolCall; loopSignature: string };
 
       const items: ParallelItem[] = [];
@@ -928,6 +1066,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
             kind: "blocked",
             tc,
             loopSignature,
+            errorCode: "loop_guardrail",
             result: {
               tool_call_id: tc.id,
               name: tc.function.name,
@@ -940,10 +1079,13 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
         }
         if (codeMode && CODE_MODE_REDIRECT_TOOLS.has(tc.function.name) && codeModeRedirects < MAX_CODE_MODE_REDIRECTS) {
           codeModeRedirects++;
+          noteCodeModeRedirect();
           items.push({
             kind: "blocked",
             tc,
             loopSignature,
+            errorCode: "code_mode_redirect",
+            redirected: true,
             result: { tool_call_id: tc.id, name: tc.function.name, content: codeModeRedirectMessage(tc.function.name), ok: false },
           });
           continue;
@@ -962,6 +1104,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
                 kind: "blocked",
                 tc,
                 loopSignature,
+                errorCode: "web_fetch_budget",
                 result: { tool_call_id: tc.id, name: "web_fetch", content: warning, ok: false, guardrail: true },
               });
               continue;
@@ -984,6 +1127,8 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
             { id: it.tc.id, name: it.tc.function.name, arguments: it.tc.function.arguments },
             batchAskPermission,
             {
+              trace,
+              turnId,
               cwd: opts.cwd,
               signal: opts.signal,
               onTasks: wrappedOnTasks,
@@ -1026,6 +1171,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
 
       for (const it of items) {
         if (it.kind === "blocked") {
+          traceBlocked(it.tc, it.result, it.errorCode, it.redirected === true);
           toolResults.push(it.result);
           opts.messages.push({
             role: "tool",
@@ -1166,6 +1312,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           content: `Tool ${tc.function.name} is not available under this turn's policy. Continue without it or ask the user to enable it.`,
           ok: false,
         };
+        traceBlocked(tc, unavailableResult, "unavailable");
         toolResults.push(unavailableResult);
         opts.messages.push({
           role: "tool",
@@ -1191,6 +1338,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           ok: false,
           guardrail: true,
         };
+        traceBlocked(tc, loopResult, "loop_guardrail");
         toolResults.push(loopResult);
         opts.messages.push({
           role: "tool",
@@ -1222,6 +1370,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
               ok: false,
               guardrail: true,
             };
+            traceBlocked(tc, budgetResult, "web_fetch_budget");
             toolResults.push(budgetResult);
             opts.messages.push({
               role: "tool",
@@ -1245,6 +1394,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
               ok: false,
               guardrail: true,
             };
+            traceBlocked(tc, sessionCapResult, "web_fetch_budget");
             toolResults.push(sessionCapResult);
             opts.messages.push({
               role: "tool",
@@ -1270,13 +1420,40 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
       if (codeMode && tc.function.name === "execute_code") {
         const args = JSON.parse(tc.function.arguments || "{}") as { code?: string; reasoning?: string };
         const code = args.code || "";
+        const sandboxStartedAt = performance.now();
+        if (trace.enabled) {
+          trace.emit(
+            "tool_call",
+            {
+              tool_call_id: tc.id,
+              name: "execute_code",
+              args_blob: trace.blob(tc.function.arguments) ?? "",
+              ...(tc.function.arguments.length <= 2048 ? { args_inline: parseArgsObject(tc.function.arguments) } : {}),
+              needs_permission: false,
+              code_mode_redirected: false,
+            },
+            turnId,
+          );
+        }
 
         const sandboxResult = await runInSandbox({
           code,
           tools: sandboxTools,
           executor: opts.executor,
           askPermission: opts.callbacks.askPermission,
-          ctx: { cwd: opts.cwd, signal: opts.signal, onTasks: wrappedOnTasks, onPlanOptions: opts.callbacks.onPlanOptions, coauthor: opts.coauthor, memoryManager: opts.memoryManager, sessionId: opts.sessionId, githubToken: opts.githubToken },
+          ctx: {
+            cwd: opts.cwd,
+            signal: opts.signal,
+            onTasks: wrappedOnTasks,
+            onPlanOptions: opts.callbacks.onPlanOptions,
+            coauthor: opts.coauthor,
+            memoryManager: opts.memoryManager,
+            sessionId: opts.sessionId,
+            githubToken: opts.githubToken,
+            trace,
+            turnId,
+            codeModeParentToolCallId: tc.id,
+          },
           timeoutMs: 30000,
           memoryLimitMB: 128,
         });
@@ -1303,6 +1480,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
         let resultContent = sandboxResult.error
           ? `Error: ${sandboxResult.error}\n\nOutput:\n${sandboxResult.output}`
           : sandboxResult.output;
+        const sandboxRawContent = resultContent;
         if (resultContent.length > MAX_TOOL_CONTENT_CHARS) {
           const rawBytes = resultContent.length;
           resultContent =
@@ -1322,6 +1500,24 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           content: resultContent,
           ok: !sandboxResult.error,
         };
+        if (trace.enabled) {
+          const rawBlob = trace.blob(sandboxRawContent) ?? "";
+          trace.emit(
+            "tool_result",
+            {
+              tool_call_id: tc.id,
+              name: "execute_code",
+              ok: result.ok,
+              ...(sandboxResult.error ? { error_code: "sandbox_error" } : {}),
+              raw_blob: rawBlob,
+              raw_bytes: Buffer.byteLength(sandboxRawContent, "utf8"),
+              reduced_blob: sandboxRawContent === resultContent ? rawBlob : trace.blob(resultContent) ?? "",
+              reduced_bytes: Buffer.byteLength(resultContent, "utf8"),
+              duration_ms: Math.round(performance.now() - sandboxStartedAt),
+            },
+            turnId,
+          );
+        }
         toolResults.push(result);
         opts.messages.push({
           role: "tool",
@@ -1335,8 +1531,10 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
       } else if (codeMode && CODE_MODE_REDIRECT_TOOLS.has(tc.function.name) && codeModeRedirects < MAX_CODE_MODE_REDIRECTS) {
         // Redirect a direct context-heavy IO call back into execute_code.
         codeModeRedirects++;
+        noteCodeModeRedirect();
         const msg = codeModeRedirectMessage(tc.function.name);
         const redirectResult: ToolResult = { tool_call_id: tc.id, name: tc.function.name, content: msg, ok: false };
+        traceBlocked(tc, redirectResult, "code_mode_redirect", true);
         toolResults.push(redirectResult);
         opts.messages.push({ role: "tool", tool_call_id: tc.id, content: msg, name: tc.function.name });
         opts.callbacks.onToolResult?.(redirectResult);
@@ -1356,6 +1554,8 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           { id: tc.id, name: tc.function.name, arguments: tc.function.arguments },
           opts.callbacks.askPermission,
           {
+            trace,
+            turnId,
             cwd: opts.cwd,
             signal: opts.signal,
             onTasks: wrappedOnTasks,
@@ -1427,6 +1627,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
             condition: result.waitRequest.condition,
             wakeAt: result.waitRequest.wakeAt,
           });
+          tr.endReason = "needs_input";
           try {
             opts.callbacks.onRunYield?.(result.waitRequest);
           } catch (error) {
@@ -1636,7 +1837,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
             "Do not repeat them. Either take a genuinely different approach (different tools, arguments, or files), " +
             "or, if you already have enough information, stop calling tools and give your final answer.",
         });
-        opts.callbacks.onGuardrail?.({
+        notifyGuardrail({
           kind: "loop_recovery",
           message: "Loop guardrail: repeated tool calls were blocked — asked the agent to change approach.",
         });
@@ -1650,7 +1851,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
           "Do not call any more tools. Summarize what you accomplished, what is blocking you, " +
           "and what the user could do next.",
       });
-      opts.callbacks.onGuardrail?.({
+      notifyGuardrail({
         kind: "loop_stopped",
         message: "Loop guardrail: the agent kept repeating blocked tool calls — ending the turn with a summary.",
       });

@@ -1,8 +1,10 @@
 import { readSSE } from "../util/sse.js";
 import { KimiApiError } from "../util/errors.js";
 import { getUserAgent } from "../util/version.js";
-import { jsonReplacer, sanitizeString, stableStringify } from "./messages.js";
+import { jsonReplacer, mergeReasoningDetails, sanitizeString, stableStringify } from "./messages.js";
 import type { ChatMessage, ReasoningDetail, ToolDef, Usage } from "./messages.js";
+import { sha256Hex } from "../trace/blobs.js";
+import type { TraceRecorder } from "../trace/recorder.js";
 import { logger } from "../util/logger.js";
 import { getLogSessionId, getLogTurnId } from "../util/log-sink.js";
 import {
@@ -63,6 +65,10 @@ export interface RunKimiOpts {
    * instead of OpenRouter. Model ids pass through in the body unchanged.
    */
   customEndpoint?: CustomEndpoint;
+  /** Session trace recorder; `llm_request` / `llm_response` are emitted on it. No-op when absent or disabled. */
+  trace?: TraceRecorder;
+  /** Turn id stamped on the trace events of this request. */
+  turnId?: string | null;
 }
 
 /**
@@ -180,45 +186,98 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     if (vendorOf(opts.model) === "anthropic") body.cache_control = { type: "ephemeral" };
   }
 
-  // Debug-only payload dump (KIMIFLARE_DUMP_LLM=1). Pure post-assembly
-  // observer: reads the already-finalized body immediately before fetch — it
-  // cannot alter what is sent. See src/util/llm-dump.ts.
+  // Observers of the finalized request body: the debug payload dump
+  // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body
+  // immediately before fetch — they cannot alter what is sent — and share
+  // one capture so the trace sees exactly what the dump sees.
+  const dumpEnabled = isLlmDumpEnabled();
+  const trace = opts.trace?.enabled ? opts.trace : null;
+  const captured = dumpEnabled || trace ? captureRequest(body) : null;
+  const response: LlmDumpResponse = {
+    text: "",
+    reasoning: "",
+    reasoningDetails: [],
+    toolCalls: [],
+    finishReason: null,
+    usage: null,
+  };
   let dumpRecord: LlmDumpRecord | null = null;
-  if (isLlmDumpEnabled()) {
-    const dumpMessages = body.messages as ChatMessage[];
-    const dumpTools = (body.tools as ToolDef[] | undefined) ?? [];
-    const { messages: _m, tools: _t, ...params } = body;
-    const dumpResponse: LlmDumpResponse = {
-      text: "",
-      reasoning: "",
-      toolCalls: [],
-      finishReason: null,
-      usage: null,
-    };
+  if (dumpEnabled && captured) {
     dumpRecord = {
       meta: {
         requestId,
         sessionId: opts.sessionId ?? getLogSessionId(),
-        turnId: getLogTurnId(),
+        turnId: opts.turnId ?? getLogTurnId(),
         model: opts.model,
         url,
         ts: new Date().toISOString(),
       },
       request: {
-        system: dumpMessages.filter((m) => m.role === "system"),
-        messages: dumpMessages,
-        tools: dumpTools,
-        params,
-        rawSerialized: stableStringify(body, jsonReplacer),
+        system: captured.messages.filter((m) => m.role === "system"),
+        messages: captured.messages,
+        tools: captured.tools,
+        params: captured.params,
+        rawSerialized: captured.rawSerialized,
       },
-      breakdown: computeBreakdown(dumpMessages, dumpTools),
-      response: dumpResponse,
+      breakdown: captured.breakdown,
+      response,
     };
   }
+  const traceRequest = (attempt: number): void => {
+    if (!trace || !captured) return;
+    trace.emit(
+      "llm_request",
+      {
+        request_id: requestId,
+        attempt,
+        model: opts.model,
+        params: captured.params,
+        request_blob: trace.blob(captured.rawSerialized) ?? "",
+        messages_sha: captured.messagesSha,
+        tools_sha: captured.toolsSha,
+        estimated_tokens: captured.breakdown.estTokens,
+      },
+      opts.turnId ?? null,
+    );
+  };
+  const traceResponse = (startedAt: number, error?: string): void => {
+    if (!trace) return;
+    const usage = response.usage;
+    trace.emit(
+      "llm_response",
+      {
+        request_id: requestId,
+        text_blob: trace.blob(response.text) ?? "",
+        ...(response.reasoning ? { reasoning_blob: trace.blob(response.reasoning) ?? "" } : {}),
+        ...(response.reasoningDetails.length ? { reasoning_details: response.reasoningDetails } : {}),
+        tool_calls: response.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, arguments: tc.arguments })),
+        finish_reason: response.finishReason,
+        ...(usage
+          ? {
+              usage: {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                ...(usage.prompt_tokens_details?.cached_tokens !== undefined
+                  ? { cached_tokens: usage.prompt_tokens_details.cached_tokens ?? undefined }
+                  : {}),
+                ...(usage.cost !== undefined ? { cost: usage.cost } : {}),
+              },
+            }
+          : {}),
+        ...(response.generationId ? { generation_id: response.generationId } : {}),
+        latency_ms: Math.round(performance.now() - startedAt),
+        aborted: opts.signal?.aborted === true,
+        ...(error !== undefined ? { error } : {}),
+      },
+      opts.turnId ?? null,
+    );
+  };
 
   logger.debug("runKimi:request", { requestId, attempt: 0, model: opts.model });
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     let res: Response;
+    const attemptStartedAt = performance.now();
+    traceRequest(attempt);
     try {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -234,8 +293,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
         signal: opts.signal,
       });
     } catch (fetchErr) {
-      if (isAbortError(fetchErr)) throw fetchErr;
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      traceResponse(attemptStartedAt, msg);
+      if (isAbortError(fetchErr)) throw fetchErr;
       logger.warn("runKimi:fetch_error", { requestId, attempt, error: msg });
       if (attempt < MAX_ATTEMPTS - 1) {
         const delay = Math.random() * (500 * 2 ** attempt);
@@ -273,6 +333,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
         err?.code,
         status,
       );
+      traceResponse(attemptStartedAt, apiErr.message);
       if (isRetryable(apiErr, attempt)) {
         const isRateLimit = apiErr.httpStatus === 429;
         const baseDelay = isRateLimit ? 2000 : 500;
@@ -290,20 +351,29 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       throw apiErr;
     }
 
-    if (!res.body) throw new KimiApiError("kimiflare: empty response body", undefined, res.status);
+    if (!res.body) {
+      const emptyErr = new KimiApiError("kimiflare: empty response body", undefined, res.status);
+      traceResponse(attemptStartedAt, emptyErr.message);
+      throw emptyErr;
+    }
 
     logger.debug("runKimi:stream_start", { requestId });
+    let streamError: string | undefined;
     try {
       for await (const ev of parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs)) {
-        if (dumpRecord) accumulateDumpResponse(dumpRecord.response, ev);
+        if (captured) accumulateDumpResponse(response, ev);
         yield ev;
       }
+    } catch (streamErr) {
+      streamError = streamErr instanceof Error ? streamErr.message : String(streamErr);
+      throw streamErr;
     } finally {
       // Write even on abort/error so partial turns are still captured.
       if (dumpRecord) {
         dumpRecord.meta.attempt = attempt;
         writeLlmDump(dumpRecord);
       }
+      traceResponse(attemptStartedAt, streamError);
     }
     logger.debug("runKimi:stream_end", { requestId });
     return;
@@ -394,19 +464,52 @@ function describeRequestyHttpError(model: string, status: number, msg: string): 
   return msg;
 }
 
-/** Fold a streamed event into the debug dump's response accumulator.
- *  Read-only side-effect on the dump record — never affects the yielded
- *  stream. Only invoked when KIMIFLARE_DUMP_LLM is enabled. */
+/** The finalized request body as observed right before fetch, shared by the
+ *  debug dump and the session trace. */
+interface CapturedRequest {
+  messages: ChatMessage[];
+  tools: ToolDef[];
+  params: Record<string, unknown>;
+  rawSerialized: string;
+  messagesSha: string;
+  toolsSha: string;
+  breakdown: ReturnType<typeof computeBreakdown>;
+}
+
+function captureRequest(body: Record<string, unknown>): CapturedRequest {
+  const messages = body.messages as ChatMessage[];
+  const tools = (body.tools as ToolDef[] | undefined) ?? [];
+  const { messages: _m, tools: _t, ...params } = body;
+  return {
+    messages,
+    tools,
+    params,
+    rawSerialized: stableStringify(body, jsonReplacer),
+    messagesSha: sha256Hex(stableStringify(messages, jsonReplacer)),
+    toolsSha: sha256Hex(stableStringify(tools, jsonReplacer)),
+    breakdown: computeBreakdown(messages, tools),
+  };
+}
+
+/** Fold a streamed event into the response accumulator shared by the debug
+ *  dump and the session trace. Read-only side-effect — never affects the
+ *  yielded stream. Only invoked when one of the two observers is enabled. */
 function accumulateDumpResponse(resp: LlmDumpResponse, ev: KimiEvent): void {
   switch (ev.type) {
+    case "response_meta":
+      if (ev.meta.generationId) resp.generationId = ev.meta.generationId;
+      break;
     case "text":
       resp.text += ev.delta;
       break;
     case "reasoning":
       resp.reasoning += ev.delta;
       break;
+    case "reasoning_details":
+      resp.reasoningDetails = mergeReasoningDetails(resp.reasoningDetails, ev.details);
+      break;
     case "tool_call_complete":
-      resp.toolCalls.push({ name: ev.name, arguments: ev.arguments });
+      resp.toolCalls.push({ id: ev.id, name: ev.name, arguments: ev.arguments });
       break;
     case "usage":
       resp.usage = ev.usage;

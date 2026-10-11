@@ -24,6 +24,9 @@ import { getCostReport } from "../usage-tracker.js";
 import type { DailyUsage } from "../usage-tracker.js";
 import type { ChatEvent } from "./chat.js";
 import { setLogSessionId } from "../util/log-sink.js";
+import { createNoopRecorder, createRecorder, emitSessionStart, type TraceRecorder } from "../trace/index.js";
+import type { ToolDef } from "../agent/messages.js";
+import type { SessionEndReason, TraceSessionMode } from "../trace/types.js";
 import type { Mode } from "../mode.js";
 import { DEFAULT_AUTO_FRESH_SUGGESTION_TURNS } from "./app-helpers.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
@@ -76,6 +79,8 @@ export interface SessionManagerDeps {
     openrouterProvider?: import("../agent/client.js").OpenRouterProviderPrefs;
     plumbingModel?: string;
     memoryEnabled?: boolean;
+    /** Local session tracing (src/trace); off unless `enabled`. */
+    trace?: { enabled: boolean; root?: string };
   } | null;
   /** Current agent mode. */
   mode: Mode;
@@ -129,6 +134,24 @@ export interface SessionManager {
   handleCheckpointPick: (checkpointId: string | null) => Promise<void>;
   /** Clears the identity refs. Used by /clear. */
   resetSession: () => void;
+
+  // Session trace (src/trace). A no-op recorder unless tracing is enabled.
+  traceRef: React.MutableRefObject<TraceRecorder>;
+  /** Recorder for the current session id; creates it on first use. */
+  ensureTrace: () => TraceRecorder;
+  /** Emit `session_start` once per recorder, with what the model will see. Returns the recorder. */
+  ensureTraceStarted: (info: TraceStartInfo) => Promise<TraceRecorder>;
+  /** Emit `session_end` (if a session was started) and drop the recorder. */
+  endTrace: (reason: SessionEndReason) => void;
+}
+
+export interface TraceStartInfo {
+  tools: ToolDef[];
+  systemPrompt: string;
+  model: string;
+  mode: TraceSessionMode;
+  config: import("../trace/session-start.js").CollectSessionStartOptions["config"];
+  toolProfile?: string;
 }
 
 export function useSessionManager(deps: SessionManagerDeps): SessionManager {
@@ -189,6 +212,60 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     return sessionIdRef.current;
   }, []);
 
+  // --- Session trace lifecycle -------------------------------------------
+  const traceRef = useRef<TraceRecorder>(createNoopRecorder());
+  const traceStartedRef = useRef(false);
+
+  const endTrace = useCallback((reason: SessionEndReason) => {
+    const trace = traceRef.current;
+    if (trace.enabled && traceStartedRef.current) trace.emit("session_end", { reason }, null);
+    traceStartedRef.current = false;
+    traceRef.current = createNoopRecorder();
+  }, []);
+
+  const ensureTrace = useCallback((): TraceRecorder => {
+    const id = ensureSessionId();
+    const cfgTrace = depsRef.current.cfg?.trace;
+    const wantEnabled = cfgTrace?.enabled === true;
+    const current = traceRef.current;
+    if (current.sessionId === id && current.enabled === wantEnabled) return current;
+    if (current.enabled && traceStartedRef.current) current.emit("session_end", { reason: "exit" }, null);
+    traceStartedRef.current = false;
+    traceRef.current = createRecorder({ enabled: wantEnabled, sessionId: id, root: cfgTrace?.root });
+    return traceRef.current;
+  }, [ensureSessionId]);
+
+  const ensureTraceStarted = useCallback(
+    async (info: TraceStartInfo): Promise<TraceRecorder> => {
+      const trace = ensureTrace();
+      if (!trace.enabled || traceStartedRef.current) return trace;
+      traceStartedRef.current = true;
+      await emitSessionStart(trace, {
+        cwd: process.cwd(),
+        model: info.model,
+        mode: info.mode,
+        config: info.config,
+        tools: info.tools,
+        systemPrompt: info.systemPrompt,
+        toolProfile: info.toolProfile,
+      });
+      return trace;
+    },
+    [ensureTrace],
+  );
+
+  // Close the trace when the app unmounts (/exit) or the process exits
+  // (Ctrl+C, crash). The write is synchronous, so it is safe in the exit
+  // handler; `endTrace` is idempotent, so both paths may run.
+  React.useEffect(() => {
+    const onExit = () => endTrace("exit");
+    process.on("exit", onExit);
+    return () => {
+      process.off("exit", onExit);
+      endTrace("exit");
+    };
+  }, [endTrace]);
+
   const saveSessionSafe = useCallback(async () => {
     const d = depsRef.current;
     if (!d.cfg) return;
@@ -237,6 +314,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         setResumeStage("Restoring artifact store…");
         startSmoothProgress(10, 20, 400);
         d.messagesRef.current = file.messages;
+        endTrace(checkpointId ? "restore_checkpoint" : "exit");
         sessionIdRef.current = file.id;
         setLogSessionId(file.id);
         sessionCreatedAtRef.current = file.createdAt;
@@ -440,6 +518,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   );
 
   const resetSession = useCallback(() => {
+    endTrace("clear");
     sessionIdRef.current = null;
     setLogSessionId(null);
     sessionCreatedAtRef.current = null;
@@ -447,7 +526,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     const d = depsRef.current;
     d.sessionStateRef.current = emptySessionState();
     d.artifactStoreRef.current = new ArtifactStore();
-  }, []);
+  }, [endTrace]);
 
   return {
     sessionIdRef,
@@ -468,5 +547,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     handleResumePick,
     handleCheckpointPick,
     resetSession,
+    traceRef,
+    ensureTrace,
+    ensureTraceStarted,
+    endTrace,
   };
 }

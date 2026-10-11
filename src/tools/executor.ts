@@ -1,6 +1,8 @@
 import type { ToolSpec, ToolContext, ToolOutput, RunWaitRequest } from "./registry.js";
 import { wrapAsToolError, type ToolErrorCode } from "./tool-error.js";
 import type { HooksManager } from "../hooks/manager.js";
+import type { TraceRecorder } from "../trace/recorder.js";
+import type { PermissionDecision as TracePermissionDecision, ToolCallPayload, ToolResultPayload } from "../trace/types.js";
 import { readTool } from "./read.js";
 import { writeTool } from "./write.js";
 import { editTool } from "./edit.js";
@@ -156,6 +158,10 @@ export type PermissionScope = "once" | "session" | "pattern";
 export interface PermissionDecisionResult {
   decision: PermissionDecisionKind;
   scope: PermissionScope;
+  /** Free-text the user typed when denying ("do X instead"). Recorded on the
+   *  trace's `permission_decision`; the text itself reaches the model as the
+   *  next user message. */
+  feedback?: string;
 }
 
 /**
@@ -262,18 +268,27 @@ export class ToolExecutor {
    *  every `run` call regardless of caller (standard agent loop,
    *  code-mode sandbox, init turn, SDK, CLI print mode). */
   private hooks: HooksManager | null;
+  /** Default session trace recorder; `ctx.trace` (set by the agent loop)
+   *  takes precedence per call. */
+  private trace: TraceRecorder | null;
 
-  constructor(tools: ToolSpec[] = ALL_TOOLS, opts?: { hooks?: HooksManager }) {
+  constructor(tools: ToolSpec[] = ALL_TOOLS, opts?: { hooks?: HooksManager; trace?: TraceRecorder }) {
     this.tools = new Map(tools.map((t) => [t.name, t]));
     this.artifactStore = new ToolArtifactStore();
     this.tools.set("expand_artifact", makeExpandArtifactTool(this.artifactStore));
     this.hooks = opts?.hooks ?? null;
+    this.trace = opts?.trace ?? null;
   }
 
   /** Swap or detach the hooks manager. Used by app startup so the
    *  executor created before the manager exists can pick it up later. */
   setHooks(hooks: HooksManager | null): void {
     this.hooks = hooks;
+  }
+
+  /** Swap or detach the default trace recorder (e.g. when the TUI starts a new session). */
+  setTrace(trace: TraceRecorder | null): void {
+    this.trace = trace;
   }
 
   list(): ToolSpec[] {
@@ -302,10 +317,26 @@ export class ToolExecutor {
     ctx: ToolContext,
     onFileChange?: (path: string, content: string) => void,
   ): Promise<ToolResult> {
+    const trace = ctx.trace ?? this.trace;
+    if (!trace?.enabled) return this.runInner(call, askPermission, ctx, onFileChange, null);
+    const tr = new ToolTrace(trace, ctx, call);
+    const result = await this.runInner(call, askPermission, ctx, onFileChange, tr);
+    tr.finish(result);
+    return result;
+  }
+
+  private async runInner(
+    call: ToolInvocation,
+    askPermission: PermissionAsker,
+    ctx: ToolContext,
+    onFileChange: ((path: string, content: string) => void) | undefined,
+    tr: ToolTrace | null,
+  ): Promise<ToolResult> {
     // `spawn_worker` was renamed to `subagent`; resumed sessions and models
     // primed by old history may still emit the old name.
     const tool = this.tools.get(call.name) ?? (call.name === "spawn_worker" ? this.tools.get("subagent") : undefined);
     if (!tool) {
+      tr?.call(null, false);
       return {
         tool_call_id: call.id,
         name: call.name,
@@ -320,6 +351,7 @@ export class ToolExecutor {
     try {
       args = call.arguments.trim() ? JSON.parse(call.arguments) : {};
     } catch (e) {
+      tr?.call(null, tool.needsPermission);
       return {
         tool_call_id: call.id,
         name: call.name,
@@ -330,6 +362,7 @@ export class ToolExecutor {
         suggestion: "reformulate the tool call with valid JSON arguments",
       };
     }
+    tr?.call(args, tool.needsPermission);
 
     // M6.1: PreToolUse hook (veto-able). Fires here — after JSON-args
     // parsing, BEFORE the permission check — so a hook can block a
@@ -370,8 +403,10 @@ export class ToolExecutor {
     if (tool.needsPermission) {
       const sessionKey = this.permissionKey(tool, args);
       if (!this.sessionAllowed.has(sessionKey)) {
+        const askedAt = performance.now();
         const raw = await askPermission({ tool, args, sessionKey });
         const result = toPermissionResult(raw);
+        tr?.permission(tracePermissionDecision(result), Math.round(performance.now() - askedAt), result.feedback);
         if (result.decision === "deny") {
           const denied: ToolResult = {
             tool_call_id: call.id,
@@ -390,7 +425,11 @@ export class ToolExecutor {
         // come from settings.json so the pattern itself is the durable
         // record — no in-memory cache needed.
         if (result.scope === "session") this.sessionAllowed.add(sessionKey);
+      } else {
+        tr?.permission("auto", 0);
       }
+    } else {
+      tr?.permission("auto", 0);
     }
 
     let runStore: RunStore | null = null;
@@ -405,6 +444,7 @@ export class ToolExecutor {
       const result = await tool.run(args as never, ctx);
       toolCompleted = true;
       const normalized = normalizeToolOutput(result);
+      tr?.raw(normalized);
       if (runStore && ctx.runId) {
         runStore.recordToolResult(ctx.runId, call.id, call.name, { ok: true, content: normalized.content });
       }
@@ -468,6 +508,7 @@ export class ToolExecutor {
       if (e instanceof RunToolBudgetExceededError) ctx.onRunBudgetExceeded?.(e.reason);
       const err = wrapAsToolError(e);
       const msg = `Error running ${call.name}: ${err.message}`;
+      tr?.raw({ content: msg, rawBytes: Buffer.byteLength(msg, "utf8"), reducedBytes: Buffer.byteLength(msg, "utf8") });
       const failure: ToolResult = {
         tool_call_id: call.id,
         name: call.name,
@@ -537,6 +578,110 @@ export class ToolExecutor {
       return `bash:${firstToken}`;
     }
     return tool.name;
+  }
+}
+
+/** Map the asker's typed result onto the trace enum. `pattern` allows come
+ *  from settings.json rules, so they count as automatic. */
+function tracePermissionDecision(result: PermissionDecisionResult): TracePermissionDecision {
+  if (result.decision === "deny") return "deny";
+  if (result.scope === "session") return "allow_session";
+  if (result.scope === "pattern") return "auto";
+  return "allow";
+}
+
+/** Inline args in the trace when their JSON is at most this long. */
+const TRACE_ARGS_INLINE_MAX = 2 * 1024;
+
+/**
+ * Collects the trace facts of one `run()` and emits `tool_call`,
+ * `permission_decision`, and `tool_result` (or a single `code_mode_call`
+ * when the call came from inside an `execute_code` sandbox).
+ */
+class ToolTrace {
+  private readonly startedAt = performance.now();
+  private readonly turnId: string | null;
+  private readonly parentId: string | undefined;
+  private rawOutput: ToolOutput | null = null;
+  private argsBlob = "";
+
+  constructor(
+    private readonly trace: TraceRecorder,
+    ctx: ToolContext,
+    private readonly invocation: ToolInvocation,
+  ) {
+    this.turnId = ctx.turnId ?? null;
+    this.parentId = ctx.codeModeParentToolCallId;
+  }
+
+  /** The call was parsed (args null when the arguments were not valid JSON). */
+  call(args: Record<string, unknown> | null, needsPermission: boolean): void {
+    this.argsBlob = this.trace.blob(this.invocation.arguments) ?? "";
+    if (this.parentId) return;
+    const payload: ToolCallPayload = {
+      tool_call_id: this.invocation.id,
+      name: this.invocation.name,
+      args_blob: this.argsBlob,
+      ...(args && this.invocation.arguments.length <= TRACE_ARGS_INLINE_MAX ? { args_inline: args } : {}),
+      needs_permission: needsPermission,
+      code_mode_redirected: false,
+    };
+    this.trace.emit("tool_call", payload, this.turnId);
+  }
+
+  permission(decision: TracePermissionDecision, latencyMs: number, feedback?: string): void {
+    this.trace.emit(
+      "permission_decision",
+      {
+        tool_call_id: this.invocation.id,
+        decision,
+        ...(feedback ? { feedback_text: feedback } : {}),
+        latency_ms: latencyMs,
+      },
+      this.turnId,
+    );
+  }
+
+  /** The tool's output before reduction. */
+  raw(output: ToolOutput): void {
+    this.rawOutput = output;
+  }
+
+  finish(result: ToolResult): void {
+    const durationMs = Math.round(performance.now() - this.startedAt);
+    const rawContent = this.rawOutput?.content ?? result.content;
+    const rawBlob = this.trace.blob(rawContent) ?? "";
+    if (this.parentId) {
+      this.trace.emit(
+        "code_mode_call",
+        {
+          parent_tool_call_id: this.parentId,
+          name: this.invocation.name,
+          args_blob: this.argsBlob,
+          raw_blob: rawBlob,
+          ok: result.ok,
+          duration_ms: durationMs,
+        },
+        this.turnId,
+      );
+      return;
+    }
+    const meta = this.rawOutput?.meta;
+    const payload: ToolResultPayload = {
+      tool_call_id: this.invocation.id,
+      name: this.invocation.name,
+      ok: result.ok,
+      ...(result.errorCode ? { error_code: result.errorCode } : {}),
+      raw_blob: rawBlob,
+      raw_bytes: Buffer.byteLength(rawContent, "utf8"),
+      reduced_blob: rawContent === result.content ? rawBlob : this.trace.blob(result.content) ?? "",
+      reduced_bytes: Buffer.byteLength(result.content, "utf8"),
+      ...(result.artifactId ? { artifact_id: result.artifactId } : {}),
+      ...(meta && meta.exitCode !== undefined && meta.exitCode !== null ? { exit_code: meta.exitCode } : {}),
+      ...(meta?.timedOut !== undefined ? { timed_out: meta.timedOut } : {}),
+      duration_ms: durationMs,
+    };
+    this.trace.emit("tool_result", payload, this.turnId);
   }
 }
 

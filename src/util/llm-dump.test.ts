@@ -58,7 +58,7 @@ function sampleRecord(): LlmDumpRecord {
       rawSerialized: JSON.stringify({ messages, tools }),
     },
     breakdown: computeBreakdown(messages, tools),
-    response: { text: "hi", reasoning: "", toolCalls: [], finishReason: "stop", usage: null },
+    response: { text: "hi", reasoning: "", reasoningDetails: [], toolCalls: [], finishReason: "stop", usage: null },
   };
 }
 

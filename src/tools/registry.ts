@@ -39,6 +39,15 @@ export interface ToolContext {
   /** When false (default), the bash tool blocks `git push` to the repository's
    *  default branch and directs the model to open a PR instead. */
   allowDirectPush?: boolean;
+  /** Session trace recorder for this call (set by the agent loop). Tools and
+   *  the executor emit on it; absent or disabled means no-op. */
+  trace?: import("../trace/recorder.js").TraceRecorder;
+  /** Turn id stamped on trace events for this call. */
+  turnId?: string | null;
+  /** Set when the call is an `api.*` invocation from inside an `execute_code`
+   *  sandbox: the id of the parent `execute_code` tool call. The executor then
+   *  records a `code_mode_call` instead of a top-level tool_call/tool_result. */
+  codeModeParentToolCallId?: string;
 }
 
 export interface ToolRender {
@@ -61,6 +70,13 @@ export interface ToolOutput {
   reducedBytes: number;
   /** Internal control signal: persist the wait and end this agent turn. */
   waitRequest?: RunWaitRequest;
+  /** Structured facts about the execution (bash: exit code, timeout), for the trace. */
+  meta?: ToolOutputMeta;
+}
+
+export interface ToolOutputMeta {
+  exitCode?: number | null;
+  timedOut?: boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

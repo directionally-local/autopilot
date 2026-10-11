@@ -22,6 +22,8 @@ import { compactEventsVisual } from "../ui/app-helpers.js";
 import { llmAuthFromConfig } from "./llm-auth.js";
 import type { HooksManager } from "../hooks/manager.js";
 import type { TurnSupervisor } from "./supervisor.js";
+import type { TraceRecorder } from "../trace/recorder.js";
+import { traceCompiledCompaction, traceLlmCompaction } from "../trace/compaction.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -48,6 +50,8 @@ export interface RunCompactDeps {
   hooks?: HooksManager;
   sessionId?: string | null;
   supervisorRef: React.MutableRefObject<TurnSupervisor>;
+  /** Session trace; `/compact` records a `compaction` event on it. */
+  trace?: TraceRecorder | null;
 }
 
 export async function runCompact(deps: RunCompactDeps): Promise<void> {
@@ -59,6 +63,7 @@ export async function runCompact(deps: RunCompactDeps): Promise<void> {
     pendingToolCallsRef,
     hooks, sessionId,
     supervisorRef,
+    trace,
   } = deps;
 
   if (busy || supervisorRef.current.isRunning) {
@@ -100,6 +105,7 @@ export async function runCompact(deps: RunCompactDeps): Promise<void> {
       if (result.metrics.rawTurnsRemoved === 0) {
         setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "nothing to compact yet" }]);
       } else {
+        traceCompiledCompaction(trace, result);
         messagesRef.current = result.newMessages;
         sessionStateRef.current = result.newState;
         setEvents((e) =>
@@ -118,6 +124,7 @@ export async function runCompact(deps: RunCompactDeps): Promise<void> {
         await saveSessionSafe();
       }
     } else {
+      const before = messagesRef.current;
       const result = await summarizeMessagesViaLlm({
         ...llmAuthFromConfig(cfg),
         model: cfg.model,
@@ -127,6 +134,7 @@ export async function runCompact(deps: RunCompactDeps): Promise<void> {
       if (result.replacedCount === 0) {
         setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "nothing to compact yet" }]);
       } else {
+        traceLlmCompaction(trace, before, result);
         messagesRef.current = result.newMessages;
         setEvents((e) =>
           compactEventsVisual(

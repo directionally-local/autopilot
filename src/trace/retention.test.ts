@@ -6,13 +6,17 @@ import { join } from "node:path";
 import { listTraceSessions, pruneTraces } from "./retention.js";
 
 let root: string;
+const savedEnv = process.env.KIMIFLARE_TRACE_DIR;
 
 before(async () => {
   root = await mkdtemp(join(tmpdir(), "kimiflare-trace-retention-"));
+  // The env override would win over the explicit roots used below.
+  delete process.env.KIMIFLARE_TRACE_DIR;
 });
 
 after(async () => {
   await rm(root, { recursive: true, force: true });
+  if (savedEnv !== undefined) process.env.KIMIFLARE_TRACE_DIR = savedEnv;
 });
 
 const DAY = 24 * 60 * 60 * 1000;

@@ -109,7 +109,7 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
     // to the turn: cancelling one never interrupts the turn or other subagents.
     const handle = workerRegistry.start(args.mission, model, ctx.signal);
     const startedAt = Date.now();
-    const record = (status: string, extra: { costUsd?: number; error?: string; localChanges?: number } = {}) =>
+    const record = (status: string, extra: { costUsd?: number; error?: string; localChanges?: number } = {}) => {
       void recordSubagentEvent({
         kind: "subagent",
         ts: Date.now(),
@@ -120,6 +120,18 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
         ...(failureReason(extra.error) ? { reason: failureReason(extra.error) } : {}),
         ...(extra.localChanges ? { localChanges: extra.localChanges } : {}),
       });
+      ctx.trace?.emit(
+        "subagent",
+        {
+          worker_id: handle.id,
+          mode: "hotcell",
+          status,
+          ...(extra.costUsd !== undefined ? { cost_usd: extra.costUsd } : {}),
+          duration_ms: Date.now() - startedAt,
+        },
+        ctx.turnId ?? null,
+      );
+    };
     let result;
     try {
       result = await runHotcellWorker({
