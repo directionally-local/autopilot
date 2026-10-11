@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.20.0](https://github.com/sinameraji/autopilot/compare/v1.19.3...v1.20.0) (2026-10-11)
+
+
+### Features
+
+* **trace:** append-only session trace recorder and blob store ([#767](https://github.com/sinameraji/autopilot/issues/767)) ([bd8ca3a](https://github.com/sinameraji/autopilot/commit/bd8ca3a089e81a215cda7a3769b598d110790ec3))
+* **trace:** outcome signals (git delta, verification, ratings, corrections) ([#770](https://github.com/sinameraji/autopilot/issues/770)) ([b5a008d](https://github.com/sinameraji/autopilot/commit/b5a008d98b097cae7a5a476cebd4f8f85be6e8b5))
+* **trace:** record requests, responses, tool calls, permissions, turn ends ([#769](https://github.com/sinameraji/autopilot/issues/769)) ([5bc3e1d](https://github.com/sinameraji/autopilot/commit/5bc3e1d12991c98de004f3c43c6914297aee1934))
+
 ## [1.19.3](https://github.com/sinameraji/autopilot/compare/v1.19.2...v1.19.3) (2026-10-07)
 
 
