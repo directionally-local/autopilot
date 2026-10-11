@@ -1,0 +1,18 @@
+{
+  "id": "sdk-persist-errored-turns",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "b43c6ba54c4e241a9c976444a361ed1e555f0e7c",
+  "prompt": "Fix three SDK session lifecycle bugs in `src/sdk/session.ts` and the loop. (1) `prompt()` saves the session only on success, so an errored turn loses the user's message and completed tool work; save in `finally`, log save failures without masking the turn's error, save new sessions on creation so resume-by-id works before the first turn, and preserve `createdAt` across saves. (2) Steers are drained only at tool boundaries, so a steer sent while the model writes its final answer is delivered one iteration into the next turn; add a `drainPendingInput()` hook to `AgentTurnOpts` that the loop checks at every tool boundary and again when the model answers without tool calls, continuing the turn so the model responds before it ends. (3) Follow-ups are pushed into history but never run; run them as their own turns, in order, after a successful turn, and turn steers that missed the turn into follow-ups.\n\nThe regression test(s) for this change are already in the worktree: `src/sdk/session-lifecycle.test.ts`, `src/sdk/session.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/sdk/session-lifecycle.test.ts src/sdk/session.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/sdk/session-lifecycle.test.ts src/sdk/session.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "sdk",
+    "agent",
+    "pr-738"
+  ],
+  "files": {
+    "src/sdk/session-lifecycle.test.ts": "files/sdk-persist-errored-turns/src/sdk/session-lifecycle.test.ts",
+    "src/sdk/session.test.ts": "files/sdk-persist-errored-turns/src/sdk/session.test.ts"
+  }
+}

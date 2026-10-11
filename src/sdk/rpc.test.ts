@@ -1,4 +1,5 @@
 import { describe, it, before, after } from "node:test";
+import { createNoopRecorder } from "../trace/recorder.js";
 import assert from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,6 +54,7 @@ function makeFakeSession(behavior: {
     cwd: process.cwd(),
     isStreaming: false,
     messages: [],
+    trace: createNoopRecorder(),
     async prompt(text) {
       state.promptCalls.push(text);
       if (state.promptCalls.length === 1 && behavior.permissionRequestId !== undefined) {

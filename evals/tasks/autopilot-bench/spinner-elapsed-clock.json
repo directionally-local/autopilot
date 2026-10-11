@@ -1,0 +1,16 @@
+{
+  "id": "spinner-elapsed-clock",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "56e7226fc085bbc4fa64a6e3aedbaf2f0777cebf",
+  "prompt": "The shared spinner in `src/ui/spinner.tsx` advances one frame per interval callback, so event-loop delays during busy work make the animation fall behind and slow down cumulatively. Derive the shared frame index from a monotonic elapsed-time clock instead of counting callbacks, so that after a delayed callback the spinner catches up to the frame that corresponds to the elapsed time, and tick boundaries are exact.\n\nThe regression test(s) for this change are already in the worktree: `src/ui/spinner.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/ui/spinner.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/ui/spinner.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "ui",
+    "pr-736"
+  ],
+  "files": {
+    "src/ui/spinner.test.ts": "files/spinner-elapsed-clock/src/ui/spinner.test.ts"
+  }
+}

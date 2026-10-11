@@ -1,0 +1,18 @@
+{
+  "id": "subagent-usage-stats",
+  "repo": "https://github.com/sinameraji/autopilot.git",
+  "base_commit": "523d60897bca307c60be551df8c9e2eb741d9d88",
+  "prompt": "Record subagent usage locally so \"how many sessions use subagents?\" is a number. Add `src/tools/subagent-stats.ts` that appends events to `~/.local/share/kimiflare/subagents.jsonl` (resolve the path at call time from `XDG_DATA_HOME`): `turn` events (session id, whether the `subagent` tool was offered, the policy decision) and `subagent` events (session id, final status, duration, cost, number of local changes, and a content-free failure category: repository / hotcell / provider / budget / timeout / cancelled / other). Never record prompts, missions, or code; writes are best effort. Provide an aggregation over a time window (sessions, how many were offered and used subagents, turns offered, completion rate, failures by category, median duration, total cost) that ignores old events and malformed lines, and a `/subagents stats` report that uses it. Record the events from the subagent tool's terminal paths (`src/tools/subagent.ts`).\n\nThe regression test(s) for this change are already in the worktree: `src/tools/subagent-stats.test.ts`, `src/tools/subagent.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/tools/subagent-stats.test.ts src/tools/subagent.test.ts` and `npm run typecheck` before you finish.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npx tsx --test src/tools/subagent-stats.test.ts src/tools/subagent.test.ts",
+  "timeout_s": 1800,
+  "tags": [
+    "tools",
+    "subagents",
+    "pr-751"
+  ],
+  "files": {
+    "src/tools/subagent-stats.test.ts": "files/subagent-usage-stats/src/tools/subagent-stats.test.ts",
+    "src/tools/subagent.test.ts": "files/subagent-usage-stats/src/tools/subagent.test.ts"
+  }
+}

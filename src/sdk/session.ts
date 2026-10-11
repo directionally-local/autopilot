@@ -204,7 +204,7 @@ class InternalSession implements KimiFlareSession {
   private onKimiMdStale?: () => void;
   private provider?: OpenRouterProviderPrefs;
   private hooks?: import("../hooks/manager.js").HooksManager;
-  private readonly trace: TraceRecorder;
+  readonly trace: TraceRecorder;
   private traceCostUsd = 0;
   /** Turn id of the last turn that ran, for next-message outcome signals. */
   private lastTurnId: string | null = null;
@@ -463,10 +463,15 @@ class InternalSession implements KimiFlareSession {
     });
   }
 
-  dispose(): void {
+  dispose(options?: { traceEndReason?: import("../trace/types.js").SessionEndReason }): void {
+    if (this.disposed) return;
     this.disposed = true;
     if (this.trace.enabled) {
-      this.trace.emit("session_end", { reason: "exit", ...(this.traceCostUsd > 0 ? { total_cost_usd: this.traceCostUsd } : {}) }, null);
+      this.trace.emit(
+        "session_end",
+        { reason: options?.traceEndReason ?? "exit", ...(this.traceCostUsd > 0 ? { total_cost_usd: this.traceCostUsd } : {}) },
+        null,
+      );
     }
     this.denyPendingPermissions();
     this.abortController?.abort();
