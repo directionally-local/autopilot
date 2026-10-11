@@ -27,7 +27,7 @@ import { getShellCommand } from "./tools/bash.js";
 import { McpManager } from "./mcp/manager.js";
 import { LspManager } from "./lsp/manager.js";
 import { HooksManager } from "./hooks/manager.js";
-import { sanitizeString } from "./agent/messages.js";
+import { sanitizeString, appendStoppedToolResults } from "./agent/messages.js";
 import type { ChatMessage, ContentPart, Usage } from "./agent/messages.js";
 import { KimiApiError, humanizeApiError } from "./util/errors.js";
 import { AbortScope } from "./util/abort-scope.js";
@@ -1066,7 +1066,7 @@ function App({
   interruptDepsRef.current = {
     busyRef, activeScopeRef, isAbortingRef, supervisorRef,
     hasPendingPermission, denyPendingPermission,
-    pendingToolCallsRef, updateTool,
+    pendingToolCallsRef, updateTool, messagesRef,
     setEvents, mkKey,
     saveSessionSafe, clearTaskTracking,
     lspManagerRef, exit,
@@ -2344,14 +2344,8 @@ function App({
             if (e.name === "AbortError") {
               // Inject synthetic tool results for any pending tool calls so message
               // history remains valid (assistant msg with tool_calls needs 1:1 results).
-              for (const [tcId, tcName] of pendingToolCallsRef.current) {
-                messagesRef.current.push({
-                  role: "tool",
-                  tool_call_id: tcId,
-                  content: "(stopped)",
-                  name: tcName,
-                });
-              }
+              // Idempotent: the interrupt handler may already have done this.
+              appendStoppedToolResults(messagesRef.current, pendingToolCallsRef.current);
               setEvents((evts) =>
                 evts.map((e) => (e.kind === "tool" && e.status === "running" ? { ...e, status: "error" as const, result: "(stopped)" } : e)),
               );

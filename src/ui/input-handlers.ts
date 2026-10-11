@@ -3,6 +3,7 @@ import type { TurnSupervisor } from "../agent/supervisor.js";
 import type { AbortScope } from "../util/abort-scope.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { ChatEvent } from "./chat.js";
+import { appendStoppedToolResults, type ChatMessage } from "../agent/messages.js";
 
 // ── Shared dep shape ─────────────────────────────────────────────────────
 
@@ -17,6 +18,9 @@ export interface InterruptDeps {
   denyPendingPermission: () => boolean;
   // In-flight tool calls (so we can mark them cancelled on abort)
   pendingToolCallsRef: React.MutableRefObject<Map<string, string>>;
+  // Conversation history: in-flight tool calls get a "(stopped)" result so
+  // the saved history stays valid for the API.
+  messagesRef: React.MutableRefObject<ChatMessage[]>;
   updateTool: (id: string, patch: Partial<Extract<ChatEvent, { kind: "tool" }>>) => void;
   // Event stream
   setEvents: React.Dispatch<React.SetStateAction<ChatEvent[]>>;
@@ -73,6 +77,10 @@ export function interruptTurn(deps: InterruptDeps): InterruptOutcome {
       ...e,
       { kind: "info", key: deps.mkKey(), text: "(interrupted)" },
     ]);
+    // The assistant message carrying these tool_calls is already in history,
+    // so the save below would otherwise persist calls without results and
+    // the next request (or a later resume) would be rejected by the API.
+    appendStoppedToolResults(deps.messagesRef.current, deps.pendingToolCallsRef.current);
     if (!deps.skipPendingToolCleanup) {
       for (const [toolId] of deps.pendingToolCallsRef.current) {
         deps.updateTool(toolId, { status: "cancelled" });

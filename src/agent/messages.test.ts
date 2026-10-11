@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { mergeReasoningDetails, stableStringify, stripOldImages } from "./messages.js";
+import { appendStoppedToolResults, mergeReasoningDetails, repairDanglingToolCalls, stableStringify, stripOldImages } from "./messages.js";
 import type { ChatMessage } from "./messages.js";
 
 describe("stableStringify", () => {
@@ -139,5 +139,61 @@ describe("mergeReasoningDetails", () => {
     const out = mergeReasoningDetails(start, [{ type: "reasoning.encrypted", data: "x" }]);
     assert.strictEqual(out.length, 2);
     assert.strictEqual(start.length, 1);
+  });
+});
+
+describe("repairDanglingToolCalls", () => {
+  const call = (id: string, name: string) => ({ id, type: "function" as const, function: { name, arguments: "{}" } });
+
+  it("inserts (stopped) results for tool calls that have none, right after the assistant message", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "do it" },
+      { role: "assistant", content: null, tool_calls: [call("a", "subagent"), call("b", "subagent")] },
+      { role: "user", content: "go on" },
+    ];
+    assert.strictEqual(repairDanglingToolCalls(messages), 2);
+    assert.deepStrictEqual(
+      messages.map((m) => [m.role, m.tool_call_id ?? null]),
+      [["system", null], ["user", null], ["assistant", null], ["tool", "a"], ["tool", "b"], ["user", null]],
+    );
+    assert.strictEqual(messages[3]!.content, "(stopped)");
+    assert.strictEqual(messages[4]!.name, "subagent");
+    // Already valid afterwards.
+    assert.strictEqual(repairDanglingToolCalls(messages), 0);
+  });
+
+  it("fills only the missing result when some arrived", () => {
+    const messages: ChatMessage[] = [
+      { role: "assistant", content: null, tool_calls: [call("a", "read"), call("b", "bash")] },
+      { role: "tool", tool_call_id: "a", content: "ok", name: "read" },
+      { role: "assistant", content: "done" },
+    ];
+    assert.strictEqual(repairDanglingToolCalls(messages), 1);
+    assert.deepStrictEqual(messages.map((m) => m.tool_call_id ?? m.role), ["assistant", "a", "b", "assistant"]);
+  });
+
+  it("leaves a valid history untouched", () => {
+    const messages: ChatMessage[] = [
+      { role: "assistant", content: null, tool_calls: [call("a", "read")] },
+      { role: "tool", tool_call_id: "a", content: "ok", name: "read" },
+      { role: "assistant", content: "x" },
+    ];
+    const before = JSON.stringify(messages);
+    assert.strictEqual(repairDanglingToolCalls(messages), 0);
+    assert.strictEqual(JSON.stringify(messages), before);
+  });
+});
+
+describe("appendStoppedToolResults", () => {
+  it("appends once per call id and is idempotent", () => {
+    const messages: ChatMessage[] = [
+      { role: "assistant", content: null, tool_calls: [{ id: "a", type: "function", function: { name: "bash", arguments: "{}" } }] },
+    ];
+    const pending = new Map([["a", "bash"], ["b", "read"]]);
+    assert.strictEqual(appendStoppedToolResults(messages, pending), 2);
+    assert.strictEqual(appendStoppedToolResults(messages, pending), 0);
+    assert.strictEqual(messages.length, 3);
+    assert.deepStrictEqual(messages.slice(1).map((m) => [m.tool_call_id, m.name, m.content]), [["a", "bash", "(stopped)"], ["b", "read", "(stopped)"]]);
   });
 });

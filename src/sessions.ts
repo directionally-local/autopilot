@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage } from "./agent/messages.js";
+import { repairDanglingToolCalls } from "./agent/messages.js";
 import type { SessionState, SerializedArtifact } from "./agent/session-state.js";
 import { listFilesByMtime, pruneFiles, RETENTION } from "./storage-limits.js";
 
@@ -151,7 +152,12 @@ export async function listSessions(limit = 30, cwd?: string): Promise<SessionSum
 
 export async function loadSession(filePath: string): Promise<SessionFile> {
   const raw = await readFile(filePath, "utf8");
-  return JSON.parse(raw) as SessionFile;
+  const file = JSON.parse(raw) as SessionFile;
+  // A turn interrupted mid-tool-call may have been saved with assistant
+  // tool_calls that never got results; the API rejects such a history
+  // ("No tool output found for function call …"). Heal it on load.
+  if (Array.isArray(file.messages)) repairDanglingToolCalls(file.messages);
+  return file;
 }
 
 /** Add a checkpoint to an existing session file. */

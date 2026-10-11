@@ -54,6 +54,9 @@ function makeDeps(overrides: Partial<{
     hasPendingPermission: () => overrides.permission ?? false,
     denyPendingPermission: () => overrides.permission ?? false,
     pendingToolCallsRef: ref(new Map<string, string>([["t1", "bash"]])),
+    messagesRef: ref([
+      { role: "assistant", content: null, tool_calls: [{ id: "t1", type: "function", function: { name: "bash", arguments: "{}" } }] },
+    ]),
     updateTool: (id: string, patch: unknown) => {
       toolUpdates.push({ id, patch });
     },
@@ -93,6 +96,28 @@ function makeDeps(overrides: Partial<{
 }
 
 describe("interruptTurn", () => {
+  it("gives in-flight tool calls a (stopped) result before the session is saved", () => {
+    const deps = makeDeps({ busy: true, hasScope: true });
+    let messagesAtSave = -1;
+    deps.saveSessionSafe = () => {
+      messagesAtSave = deps.messagesRef.current.length;
+    };
+    const out = interruptTurn(deps);
+    assert.strictEqual(out.didInterruptTurn, true);
+    assert.strictEqual(messagesAtSave, 2, "the (stopped) result is in history when the save runs");
+    const last = deps.messagesRef.current[1]!;
+    assert.deepStrictEqual([last.role, last.tool_call_id, last.content, last.name], ["tool", "t1", "(stopped)", "bash"]);
+    assert.strictEqual(deps.pendingToolCallsRef.current.size, 0);
+  });
+
+  it("also heals history on the SIGINT path that skips the UI tool cleanup", () => {
+    const deps = makeDeps({ busy: true, hasScope: true });
+    deps.skipPendingToolCleanup = true;
+    interruptTurn(deps);
+    assert.strictEqual(deps.messagesRef.current.length, 2);
+    assert.strictEqual(deps.toolUpdates.length, 0, "UI tool events are left to the abort handler, as before");
+  });
+
   it("is a no-op when idle (no busy, no perm)", () => {
     const deps = makeDeps();
     const out = interruptTurn(deps);
