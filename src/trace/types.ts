@@ -206,15 +206,43 @@ export interface TurnEndPayload {
   final_text_blob?: string;
 }
 
-/**
- * Outcome signals. Phase 3 of the plan defines the concrete variants
- * (git_delta, verification, rating, next_message, reverted, test_verdict);
- * until then the payload is only required to carry a `kind`.
- */
-export interface OutcomePayload {
-  kind: string;
-  [key: string]: unknown;
-}
+export type VerificationCategory = "test" | "lint" | "typecheck" | "build";
+export type NextMessageClassification = "continue" | "correction" | "new_task" | "question" | "other";
+export type RevertHow = "clear" | "restore_checkpoint" | "git_checkout";
+
+/** Outcome signals a dataset builder can filter or weight on (plan §3.1). */
+export type OutcomePayload =
+  | {
+      kind: "git_delta";
+      turn_id: string;
+      files_changed: number;
+      insertions: number;
+      deletions: number;
+      /** Blob of the raw `git diff --numstat` output after the turn. */
+      numstat_blob: string;
+      /** Blob of the patch, when it is at most 512 KB. */
+      patch_blob?: string;
+    }
+  | {
+      kind: "verification";
+      turn_id: string;
+      tool_call_id: string;
+      command: string;
+      category: VerificationCategory;
+      exit_code: number;
+    }
+  | { kind: "rating"; turn_id: string; value: "good" | "bad"; reason?: string }
+  | { kind: "next_message"; turn_id: string; classification: NextMessageClassification; classifier: "regex" }
+  | { kind: "reverted"; turn_id: string; how: RevertHow }
+  | {
+      kind: "test_verdict";
+      task_id: string;
+      passed: boolean;
+      command: string;
+      exit_code: number;
+      duration_ms: number;
+      log_blob: string;
+    };
 
 export type SessionEndReason = "exit" | "clear" | "restore_checkpoint" | "crash" | "eval_done";
 

@@ -27,6 +27,8 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "checkpoint", argHint: "[label]", description: "Save current point in session", source: "builtin" },
   { name: "checkpoints", description: "List checkpoints in current session", source: "builtin" },
   { name: "compact", description: "Summarize old turns to free context", source: "builtin" },
+  { name: "good", description: "Rate the last turn as good (recorded in the local session trace)", source: "builtin" },
+  { name: "bad", argHint: "[reason]", description: "Rate the last turn as bad (recorded in the local session trace)", source: "builtin" },
   { name: "clear", description: "Clear current conversation", source: "builtin" },
   { name: "fresh", description: "Start a fresh session with a summarized plan or continuation context", source: "builtin" },
   { name: "init", description: "Scan repo and write AGENTS.md", source: "builtin" },

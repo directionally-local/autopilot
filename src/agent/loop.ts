@@ -26,6 +26,7 @@ import { withTurnDirective } from "./turn-directive.js";
 import { CONTINUE_NUDGE, INCOMPLETE_THRESHOLD, shouldCheckCompletion, toolsUsedSince, type CompletionCheck } from "./completion-check.js";
 import type { Mode } from "../mode.js";
 import { createNoopRecorder, makeTurnId } from "../trace/recorder.js";
+import { beginGitDelta } from "../trace/git-delta.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnEndReason } from "../trace/types.js";
 
@@ -365,6 +366,11 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
       tr.turnId,
     );
   };
+  // Workspace delta for `outcome{git_delta}`: snapshot before, measure after.
+  // No git subprocesses unless tracing is enabled.
+  const gitDelta = await beginGitDelta({ trace: tr.trace, turnId: tr.turnId, sessionId: opts.sessionId, cwd: opts.cwd }).catch(
+    () => null,
+  );
   try {
     await runAgentTurnInner(opts, tr);
     endTurn(tr.endReason ?? "complete", tr.finalText);
@@ -377,6 +383,8 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
       endTurn("error", tr.partialText || tr.finalText);
     }
     throw err;
+  } finally {
+    await gitDelta?.finish().catch(() => undefined);
   }
 }
 

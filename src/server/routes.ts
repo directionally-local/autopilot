@@ -8,7 +8,7 @@ import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
-import { createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
+import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
 import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { ToolSpec } from "../tools/registry.js";
 import { runAgentTurn } from "../agent/loop.js";
@@ -69,6 +69,8 @@ interface ActiveSession {
   trace?: TraceRecorder;
   /** Turn id minted with the pending user message, consumed by the next turn. */
   nextTurnId?: string;
+  /** Turn id of the last turn that ran, for next-message outcome signals. */
+  lastTurnId?: string;
 }
 
 /** Create the session trace and record `session_start`; a no-op recorder when tracing is off. */
@@ -725,6 +727,13 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         const userContent = await buildUserMessage(prompt, resolvedFiles, active.sessionFile.cwd);
         active.messages.push({ role: "user", content: userContent });
         active.nextTurnId = makeTurnId();
+        if (active.trace?.enabled && active.lastTurnId) {
+          active.trace.emit(
+            "outcome",
+            { kind: "next_message", turn_id: active.lastTurnId, classification: classifyNextMessage(prompt), classifier: "regex" },
+            active.lastTurnId,
+          );
+        }
         traceUserMessage(active.trace, prompt, resolvedFiles.length, active.nextTurnId);
 
         launchAgentTurnForSession(active, config, allowAll);
@@ -928,6 +937,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
   const compaction = sessionFileCompactionTarget(sessionFile);
   const turnId = active.nextTurnId ?? makeTurnId();
   active.nextTurnId = undefined;
+  active.lastTurnId = turnId;
   try {
     if (run && runStore) {
 
