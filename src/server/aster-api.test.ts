@@ -9,6 +9,7 @@ import type { KimiConfig } from "../config.js";
 import { AsterGitHub, AsterGitHubError } from "./aster-github.js";
 import { AsterApi, type AsterTurnStart } from "./aster-api.js";
 import { AsterStore } from "./aster-store.js";
+import type { AsterPushMessage } from "./aster-push.js";
 import { startServer } from "./index.js";
 import { RunStore } from "../runs/store.js";
 import { saveSession } from "../sessions.js";
@@ -511,13 +512,22 @@ describe("Aster control-plane API", () => {
   });
 
   it("requires an explicit approval and never executes a denied write", async () => {
-    const harness = await createHarness("approval");
+    const harness = await createHarness("approval", { pushConfigured: true });
     try {
       const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
       const conversation = await created.json() as { conversationId: string };
       const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, { clientTurnId: "turn-write-file", text: "write a file" });
       assert.equal(turn.status, 202);
       const approval = await waitForApproval(harness, conversation.conversationId);
+      const waiting = await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId);
+      assert.equal((await waiting.json() as { status: string }).status, "waiting_approval");
+      assert.deepEqual(harness.pushes, [{
+        title: "Approval required",
+        body: "write: Create or replace created.txt in this workspace",
+        conversationId: conversation.conversationId,
+        category: "APPROVAL",
+        approvalId: approval.id,
+      }]);
 
       const details = await request(harness, "GET", `/api/v1/approvals/${approval.id}`);
       assert.equal(details.status, 200);
@@ -537,6 +547,45 @@ describe("Aster control-plane API", () => {
       assert.equal(harness.permissionDecisions.at(-1), "deny");
       assert.equal(await exists(join(harness.worktreeRoot, conversation.conversationId, "created.txt")), false);
       await waitForStatus(harness, conversation.conversationId, "completed");
+    } finally {
+      await harness.close();
+    }
+  });
+  it("sends terminal pushes only when no client is connected to the conversation SSE stream", async () => {
+    const harness = await createHarness("complete", { pushConfigured: true });
+    try {
+      const firstCreated = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
+      const first = await firstCreated.json() as { conversationId: string };
+      const firstTurn = await request(harness, "POST", "/api/v1/conversations/" + first.conversationId + "/turns", { clientTurnId: "turn-no-stream", text: "finish while disconnected" });
+      assert.equal(firstTurn.status, 202);
+      await waitForStatus(harness, first.conversationId, "completed");
+      assert.deepEqual(harness.pushes.map((push) => push.conversationId), [first.conversationId]);
+
+      const secondCreated = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
+      const second = await secondCreated.json() as { conversationId: string };
+      const streamResponse = await request(harness, "GET", "/api/v1/conversations/" + second.conversationId + "/events?after=0");
+      const liveEvents = readUntil(streamResponse, "event: completed");
+      const secondTurn = await request(harness, "POST", "/api/v1/conversations/" + second.conversationId + "/turns", { clientTurnId: "turn-live-stream", text: "finish while connected" });
+      assert.equal(secondTurn.status, 202);
+      assert.match(await liveEvents, /event: completed/);
+      assert.deepEqual(harness.pushes.map((push) => push.conversationId), [first.conversationId]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("sends conversation-only push data when a run fails", async () => {
+    const harness = await createHarness("fail", { pushConfigured: true });
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
+      const conversation = await created.json() as { conversationId: string };
+      const turn = await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/turns", { clientTurnId: "turn-failed", text: "fail" });
+      assert.equal(turn.status, 202);
+      await waitForStatus(harness, conversation.conversationId, "failed");
+      assert.equal(harness.pushes.length, 1);
+      assert.equal(harness.pushes[0]!.conversationId, conversation.conversationId);
+      assert.equal(harness.pushes[0]!.category, undefined);
+      assert.equal(harness.pushes[0]!.approvalId, undefined);
     } finally {
       await harness.close();
     }
@@ -694,10 +743,11 @@ interface Harness {
   restores: Array<{ cellId: string; checkpointId: string }>;
   provisionedProjects: Array<unknown>;
   createdRepositories: string[];
+  pushes: AsterPushMessage[];
   close(): Promise<void>;
 }
 
-async function createHarness(mode: "complete" | "hang" | "approval", options: { openRouterCatalog?: boolean } = {}): Promise<Harness> {
+async function createHarness(mode: "complete" | "hang" | "approval" | "fail", options: { openRouterCatalog?: boolean; pushConfigured?: boolean } = {}): Promise<Harness> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-api-")));
   tempDirs.push(root);
   const workspaceRoot = join(root, "workspace");
@@ -761,6 +811,14 @@ async function createHarness(mode: "complete" | "hang" | "approval", options: { 
   const restores: Array<{ cellId: string; checkpointId: string }> = [];
   const provisionedProjects: Array<unknown> = [];
   const createdRepositories: string[] = [];
+  const pushes: AsterPushMessage[] = [];
+  const fakePush = {
+    configured: options.pushConfigured ?? false,
+    notify: async (message: AsterPushMessage) => { pushes.push(message); },
+    register: () => true,
+    unregister: () => {},
+    close: () => {},
+  };
   const repo = (fullName: string) => ({
     fullName, name: fullName.split("/")[1]!, owner: fullName.split("/")[0]!, private: true,
     description: null, defaultBranch: "main", updatedAt: null,
@@ -790,6 +848,7 @@ async function createHarness(mode: "complete" | "hang" | "approval", options: { 
       turns.push(turn);
       if (mode === "complete") void completeTurn(turn, `reply-${turns.length}`);
       else if (mode === "approval") void approveWriteTurn(turn, permissionDecisions);
+      else if (mode === "fail") void failTurn(turn);
     },
     cancelRun: (runId) => { cancelledRuns.push(runId); },
     setModel: async (cellId, model) => { modelSwitches.push({ cellId, model }); },
@@ -808,7 +867,7 @@ async function createHarness(mode: "complete" | "hang" | "approval", options: { 
       if (path !== "deck.pdf") throw new Error("artifact_not_found");
       return { data: Buffer.from("%PDF"), mimeType: "application/pdf", name: "deck.pdf" };
     },
-  }, fakeGitHub);
+  }, fakeGitHub, undefined, fakePush);
   const server = createServer((req, res) => { void api.handle(req, res); });
   const port = await listen(server);
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -831,6 +890,7 @@ async function createHarness(mode: "complete" | "hang" | "approval", options: { 
     restores,
     provisionedProjects,
     createdRepositories,
+    pushes,
     close,
   };
 }
@@ -861,6 +921,16 @@ async function waitForStatusAt(base: string, token: string, conversationId: stri
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.fail(`conversation did not reach ${expected}`);
+}
+
+async function failTurn(turn: AsterTurnStart): Promise<void> {
+  const runs = new RunStore();
+  try {
+    if (runs.getRun(turn.runId)?.status === "running") runs.transition(turn.runId, "failed", "test_failure");
+  } finally {
+    runs.close();
+  }
+  turn.finish("failed", "test_failure");
 }
 
 async function completeTurn(turn: AsterTurnStart, text: string): Promise<void> {
