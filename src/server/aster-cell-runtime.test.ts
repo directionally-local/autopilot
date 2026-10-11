@@ -27,6 +27,7 @@ interface FakeCellState {
   commands?: string[];
   writeSizes?: number[];
   activeRunId?: string | null;
+  promptModes?: string[];
   promptEvents?: Array<Record<string, unknown>>;
 }
 
@@ -71,6 +72,8 @@ function fakeSandbox(state: FakeCellState) {
         if (body.type === "new_session") { state.sessions.push(String(body.sessionId)); return respond({ type: "ok", id: body.id }); }
         if (body.type === "prompt") {
           state.prompts.push({ id: String(body.id), message: String(body.message) });
+          const options = body.options && typeof body.options === "object" ? body.options as Record<string, unknown> : {};
+          (state.promptModes ??= []).push(String(options.mode ?? ""));
           queueMicrotask(() => {
             const promptEvents = state.promptEvents ?? [{ type: "message.delta", text: "cell reply" }];
             for (const event of promptEvents) {
@@ -343,6 +346,29 @@ describe("Aster Hotcell runtime", () => {
     }]);
     assert.deepEqual(turn.finished, ["completed"]);
     assert.deepEqual(turn.cursors, [1, 2, 3, 4, 5]);
+  });
+
+  it("forwards plan, ask, and auto modes to each cell prompt", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const { cellId } = await runtime.provisionConversation({
+      conversationId: crypto.randomUUID(), sessionId: "s-mode", cellName: "aster-mode", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      model: "test/model", allowCreate: true, onCellCreated: () => {},
+    });
+    const state = [...cells.values()][0]!;
+    const expected = ["plan", "edit", "auto"];
+    for (const [index, mode] of (["plan", "ask", "auto"] as const).entries()) {
+      const turn = fakeTurn({
+        cellId,
+        runId: crypto.randomUUID(),
+        cellEventCursor: state.events.at(-1)?.cursor ?? 0,
+        mode,
+      });
+      runtime.startTurn(turn);
+      await waitFor(() => turn.finished.length > 0);
+      assert.deepEqual(turn.finished, ["completed"]);
+      assert.equal(state.promptModes?.[index], expected[index]);
+    }
   });
 
   it("sends 150k prompts through bounded Hotcell control-file writes", async () => {

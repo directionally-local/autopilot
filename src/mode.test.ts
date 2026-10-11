@@ -3,6 +3,9 @@ import assert from "node:assert";
 import {
   isReadOnlyBash,
   isBlockedInPlanMode,
+  isAllowedInPlanMode,
+  requiresApprovalInAutoMode,
+  systemPromptForMode,
   nextMode,
   modeDescription,
   MODES,
@@ -98,6 +101,9 @@ describe("isBlockedInPlanMode", () => {
     assert.strictEqual(isBlockedInPlanMode("mcp_fs"), true);
     assert.strictEqual(isBlockedInPlanMode("lsp_rename"), true);
     assert.strictEqual(isBlockedInPlanMode("browser_fetch"), true);
+    for (const tool of ["github_create_pr", "memory_remember", "memory_forget", "job_start", "job_cancel", "subagent", "changelog_image"]) {
+      assert.strictEqual(isBlockedInPlanMode(tool), true, tool);
+    }
   });
 
   it("allows read-only tools", () => {
@@ -105,6 +111,24 @@ describe("isBlockedInPlanMode", () => {
     assert.strictEqual(isBlockedInPlanMode("grep"), false);
     assert.strictEqual(isBlockedInPlanMode("glob"), false);
     assert.strictEqual(isBlockedInPlanMode("web_fetch"), false);
+  });
+
+  it("fails closed for plan-mode permissions and allows only safe reads", () => {
+    assert.equal(isAllowedInPlanMode("read"), true);
+    assert.equal(isAllowedInPlanMode("tasks_set"), true);
+    assert.equal(isAllowedInPlanMode("bash", { command: "git status && git diff" }), true);
+    assert.equal(isAllowedInPlanMode("bash", { command: "git push origin feature" }), false);
+    assert.equal(isAllowedInPlanMode("github_create_pr", {}), false);
+    assert.equal(isAllowedInPlanMode("unknown_mutator", {}), false);
+    assert.match(systemPromptForMode("plan"), /numbered plan/);
+  });
+
+  it("requires auto-mode approval before recognized external actions", () => {
+    assert.equal(requiresApprovalInAutoMode("github_create_pr", {}), true);
+    assert.equal(requiresApprovalInAutoMode("bash", { command: "git push origin feature" }), true);
+    assert.equal(requiresApprovalInAutoMode("bash", { command: "curl -X DELETE http://proxy/api/repos/o/r" }), true);
+    assert.equal(requiresApprovalInAutoMode("bash", { command: "git status" }), false);
+    assert.equal(requiresApprovalInAutoMode("write", {}), false);
   });
 });
 

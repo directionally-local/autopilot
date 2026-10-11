@@ -16,11 +16,20 @@ function getHeaders(token?: string): Record<string, string> {
   return headers;
 }
 
+function githubApiBase(): string {
+  return process.env.ASTER_GITHUB_API_URL?.trim().replace(/\/+$/, "") || GITHUB_API_BASE;
+}
+
+function githubRequestTimeoutMs(): number {
+  // Aster proxy writes may wait for an approval (configured server maximum: one hour).
+  return process.env.ASTER_GITHUB_API_URL ? 66 * 60 * 1000 : TIMEOUT_MS;
+}
+
 async function githubFetch(path: string, token?: string): Promise<unknown> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), githubRequestTimeoutMs());
   try {
-    const res = await fetch(`${GITHUB_API_BASE}${path}`, {
+    const res = await fetch(`${githubApiBase()}${path}`, {
       signal: controller.signal,
       headers: getHeaders(token),
     });
@@ -36,9 +45,9 @@ async function githubFetch(path: string, token?: string): Promise<unknown> {
 
 async function githubPost(path: string, body: unknown, token?: string): Promise<unknown> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), githubRequestTimeoutMs());
   try {
-    const res = await fetch(`${GITHUB_API_BASE}${path}`, {
+    const res = await fetch(`${githubApiBase()}${path}`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -63,7 +72,7 @@ function makeOutput(content: string): ToolOutput {
 }
 
 function getToken(ctx: ToolContext): string | undefined {
-  return ctx.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  return process.env.ASTER_GITHUB_TOKEN || ctx.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 }
 
 function formatError(err: unknown): string {

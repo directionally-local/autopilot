@@ -14,8 +14,8 @@ const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const MAX_EVENTS = 250;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /**
- * The cell is a disposable, per-conversation sandbox with its own git history, so the
- * agent runs autonomously: every tool call (bash, write, edit, …) is auto-approved.
+ * Legacy control clients omit per-prompt mode and retain the previous auto behavior.
+ * Current Aster servers pass a validated mode with every prompt.
  */
 const CELL_MODE = "auto";
 
@@ -39,6 +39,10 @@ interface BridgeState {
 }
 
 /** Hotcell's gateway base URL is the provider root; Autopilot's OpenRouter client expects `/v1`. */
+export function normalizeCellPromptMode(value: unknown): "plan" | "edit" | "auto" {
+  return value === "plan" || value === "edit" || value === "auto" ? value : CELL_MODE;
+}
+
 export function normalizeGatewayBaseUrl(value: string | undefined): string | undefined {
   const trimmed = value?.trim().replace(/\/+$/, "");
   if (!trimmed) return value;
@@ -176,10 +180,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, state: B
     if (state.seenRunIds?.includes(runId)) return send(res, 202, { accepted: true, runId, replay: true });
     if (state.activeRunId) return send(res, 409, { error: "session_busy" });
     if (!state.initialized || typeof command.message !== "string" || !command.message.trim()) return send(res, 409, { error: "session_not_ready" });
-    // The session ignores `mode` in its new_session config; the per-prompt option is what
-    // its permission handler reads, so every cell prompt runs autonomously.
+    // The server selects each prompt mode; legacy requests fall back to auto.
     const options = command.options && typeof command.options === "object" ? command.options as Record<string, unknown> : {};
-    command.options = { ...options, mode: CELL_MODE };
+    command.options = { ...options, mode: normalizeCellPromptMode(options.mode) };
     state.activeRunId = runId;
     state.seenRunIds = [...(state.seenRunIds ?? []), runId];
     await persistState(state);

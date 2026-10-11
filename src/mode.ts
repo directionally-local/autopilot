@@ -19,14 +19,43 @@ export function modeDescription(m: Mode): string {
 }
 
 export const MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
+const PLAN_BLOCKED_TOOLS = new Set([
+  "github_create_pr", "memory_remember", "memory_forget", "job_start", "job_cancel",
+  "subagent", "changelog_image", "wait_for", "lsp_rename", "lsp_codeAction", "browser_fetch",
+]);
+const PLAN_READ_ONLY_TOOLS = new Set([
+  "read", "glob", "grep", "expand_artifact", "web_fetch", "search_web",
+  "github_read_pr", "github_read_issue", "github_read_code", "github_list_merged_prs", "github_list_releases",
+  "memory_recall", "job_status", "job_logs", "lsp_definition", "lsp_typeDefinition", "lsp_references",
+  "lsp_hover", "lsp_workspaceSymbol", "tasks_set", "present_plan_options",
+]);
 
 export function isBlockedInPlanMode(toolName: string): boolean {
-  if (MUTATING_TOOLS.has(toolName)) return true;
+  if (MUTATING_TOOLS.has(toolName) || PLAN_BLOCKED_TOOLS.has(toolName)) return true;
   if (toolName.startsWith("mcp_")) return true;
-  if (toolName === "lsp_rename" || toolName === "lsp_codeAction") return true;
-  // browser_fetch with screenshot writes files to disk
-  if (toolName === "browser_fetch") return true;
   return false;
+}
+
+/** Fail-closed permission policy for plan-mode sessions. */
+export function isAllowedInPlanMode(toolName: string, args?: unknown): boolean {
+  if (toolName === "bash") {
+    const command = args && typeof args === "object" ? (args as { command?: unknown }).command : undefined;
+    return typeof command === "string" && isReadOnlyBash(command);
+  }
+  return PLAN_READ_ONLY_TOOLS.has(toolName);
+}
+
+/** External actions in auto mode pause before the action executes. */
+export function requiresApprovalInAutoMode(toolName: string, args?: unknown): boolean {
+  if (toolName === "github_create_pr") return true;
+  if (toolName !== "bash" || !args || typeof args !== "object") return false;
+  const command = (args as { command?: unknown }).command;
+  if (typeof command !== "string") return false;
+  if (/\bgit\s+push\b/i.test(command)) return true;
+  const curlLike = /\b(?:curl|wget)\b/i.test(command);
+  const mutatingMethod = /(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)\b/i.test(command);
+  const hasBody = /(?:^|\s)(?:-d|--data(?:-raw|-binary)?)\b/i.test(command);
+  return curlLike && (mutatingMethod || hasBody);
 }
 
 // Bash safety for plan mode ---------------------------------------------------
@@ -175,7 +204,7 @@ export function isReadOnlyBash(command: string): boolean {
 
 export function systemPromptForMode(m: Mode): string {
   if (m === "plan") {
-    return "\n\nPLAN MODE is active. The user wants you to investigate and produce a plan WITHOUT making any changes. Do not call write, edit, or mutating bash commands. You may use read-only bash commands (e.g., git log, git diff, ls, cat, grep) along with read/glob/grep/web-fetch. For research, prefer these read-only tools: search_web (when you need to find information but don't have a URL), web_fetch (when you already know the exact URL), browser_fetch (for JavaScript-rendered pages where web_fetch is insufficient), github_read_pr / github_read_issue / github_read_code (to inspect GitHub repositories without cloning). Scripting interpreters (node, python3, ruby, perl, awk) and build/package tools (npm, cargo, go, tsc, jest, etc.) are blocked in plan mode. At the end, present a concise plan (bullets, files to change, approach). The user will review and then exit plan mode to execute.";
+    return "\n\nPLAN MODE is active. The user wants you to investigate and produce a plan WITHOUT making any changes. Do not call write, edit, or mutating bash commands. You may use read-only bash commands (e.g., git log, git diff, ls, cat, grep) along with read/glob/grep/web-fetch. For research, prefer these read-only tools: search_web (when you need to find information but don't have a URL), web_fetch (when you already know the exact URL), github_read_pr / github_read_issue / github_read_code (to inspect GitHub repositories without cloning). `browser_fetch` is blocked because screenshots write files. Scripting interpreters (node, python3, ruby, perl, awk) and build/package tools (npm, cargo, go, tsc, jest, etc.) are blocked in plan mode. At the end, present a concise numbered plan (1., 2., ...) naming the files to change and the approach. The user will review and then exit plan mode to execute.";
   }
   if (m === "auto") {
     return "\n\nAUTO MODE is active. The user has opted into autonomous execution — every tool call will be auto-approved. Work efficiently, but do not take irreversible destructive actions (rm -rf, git push --force, dropping tables, etc.) without pausing to describe them in chat first. Prefer smaller reversible steps.";

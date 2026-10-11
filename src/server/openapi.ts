@@ -347,10 +347,17 @@ export function getOpenApiSpec(): string {
       },
       "/api/v1/conversations/{conversationId}": {
         get: {
-          summary: "Get conversation status without returning model/tool history or filesystem paths",
+          summary: "Get conversation status, persisted work mode, and last event cursor without returning model/tool history or filesystem paths",
           security: [{ asterBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Conversation metadata and last event cursor" }, "404": { description: "Conversation not found or outside credential scope" } },
+        },
+        patch: {
+          summary: "Set the persistent conversation work mode",
+          security: [{ asterBearer: [] }],
+          parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["mode"], properties: { mode: { type: "string", enum: ["plan", "ask", "auto"] } }, additionalProperties: false }, example: { mode: "plan" } } } },
+          responses: { "200": { description: "Updated conversation; mode applies to future turns" }, "400": { description: "Invalid mode" }, "404": { description: "Conversation not found or outside credential scope" } },
         },
         delete: {
           summary: "Revoke the cell's egress tokens and destroy the conversation's Hotcell and volume (retryable)",
@@ -380,7 +387,7 @@ export function getOpenApiSpec(): string {
           summary: "Append a user turn to the persistent conversation",
           security: [{ asterBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["text"], properties: { clientTurnId: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", description: "Optional stable idempotency key, scoped to this conversation. Omit only for non-idempotent legacy submission." }, text: { type: "string", maxLength: 20000 } }, additionalProperties: false }, examples: { legacy: { summary: "Legacy text-only submission (do not automatically retry ambiguous requests)", value: { text: "Summarize the failing test and propose a fix." } }, idempotent: { summary: "Retry-safe submission", value: { clientTurnId: "turn-550e8400-e29b-41d4-a716-446655440000", text: "Summarize the failing test and propose a fix." } } } } } },
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["text"], properties: { clientTurnId: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", description: "Optional stable idempotency key, scoped to this conversation. Omit only for non-idempotent legacy submission." }, text: { type: "string", maxLength: 500000 }, mode: { type: "string", enum: ["plan", "ask", "auto"], description: "Optional per-turn override; does not update the persisted conversation mode." } }, additionalProperties: false }, examples: { legacy: { summary: "Legacy text-only submission (do not automatically retry ambiguous requests)", value: { text: "Summarize the failing test and propose a fix." } }, idempotent: { summary: "Retry-safe submission", value: { clientTurnId: "turn-550e8400-e29b-41d4-a716-446655440000", text: "Summarize the failing test and propose a fix." } } } } } },
           responses: { "202": { description: "Turn accepted; keyed submissions replay the persisted response for the same ID and text" }, "400": { description: "clientTurnId, when present, or text is invalid" }, "409": { description: "conversation_busy or idempotency_conflict for a reused key with different text" } },
         },
       },

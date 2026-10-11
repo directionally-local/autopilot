@@ -142,6 +142,33 @@ describe("github_read_code", () => {
 });
 
 describe("github_create_pr", () => {
+  it("uses Aster's scoped token and repository API proxy when configured", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalApiUrl = process.env.ASTER_GITHUB_API_URL;
+    const originalAsterToken = process.env.ASTER_GITHUB_TOKEN;
+    const originalGitHubToken = process.env.GITHUB_TOKEN;
+    process.env.ASTER_GITHUB_API_URL = "http://aster-proxy.local/api/";
+    process.env.ASTER_GITHUB_TOKEN = "conversation-grant";
+    process.env.GITHUB_TOKEN = "unscoped-token";
+    globalThis.fetch = async (input, init) => {
+      assert.equal(input.toString(), "http://aster-proxy.local/api/repos/owner/repo/pulls");
+      assert.equal(new Headers((init as RequestInit).headers).get("authorization"), "Bearer conversation-grant");
+      return new Response(JSON.stringify({ number: 8, title: "Add feature", html_url: "https://github.com/owner/repo/pull/8", state: "open" }), { status: 201 });
+    };
+    try {
+      const result = await githubCreatePrTool.run({ owner: "owner", repo: "repo", title: "Add feature", head: "feat", base: "main" }, { cwd: "/workspace" }) as ToolOutput;
+      assert.ok(result.content.includes("#8"));
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalApiUrl === undefined) delete process.env.ASTER_GITHUB_API_URL;
+      else process.env.ASTER_GITHUB_API_URL = originalApiUrl;
+      if (originalAsterToken === undefined) delete process.env.ASTER_GITHUB_TOKEN;
+      else process.env.ASTER_GITHUB_TOKEN = originalAsterToken;
+      if (originalGitHubToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = originalGitHubToken;
+    }
+  });
+
   it("creates a PR and returns the URL", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {

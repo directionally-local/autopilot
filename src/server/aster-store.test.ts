@@ -50,6 +50,7 @@ describe("AsterStore", () => {
     });
     try {
       assert.equal(conversation.status, "ready");
+      assert.equal(conversation.mode, "ask");
       assert.equal(store.beginTurn(conversation.id, "run-1"), true);
       assert.equal(store.beginTurn(conversation.id, "run-2"), false);
       assert.equal(store.updateConversationStatus(conversation.id, "run-1", "waiting_approval"), true);
@@ -70,6 +71,30 @@ describe("AsterStore", () => {
     }
   });
 
+  it("persists work-mode changes across reopen", async () => {
+    const root = await fixture();
+    const dbPath = join(root, "state", "aster.db");
+    let store = new AsterStore(dbPath);
+    const conversation = store.createConversation({
+      id: "conv-mode",
+      workspaceId: "default",
+      model: "test/model",
+      sessionId: "session-mode",
+      worktreePath: join(root, "worktrees", "conv-mode"),
+      cwd: join(root, "worktrees", "conv-mode"),
+      branch: "main",
+    });
+    try {
+      assert.equal(conversation.mode, "ask");
+      assert.equal(store.setConversationMode(conversation.id, "plan")?.mode, "plan");
+      store.close();
+      store = new AsterStore(dbPath);
+      assert.equal(store.getConversation(conversation.id)?.mode, "plan");
+    } finally {
+      try { store.close(); } catch { /* closed before reopening */ }
+    }
+  });
+
   it("migrates an existing database additively and persists accepted turn replay across reopen", async () => {
     const root = await fixture();
     const dbPath = join(root, "state", "aster.db");
@@ -84,6 +109,7 @@ describe("AsterStore", () => {
     let store = new AsterStore(dbPath);
     try {
       assert.equal(store.getConversation("conv-legacy")?.workspaceId, "default");
+      assert.equal(store.getConversation("conv-legacy")?.mode, "ask");
       const response = { conversationId: "conv-legacy", clientTurnId: "retry-1", runId: "run-legacy", status: "running" };
       assert.deepEqual(store.reserveTurn({
         conversationId: "conv-legacy",

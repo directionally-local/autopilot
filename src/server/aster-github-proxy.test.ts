@@ -24,11 +24,17 @@ describe("Aster GitHub proxy", () => {
     });
     const upstreamPort = await listen(upstream);
     const revoked = new Set<string>();
+    const authorizedWrites: Array<{ kind: string; method: string; path: string; conversationId: string }> = [];
+    let allowWrites = true;
     const proxy = new AsterGitHubProxy({
       token: "real-pat",
       gitUpstream: `http://127.0.0.1:${upstreamPort}`,
       apiUpstream: `http://127.0.0.1:${upstreamPort}`,
       resolveGrant: (grant) => (grant === "grant-a" && !revoked.has(grant) ? { conversationId: "c1", repository: "me/app" } : undefined),
+      authorizeWrite: async (grant, operation) => {
+        authorizedWrites.push({ ...operation, conversationId: grant.conversationId });
+        return allowWrites;
+      },
     });
     const port = await proxy.listen(0, "127.0.0.1");
     const base = `http://127.0.0.1:${port}`;
@@ -61,8 +67,18 @@ describe("Aster GitHub proxy", () => {
       assert.equal(seen[2]!.body, "PACKDATA");
       assert.ok(seen.every((request) => !request.authorization.includes("grant-a")), "the grant token never reaches GitHub");
 
+      assert.deepEqual(authorizedWrites, [
+        { kind: "github_api", method: "POST", path: "/repos/me/app/pulls", conversationId: "c1" },
+        { kind: "git_push", method: "POST", path: "/me/app.git/git-receive-pack", conversationId: "c1" },
+      ]);
+
+      allowWrites = false;
+      assert.equal((await fetch(base + "/api/repos/me/app/pulls", { method: "POST", headers: { authorization: "Bearer grant-a" }, body: "{}" })).status, 403);
+      assert.equal((await fetch(base + "/git/me/app.git/git-receive-pack", { method: "POST", headers: { authorization: basic("grant-a") }, body: "PACKDATA" })).status, 403);
+      assert.equal(seen.length, 3, "denied external operations never reach GitHub");
+
       revoked.add("grant-a");
-      assert.equal((await fetch(`${base}/api/repos/me/app`, { headers: { authorization: "Bearer grant-a" } })).status, 403);
+      assert.equal((await fetch(base + "/api/repos/me/app", { headers: { authorization: "Bearer grant-a" } })).status, 403);
     } finally {
       proxy.close();
       upstream.close();

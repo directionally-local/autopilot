@@ -7,7 +7,7 @@ Aster is a native iOS client. Autopilot on the VM owns model credentials, prompt
 - Keep `autopilot serve` bound to `127.0.0.1:4096`. Do not open this port in Hetzner firewall/UFW and do not use Tailscale Funnel or a public reverse proxy.
 - Development access uses an SSH local forward. Physical iPhone access requires a private tailnet (recommended: Tailscale Serve, not Funnel) plus an expiring, workspace-scoped Aster credential stored in the iOS Keychain. The current VM has no Tailscale installation/enrollment; Aster cannot reach it from a phone until the operator enrolls the VM and phone in the same tailnet.
 - `/api/v1/*` requires `Authorization: Bearer aster_…`. Credentials are workspace-scoped, expire (default 30 days), are stored only as SHA-256 hashes, and can be revoked. Legacy routes keep their separate Basic auth.
-- The API exposes only `read`, `write`, and `edit`; no shell, external job, browser, web, GitHub, or artifact-expansion tools. Reads/writes/edits resolve inside the conversation worktree, reject traversal/symlinks out of root, and block credential/VCS paths. `write` and `edit` require a per-action human approval.
+- Work modes are enforced by the server: `plan` denies state-changing tools and asks the agent for a numbered plan; `ask` requires approval for writes, edits, and mutating shell commands; `auto` permits changes inside the isolated cell but requires approval for Git pushes and mutating GitHub API operations through the repository-scoped proxy. No mode grants access to host files or credentials.
 - Provider credentials remain in the VM service environment/config. They are never sent to Aster or included in API responses/events. Provider-like secrets in turn text or proposed write arguments are rejected; assistant deltas are redacted defensively.
 - Each conversation runs inside its own Hotcell microVM with no host network and no host filesystem. Model access is brokered by Hotcell's credential gateway with a per-conversation, per-model, spend-capped, TTL-bound egress token that is revoked on destroy. Prompts and file contents never appear in Hotcell exec commands or logs; control traffic uses fixed commands with request bodies passed through `0600` files inside the cell.
 
@@ -112,7 +112,7 @@ All paths below require the scoped Bearer credential. Unknown IDs outside the to
   "service": "autopilot",
   "apiVersion": "v1",
   "serviceVersion": "1.5.0",
-  "capabilities": ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals"]
+  "capabilities": ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "work-modes"]
 }
 ```
 
@@ -139,10 +139,18 @@ Requires an `Idempotency-Key` header (1-128 safe characters). The key is hashed 
 Returns `201` with an opaque conversation ID and cursor; no filesystem paths or agent history:
 
 ```json
-{"conversationId":"<uuid>","workspaceId":"default","model":"moonshotai/kimi-k2.6","status":"ready","activeRunId":null,"lastEventId":1,"createdAt":"...","updatedAt":"..."}
+{"conversationId":"<uuid>","workspaceId":"default","model":"moonshotai/kimi-k2.6","mode":"ask","status":"ready","activeRunId":null,"lastEventId":1,"createdAt":"...","updatedAt":"..."}
 ```
 
-`GET /api/v1/conversations/{conversationId}` resumes metadata by opaque ID. Conversation history remains server-side; Aster does not replay it on later requests.
+`GET /api/v1/conversations/{conversationId}` resumes metadata by opaque ID and includes the persisted `mode`. Conversation history remains server-side; Aster does not replay it on later requests. New conversations default to `ask`.
+
+`PATCH /api/v1/conversations/{conversationId}` updates the persistent mode (conversation/write scope):
+
+```json
+{"mode":"plan"}
+```
+
+Only `plan`, `ask`, or `auto` is accepted; the response is the updated conversation shape. Changing the stored mode affects future turns; an active turn keeps the mode it started with.
 
 `POST /api/v1/conversations/{conversationId}/turns`
 
@@ -160,7 +168,7 @@ New clients can opt into durable idempotency by including a stable `clientTurnId
 {"clientTurnId":"turn-550e8400-e29b-41d4-a716-446655440000","text":"Summarize the failing test and propose a fix."}
 ```
 
-`clientTurnId` is 1-128 ASCII letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit, and is scoped to its conversation. Keep and resend the same ID for every retry of the same logical turn. The server compares the JSON-decoded `text` exactly for key reuse; it trims the text before appending it to the conversation and sending it to the model. Text is capped at 500,000 characters (the model's context window is the practical limit); request bodies are capped at 4 MiB. The workspace cannot be changed by a turn request. A turn may include `"model"`: when it differs from the conversation's model, the server switches the in-cell session to it before starting the turn (`400 model_not_allowed` for models outside the catalog).
+`clientTurnId` is 1-128 ASCII letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit, and is scoped to its conversation. Keep and resend the same ID for every retry of the same logical turn. The server compares the JSON-decoded `text` exactly for key reuse; it trims the text before appending it to the conversation and sending it to the model. Text is capped at 500,000 characters (the model's context window is the practical limit); request bodies are capped at 4 MiB. The workspace cannot be changed by a turn request. A turn may include `"model"`: when it differs from the conversation's model, the server switches the in-cell session to it before starting the turn (`400 model_not_allowed` for models outside the catalog). A turn may also include `"mode":"plan"|"ask"|"auto"` to override the conversation mode for that turn only; omitted mode uses the persisted value.
 
 The first accepted keyed request returns `202` with `{conversationId,clientTurnId,runId,status:"running"}` and stores that acceptance response, text, and run ID in SQLite in the same transaction that claims the conversation's active turn. Repeating the same ID and same text returns the original `202` response and run ID without appending another user message or starting another run, including after completion or restart. A restarted server marks uncertain work interrupted and does not replay it; a keyed retry still returns the original acceptance receipt, while conversation metadata/SSE reports current state. Reusing the ID with different text returns stable `409 idempotency_conflict`.
 
@@ -168,7 +176,7 @@ Only one active turn per conversation is allowed. A different, previously unused
 
 ### Autonomy, tool output, and checkpoints
 
-The in-cell agent runs in `auto` mode: every tool call (shell, write, edit, …) is auto-approved, so no `approval.required` events are raised for cell conversations. The phone sees what happened instead: `tool.activity` events carry `{tool, toolCallId, activity: "started", input}` (the shell command or file path) and `{tool, toolCallId, activity: "completed" | "failed", output}` (redacted, at most 16,000 characters with the middle elided).
+Each turn uses its selected work mode inside the cell. In `plan`, state-changing tools are denied without approval and the agent is instructed to return a numbered plan. In `ask`, mutating writes/edits/shell commands pause for `approval.required` until the user decides or approval expires. In `auto`, sandbox-local writes proceed without approval, while Git pushes and GitHub REST mutations pause for approval at the server-owned repository proxy. The phone also receives `tool.activity` events with bounded, redacted input/output summaries.
 
 `/workspace` is a git repository. After every turn, including cancelled or failed ones, the server commits whatever changed and emits `checkpoint.created` `{id, message, createdAt}` before the terminal status event. `.aster/` (bridge state) is excluded.
 

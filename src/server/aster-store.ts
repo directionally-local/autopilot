@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 
 export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve";
 export type AsterConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed";
+export type AsterConversationMode = "plan" | "ask" | "auto";
 export type AsterApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
 
 export interface AsterPrincipal {
@@ -20,6 +21,7 @@ export interface AsterConversation {
   id: string;
   workspaceId: string;
   model: string;
+  mode: AsterConversationMode;
   sessionId: string;
   worktreePath: string;
   cwd: string;
@@ -123,6 +125,7 @@ interface ConversationRow extends Record<string, unknown> {
   id: string;
   workspace_id: string;
   model: string;
+  mode: AsterConversationMode;
   session_id: string;
   worktree_path: string;
   cwd: string;
@@ -190,6 +193,7 @@ export class AsterStore {
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         model TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'ask',
         session_id TEXT NOT NULL UNIQUE,
         worktree_path TEXT NOT NULL,
         cwd TEXT NOT NULL,
@@ -269,6 +273,10 @@ export class AsterStore {
         created_at INTEGER NOT NULL
       );
     `);
+    const conversationColumns = this.db.pragma("table_info(aster_conversations)") as Array<{ name: string }>;
+    if (!conversationColumns.some((column) => column.name === "mode")) {
+      this.db.exec("ALTER TABLE aster_conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'ask'");
+    }
     try { chmodSync(dbPath, 0o600); } catch { /* existing/read-only database permissions are managed by the caller */ }
   }
 
@@ -393,13 +401,14 @@ export class AsterStore {
     worktreePath: string;
     cwd: string;
     branch: string;
+    mode?: AsterConversationMode;
   }): AsterConversation {
     const now = Date.now();
     const create = this.db.transaction(() => {
       this.db.prepare(`INSERT INTO aster_conversations
-        (id, workspace_id, model, session_id, worktree_path, cwd, branch, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`)
-        .run(input.id, input.workspaceId, input.model, input.sessionId, input.worktreePath, input.cwd, input.branch, now, now);
+        (id, workspace_id, model, mode, session_id, worktree_path, cwd, branch, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`)
+        .run(input.id, input.workspaceId, input.model, input.mode ?? "ask", input.sessionId, input.worktreePath, input.cwd, input.branch, now, now);
       this.insertEvent(input.id, null, "status", { status: "ready" }, now);
     });
     create.immediate();
@@ -409,6 +418,11 @@ export class AsterStore {
   getConversation(id: string): AsterConversation | undefined {
     const row = this.db.prepare("SELECT * FROM aster_conversations WHERE id = ?").get(id) as ConversationRow | undefined;
     return row ? rowToConversation(row) : undefined;
+  }
+
+  setConversationMode(id: string, mode: AsterConversationMode): AsterConversation | undefined {
+    const result = this.db.prepare("UPDATE aster_conversations SET mode = ?, updated_at = ? WHERE id = ?").run(mode, Date.now(), id);
+    return result.changes === 1 ? this.getConversation(id) : undefined;
   }
 
   listActiveConversations(): AsterConversation[] {
@@ -696,6 +710,7 @@ function rowToConversation(row: ConversationRow): AsterConversation {
     id: row.id,
     workspaceId: row.workspace_id,
     model: row.model,
+    mode: row.mode === "plan" || row.mode === "auto" ? row.mode : "ask",
     sessionId: row.session_id,
     worktreePath: row.worktree_path,
     cwd: row.cwd,

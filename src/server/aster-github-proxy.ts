@@ -21,11 +21,19 @@ export interface AsterGitHubGrant {
   repository: string;
 }
 
+export interface AsterGitHubWriteOperation {
+  kind: "git_push" | "github_api";
+  method: string;
+  path: string;
+}
+
 export interface AsterGitHubProxyOptions {
   /** The server's GitHub token; never sent to cells. */
   token: string;
   /** Resolves a cell's grant token to its repository, or undefined if unknown or revoked. */
   resolveGrant: (grantToken: string) => AsterGitHubGrant | undefined;
+  /** Server policy for Git pushes and mutating repository API requests. */
+  authorizeWrite?: (grant: AsterGitHubGrant, operation: AsterGitHubWriteOperation) => boolean | Promise<boolean>;
   /** Upstream roots, overridable for tests. */
   gitUpstream?: string;
   apiUpstream?: string;
@@ -47,7 +55,14 @@ export class AsterGitHubProxy {
   }
 
   async listen(port: number, host: string): Promise<number> {
-    this.server = createServer((req, res) => this.handle(req, res));
+    this.server = createServer((req, res) => {
+      void this.handle(req, res).catch(() => {
+        if (!res.headersSent) deny(res, 502, "GitHub authorization could not be completed");
+        else res.destroy();
+      });
+    });
+    // Aster approvals can remain pending for up to one hour before the request is forwarded.
+    this.server.requestTimeout = 66 * 60 * 1000;
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
       this.server!.listen(port, host, () => resolve());
@@ -61,7 +76,7 @@ export class AsterGitHubProxy {
     this.server = undefined;
   }
 
-  handle(req: IncomingMessage, res: ServerResponse): void {
+  async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://proxy.local");
     const git = url.pathname.match(GIT_PATH_RE);
     const api = git ? null : url.pathname.match(API_PATH_RE);
@@ -85,6 +100,19 @@ export class AsterGitHubProxy {
     const upstream = git
       ? new URL(`/${owner}/${name}.git/${git[3]}${url.search}`, this.gitUpstream)
       : new URL(`/repos/${owner}/${name}${api![3] ?? ""}${url.search}`, this.apiUpstream);
+    const method = (req.method ?? "GET").toUpperCase();
+    const writeOperation: AsterGitHubWriteOperation | undefined = git
+      ? git[3] === "git-receive-pack" && method === "POST"
+        ? { kind: "git_push", method, path: upstream.pathname }
+        : undefined
+      : !["GET", "HEAD", "OPTIONS"].includes(method)
+        ? { kind: "github_api", method, path: upstream.pathname }
+        : undefined;
+    if (writeOperation && this.options.authorizeWrite && !(await this.options.authorizeWrite(grant, writeOperation))) {
+      deny(res, 403, "This external GitHub write requires approval");
+      return;
+    }
+    if (res.destroyed) return;
     const headers: Record<string, string> = {};
     for (const name of FORWARDED_REQUEST_HEADERS) {
       const value = req.headers[name];
@@ -96,7 +124,7 @@ export class AsterGitHubProxy {
       : `Bearer ${this.options.token}`;
 
     const send = upstream.protocol === "https:" ? httpsRequest : httpRequest;
-    const forward = send(upstream, { method: req.method, headers }, (upstreamRes) => {
+    const forward = send(upstream, { method, headers }, (upstreamRes) => {
       const responseHeaders: Record<string, string | string[]> = {};
       for (const [key, value] of Object.entries(upstreamRes.headers)) {
         if (value !== undefined && !HOP_BY_HOP.has(key)) responseHeaders[key] = value;

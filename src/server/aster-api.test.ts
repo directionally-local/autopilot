@@ -464,6 +464,85 @@ describe("Aster control-plane API", () => {
     }
   });
 
+  it("stores work modes, supports per-turn overrides, and denies plan-mode writes", async () => {
+    const harness = await createHarness("hang");
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
+      const conversation = await created.json() as { conversationId: string };
+      let state = await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId);
+      assert.equal((await state.json() as { mode: string }).mode, "ask");
+
+      const invalid = await request(harness, "PATCH", "/api/v1/conversations/" + conversation.conversationId, { mode: "edit" });
+      assert.equal(invalid.status, 400);
+      const patched = await request(harness, "PATCH", "/api/v1/conversations/" + conversation.conversationId, { mode: "plan" });
+      assert.equal(patched.status, 200);
+      assert.equal((await patched.json() as { mode: string }).mode, "plan");
+
+      const planTurn = await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/turns", { clientTurnId: "turn-plan-mode", text: "[Plan mode] create a file" });
+      assert.equal(planTurn.status, 202);
+      const plan = harness.turns.at(-1)!;
+      assert.equal(plan.mode, "plan");
+      assert.equal(await plan.askPermission({ tool: { name: "write" }, args: { path: "created.txt", content: "no" } } as never), "deny");
+      await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/cancel");
+
+      const autoTurn = await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/turns", { clientTurnId: "turn-auto-override", text: "write locally", mode: "auto" });
+      assert.equal(autoTurn.status, 202);
+      const automatic = harness.turns.at(-1)!;
+      assert.equal(automatic.mode, "auto");
+      assert.equal(await automatic.askPermission({ tool: { name: "write" }, args: { path: "created.txt", content: "safe" } } as never), "allow");
+      const external = automatic.askPermission({
+        tool: { name: "git_push" },
+        args: { method: "POST", path: "/me/app.git/git-receive-pack", repository: "me/app" },
+      } as never);
+      const approval = await waitForApproval(harness, conversation.conversationId);
+      const approvalDetails = await request(harness, "GET", "/api/v1/approvals/" + approval.id);
+      assert.equal((await approvalDetails.json() as { tool: string }).tool, "git_push");
+      const allowed = await request(harness, "POST", "/api/v1/approvals/" + approval.id, { decision: "allow" });
+      assert.equal(allowed.status, 200);
+      assert.equal(await external, "allow");
+
+      const shellPush = automatic.askPermission({ tool: { name: "bash" }, args: { command: "git push origin feature" } } as never);
+      const shellApproval = await waitForApproval(harness, conversation.conversationId);
+      assert.equal((await request(harness, "POST", "/api/v1/approvals/" + shellApproval.id, { decision: "allow" })).status, 200);
+      assert.equal(await shellPush, "allow");
+
+      const createPr = automatic.askPermission({ tool: { name: "github_create_pr" }, args: { owner: "me", repo: "app", title: "Open PR", head: "feature" } } as never);
+      const prApproval = await waitForApproval(harness, conversation.conversationId);
+      assert.equal((await request(harness, "POST", "/api/v1/approvals/" + prApproval.id, { decision: "allow" })).status, 200);
+      assert.equal(await createPr, "allow");
+
+      state = await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId);
+      assert.equal((await state.json() as { mode: string }).mode, "plan", "per-turn override does not persist");
+      await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/cancel");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("requires approval for a mutating shell command in ask mode", async () => {
+    const harness = await createHarness("hang");
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
+      const conversation = await created.json() as { conversationId: string };
+      const turnResponse = await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/turns", { clientTurnId: "turn-ask-bash", text: "edit a file" });
+      assert.equal(turnResponse.status, 202);
+      const turn = harness.turns.at(-1)!;
+      assert.equal(turn.mode, "ask");
+      const decision = turn.askPermission({ tool: { name: "bash" }, args: { command: "touch created.txt" } } as never);
+      const approval = await waitForApproval(harness, conversation.conversationId);
+      const current = await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId);
+      assert.equal((await current.json() as { status: string }).status, "waiting_approval");
+      const events = await readUntil(await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId + "/events?after=0"), "event: approval.required");
+      assert.match(events, /approvalId/);
+      const allowed = await request(harness, "POST", "/api/v1/approvals/" + approval.id, { decision: "allow" });
+      assert.equal(allowed.status, 200);
+      assert.equal(await decision, "allow");
+      await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/cancel");
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("allows an explicitly approved write and makes resolution idempotent", async () => {
     const harness = await createHarness("approval");
     try {

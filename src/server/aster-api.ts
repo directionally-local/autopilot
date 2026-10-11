@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { KimiConfig } from "../config.js";
+import { isAllowedInPlanMode, requiresApprovalInAutoMode } from "../mode.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
@@ -11,13 +12,13 @@ import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager } from "../runs/worktrees.js";
 import { loadSession, saveSession, sessionsDir, type SessionFile } from "../sessions.js";
 import { getAppVersion } from "../util/version.js";
-import { AsterStore, type AsterConversationProject, type AsterConversation, type AsterConversationStatus, type AsterPrincipal, type AsterScope } from "./aster-store.js";
+import { AsterStore, type AsterConversationProject, type AsterConversation, type AsterConversationStatus, type AsterConversationMode, type AsterPrincipal, type AsterScope } from "./aster-store.js";
 import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, type AsterServerConfig } from "./aster-workspaces.js";
 import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import type { AsterArtifact, AsterCellProject } from "./aster-cell-runtime.js";
 import { AsterGitHub, AsterGitHubError, REPOSITORY_FULL_NAME_RE } from "./aster-github.js";
 import { AsterMemory } from "./aster-memory.js";
-import { AsterGitHubProxy } from "./aster-github-proxy.js";
+import { AsterGitHubProxy, type AsterGitHubWriteOperation } from "./aster-github-proxy.js";
 import { AsterPush } from "./aster-push.js";
 import { containsLikelyProviderSecret, createAsterTools, redactLikelySecrets, assertAsterCellPath } from "./aster-tools.js";
 
@@ -34,6 +35,7 @@ const ALLOWED_ASTER_TOOLS = ["read", "write", "edit"] as const;
 export interface AsterTurnStart {
   runId: string;
   conversation: AsterConversation;
+  mode?: AsterConversationMode;
   cellId: string;
   cellEventCursor: number;
   userText: string;
@@ -103,6 +105,8 @@ export class AsterApi {
   private recovery: Promise<void> | undefined;
   private readonly waiters = new Map<string, AsterWaiter>();
   private readonly connectedEventStreams = new Map<string, number>();
+  private readonly activeModes = new Map<string, AsterConversationMode>();
+  private readonly approvedExternalWrites = new Map<string, Set<string>>();
   private readonly runtime: AsterApiRuntime;
   private readonly config: KimiConfig;
 
@@ -138,7 +142,30 @@ export class AsterApi {
     const token = env.GITHUB_TOKEN;
     if (!listen || !publicUrl || !token || this.githubProxy) return;
     const separator = listen.lastIndexOf(":");
-    const proxy = new AsterGitHubProxy({ token, resolveGrant: (grant) => this.getStore().resolveGitHubGrant(grant) });
+    const proxy = new AsterGitHubProxy({
+      token,
+      resolveGrant: (grant) => this.getStore().resolveGitHubGrant(grant),
+      authorizeWrite: async (grant, operation) => {
+        const store = this.getStore();
+        const conversation = store.getConversation(grant.conversationId);
+        const runId = conversation?.activeRunId;
+        if (!conversation || !runId) return false;
+        const mode = this.activeModes.get(runId) ?? conversation.mode;
+        if (mode === "plan") return false;
+        if (mode === "ask") return true; // the server-selected SDK mode already gates the mutating tool call
+        if (this.consumeApprovedExternalWrite(runId, operation)) return true;
+        const publish = (type: string, data: Record<string, unknown>) => store.appendEvent(conversation.id, runId, type, data);
+        const decision = await this.askForApproval(
+          store,
+          conversation,
+          runId,
+          { sessionKey: conversation.sessionId, tool: { name: operation.kind }, args: { method: operation.method, path: operation.path, repository: grant.repository } } as unknown as PermissionRequest,
+          publish,
+          mode,
+        );
+        return decision === "allow";
+      },
+    });
     await proxy.listen(Number(listen.slice(separator + 1)), listen.slice(0, separator));
     this.githubProxy = proxy;
     this.githubProxyUrl = publicUrl.replace(/\/+$/, "");
@@ -198,7 +225,7 @@ export class AsterApi {
           service: "autopilot",
           apiVersion: "v1",
           serviceVersion: getAppVersion(),
-          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
+          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "work-modes", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
         });
       }
 
@@ -315,7 +342,8 @@ export class AsterApi {
         const conversation = await this.authorizedConversation(store, principal, turnMatch[1]!);
         if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
         const body = await readJsonBody(req);
-        if (Object.keys(body).some((key) => key !== "text" && key !== "clientTurnId" && key !== "model")) return sendError(res, 400, "unsupported_field", "Turns accept text, an optional clientTurnId, and an optional model; the workspace is fixed by the conversation");
+        if (Object.keys(body).some((key) => key !== "text" && key !== "clientTurnId" && key !== "model" && key !== "mode")) return sendError(res, 400, "unsupported_field", "Turns accept text, clientTurnId, model, and mode; the workspace is fixed by the conversation");
+        if (Object.hasOwn(body, "mode") && body.mode !== "plan" && body.mode !== "ask" && body.mode !== "auto") return sendError(res, 400, "invalid_mode", "mode must be plan, ask, or auto");
         const hasClientTurnId = Object.hasOwn(body, "clientTurnId");
         const clientTurnId = hasClientTurnId && typeof body.clientTurnId === "string" ? body.clientTurnId : undefined;
         if (hasClientTurnId && (!clientTurnId || !CLIENT_TURN_ID_RE.test(clientTurnId))) return sendError(res, 400, "invalid_client_turn_id", "clientTurnId must be 1-128 ASCII letters, digits, '.', '_', ':', or '-' and start with a letter or digit");
@@ -334,7 +362,8 @@ export class AsterApi {
             target = switched;
           }
         }
-        return await this.appendTurn(res, store, target, clientTurnId, requestText, text);
+        const mode = (body.mode ?? target.mode) as AsterConversationMode;
+        return await this.appendTurn(res, store, target, clientTurnId, requestText, text, mode);
       }
 
       const cancelMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/cancel$/);
@@ -420,6 +449,17 @@ export class AsterApi {
         if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
         return this.destroyConversation(res, store, conversation);
       }
+      if (conversationMatch && method === "PATCH") {
+        if (!this.hasScope(principal, "conversations:write")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/write scope");
+        const conversation = await this.authorizedConversation(store, principal, conversationMatch[1]!);
+        if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
+        const body = await readJsonBody(req);
+        if (Object.keys(body).some((key) => key !== "mode")) return sendError(res, 400, "unsupported_field", "Conversation updates accept mode only");
+        if (body.mode !== "plan" && body.mode !== "ask" && body.mode !== "auto") return sendError(res, 400, "invalid_mode", "mode must be plan, ask, or auto");
+        const updated = store.setConversationMode(conversation.id, body.mode);
+        if (!updated) return sendError(res, 404, "conversation_not_found", "Conversation not found");
+        return json(res, 200, publicConversation(updated, store.getConversationProject(updated.id)));
+      }
       if (conversationMatch && method === "GET") {
         if (!this.hasScope(principal, "conversations:read")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/read scope");
         const conversation = await this.authorizedConversation(store, principal, conversationMatch[1]!);
@@ -464,6 +504,8 @@ export class AsterApi {
       waiter.resolve("deny");
       this.waiters.delete(id);
     }
+    this.activeModes.clear();
+    this.approvedExternalWrites.clear();
     this.store?.close();
     this.store = undefined;
     this.memory?.close();
@@ -553,6 +595,7 @@ export class AsterApi {
     return {
       runId,
       conversation,
+      mode: conversation.mode,
       cellId,
       cellEventCursor: cursor,
       userText,
@@ -713,6 +756,7 @@ export class AsterApi {
     clientTurnId: string | undefined,
     requestText: string,
     text: string,
+    mode: AsterConversationMode,
   ): Promise<void> {
     const idempotent = clientTurnId !== undefined;
     if (clientTurnId !== undefined) {
@@ -821,6 +865,7 @@ export class AsterApi {
       const active: AsterTurnStart = {
         runId,
         conversation,
+        mode,
         cellId: cellMapping.cellId,
         cellEventCursor: cellMapping.eventCursor,
         userText: text,
@@ -830,10 +875,12 @@ export class AsterApi {
         allowedTools,
         maxToolIterations: run.maxToolIterations,
         maxRuntimeMs: run.maxRuntimeMs,
-        askPermission: (request) => this.askForApproval(store, conversation, runId, request, publishEvent),
+        askPermission: (request) => this.askForApproval(store, conversation, runId, request, publishEvent, mode),
         publishEvent,
         onCellCursor: (cursor) => store.advanceCellEventCursor(conversation.id, cursor),
         finish: (status, reason) => {
+          this.activeModes.delete(runId);
+          this.approvedExternalWrites.delete(runId);
           const updated = store.updateConversationStatus(conversation.id, runId, status, reason ? { reason } : {});
           if (updated) store.appendEvent(conversation.id, runId, status, reason ? { reason } : {});
           if (updated) this.notifyTurnEnd(store, conversation.id, runId, status, reason, text, turnStartSequence);
@@ -850,9 +897,12 @@ export class AsterApi {
           if (changes.length) publishEvent("memory.updated", { items: changes });
         };
       }
+      this.activeModes.set(runId, mode);
       this.runtime.startTurn(active);
       json(res, 202, acceptedResponse);
     } catch {
+      this.activeModes.delete(runId);
+      this.approvedExternalWrites.delete(runId);
       sessionFile.messages.length = previousLength;
       await saveSession(sessionFile).catch(() => {});
       const runs = new RunStore();
@@ -878,21 +928,54 @@ export class AsterApi {
     runId: string,
     request: PermissionRequest,
     publish: (type: string, data: Record<string, unknown>) => void,
+    mode: AsterConversationMode,
   ): Promise<PermissionDecision> {
-    if (request.tool.name !== "write" && request.tool.name !== "edit") return "deny";
-    const argsJson = JSON.stringify(request.args);
+    const toolName = request.tool.name;
+    const args = request.args;
+    const argsJson = JSON.stringify(args);
     if (Buffer.byteLength(argsJson, "utf8") > MAX_APPROVAL_ARG_BYTES || containsLikelyProviderSecret(argsJson)) {
-      publish("tool.activity", { tool: request.tool.name, activity: "rejected", reason: "unsafe_payload" });
+      publish("tool.activity", { tool: toolName, activity: "rejected", reason: "unsafe_payload" });
       return "deny";
     }
-    try {
-      assertAsterCellPath(request.args.path);
-    } catch {
-      publish("tool.activity", { tool: request.tool.name, activity: "rejected", reason: "workspace_path_forbidden" });
+    if (mode === "plan") {
+      if (isAllowedInPlanMode(toolName, args)) return "allow";
+      publish("tool.activity", { tool: toolName, activity: "rejected", reason: "plan_mode" });
       return "deny";
     }
-    const file = typeof request.args.path === "string" ? request.args.path.split(/[\\/]/).filter(Boolean).slice(-2).join("/") : "workspace file";
-    const explanation = request.tool.name === "write" ? `Create or replace ${file} in this workspace` : `Edit ${file} in this workspace`;
+    if (mode === "auto") {
+      if (toolName === "write" || toolName === "edit") return "allow";
+      if (toolName === "bash" && !requiresApprovalInAutoMode(toolName, args)) return "allow";
+      if (toolName !== "github_api" && toolName !== "git_push" && !requiresApprovalInAutoMode(toolName, args)) {
+        return isAllowedInPlanMode(toolName, args) ? "allow" : "deny";
+      }
+    } else if (isAllowedInPlanMode(toolName, args)) {
+      return "allow";
+    }
+    const fileTool = toolName === "write" || toolName === "edit";
+    if (fileTool) {
+      try {
+        assertAsterCellPath(args.path);
+      } catch {
+        publish("tool.activity", { tool: toolName, activity: "rejected", reason: "workspace_path_forbidden" });
+        return "deny";
+      }
+    }
+    if (toolName === "bash" && typeof args.command !== "string") {
+      publish("tool.activity", { tool: toolName, activity: "rejected", reason: "invalid_command" });
+      return "deny";
+    }
+    const file = typeof args.path === "string" ? args.path.split(/[\\/]/).filter(Boolean).slice(-2).join("/") : "workspace file";
+    const explanation = toolName === "write"
+      ? "Create or replace " + file + " in this workspace"
+      : toolName === "edit"
+        ? "Edit " + file + " in this workspace"
+        : toolName === "bash"
+          ? "Run shell command: " + String(args.command).slice(0, 300)
+          : toolName === "github_create_pr"
+            ? "Create pull request " + String(args.owner ?? "") + "/" + String(args.repo ?? "") + ": " + String(args.title ?? "").slice(0, 160)
+            : toolName === "git_push"
+              ? "Push changes to " + String(args.repository ?? "this repository")
+              : "GitHub " + String(args.method ?? "write") + " " + String(args.path ?? "repository API") + " for " + String(args.repository ?? "this repository");
     const config = await loadAsterServerConfig();
     const approval = store.createApproval({
       conversationId: conversation.id,
@@ -927,6 +1010,35 @@ export class AsterApi {
       timer.unref();
       this.waiters.set(approval.id, { resolve: resolveDecision, timer });
     });
+  }
+
+  private grantApprovedExternalWrite(approval: import("./aster-store.js").AsterApproval): void {
+    if (this.activeModes.get(approval.runId) !== "auto") return;
+    const args = approval.arguments;
+    let permit: string | undefined;
+    if (approval.toolName === "github_create_pr") {
+      const owner = typeof args.owner === "string" ? args.owner : "";
+      const repo = typeof args.repo === "string" ? args.repo : "";
+      if (owner && repo) permit = ("github_api:POST:/repos/" + owner + "/" + repo + "/pulls").toLowerCase();
+    } else if (approval.toolName === "bash" && requiresApprovalInAutoMode("bash", args)) {
+      const command = typeof args.command === "string" ? args.command : "";
+      permit = /\bgit\s+push\b/i.test(command) ? "git_push" : "github_api:*";
+    }
+    if (!permit) return;
+    const permits = this.approvedExternalWrites.get(approval.runId) ?? new Set<string>();
+    permits.add(permit);
+    this.approvedExternalWrites.set(approval.runId, permits);
+  }
+
+  private consumeApprovedExternalWrite(runId: string, operation: AsterGitHubWriteOperation): boolean {
+    const permits = this.approvedExternalWrites.get(runId);
+    if (!permits) return false;
+    const key = operation.kind === "git_push"
+      ? "git_push"
+      : ("github_api:" + operation.method.toUpperCase() + ":" + operation.path).toLowerCase();
+    const allowed = permits.delete(key) || (operation.kind === "github_api" && permits.delete("github_api:*"));
+    if (permits.size === 0) this.approvedExternalWrites.delete(runId);
+    return allowed;
   }
 
   private async expireApproval(store: AsterStore, id: string): Promise<void> {
@@ -972,6 +1084,7 @@ export class AsterApi {
       approvalId: approval.id,
       decision: status === "expired" ? "deny" : decision,
     });
+    if (status === "approved" && decision === "allow") this.grantApprovedExternalWrite(approval);
     const waiter = this.waiters.get(approval.id);
     if (waiter) {
       clearTimeout(waiter.timer);
@@ -1030,6 +1143,8 @@ export class AsterApi {
         if (waiter) { clearTimeout(waiter.timer); this.waiters.delete(approval.id); waiter.resolve("deny"); }
       }
       this.runtime.cancelRun(conversation.activeRunId);
+      this.activeModes.delete(conversation.activeRunId);
+      this.approvedExternalWrites.delete(conversation.activeRunId);
       store.updateConversationStatus(conversation.id, conversation.activeRunId, "cancelled", { reason: "conversation_destroyed" });
     }
     try {
@@ -1122,6 +1237,8 @@ export class AsterApi {
       runs.close();
     }
     this.runtime.cancelRun(runId);
+    this.activeModes.delete(runId);
+    this.approvedExternalWrites.delete(runId);
     store.updateConversationStatus(conversation.id, runId, "cancelled", { reason: "client_cancelled" });
     store.appendEvent(conversation.id, runId, "cancelled", { code: "cancelled_by_client" });
     const updated = store.getConversation(conversation.id);
@@ -1246,6 +1363,7 @@ function publicConversation(conversation: AsterConversation, project?: AsterConv
     conversationId: conversation.id,
     workspaceId: conversation.workspaceId,
     model: conversation.model,
+    mode: conversation.mode,
     status: conversation.status,
     activeRunId: conversation.activeRunId,
     lastEventId: conversation.lastEventSequence,

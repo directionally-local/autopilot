@@ -580,19 +580,16 @@ class InternalSession implements KimiFlareSession {
         if (ev.kind === "limit_stopped") this.emit({ type: "status", status: "error" });
       },
       askPermission: async (req) => {
-        if (mode === "auto") return "allow";
+        if (mode === "auto") {
+          const { requiresApprovalInAutoMode } = await import("../mode.js");
+          if (!requiresApprovalInAutoMode(req.tool.name, req.args)) return "allow";
+        }
         if (mode === "plan") {
-          const { isBlockedInPlanMode, isReadOnlyBash } = await import("../mode.js");
-          if (req.tool.name === "bash" && typeof req.args.command === "string" && isReadOnlyBash(req.args.command)) {
-            return "allow";
-          }
-          if (isBlockedInPlanMode(req.tool.name)) {
-            return "deny";
-          }
-          return "allow";
+          const { isAllowedInPlanMode } = await import("../mode.js");
+          return isAllowedInPlanMode(req.tool.name, req.args) ? "allow" : "deny";
         }
 
-        // edit mode: emit event and wait for external resolution
+        // Ask mode and auto-mode external actions emit an event and wait for server approval.
         const requestId = `req_${this.nextRequestId++}`;
         this.emit({
           type: "permission.request",

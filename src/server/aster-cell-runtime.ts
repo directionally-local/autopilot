@@ -323,7 +323,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
       const note = [await this.readNotes(cell), turn.memory?.note ?? ""].filter(Boolean).join("\n\n");
       const message = note ? `${note}\n\n${turn.userText}` : turn.userText;
       artifactsBefore = await this.listArtifacts(cellId).catch(() => []);
-      await this.controlById(cellId, "POST", "/rpc", { id: runId, type: "prompt", message });
+      const mode = turn.mode === "plan" ? "plan" : turn.mode === "auto" ? "auto" : "edit";
+      await this.controlById(cellId, "POST", "/rpc", { id: runId, type: "prompt", message, options: { mode } });
       if (note) await this.clearNotes(cell);
     } catch (error) {
       if (!(error instanceof Error && error.message === "resume")) {
@@ -390,7 +391,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
             });
             break;
           case "permission.request": {
-            // Cells run in auto mode, so this only fires if a prompt somehow ran in another mode.
+            // The SDK emits this for actions that require server-side approval in the selected mode.
             const decision = await turn.askPermission({
               tool: { name: event.toolName },
               args: (event.args as Record<string, unknown>) ?? {},
