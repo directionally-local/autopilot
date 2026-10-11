@@ -61,6 +61,8 @@ describe("loadConfig", () => {
     "KIMIFLARE_API_KEY",
     "KIMIFLARE_SUBAGENT_POLICY",
     "REQUESTY_API_KEY",
+    "KIMIFLARE_TRACE",
+    "KIMIFLARE_TRACE_DIR",
     "XDG_CONFIG_HOME",
   ] as const;
   const saved: Record<string, string | undefined> = {};
@@ -255,6 +257,32 @@ describe("loadConfig", () => {
     assert.ok(cfg);
     assert.ok(!("baseUrl" in cfg));
     assert.ok(!("accountId" in cfg));
+  });
+
+  describe("trace", () => {
+    it("is absent by default", async () => {
+      process.env.OPENROUTER_API_KEY = "sk-or-env";
+      const cfg = await loadConfig();
+      assert.ok(cfg);
+      assert.ok(!("trace" in cfg));
+    });
+
+    it("KIMIFLARE_TRACE=1 enables tracing; KIMIFLARE_TRACE_DIR sets the root", async () => {
+      process.env.OPENROUTER_API_KEY = "sk-or-env";
+      process.env.KIMIFLARE_TRACE = "1";
+      assert.deepStrictEqual((await loadConfig())?.trace, { enabled: true });
+      process.env.KIMIFLARE_TRACE_DIR = "/tmp/traces";
+      assert.deepStrictEqual((await loadConfig())?.trace, { enabled: true, root: "/tmp/traces" });
+    });
+
+    it("reads the persisted block and lets the env override it", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", trace: { enabled: true, root: "/persisted" } });
+      assert.deepStrictEqual((await loadConfig())?.trace, { enabled: true, root: "/persisted" });
+      process.env.KIMIFLARE_TRACE = "0";
+      assert.deepStrictEqual((await loadConfig())?.trace, { enabled: false, root: "/persisted" });
+      process.env.KIMIFLARE_TRACE_DIR = "/env";
+      assert.deepStrictEqual((await loadConfig())?.trace, { enabled: false, root: "/env" });
+    });
   });
 
   describe("custom OpenAI-compatible endpoint", () => {

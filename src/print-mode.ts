@@ -26,6 +26,8 @@ import { evaluatePermissionRules } from "./permissions-evaluator.js";
 import { classifyIntent } from "./intent/classify.js";
 import { allowsSubagentDispatch, resolveSubagentGuidance } from "./intent/subagent-policy.js";
 import type { KimiConfig, PermissionRules, ReasoningEffort } from "./config.js";
+import { createRecorder, emitSessionStart, type SessionEndReason } from "./trace/index.js";
+import { toOpenAIToolDefs } from "./tools/registry.js";
 
 export type PrintFormat = "text" | "json" | "stream-json";
 
@@ -64,6 +66,10 @@ export interface PrintModeOpts
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
+  /** Local session tracing (off unless `trace.enabled`). */
+  trace?: KimiConfig["trace"];
+  /** Full config, recorded (redacted) on the trace's `session_start` event. */
+  traceConfigSnapshot?: KimiConfig;
 }
 
 interface JsonToolCall {
@@ -235,11 +241,9 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   // Build messages
   const messages: ChatMessage[] = [];
+  const systemPrompt = buildSystemPrompt({ cwd, tools: workerTools, model: opts.model, preferPullRequests: opts.preferPullRequests});
   if (isNew || sessionFile.messages.length === 0) {
-    messages.push({
-      role: "system",
-      content: buildSystemPrompt({ cwd, tools: workerTools, model: opts.model, preferPullRequests: opts.preferPullRequests}),
-    });
+    messages.push({ role: "system", content: systemPrompt });
   } else {
     // Continue: load existing messages, filter out old system prompts, keep context
     // Keep the compiled session state from earlier compaction; it summarizes
@@ -247,12 +251,27 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     const nonSystem = sessionFile.messages.filter(
       (m) => m.role !== "system" || (typeof m.content === "string" && m.content.startsWith("[compiled session state]")),
     );
-    messages.push({
-      role: "system",
-      content: buildSystemPrompt({ cwd, tools: workerTools, model: opts.model, preferPullRequests: opts.preferPullRequests}),
-    });
+    messages.push({ role: "system", content: systemPrompt });
     messages.push(...nonSystem);
   }
+
+  // Session trace (no-op unless enabled; nothing is written when disabled).
+  const trace = createRecorder({
+    enabled: opts.trace?.enabled === true,
+    sessionId: sessionFile.id,
+    root: opts.trace?.root,
+  });
+  await emitSessionStart(trace, {
+    cwd,
+    model: opts.model,
+    mode: "print",
+    config: opts.traceConfigSnapshot,
+    tools: toOpenAIToolDefs(workerTools),
+    systemPrompt,
+    toolProfile: opts.workerProfile ?? "full",
+  });
+  let traceCostUsd = 0;
+  let traceEndReason: SessionEndReason = "exit";
 
   // Build user message with file attachments
   const files = opts.files ? await resolveFiles(opts.files, cwd) : [];
@@ -291,6 +310,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
           ? { apiKey: opts.openrouterApiKey, meta }
           : undefined;
       usageWrites.push(recordUsage(sessionFile.id, u, lookup, opts.model).catch(() => undefined));
+      if (typeof u.cost === "number") traceCostUsd += u.cost;
     },
     onReasoningDelta: opts.showReasoning
       ? (delta) => {
@@ -461,9 +481,12 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    traceEndReason = "crash";
     throw err;
   } finally {
     await Promise.all(usageWrites);
+    trace.emit("session_end", { reason: traceEndReason, total_cost_usd: traceCostUsd || undefined }, null);
+    await trace.flush();
   }
 
   // Save session

@@ -48,6 +48,8 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
 
   // Prune old sessions on startup (silent)
   void import("../sessions.js").then(({ pruneSessions }) => pruneSessions());
+  // Prune old session traces (silent; nothing to do unless tracing has run).
+  void import("../trace/retention.js").then(({ pruneTraces }) => pruneTraces({ root: cfg.trace?.root }));
 
   // Prune old structured logs (M5.1) and surface the current path once.
   void import("../util/log-sink.js").then(({ pruneOldLogs, isLogSinkEnabled }) => {
