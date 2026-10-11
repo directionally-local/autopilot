@@ -8,7 +8,7 @@ autopilot eval run --tasks evals/tasks/autopilot-bench --config evals/configs/<c
 autopilot eval compare /tmp/eval-baseline/results.jsonl /tmp/eval-change/results.jsonl
 ```
 
-`eval run` creates a detached git worktree per task × sample at the task's `base_commit`, copies the task's `files` in, runs `setup`, drives the agent through the SDK with permissions auto-approved and tracing forced on (`<out>/traces/<session>/`), restores `files`, runs `test`, records `outcome{test_verdict}` on the trace, and appends one line to `<out>/results.jsonl`. Harness failures (crash, timeout, setup failure) are recorded as `passed: false` with an `error`; one task never aborts the set. `--concurrency K` runs K tasks at once; `--filter <globs>` selects task ids (comma-separated globs, e.g. `bash-*,queue-batch-grouping`); `--keep` leaves worktrees under `<out>/work/`.
+`eval run` creates a detached git worktree per task × sample at the task's `base_commit`, copies the task's `files` in, runs `setup`, drives the agent through the SDK with permissions auto-approved and tracing forced on (`<out>/traces/<session>/`), restores `files`, runs `test`, records `outcome{test_verdict}` on the trace, and appends one line to `<out>/results.jsonl`. Harness failures (crash, timeout, setup failure) are recorded as `passed: false` with an `error`; one task never aborts the set. `--concurrency K` runs K tasks at once; `--filter <glob>` selects task ids; `--keep` leaves worktrees under `<out>/work/`.
 
 `eval compare` collapses samples to one outcome per task (strict majority), pairs tasks present in both files, and prints success rates, an exact two-sided McNemar test on the discordant pairs, mean and median cost, median turns, overflow counts, and the per-task flips.
 

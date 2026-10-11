@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadTasks, matchesTaskFilter, validateTask } from "./tasks.js";
+import { loadTasks, validateTask } from "./tasks.js";
 
 let dir: string;
 
@@ -29,15 +29,6 @@ describe("loadTasks", () => {
     assert.strictEqual(all[0]!.resolvedFiles["src/x.test.ts"], join(dir, "files", "a", "x.test.ts"));
     const filtered = await loadTasks(dir, "b-*");
     assert.deepStrictEqual(filtered.map((t) => t.id), ["b-two"]);
-    const both = await loadTasks(dir, "b-*, a");
-    assert.deepStrictEqual(both.map((t) => t.id), ["a", "b-two"]);
-  });
-
-  it("matchesTaskFilter accepts comma-separated globs and an empty filter", () => {
-    assert.strictEqual(matchesTaskFilter("x", undefined), true);
-    assert.strictEqual(matchesTaskFilter("x", "  "), true);
-    assert.strictEqual(matchesTaskFilter("queue-batch-grouping", "subagent-*,queue-batch-grouping"), true);
-    assert.strictEqual(matchesTaskFilter("other", "subagent-*,queue-batch-grouping"), false);
   });
 
   it("rejects malformed tasks", () => {

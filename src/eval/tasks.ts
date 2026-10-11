@@ -63,17 +63,7 @@ export function validateTask(raw: unknown, source: string): EvalTask {
   return t as unknown as EvalTask;
 }
 
-/** True when `id` matches any of the comma-separated globs in `filter` (no braces; use commas). */
-export function matchesTaskFilter(id: string, filter: string | undefined): boolean {
-  if (!filter || !filter.trim()) return true;
-  return filter
-    .split(",")
-    .map((g) => g.trim())
-    .filter(Boolean)
-    .some((g) => matchGlob(id, g));
-}
-
-/** Load every `*.json` task in `dir`, optionally keeping only ids matching `filter` (comma-separated globs). */
+/** Load every `*.json` task in `dir`, optionally keeping only ids matching `filter` (glob). */
 export async function loadTasks(dir: string, filter?: string): Promise<LoadedEvalTask[]> {
   const root = resolve(dir);
   const names = (await readdir(root)).filter((n) => n.endsWith(".json")).sort();
@@ -85,7 +75,7 @@ export async function loadTasks(dir: string, filter?: string): Promise<LoadedEva
     if (task.id !== basename(name, ".json")) throw new Error(`${name}: "id" (${task.id}) must match the file name`);
     if (seen.has(task.id)) throw new Error(`duplicate task id ${task.id}`);
     seen.add(task.id);
-    if (!matchesTaskFilter(task.id, filter)) continue;
+    if (filter && !matchGlob(task.id, filter)) continue;
     const resolvedFiles: Record<string, string> = {};
     for (const [dest, src] of Object.entries(task.files ?? {})) {
       const abs = resolve(root, src);

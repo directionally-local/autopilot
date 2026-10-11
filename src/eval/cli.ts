@@ -16,7 +16,7 @@ export function registerEvalCommand(program: Command): void {
     .option("--model <id>", "model id (overrides the config file)")
     .option("--samples <n>", "runs per task", "1")
     .option("--concurrency <k>", "parallel runs", "1")
-    .option("--filter <globs>", "only task ids matching these comma-separated globs (e.g. \"bash-*,queue-batch-grouping\")")
+    .option("--filter <glob>", "only task ids matching this glob")
     .option("--keep", "keep worktrees after each run")
     .action(async (cmdOpts: { tasks: string; config: string; out: string; model?: string; samples: string; concurrency: string; filter?: string; keep?: boolean }, command: Command) => {
       const { runEval } = await import("./run.js");
