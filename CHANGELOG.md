@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.1](https://github.com/sinameraji/autopilot/compare/v1.20.0...v1.20.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **session:** give interrupted tool calls a (stopped) result before saving ([#771](https://github.com/sinameraji/autopilot/issues/771)) ([cda8b9e](https://github.com/sinameraji/autopilot/commit/cda8b9e699eed3babf24ee09e12c83cc1e6c7e6f))
+
 ## [1.20.0](https://github.com/sinameraji/autopilot/compare/v1.19.3...v1.20.0) (2026-10-11)
 
 
