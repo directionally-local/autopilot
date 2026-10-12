@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.0](https://github.com/sinameraji/autopilot/compare/v1.21.0...v1.22.0) (2026-10-12)
+
+
+### Features
+
+* disable inline subagent notices (compact region handles them) ([#777](https://github.com/sinameraji/autopilot/issues/777)) ([375fe81](https://github.com/sinameraji/autopilot/commit/375fe81d1903a8fe4fdca82c00709bb1f0579867))
+
 ## [1.21.0](https://github.com/sinameraji/autopilot/compare/v1.20.1...v1.21.0) (2026-10-11)
 
 
