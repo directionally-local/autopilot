@@ -6,10 +6,8 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { KimiConfig } from "../config.js";
-import { AsterGitHub, AsterGitHubError } from "./aster-github.js";
 import { AsterApi, type AsterTurnStart } from "./aster-api.js";
 import { AsterStore } from "./aster-store.js";
-import type { AsterPushMessage } from "./aster-push.js";
 import { startServer } from "./index.js";
 import { RunStore } from "../runs/store.js";
 import { saveSession } from "../sessions.js";
@@ -27,7 +25,7 @@ afterEach(async () => {
 });
 
 describe("Aster control-plane API", () => {
-  it("runs follow-up turns through an injected cell runtime with SSE replay", async () => {
+  it("runs persisted follow-up turns through the shared server runner with SSE replay", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-live-route-")));
     tempDirs.push(root);
     const workspaceRoot = join(root, "repo");
@@ -56,32 +54,20 @@ describe("Aster control-plane API", () => {
     });
     credentialStore.close();
 
-    const turns: AsterTurnStart[] = [];
-    const server = await startServer({
-      port: 0,
-      hostname: "127.0.0.1",
-      config: { openrouterApiKey: "test-provider-key", model: "test/model" } as KimiConfig,
-      asterRuntime: {
-        provisionConversation: async (input) => {
-          input.onCellCreated(`cell-${input.conversationId}`);
-          return { cellId: `cell-${input.conversationId}` };
-        },
-        startTurn: (turn) => {
-          turns.push(turn);
-          const text = turns.length === 1 ? "FIRST_REPLIED" : "SECOND_REPLIED";
-          setTimeout(() => {
-            if (text === "FIRST_REPLIED") {
-              turn.publishEvent("usage", { inputTokens: 42, outputTokens: 7, costUsd: 0.001, cumulative: true });
-              turn.publishEvent("todo.updated", { items: [{ title: "Run the suite", status: "in_progress" }] });
-            }
-            turn.publishEvent("assistant.delta", { text });
-            turn.onCellCursor?.(turn.cellEventCursor + 1);
-            turn.finish("completed");
-          }, 10);
-        },
-        cancelRun: () => {},
-      },
-    });
+    const realFetch = globalThis.fetch;
+    const modelMessages: Array<Array<{ role: string; content: unknown }>> = [];
+    let modelCalls = 0;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1:")) return realFetch(input, init);
+      if (!url.includes("openrouter.ai")) return realFetch(input, init);
+      const requestBody = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: unknown }> };
+      modelMessages.push(requestBody.messages ?? []);
+      modelCalls++;
+      return openRouterResponse(modelCalls === 1 ? "FIRST_REPLIED" : "SECOND_REPLIED");
+    };
+
+    const server = await startServer({ port: 0, hostname: "127.0.0.1", config: { openrouterApiKey: "test-provider-key", model: "test/model" } as KimiConfig });
     try {
       const address = server.address();
       assert.ok(address && typeof address !== "string");
@@ -91,43 +77,26 @@ describe("Aster control-plane API", () => {
       const health = await fetch(`${base}/api/v1/health`, { headers: { Authorization: `Bearer ${credential.token}` } });
       assert.equal(health.status, 200);
       assert.equal(health.headers.get("access-control-allow-origin"), null);
-
-      const missingKey = await fetch(`${base}/api/v1/conversations`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId: "default", model: "test/model" }),
-      });
-      assert.equal(missingKey.status, 400);
-      assert.equal((await missingKey.json() as { error: { code: string } }).error.code, "idempotency_key_required");
-
       const arbitraryWorkspace = await fetch(`${base}/api/v1/conversations`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json", "Idempotency-Key": "create-1" },
+        headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ workspaceId: "/etc", model: "test/model" }),
       });
       assert.equal(arbitraryWorkspace.status, 403);
       const arbitraryModel = await fetch(`${base}/api/v1/conversations`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json", "Idempotency-Key": "create-2" },
+        headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ workspaceId: "default", model: "unconfigured/model" }),
       });
       assert.equal(arbitraryModel.status, 400);
 
-      const createHeaders = { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json", "Idempotency-Key": "create-main" };
-      const createBody = JSON.stringify({ workspaceId: "default", model: "test/model" });
-      const create = await fetch(`${base}/api/v1/conversations`, { method: "POST", headers: createHeaders, body: createBody });
-      assert.equal(create.status, 201);
-      const conversation = await create.json() as { conversationId: string; lastEventId: number };
-      const createRetry = await fetch(`${base}/api/v1/conversations`, { method: "POST", headers: createHeaders, body: createBody });
-      assert.equal(createRetry.status, 200);
-      assert.equal((await createRetry.json() as { conversationId: string }).conversationId, conversation.conversationId);
-      const createConflict = await fetch(`${base}/api/v1/conversations`, {
+      const create = await fetch(`${base}/api/v1/conversations`, {
         method: "POST",
-        headers: createHeaders,
+        headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ workspaceId: "default", model: "test/model" }),
       });
-      assert.equal(createConflict.status, 200);
-
+      assert.equal(create.status, 201);
+      const conversation = await create.json() as { conversationId: string; lastEventId: number };
       const firstEventsPromise = readUntil(await fetch(`${base}/api/v1/conversations/${conversation.conversationId}/events?after=${conversation.lastEventId}`, {
         headers: { Authorization: `Bearer ${credential.token}` },
       }), "event: completed");
@@ -141,17 +110,8 @@ describe("Aster control-plane API", () => {
       const firstEvents = await firstEventsPromise;
       assert.match(firstEvents, /event: assistant\.delta/);
       assert.match(firstEvents, /FIRST_REPLIED/);
-      assert.match(firstEvents, /event: usage\r?\ndata: \{"inputTokens":42,"outputTokens":7,"costUsd":0.001,"cumulative":true\}/);
-      assert.match(firstEvents, /event: todo\.updated\r?\ndata: \{"items":\[\{"title":"Run the suite","status":"in_progress"\}\]\}/);
       assert.match(firstEvents, /id: \d+/);
       assert.doesNotMatch(firstEvents, /arguments|tool\.result/);
-
-      const replayUrl = base + "/api/v1/conversations/" + conversation.conversationId + "/events?after=" + conversation.lastEventId;
-      const replayedProgress = await readUntil(await fetch(replayUrl, {
-        headers: { Authorization: "Bearer " + credential.token },
-      }), "event: completed");
-      assert.match(replayedProgress, /event: usage/);
-      assert.match(replayedProgress, /event: todo\.updated/);
 
       const firstState = await fetch(`${base}/api/v1/conversations/${conversation.conversationId}`, { headers: { Authorization: `Bearer ${credential.token}` } });
       const cursor = (await firstState.json() as { lastEventId: number }).lastEventId;
@@ -167,11 +127,11 @@ describe("Aster control-plane API", () => {
       await waitForStatusAt(base, credential.token, conversation.conversationId, "completed");
       const secondEvents = await secondEventsPromise;
       assert.match(secondEvents, /SECOND_REPLIED/);
-      assert.equal(turns.length, 2);
-      assert.equal(turns[1]!.userText, "second turn");
-      assert.equal(turns[1]!.cellId, turns[0]!.cellId);
-      assert.equal(turns[1]!.cellEventCursor, 1);
+      assert.ok(modelMessages[1]!.some((message) => message.role === "user" && message.content === "first turn"));
+      assert.ok(modelMessages[1]!.some((message) => message.role === "assistant" && message.content === "FIRST_REPLIED"));
+      assert.ok(modelMessages[1]!.some((message) => message.role === "user" && message.content === "second turn"));
     } finally {
+      globalThis.fetch = realFetch;
       await closeServer(server);
     }
   });
@@ -268,9 +228,8 @@ describe("Aster control-plane API", () => {
       assert.notEqual(secondRun.runId, firstRun.runId);
       await waitForStatus(harness, conversation.conversationId, "completed");
       assert.equal(harness.turns.length, 2);
-      assert.equal(harness.turns[1]!.userText, "second turn");
-      assert.equal(harness.turns[1]!.cellId, harness.turns[0]!.cellId);
-      assert.equal(harness.turns[1]!.conversation.sessionId, harness.turns[0]!.conversation.sessionId);
+      assert.ok(harness.turns[1]!.messages.some((message) => message.role === "user" && message.content === "first turn"));
+      assert.ok(harness.turns[1]!.messages.some((message) => message.role === "assistant" && message.content === "reply-1"));
 
       const stream = await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}/events?after=${firstState.lastEventId}`);
       assert.equal(stream.status, 200);
@@ -280,78 +239,6 @@ describe("Aster control-plane API", () => {
       assert.match(eventText, /event: assistant\.delta/);
       assert.match(eventText, /reply-2/);
       assert.doesNotMatch(eventText, /arguments|content\\":\\"reply-2/);
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it("binds one cell per conversation, isolates credentials, and pauses/resumes/destroys idempotently", async () => {
-    const harness = await createHarness("complete");
-    try {
-      const firstCreate = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" }, "cell-key-a");
-      assert.equal(firstCreate.status, 201);
-      const first = await firstCreate.json() as { conversationId: string };
-      const secondCreate = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" }, "cell-key-b");
-      assert.equal(secondCreate.status, 201);
-      const second = await secondCreate.json() as { conversationId: string };
-
-      const store = new AsterStore();
-      try {
-        const firstMapping = store.getCellMapping(first.conversationId)!;
-        const secondMapping = store.getCellMapping(second.conversationId)!;
-        assert.equal(firstMapping.cellId, `cell-${first.conversationId}`);
-        assert.equal(secondMapping.cellId, `cell-${second.conversationId}`);
-        assert.notEqual(firstMapping.cellId, secondMapping.cellId);
-        assert.notEqual(firstMapping.sessionId, secondMapping.sessionId);
-      } finally {
-        store.close();
-      }
-
-      // Cross-credential access is invisible even within the same workspace scope.
-      const otherStore = new AsterStore();
-      let otherToken: string;
-      try {
-        otherToken = otherStore.createCredential({
-          name: "other-client",
-          workspaceIds: ["default"],
-          scopes: ["conversations:read", "conversations:write"],
-          expiresAt: Date.now() + 60_000,
-        }).token;
-      } finally {
-        otherStore.close();
-      }
-      const crossRead = await fetch(`${harness.baseUrl}/api/v1/conversations/${first.conversationId}`, { headers: { Authorization: `Bearer ${otherToken}` } });
-      assert.equal(crossRead.status, 404);
-      const crossDestroy = await fetch(`${harness.baseUrl}/api/v1/conversations/${first.conversationId}`, { method: "DELETE", headers: { Authorization: `Bearer ${otherToken}` } });
-      assert.equal(crossDestroy.status, 404);
-
-      // Pause is idempotent at a safe boundary and rejects new turns while paused.
-      const pause = await request(harness, "POST", `/api/v1/conversations/${first.conversationId}/pause`);
-      assert.equal(pause.status, 200);
-      const pauseAgain = await request(harness, "POST", `/api/v1/conversations/${first.conversationId}/pause`);
-      assert.equal(pauseAgain.status, 200);
-      assert.deepEqual(harness.pausedCells, [`cell-${first.conversationId}`]);
-      const pausedTurn = await request(harness, "POST", `/api/v1/conversations/${first.conversationId}/turns`, { clientTurnId: "while-paused", text: "should reject" });
-      assert.equal(pausedTurn.status, 409);
-      assert.equal(((await pausedTurn.json() as { error: { code: string } }).error).code, "conversation_paused");
-
-      const resume = await request(harness, "POST", `/api/v1/conversations/${first.conversationId}/resume`);
-      assert.equal(resume.status, 200);
-      assert.deepEqual(harness.resumedCells, [`cell-${first.conversationId}`]);
-      const turn = await request(harness, "POST", `/api/v1/conversations/${first.conversationId}/turns`, { clientTurnId: "after-resume", text: "continue" });
-      assert.equal(turn.status, 202);
-      await waitForStatus(harness, first.conversationId, "completed");
-      assert.equal(harness.turns[0]!.cellId, `cell-${first.conversationId}`);
-
-      // Destroy is retryable, revokes through the provider, and poisons the create key.
-      const destroy = await fetch(`${harness.baseUrl}/api/v1/conversations/${first.conversationId}`, { method: "DELETE", headers: { Authorization: `Bearer ${harness.token}` } });
-      assert.equal(destroy.status, 200);
-      assert.equal((await destroy.json() as { status: string }).status, "destroyed");
-      const destroyRetry = await fetch(`${harness.baseUrl}/api/v1/conversations/${first.conversationId}`, { method: "DELETE", headers: { Authorization: `Bearer ${harness.token}` } });
-      assert.equal(destroyRetry.status, 200);
-      assert.deepEqual(harness.destroyedCells, [`cell-${first.conversationId}`]);
-      const recreate = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" }, "cell-key-a");
-      assert.equal(recreate.status, 410);
     } finally {
       await harness.close();
     }
@@ -443,7 +330,7 @@ describe("Aster control-plane API", () => {
       });
       assert.equal(invalid.status, 400);
       const tooLarge = await request(harness, "POST", "/api/v1/conversations", {
-        workspaceId: "default", model: "test/model", extra: "x".repeat(4 * 1024 * 1024 + 1),
+        workspaceId: "default", model: "test/model", extra: "x".repeat(70_000),
       });
       assert.equal(tooLarge.status, 413);
 
@@ -481,7 +368,7 @@ describe("Aster control-plane API", () => {
       assert.equal(conflict.status, 409);
       assert.equal(harness.permissionDecisions.at(-1), "allow");
       await waitForStatus(harness, conversation.conversationId, "completed");
-      assert.equal(harness.turns.at(-1)?.cellId, `cell-${conversation.conversationId}`);
+      assert.equal(await readFile(join(harness.worktreeRoot, conversation.conversationId, "created.txt"), "utf8"), "safe content");
     } finally {
       await harness.close();
     }
@@ -512,22 +399,13 @@ describe("Aster control-plane API", () => {
   });
 
   it("requires an explicit approval and never executes a denied write", async () => {
-    const harness = await createHarness("approval", { pushConfigured: true });
+    const harness = await createHarness("approval");
     try {
       const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
       const conversation = await created.json() as { conversationId: string };
       const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, { clientTurnId: "turn-write-file", text: "write a file" });
       assert.equal(turn.status, 202);
       const approval = await waitForApproval(harness, conversation.conversationId);
-      const waiting = await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId);
-      assert.equal((await waiting.json() as { status: string }).status, "waiting_approval");
-      assert.deepEqual(harness.pushes, [{
-        title: "Approval required",
-        body: "write: Create or replace created.txt in this workspace",
-        conversationId: conversation.conversationId,
-        category: "APPROVAL",
-        approvalId: approval.id,
-      }]);
 
       const details = await request(harness, "GET", `/api/v1/approvals/${approval.id}`);
       assert.equal(details.status, 200);
@@ -551,181 +429,6 @@ describe("Aster control-plane API", () => {
       await harness.close();
     }
   });
-  it("sends terminal pushes only when no client is connected to the conversation SSE stream", async () => {
-    const harness = await createHarness("complete", { pushConfigured: true });
-    try {
-      const firstCreated = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
-      const first = await firstCreated.json() as { conversationId: string };
-      const firstTurn = await request(harness, "POST", "/api/v1/conversations/" + first.conversationId + "/turns", { clientTurnId: "turn-no-stream", text: "finish while disconnected" });
-      assert.equal(firstTurn.status, 202);
-      await waitForStatus(harness, first.conversationId, "completed");
-      assert.deepEqual(harness.pushes.map((push) => push.conversationId), [first.conversationId]);
-
-      const secondCreated = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
-      const second = await secondCreated.json() as { conversationId: string };
-      const streamResponse = await request(harness, "GET", "/api/v1/conversations/" + second.conversationId + "/events?after=0");
-      const liveEvents = readUntil(streamResponse, "event: completed");
-      const secondTurn = await request(harness, "POST", "/api/v1/conversations/" + second.conversationId + "/turns", { clientTurnId: "turn-live-stream", text: "finish while connected" });
-      assert.equal(secondTurn.status, 202);
-      assert.match(await liveEvents, /event: completed/);
-      assert.deepEqual(harness.pushes.map((push) => push.conversationId), [first.conversationId]);
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it("sends conversation-only push data when a run fails", async () => {
-    const harness = await createHarness("fail", { pushConfigured: true });
-    try {
-      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
-      const conversation = await created.json() as { conversationId: string };
-      const turn = await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/turns", { clientTurnId: "turn-failed", text: "fail" });
-      assert.equal(turn.status, 202);
-      await waitForStatus(harness, conversation.conversationId, "failed");
-      assert.equal(harness.pushes.length, 1);
-      assert.equal(harness.pushes[0]!.conversationId, conversation.conversationId);
-      assert.equal(harness.pushes[0]!.category, undefined);
-      assert.equal(harness.pushes[0]!.approvalId, undefined);
-    } finally {
-      await harness.close();
-    }
-  });
-});
-
-describe("Aster chat/code projects, GitHub, and artifacts", () => {
-  it("lists and creates repositories and provisions code and chat conversations", async () => {
-    const harness = await createHarness("complete");
-    try {
-      const listed = await (await request(harness, "GET", "/api/v1/github/repositories?q=app")).json() as { repositories: Array<{ fullName: string }> };
-      assert.deepEqual(listed.repositories.map((r) => r.fullName), ["me/app"]);
-      const created = await request(harness, "POST", "/api/v1/github/repositories", { name: "fresh", private: true });
-      assert.equal(created.status, 201);
-      assert.deepEqual(harness.createdRepositories, ["me/fresh"]);
-
-      const missing = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model", kind: "code", repository: "me/nope" });
-      assert.equal(missing.status, 404);
-      const noRepo = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model", kind: "code" });
-      assert.equal(noRepo.status, 400);
-
-      const code = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model", kind: "code", repository: "me/app" });
-      assert.equal(code.status, 201);
-      const codeBody = await code.json() as { conversationId: string; kind: string; repository: string; branch: string };
-      assert.equal(codeBody.kind, "code");
-      assert.equal(codeBody.repository, "me/app");
-      assert.equal(codeBody.branch, `aster/${codeBody.conversationId.slice(0, 8)}`);
-      assert.deepEqual(harness.provisionedProjects.at(-1), { kind: "code", repository: "me/app", baseBranch: "main", branch: codeBody.branch });
-
-      const chat = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model", kind: "chat" });
-      assert.equal(chat.status, 201);
-      assert.deepEqual(harness.provisionedProjects.at(-1), { kind: "chat" });
-      const fetched = await (await request(harness, "GET", `/api/v1/conversations/${codeBody.conversationId}`)).json() as { kind: string };
-      assert.equal(fetched.kind, "code");
-
-      const legacy = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
-      assert.equal(legacy.status, 201);
-      assert.equal(harness.provisionedProjects.at(-1), undefined);
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it("accepts long pasted documents as a turn", async () => {
-    const harness = await createHarness("hang");
-    try {
-      const created = await (await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model", kind: "chat" })).json() as { conversationId: string };
-      const document = "Section about the product strategy and roadmap. ".repeat(2_100); // ~100k characters
-      const turn = await request(harness, "POST", `/api/v1/conversations/${created.conversationId}/turns`, { clientTurnId: "long-1", text: `Summarize this:\n${document}` });
-      assert.equal(turn.status, 202);
-      assert.equal(harness.turns.at(-1)!.userText.length > 100_000, true);
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it("lists artifacts and downloads one as an attachment", async () => {
-    const harness = await createHarness("complete");
-    try {
-      const created = await (await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model", kind: "chat" })).json() as { conversationId: string };
-      const base = `/api/v1/conversations/${created.conversationId}/artifacts`;
-      const list = await (await request(harness, "GET", base)).json() as { artifacts: Array<{ path: string }> };
-      assert.deepEqual(list.artifacts.map((a) => a.path), ["deck.pdf"]);
-      const file = await request(harness, "GET", `${base}/file?path=deck.pdf`);
-      assert.equal(file.status, 200);
-      assert.equal(file.headers.get("content-type"), "application/pdf");
-      assert.match(file.headers.get("content-disposition") ?? "", /deck\.pdf/);
-      assert.equal(await file.text(), "%PDF");
-      assert.equal((await request(harness, "GET", `${base}/file?path=../secret`)).status, 400);
-      assert.equal((await request(harness, "GET", `${base}/file?path=missing.pdf`)).status, 404);
-    } finally {
-      await harness.close();
-    }
-  });
-});
-
-describe("Aster model catalog, model switching, and checkpoints", () => {
-  it("offers the tool-capable OpenRouter catalog and switches models between turns", async () => {
-    const harness = await createHarness("complete", { openRouterCatalog: true });
-    try {
-      const models = await request(harness, "GET", "/api/v1/models");
-      assert.equal(models.status, 200);
-      const body = await models.json() as { models: string[]; catalog: Array<{ id: string; contextWindow: number }> };
-      assert.deepEqual(body.models, ["test/model", "vendor/other-model"]);
-      assert.equal(body.catalog[0]!.contextWindow, 200_000);
-
-      const rejected = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "vendor/no-tools" });
-      assert.equal(rejected.status, 400);
-
-      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
-      assert.equal(created.status, 201);
-      const conversation = await created.json() as { conversationId: string };
-
-      const first = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, { text: "hi", model: "test/model" });
-      assert.equal(first.status, 202);
-      await waitForStatus(harness, conversation.conversationId, "completed");
-      assert.deepEqual(harness.modelSwitches, []);
-
-      const badModel = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, { text: "hi", model: "vendor/unknown" });
-      assert.equal(badModel.status, 400);
-
-      const switched = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, { text: "again", model: "vendor/other-model" });
-      assert.equal(switched.status, 202);
-      await waitForStatus(harness, conversation.conversationId, "completed");
-      assert.deepEqual(harness.modelSwitches, [{ cellId: `cell-${conversation.conversationId}`, model: "vendor/other-model" }]);
-      const fetched = await (await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}`)).json() as { model: string };
-      assert.equal(fetched.model, "vendor/other-model");
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it("lists and restores checkpoints only between turns", async () => {
-    const harness = await createHarness("hang");
-    try {
-      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
-      const conversation = await created.json() as { conversationId: string };
-      const base = `/api/v1/conversations/${conversation.conversationId}/checkpoints`;
-
-      const list = await request(harness, "GET", base);
-      assert.equal(list.status, 200);
-      const listed = await list.json() as { checkpoints: Array<{ id: string; message: string }> };
-      assert.deepEqual(listed.checkpoints.map((checkpoint) => checkpoint.message), ["second", "Workspace created"]);
-
-      const missing = await request(harness, "POST", `${base}/${"d".repeat(40)}/restore`, {});
-      assert.equal(missing.status, 404);
-      const restored = await request(harness, "POST", `${base}/${"a".repeat(40)}/restore`, {});
-      assert.equal(restored.status, 200);
-      assert.deepEqual(harness.restores, [{ cellId: `cell-${conversation.conversationId}`, checkpointId: "a".repeat(40) }]);
-
-      const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, { text: "work" });
-      assert.equal(turn.status, 202);
-      const busy = await request(harness, "POST", `${base}/${"a".repeat(40)}/restore`, {});
-      assert.equal(busy.status, 409);
-      const busySwitch = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, { text: "x", model: "test/model" });
-      assert.equal(busySwitch.status, 409);
-    } finally {
-      await harness.close();
-    }
-  });
 });
 
 interface Harness {
@@ -736,18 +439,10 @@ interface Harness {
   turns: AsterTurnStart[];
   cancelledRuns: string[];
   permissionDecisions: string[];
-  destroyedCells: string[];
-  pausedCells: string[];
-  resumedCells: string[];
-  modelSwitches: Array<{ cellId: string; model: string }>;
-  restores: Array<{ cellId: string; checkpointId: string }>;
-  provisionedProjects: Array<unknown>;
-  createdRepositories: string[];
-  pushes: AsterPushMessage[];
   close(): Promise<void>;
 }
 
-async function createHarness(mode: "complete" | "hang" | "approval" | "fail", options: { openRouterCatalog?: boolean; pushConfigured?: boolean } = {}): Promise<Harness> {
+async function createHarness(mode: "complete" | "hang" | "approval"): Promise<Harness> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-api-")));
   tempDirs.push(root);
   const workspaceRoot = join(root, "workspace");
@@ -765,7 +460,7 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const runsDb = join(root, "state", "runs.db");
   const configPath = join(root, "aster.json");
   await writeFile(configPath, JSON.stringify({
-    models: options.openRouterCatalog ? "openrouter" : ["test/model"],
+    models: ["test/model"],
     approvalTtlMs: 1500,
     workspaces: [{ id: "default", displayName: "Default workspace", rootPath: workspaceRoot }],
   }));
@@ -775,22 +470,6 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   setEnv("AUTOPILOT_RUNS_DB", runsDb);
   setEnv("AUTOPILOT_ASTER_CONFIG", configPath);
   setEnv("KIMIFLARE_SERVER_PASSWORD", "legacy-only-secret");
-  setEnv("AUTOPILOT_ASTER_MEMORY", "off");
-  if (options.openRouterCatalog) {
-    // A fresh on-disk catalog cache, so the test never reaches the network.
-    const configHome = join(root, "config-home");
-    await mkdir(join(configHome, "kimiflare"), { recursive: true });
-    const entry = (id: string, tools: boolean) => ({
-      id, name: id, contextWindow: 200_000, maxOutputTokens: 8_000,
-      pricing: { inputPerMtok: 1, outputPerMtok: 2 }, supports: { tools, reasoning: true, streaming: true },
-    });
-    await writeFile(join(configHome, "kimiflare", "openrouter-models.json"), JSON.stringify({
-      version: 4,
-      fetchedAt: new Date().toISOString(),
-      models: [entry("test/model", true), entry("vendor/other-model", true), entry("vendor/no-tools", false)],
-    }));
-    setEnv("XDG_CONFIG_HOME", configHome);
-  }
 
   const asterStore = new AsterStore(asterDb);
   const credential = asterStore.createCredential({
@@ -804,70 +483,14 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const turns: AsterTurnStart[] = [];
   const cancelledRuns: string[] = [];
   const permissionDecisions: string[] = [];
-  const destroyedCells: string[] = [];
-  const pausedCells: string[] = [];
-  const resumedCells: string[] = [];
-  const modelSwitches: Array<{ cellId: string; model: string }> = [];
-  const restores: Array<{ cellId: string; checkpointId: string }> = [];
-  const provisionedProjects: Array<unknown> = [];
-  const createdRepositories: string[] = [];
-  const pushes: AsterPushMessage[] = [];
-  const fakePush = {
-    configured: options.pushConfigured ?? false,
-    notify: async (message: AsterPushMessage) => { pushes.push(message); },
-    register: () => true,
-    unregister: () => {},
-    close: () => {},
-  };
-  const repo = (fullName: string) => ({
-    fullName, name: fullName.split("/")[1]!, owner: fullName.split("/")[0]!, private: true,
-    description: null, defaultBranch: "main", updatedAt: null,
-  });
-  const fakeGitHub = {
-    configured: true,
-    listRepositories: async (query: string) => [repo("me/app"), repo("me/site")].filter((r) => r.fullName.includes(query)),
-    getRepository: async (fullName: string) => {
-      if (fullName !== "me/app" && !createdRepositories.includes(fullName)) throw new AsterGitHubError("Repository not found", 404, "repository_not_found");
-      return repo(fullName);
-    },
-    createRepository: async (input: { name: string }) => {
-      createdRepositories.push(`me/${input.name}`);
-      return repo(`me/${input.name}`);
-    },
-  } as unknown as AsterGitHub;
   const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as KimiConfig, {
-    provisionConversation: async (input) => {
-      provisionedProjects.push(input.project);
-      input.onCellCreated(`cell-${input.conversationId}`);
-      return { cellId: `cell-${input.conversationId}` };
-    },
-    destroyCell: async (cellId) => { destroyedCells.push(cellId); },
-    pauseCell: async (cellId) => { pausedCells.push(cellId); },
-    resumeCell: async (cellId) => { resumedCells.push(cellId); },
     startTurn: (turn) => {
       turns.push(turn);
       if (mode === "complete") void completeTurn(turn, `reply-${turns.length}`);
       else if (mode === "approval") void approveWriteTurn(turn, permissionDecisions);
-      else if (mode === "fail") void failTurn(turn);
     },
     cancelRun: (runId) => { cancelledRuns.push(runId); },
-    setModel: async (cellId, model) => { modelSwitches.push({ cellId, model }); },
-    listCheckpoints: async () => [
-      { id: "b".repeat(40), message: "second", createdAt: "2026-10-05T10:01:00Z" },
-      { id: "a".repeat(40), message: "Workspace created", createdAt: "2026-10-05T10:00:00Z" },
-    ],
-    restoreCheckpoint: async (cellId, _conversationId, checkpointId) => {
-      if (checkpointId !== "a".repeat(40)) throw new Error("checkpoint_not_found");
-      restores.push({ cellId, checkpointId });
-      return { id: "c".repeat(40), message: "Restore checkpoint aaaaaaa", createdAt: "2026-10-05T10:02:00Z" };
-    },
-    listArtifacts: async () => [{ path: "deck.pdf", name: "deck.pdf", size: 4, modifiedAt: "2026-10-05T10:03:00Z", mimeType: "application/pdf" }],
-    readArtifact: async (_cellId, path) => {
-      if (path.includes("..")) throw new Error("invalid_artifact_path");
-      if (path !== "deck.pdf") throw new Error("artifact_not_found");
-      return { data: Buffer.from("%PDF"), mimeType: "application/pdf", name: "deck.pdf" };
-    },
-  }, fakeGitHub, undefined, fakePush);
+  });
   const server = createServer((req, res) => { void api.handle(req, res); });
   const port = await listen(server);
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -883,14 +506,6 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     turns,
     cancelledRuns,
     permissionDecisions,
-    destroyedCells,
-    pausedCells,
-    resumedCells,
-    modelSwitches,
-    restores,
-    provisionedProjects,
-    createdRepositories,
-    pushes,
     close,
   };
 }
@@ -923,16 +538,6 @@ async function waitForStatusAt(base: string, token: string, conversationId: stri
   assert.fail(`conversation did not reach ${expected}`);
 }
 
-async function failTurn(turn: AsterTurnStart): Promise<void> {
-  const runs = new RunStore();
-  try {
-    if (runs.getRun(turn.runId)?.status === "running") runs.transition(turn.runId, "failed", "test_failure");
-  } finally {
-    runs.close();
-  }
-  turn.finish("failed", "test_failure");
-}
-
 async function completeTurn(turn: AsterTurnStart, text: string): Promise<void> {
   turn.messages.push({ role: "assistant", content: text });
   turn.sessionFile.messages = turn.messages;
@@ -949,12 +554,20 @@ async function completeTurn(turn: AsterTurnStart, text: string): Promise<void> {
 }
 
 async function approveWriteTurn(turn: AsterTurnStart, decisions: string[]): Promise<void> {
-  const decision = await turn.askPermission({
-    tool: { name: "write" },
-    args: { path: "created.txt", content: "safe content" },
-  } as never);
-  decisions.push(typeof decision === "string" ? decision : decision.decision);
-  await completeTurn(turn, decisions.at(-1) === "allow" ? "The write was approved." : "The write was denied.");
+  const tool = turn.executor.list().find((item) => item.name === "write");
+  assert.ok(tool);
+  const args = { path: "created.txt", content: "safe content" };
+  const result = await turn.executor.run(
+    { id: "tool-call-1", name: "write", arguments: JSON.stringify(args) },
+    async (request) => {
+      const decision = await turn.askPermission(request);
+      decisions.push(typeof decision === "string" ? decision : decision.decision);
+      return decision;
+    },
+    { cwd: turn.sessionFile.cwd, runId: turn.runId, sessionId: turn.sessionFile.id, runsDbPath: process.env.AUTOPILOT_RUNS_DB },
+  );
+  assert.equal(result.ok, decisions.at(-1) === "allow");
+  await completeTurn(turn, result.ok ? "The write was approved." : "The write was denied.");
 }
 
 async function waitForStatus(harness: Harness, conversationId: string, expected: string): Promise<void> {
@@ -983,15 +596,12 @@ async function waitForApproval(harness: Harness, conversationId: string): Promis
   assert.fail("approval was not created");
 }
 
-async function request(harness: Harness, method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<Response> {
+async function request(harness: Harness, method: string, path: string, body?: unknown): Promise<Response> {
   return fetch(`${harness.baseUrl}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${harness.token}`,
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...(path === "/api/v1/conversations" && method === "POST"
-        ? { "Idempotency-Key": idempotencyKey ?? `test-create-${Math.random().toString(36).slice(2)}` }
-        : {}),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });

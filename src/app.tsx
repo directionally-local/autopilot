@@ -2559,23 +2559,22 @@ function App({
   );
   submitRef.current = submit;
 
-  // Camouflage shows subagents in its activity panel, not inline; announce
-  // each one once so the user knows it exists and how to stop it.
-  useEffect(() => {
-    if (!bridge) return;
-    const seen = announcedSubagentsRef.current;
-    const fresh = runningSubagents.filter((w) => !seen.has(w.id));
-    if (fresh.length === 0) return;
-    for (const w of fresh) seen.add(w.id);
-    setEvents((evts) => [
-      ...evts,
-      ...fresh.map((w) => ({
-        kind: "info" as const,
-        key: mkKey(),
-        text: `subagent #${w.index} started: ${w.task.replace(/\s+/g, " ").slice(0, 100)} · /agents to view or stop`,
-      })),
-    ]);
-  }, [bridge, runningSubagents]);
+  // Subagents are shown in the compact live region trail; no need for inline notices.
+  // useEffect(() => {
+  //   if (!bridge) return;
+  //   const seen = announcedSubagentsRef.current;
+  //   const fresh = runningSubagents.filter((w) => !seen.has(w.id));
+  //   if (fresh.length === 0) return;
+  //   for (const w of fresh) seen.add(w.id);
+  //   setEvents((evts) => [
+  //     ...evts,
+  //     ...fresh.map((w) => ({
+  //       kind: "info" as const,
+  //       key: mkKey(),
+  //       text: `subagent #${w.index} started: ${w.task.replace(/\s+/g, " ").slice(0, 100)} · /agents to view or stop`,
+  //     })),
+  //   ]);
+  // }, [bridge, runningSubagents]);
 
   // --- Mid-turn triage (#725) -------------------------------------------
   // Messages sent while the agent works are queued first; triage may then
