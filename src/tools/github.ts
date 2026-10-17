@@ -1,6 +1,9 @@
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
 import { getUserAgent } from "../util/version.js";
 
+const execFile = promisify(execFileCallback);
 const GITHUB_API_BASE = "https://api.github.com";
 const TIMEOUT_MS = 20_000;
 
@@ -16,7 +19,24 @@ function getHeaders(token?: string): Record<string, string> {
   return headers;
 }
 
-async function githubFetch(path: string, token?: string): Promise<unknown> {
+async function ghApi(path: string, token?: string, body?: unknown): Promise<unknown> {
+  const args = ["api", path.replace(/^\/+/, "")];
+  if (body !== undefined && typeof body === "object" && body !== null) {
+    args.push("-X", "POST");
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined || value === null) continue;
+      args.push(typeof value === "boolean" ? "-F" : "-f", `${key}=${String(value)}`);
+    }
+  }
+  const result = await execFile("gh", args, {
+    timeout: TIMEOUT_MS,
+    maxBuffer: 10 * 1024 * 1024,
+    env: token ? { ...process.env, GH_TOKEN: token } : process.env,
+  });
+  return JSON.parse(result.stdout);
+}
+
+export async function githubFetch(path: string, token?: string, cliFallback: (path: string, token?: string) => Promise<unknown> = ghApi): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -29,6 +49,12 @@ async function githubFetch(path: string, token?: string): Promise<unknown> {
       throw new Error(`GitHub API ${res.status}: ${res.statusText}${body ? ` — ${body.slice(0, 200)}` : ""}`);
     }
     return await res.json();
+  } catch (apiError) {
+    try {
+      return await cliFallback(path, token);
+    } catch (cliError) {
+      throw new Error(`${formatError(apiError)}; gh CLI fallback failed: ${formatError(cliError)}`);
+    }
   } finally {
     clearTimeout(timer);
   }
@@ -52,6 +78,12 @@ async function githubPost(path: string, body: unknown, token?: string): Promise<
       throw new Error(`GitHub API ${res.status}: ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ""}`);
     }
     return await res.json();
+  } catch (apiError) {
+    try {
+      return await ghApi(path, token, body);
+    } catch (cliError) {
+      throw new Error(`${formatError(apiError)}; gh CLI fallback failed: ${formatError(cliError)}`);
+    }
   } finally {
     clearTimeout(timer);
   }
