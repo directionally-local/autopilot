@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.2](https://github.com/sinameraji/autopilot/compare/v1.22.1...v1.22.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* resolve npm audit vulnerabilities ([#781](https://github.com/sinameraji/autopilot/issues/781)) ([ba30dc2](https://github.com/sinameraji/autopilot/commit/ba30dc21c5705ed710fba64b8770f4014b3d3bd6))
+
 ## [1.22.1](https://github.com/sinameraji/autopilot/compare/v1.22.0...v1.22.1) (2026-10-17)
 
 
