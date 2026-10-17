@@ -1,4 +1,5 @@
 import React, { useCallback, useRef, useState } from "react";
+import { setTerminalTitle } from "./terminal-title.js";
 import {
   listSessions,
   loadSession,
@@ -345,6 +346,8 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         endTrace(checkpointId ? "restore_checkpoint" : "exit");
         turnHistoryRef.current = [];
         sessionIdRef.current = file.id;
+        sessionTitleRef.current = file.title ?? null;
+        if (file.title) setTerminalTitle(file.title);
         setLogSessionId(file.id);
         sessionCreatedAtRef.current = file.createdAt;
         if (file.sessionState && d.compiledContextRef.current) {
@@ -555,6 +558,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     setLogSessionId(null);
     sessionCreatedAtRef.current = null;
     sessionTitleRef.current = null;
+    setTerminalTitle("autopilot");
     const d = depsRef.current;
     d.sessionStateRef.current = emptySessionState();
     d.artifactStoreRef.current = new ArtifactStore();

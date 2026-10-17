@@ -1,7 +1,25 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { githubReadPrTool, githubReadIssueTool, githubReadCodeTool, githubCreatePrTool } from "./github.js";
+import { githubReadPrTool, githubReadIssueTool, githubReadCodeTool, githubCreatePrTool, githubFetch } from "./github.js";
 import type { ToolOutput } from "./registry.js";
+
+describe("GitHub CLI fallback", () => {
+  it("uses the CLI fallback when the REST API fails", async () => {
+    const originalFetch = globalThis.fetch;
+    let fallbackPath = "";
+    globalThis.fetch = async () => new Response("API unavailable", { status: 503 });
+    try {
+      const result = await githubFetch("/repos/owner/repo", undefined, async (path) => {
+        fallbackPath = path;
+        return { name: "repo" };
+      });
+      assert.equal(fallbackPath, "/repos/owner/repo");
+      assert.deepEqual(result, { name: "repo" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
 
 describe("github_read_pr", () => {
   it("returns PR details", async () => {
