@@ -78,7 +78,7 @@
     "vscode-languageserver-protocol": "^3.17.5"
   },
   "optionalDependencies": {
-    "camouflage-tui": "beta",
+    "camouflage-tui": "^2.6.0",
     "isolated-vm": "^6.1.2"
   },
   "devDependencies": {
