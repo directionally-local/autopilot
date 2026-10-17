@@ -63,6 +63,13 @@ autopilot
 
 On first run, **Sign in with OpenRouter**: approve autopilot in your browser and a key is created for you (or paste one from <https://openrouter.ai/keys>). Then pick a model. That's it.
 
+Or install with Homebrew on macOS or Linux (Homebrew installs Node.js for you):
+
+```sh
+brew install sinameraji/tap/autopilot
+autopilot
+```
+
 Or run without installing:
 
 ```sh
