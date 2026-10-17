@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.1](https://github.com/sinameraji/autopilot/compare/v1.22.0...v1.22.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* use stable Camouflage release in Autopilot ([#779](https://github.com/sinameraji/autopilot/issues/779)) ([9d9e73e](https://github.com/sinameraji/autopilot/commit/9d9e73e399548f2a10746e0098374b9638aad27b))
+
 ## [1.22.0](https://github.com/sinameraji/autopilot/compare/v1.21.0...v1.22.0) (2026-10-12)
 
 
