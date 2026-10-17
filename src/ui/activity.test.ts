@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { RunningWorker } from "../tools/worker-registry.js";
 import type { JobRecord } from "../jobs/manager.js";
-import { activityFromJob, activityFromSubagent, diffActivityItems, isActiveJob } from "./activity.js";
+import { activityFromJob, activityFromSubagent, activityTaskPreview, diffActivityItems, isActiveJob } from "./activity.js";
 
 const job = (status: JobRecord["status"], patch: Partial<JobRecord> = {}): JobRecord => ({
   id: "job-1",
@@ -71,6 +71,15 @@ describe("activity adapters", () => {
     assert.equal(isActiveJob(job("running")), true);
     assert.equal(isActiveJob(job("cancelling")), true);
     assert.equal(isActiveJob(job("completed")), false);
+  });
+
+  it("normalizes and bounds subagent activity titles", () => {
+    assert.equal(activityTaskPreview("  inspect\n\t sessions  "), "inspect sessions");
+    assert.equal(activityTaskPreview("x".repeat(100)), `${"x".repeat(71)}…`);
+    const title = activityFromSubagent(worker({ task: "inspect\n" + "details ".repeat(20) })).title;
+    assert.match(title, /^subagent #1: inspect details/);
+    assert.equal(title.length, "subagent #1: ".length + 72);
+    assert.equal(title.includes("\n"), false);
   });
 
   it("maps running subagents as individually stoppable agent rows", () => {
