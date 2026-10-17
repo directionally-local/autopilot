@@ -55,6 +55,7 @@ import { homedir } from "node:os";
 import QRCode from "qrcode";
 import type { ToolRender } from "./tools/registry.js";
 import { CustomTextInput } from "./ui/text-input.js";
+import { setTerminalTitle } from "./ui/terminal-title.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { Onboarding } from "./ui/onboarding.js";
@@ -1711,6 +1712,7 @@ function App({
       // Generate a human-readable title on first turn
       if (!sessionTitleRef.current) {
         sessionTitleRef.current = generateSessionTitle(trimmed, classification.intent);
+        setTerminalTitle(sessionTitleRef.current);
       }
 
       const effortForTier: Record<string, ReasoningEffort> = {
