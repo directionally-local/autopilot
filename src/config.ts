@@ -169,7 +169,7 @@ export interface KimiConfig {
   workerBudgetMaxUsd?: number;
   /** Max workers to spawn in parallel (default: 3). */
   workerMaxParallel?: number;
-  /** Timeout per worker in milliseconds (default: 300000 = 5 min). */
+  /** Timeout per worker in milliseconds (default: 600000 = 10 min). */
   workerTimeoutMs?: number;
   /** Turn count at which KimiFlare suggests /fresh in auto/edit mode. 0 = disabled. Default: 30. */
   autoFreshSuggestionTurns?: number;
