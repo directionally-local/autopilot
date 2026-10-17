@@ -64,7 +64,6 @@
   "dependencies": {
     "@hotcell/sdk": "^0.1.23",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@resvg/resvg-js": "^2.6.2",
     "better-sqlite3": "^12.9.0",
     "commander": "^12.1.0",
     "ink": "^7.0.1",
@@ -78,6 +77,7 @@
     "vscode-languageserver-protocol": "^3.17.5"
   },
   "optionalDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "camouflage-tui": "^2.6.1",
     "isolated-vm": "^6.1.2"
   },
@@ -92,5 +92,20 @@
   },
   "overrides": {
     "esbuild": "^0.28.2"
-  }
+  },
+  "bundleDependencies": [
+    "@hotcell/sdk",
+    "@modelcontextprotocol/sdk",
+    "better-sqlite3",
+    "commander",
+    "ink",
+    "ink-select-input",
+    "ink-spinner",
+    "ink-text-input",
+    "qrcode",
+    "react",
+    "turndown",
+    "typescript",
+    "vscode-languageserver-protocol"
+  ]
 }
