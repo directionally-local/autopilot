@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/autopilot-ai"><img src="https://img.shields.io/npm/v/autopilot-ai?style=flat-square&color=cb3837" alt="npm version"></a>
+  <a href="https://github.com/sinameraji/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat-square&logo=homebrew&logoColor=black" alt="Install with Homebrew"></a>
   <a href="https://www.npmjs.com/package/autopilot-ai"><img src="https://img.shields.io/npm/dm/autopilot-ai?style=flat-square&color=cb3837" alt="npm downloads"></a>
   <a href="https://github.com/sinameraji/autopilot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sinameraji/autopilot?style=flat-square&color=2ea44f" alt="license"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js >= 20">
