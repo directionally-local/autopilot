@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.23.0](https://github.com/sinameraji/autopilot/compare/v1.22.2...v1.23.0) (2026-10-17)
+
+
+### Features
+
+* show session topic in terminal title ([#783](https://github.com/sinameraji/autopilot/issues/783)) ([3693271](https://github.com/sinameraji/autopilot/commit/3693271501e37a1527b8183042e9082ed9948b96))
+
+
+### Bug Fixes
+
+* **deps:** require camouflage-tui 2.6.1 ([#788](https://github.com/sinameraji/autopilot/issues/788)) ([dbdf6db](https://github.com/sinameraji/autopilot/commit/dbdf6db976d6951021ad71cece91d0a49bc300ee))
+* shorten subagent activity summaries ([#787](https://github.com/sinameraji/autopilot/issues/787)) ([b945779](https://github.com/sinameraji/autopilot/commit/b9457791a38ec7e592aee6a0a232015116b419ea))
+* **subagents:** start hotcell non-interactively ([#786](https://github.com/sinameraji/autopilot/issues/786)) ([abf82fa](https://github.com/sinameraji/autopilot/commit/abf82faa8cfbb074b9d97274d226d5076e497c2d))
+
 ## [1.22.2](https://github.com/sinameraji/autopilot/compare/v1.22.1...v1.22.2) (2026-10-17)
 
 
