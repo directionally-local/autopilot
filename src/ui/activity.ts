@@ -50,12 +50,17 @@ export function activityFromSubagent(worker: RunningWorker): ActivityItem {
   return {
     id: `agent:${worker.id}`,
     kind: "agent",
-    title: `subagent #${worker.index}: ${worker.task}`,
+    title: `subagent #${worker.index}: ${activityTaskPreview(worker.task)}`,
     status: "running",
     stoppable: worker.status === "running",
     ...(worker.status === "cancelling" ? { summary: "Stopping…" } : {}),
     started_at_ms: worker.startedAt,
   };
+}
+
+export function activityTaskPreview(task: string): string {
+  const oneLine = task.replace(/\s+/g, " ").trim();
+  return oneLine.length > 72 ? `${oneLine.slice(0, 71)}…` : oneLine;
 }
 
 export type ActivityEvent =
