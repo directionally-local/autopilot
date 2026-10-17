@@ -12,7 +12,7 @@ import { CACHED_WORKER_DIR, ensureWorkerBackup } from "./hotcell-worker-cache.js
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT_BYTES = 1_000_000;
 const MAX_PROMPT_CHARS = 40_000;
-const DEFAULT_CELL_TIMEOUT_MS = 300_000;
+const DEFAULT_CELL_TIMEOUT_MS = 600_000;
 const DEFAULT_SETUP_TIMEOUT_MS = 300_000;
 /** The subagent runtime (Autopilot CLI) inside the cell: restored from the
  *  local cache, or installed there when the cache is unavailable. The target
@@ -116,6 +116,17 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
   const timeoutMs = options.timeoutMs ?? DEFAULT_CELL_TIMEOUT_MS;
 
   try {
+    // Hotcell's bare `hotcell` command is an interactive TTY front door; this
+    // runner deliberately has no stdin. Start the daemon through its explicit,
+    // idempotent non-interactive command instead of leaving a confirmation prompt
+    // unanswered. `--defaults` accepts first-start defaults for agent use.
+    const started = await execute(command, ["start", "--defaults"], {
+      cwd, signal: options.signal, timeoutMs: 30_000,
+    });
+    if (started.code !== 0 || started.timedOut || started.aborted) {
+      throw new Error(formatSetupFailure(started).replace("Hotcell setup failed", "Hotcell daemon startup failed"));
+    }
+
     // Default: stream your working tree in (no clone, no credentials, no
     // push — works for private repos). Trees too large to copy fall back to
     // cloning origin and applying a patch of local changes.

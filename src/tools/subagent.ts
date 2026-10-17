@@ -19,7 +19,7 @@ interface LegacySpawnWorkerArgs {
   budget?: { maxCostUsd?: number };
 }
 
-const DEFAULT_WORKER_TIMEOUT_MS = 300_000;
+const DEFAULT_WORKER_TIMEOUT_MS = 600_000;
 
 /** Map legacy `spawn_worker` arguments onto the `subagent` shape. */
 export function fromLegacySpawnWorkerArgs(args: LegacySpawnWorkerArgs): SubagentArgs {
@@ -163,7 +163,8 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
     if (handle.cancelledByUser && !ctx.signal?.aborted) {
       return textOutput(userCancelledMessage(handle.index, args.mission));
     }
-    if (result.status !== "completed" && result.status !== "budget_exhausted") {
+    if (result.status !== "completed" && result.status !== "budget_exhausted" &&
+      !(result.status === "spend_exhausted" && result.partialResult && result.findings.length > 0)) {
       throw new Error("Subagent " + result.status + ": " + (result.error ?? "unknown error"));
     }
 
@@ -175,7 +176,7 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
  *  open questions, and a clear marker when the report was unstructured. */
 export function formatWorkerResult(result: WorkerResultMessage, model: string): string {
   const lines = [
-    "Subagent " + result.status + (result.status === "budget_exhausted" ? " (partial result)" : "") + ".",
+    "Subagent " + result.status + ((result.status === "budget_exhausted" || result.status === "spend_exhausted") ? " (partial result)" : "") + ".",
     "Model: " + (result.model ?? model) + " · Tokens: " + result.tokensUsed.toLocaleString() + " · Cost: " + (result.costUsd > 0 ? result.costUsd.toFixed(4) + " total cost" : "unavailable") + ".",
     ...result.findings.map((finding) =>
       "\n## " + finding.topic + (result.structured ? " (" + finding.confidence + " confidence)" : "") + "\n" + finding.summary +
@@ -193,7 +194,7 @@ export function formatWorkerResult(result: WorkerResultMessage, model: string): 
   if (!result.structured && result.findings.length) {
     lines.push("\n(The subagent did not return a structured report; findings above are its raw answer and are unverified.)");
   }
-  if (result.status === "budget_exhausted") {
+  if (result.status === "budget_exhausted" || result.status === "spend_exhausted") {
     lines.push("\nThe subagent ran out of budget; review partial findings before relying on them.");
   }
   return lines.join("\n");

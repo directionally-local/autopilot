@@ -63,6 +63,7 @@ function fakeRunner(options: {
 } = {}): HotcellProcessRunner {
   return async (_executable, args, runOptions): Promise<HotcellProcessResult> => {
     options.calls?.push({ args, options: runOptions });
+    if (args[0] === "start") return { code: 0, stdout: "started", stderr: "", aborted: false };
     if (args[0] === "create") return {
       code: options.createCode ?? 0,
       stdout: options.createOutput ?? `Created sandbox ${cellId}\n`,
@@ -145,29 +146,31 @@ describe("Hotcell worker helpers", () => {
     assert.equal(result.model, "openai/gpt-6-luna");
     assert.equal(result.tokensUsed, 15);
     assert.equal(result.costUsd, 0.01301);
-    assert.ok(calls[0]!.args.includes("--egress-spend-cap"));
-    assert.ok(calls[0]!.args.includes("0.25"));
-    assert.ok(calls[0]!.args.includes("--ref"));
+    assert.deepEqual(calls[0]!.args, ["start", "--defaults"]);
+    assert.equal(calls[0]!.options.timeoutMs, 30_000);
+    assert.ok(calls[1]!.args.includes("--egress-spend-cap"));
+    assert.ok(calls[1]!.args.includes("0.25"));
+    assert.ok(calls[1]!.args.includes("--ref"));
     const repo = await getRepositorySnapshot(cwd);
-    const createArgs = calls[0]!.args;
+    const createArgs = calls[1]!.args;
     assert.equal(createArgs[createArgs.indexOf("--ref") + 1], repo.ref);
     assert.ok(!createArgs.includes("--setup"), "mandatory setup runs in exec so errors are not swallowed by Hotcell's best-effort setup hook");
-    assert.deepEqual(calls.map((call) => call.args[0]), ["create", "exec", "exec", "exec", "stats", "rm"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["start", "create", "exec", "exec", "exec", "stats", "rm"]);
 
     // Locate exec: records the clone, skipping the runtime directory.
-    const locate = calls[1]!.args[2]!;
+    const locate = calls[2]!.args[2]!;
     assert.ok(locate.includes("-path /workspace/.autopilot-worker -prune -o -name .git"));
     assert.ok(locate.includes("/tmp/autopilot-repo-root"));
 
     // Setup exec: pinned checkout plus a private install of the worker CLI.
-    const setup = calls[2]!.args[2]!;
+    const setup = calls[3]!.args[2]!;
     assert.ok(setup.includes(`git -C "$REPO_ROOT" fetch --quiet origin '${repo.commit}'`));
     assert.ok(setup.includes(`git -C "$REPO_ROOT" checkout --quiet --detach '${repo.commit}'`));
     assert.match(setup, /npm install --prefix \/workspace\/.autopilot-worker .*'autopilot-ai@\d+\.\d+\.\d+'/);
-    assert.equal(calls[2]!.options.timeoutMs, 300_000, "setup has its own timeout");
+    assert.equal(calls[3]!.options.timeoutMs, 300_000, "setup has its own timeout");
 
     // Research exec: runs the installed CLI from the target repo, never the repo's own code or install.
-    const command = calls[3]!.args[2]!;
+    const command = calls[4]!.args[2]!;
     for (const text of [setup, command]) {
       assert.ok(!text.includes("npm ci"), "target repo dependencies are never installed");
       assert.ok(!text.includes("src/index.tsx"), "target repo is not assumed to be Autopilot");
@@ -186,6 +189,7 @@ describe("Hotcell worker helpers", () => {
     let cellName = "";
     const runner: HotcellProcessRunner = async (_executable, args, options) => {
       calls.push({ args, options });
+      if (args[0] === "start") return { code: 0, stdout: "started", stderr: "", aborted: false };
       if (args[0] === "create") {
         cellName = args[args.indexOf("--name") + 1]!;
         return { code: 0, stdout: "created successfully", stderr: "", aborted: false };
@@ -209,7 +213,7 @@ describe("Hotcell worker helpers", () => {
     });
 
     assert.equal(result.status, "completed");
-    assert.deepEqual(calls.map((call) => call.args[0]), ["create", "ls", "exec", "exec", "exec", "stats", "rm"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["start", "create", "ls", "exec", "exec", "exec", "stats", "rm"]);
     assert.deepEqual(calls.at(-1)?.args, ["rm", cellId]);
   });
 
@@ -219,6 +223,7 @@ describe("Hotcell worker helpers", () => {
     let cellName = "";
     const runner: HotcellProcessRunner = async (_executable, args, options) => {
       calls.push({ args, options });
+      if (args[0] === "start") return { code: 0, stdout: "started", stderr: "", aborted: false };
       if (args[0] === "create") {
         cellName = args[args.indexOf("--name") + 1]!;
         return { code: 1, stdout: "", stderr: "setup failed OPENROUTER_API_KEY=do-not-leak", aborted: false };
@@ -240,8 +245,27 @@ describe("Hotcell worker helpers", () => {
     assert.equal(result.status, "failed");
     assert.match(result.error ?? "", /setup failed/);
     assert.doesNotMatch(result.error ?? "", /do-not-leak|OPENROUTER_API_KEY/);
-    assert.deepEqual(calls.map((call) => call.args[0]), ["create", "ls", "rm"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["start", "create", "ls", "rm"]);
     assert.deepEqual(calls.at(-1)?.args, ["rm", cellId]);
+  });
+
+  it("fails clearly when the Hotcell daemon cannot start and does not create a cell", async () => {
+    const cwd = await makeRepo();
+    const calls: string[][] = [];
+    const runner: HotcellProcessRunner = async (_executable, args) => {
+      calls.push(args);
+      return { code: args[0] === "start" ? 1 : 0, stdout: "", stderr: args[0] === "start" ? "Docker is not running" : "", aborted: false };
+    };
+    const result = await runHotcellWorker({
+      task: "Research",
+      model: "openai/gpt-6-luna",
+      budgetUsd: 0.25,
+      cwd,
+      processRunner: runner,
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.error ?? "", /daemon startup failed.*Docker is not running/);
+    assert.deepEqual(calls, [["start", "--defaults"]]);
   });
 
   it("rejects an invalid model before creating a cell", async () => {
@@ -298,6 +322,7 @@ describe("Hotcell worker helpers", () => {
       const calls: string[][] = [];
       const runner: HotcellProcessRunner = async (_executable, args) => {
         calls.push(args);
+        if (args[0] === "start") return { code: 0, stdout: "started", stderr: "", aborted: false };
         if (args[0] === "create") return { code: 0, stdout: cellId, stderr: "", aborted: false };
         if (args[0] === "exec") return setupResult;
         if (args[0] === "rm") return { code: 0, stdout: "", stderr: "", aborted: false };
@@ -307,7 +332,7 @@ describe("Hotcell worker helpers", () => {
       assert.equal(result.status, status);
       assert.match(result.error ?? "", pattern);
       assert.doesNotMatch(result.error ?? "", /do-not-leak/);
-      assert.deepEqual(calls.map((args) => args[0]), ["create", "exec", "rm"], "research never runs after failed setup");
+      assert.deepEqual(calls.map((args) => args[0]), ["start", "create", "exec", "rm"], "research never runs after failed setup");
     }
   });
 
@@ -317,6 +342,7 @@ describe("Hotcell worker helpers", () => {
     let maxActiveCells = 0;
     let created = 0;
     const runner: HotcellProcessRunner = async (_executable, args) => {
+      if (args[0] === "start") return { code: 0, stdout: "started", stderr: "", aborted: false };
       if (args[0] === "create") {
         created++;
         activeCells++;
@@ -390,6 +416,8 @@ describe("Hotcell worker helpers", () => {
     });
     assert.equal(result.status, "spend_exhausted");
     assert.equal(result.budgetExceeded, true);
+    assert.equal(result.partialResult, true);
+    assert.ok(result.findings.length > 0, "findings produced before the cap should be retained");
     assert.match(result.error ?? "", /spend cap/);
   });
 
@@ -546,6 +574,7 @@ describe("Hotcell worker helpers", () => {
     const calls: string[][] = [];
     const runner: HotcellProcessRunner = async (_exe, args) => {
       calls.push(args);
+      if (args[0] === "start") return { code: 0, stdout: "started", stderr: "", aborted: false };
       if (args[0] === "create") return { code: 0, stdout: cellId, stderr: "", aborted: false };
       if (args[0] === "exec" && args[2]?.includes("--format json")) return { code: 0, stdout: JSON.stringify({ text: "found it" }), stderr: "", aborted: false };
       if (args[0] === "stats") return { code: 0, stdout: "Cost: 0.01", stderr: "", aborted: false };
@@ -558,7 +587,7 @@ describe("Hotcell worker helpers", () => {
     assert.match(result.snapshotNote ?? "", /saw your current working tree \(1 file, uncommitted changes included\)/);
     const create = calls.find((a) => a[0] === "create")!;
     assert.ok(!create.includes("--repo"), "no clone: works without GitHub credentials");
-    assert.deepEqual(calls.map((a) => a[0]), ["create", "files", "exec", "exec", "stats", "rm"]);
+    assert.deepEqual(calls.map((a) => a[0]), ["start", "create", "files", "exec", "exec", "stats", "rm"]);
     const setup = calls.filter((a) => a[0] === "exec")[0]![2]!;
     assert.match(setup, /cat \/workspace\/.autopilot-snapshot-\* \| base64 -d \| tar -xzf - -C \/workspace\/repo/);
     assert.match(setup, /printf "%s" \/workspace\/repo > \/tmp\/autopilot-repo-root/);

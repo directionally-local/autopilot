@@ -117,6 +117,20 @@ describe("formatWorkerResult", () => {
     assert.doesNotMatch(text, /unverified/);
   });
 
+  it("renders spend-exhausted findings as a partial result that needs review", () => {
+    const text = formatWorkerResult({
+      ...base,
+      status: "spend_exhausted",
+      partialResult: true,
+      budgetExceeded: true,
+      findings: [{ topic: "Partial research", summary: "Useful findings before the cap.", confidence: "medium", sources: ["src/a.ts:12"], relevance: "high" }],
+      filesRead: ["src/a.ts"],
+    }, "openai/gpt-6-luna");
+    assert.match(text, /Subagent spend_exhausted \(partial result\)/);
+    assert.match(text, /Useful findings before the cap/);
+    assert.match(text, /review partial findings/);
+  });
+
   it("flags unstructured raw answers", () => {
     const text = formatWorkerResult({
       ...base,
