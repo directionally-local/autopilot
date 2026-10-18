@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.25.0](https://github.com/sinameraji/autopilot/compare/v1.24.2...v1.25.0) (2026-10-18)
+
+
+### Features
+
+* add robust HTML artifact workflow ([#796](https://github.com/sinameraji/autopilot/issues/796)) ([943f03b](https://github.com/sinameraji/autopilot/commit/943f03bf45930c07adbf2c14acf76d318dbdab52))
+
 ## [1.24.2](https://github.com/sinameraji/autopilot/compare/v1.24.1...v1.24.2) (2026-10-18)
 
 
