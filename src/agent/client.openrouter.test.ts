@@ -103,10 +103,45 @@ describe("runKimi: OpenRouter stream parsing", () => {
       ),
     );
     const complete = events.find((e) => e.type === "tool_call_complete");
-    assert.deepStrictEqual(complete, { type: "tool_call_complete", index: 0, id: "call_1", name: "bash", arguments: '{"cmd":"ls"}' });
+    assert.deepStrictEqual(complete, {
+      type: "tool_call_complete",
+      index: 0,
+      id: "call_1",
+      name: "bash",
+      arguments: '{"cmd":"ls"}',
+      finishReason: "tool_calls",
+    });
     const done = events.at(-1);
     assert.strictEqual(done?.type, "done");
     assert.strictEqual((done as { finishReason: string | null }).finishReason, "tool_calls");
+  });
+
+  it("preserves malformed tool arguments and reports finish_reason", async () => {
+    const rawArguments = '{"html":"<main><script>const dashboard = ';
+    const events = await collect(
+      sse(
+        {
+          ...head,
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ index: 0, id: "call_truncated", type: "function", function: { name: "create_artifact", arguments: rawArguments } }] },
+            },
+          ],
+        },
+        { ...head, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        "[DONE]",
+      ),
+    );
+    const complete = events.find((e) => e.type === "tool_call_complete");
+    assert.deepStrictEqual(complete, {
+      type: "tool_call_complete",
+      index: 0,
+      id: "call_truncated",
+      name: "create_artifact",
+      arguments: rawArguments,
+      finishReason: "tool_calls",
+    });
   });
 
   it("passes OpenRouter's inline billed cost through on the usage event", async () => {

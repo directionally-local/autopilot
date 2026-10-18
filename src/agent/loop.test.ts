@@ -68,6 +68,70 @@ describe("runAgentTurn", () => {
     assert.equal(messages.length, 2);
   });
 
+  it("preserves malformed streamed tool arguments through the agent loop", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "test" },
+      { role: "user", content: "Create an artifact" },
+    ];
+    const tool: ToolSpec = {
+      name: "create_artifact",
+      description: "Open an HTML artifact",
+      parameters: { type: "object", properties: { title: { type: "string" }, sourcePath: { type: "string" } }, required: ["title", "sourcePath"] },
+      needsPermission: true,
+      run: async () => "unexpected",
+    };
+    const rawArguments = '{"title":"Dashboard","sourcePath":"report.html';
+    let fetchCount = 0;
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder();
+      const first = fetchCount++ === 0;
+      const events = first
+        ? [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-truncated", type: "function", function: { name: "create_artifact", arguments: rawArguments } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ]
+        : [{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }];
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    let executedArguments = "";
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string; arguments: string }) => {
+        executedArguments = call.arguments;
+        return {
+          tool_call_id: call.id,
+          name: call.name,
+          content: "Error: invalid JSON arguments. No tool action was performed.",
+          ok: false,
+          errorCode: "invalid_args",
+          recoverable: true,
+          suggestion: "Use write, then call create_artifact with sourcePath.",
+        };
+      },
+    } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    assert.equal(fetchCount, 2);
+    assert.equal(executedArguments, rawArguments);
+  });
+
   it("exits gracefully when signal aborts during streaming", async () => {
     const controller = new AbortController();
     const messages: ChatMessage[] = [

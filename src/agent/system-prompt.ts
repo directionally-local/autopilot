@@ -122,6 +122,10 @@ If the user asks what model you are, answer with exactly: \`${opts.model}\`. Thi
     ? "\n\nLSP tools are available for semantic code intelligence. Prefer `lsp_definition` over `grep` when looking for the source of a symbol. Prefer `lsp_references` over `grep` when finding usages. Use `lsp_hover` to confirm types before refactoring."
     : "";
 
+  const hasArtifactTool = opts.tools.some((t) => t.name === "create_artifact");
+  const artifactGuidance = hasArtifactTool
+    ? "\n\n## Choosing when to create an artifact\nUse `create_artifact` when the user would benefit from a visual, interactive, or polished standalone deliverable (for example, a dashboard, chart, diagram, prototype, or long structured report). Prefer a normal terminal response for brief answers, explanations, code snippets, and routine repository changes. For an artifact, first use `write` to save the complete HTML document as a local `.html` file in the workspace; then call `create_artifact` with a concise title and that file's workspace-relative `sourcePath`. Never put the full HTML document in `create_artifact` arguments. After it opens, summarize the result briefly in the terminal."
+    : "";
   const tools = `Tools available:\n${toolsBlock}`;
   // Only the interactive TUI supports `!` commands; never advertise them elsewhere.
   const userShellBlock = userShellCommandsEnabled() ? `\n\n${USER_SHELL_PROMPT_SECTION}` : "";
@@ -151,7 +155,7 @@ If the user asks what model you are, answer with exactly: \`${opts.model}\`. Thi
   const mcpContextBlock = opts.mcpContext
     ? `\n\n## MCP Context\n\nThe following MCP server information was pre-computed by the coordinator.\n\n${opts.mcpContext}`
     : "";
-  return identity + "\n\n" + env + "\n\n" + tools + lspBlock + userShellBlock + contextBlock + modeBlock + skillsBlock + memoryBlock + lspContextBlock + mcpContextBlock;
+  return identity + "\n\n" + env + "\n\n" + tools + artifactGuidance + lspBlock + userShellBlock + contextBlock + modeBlock + skillsBlock + memoryBlock + lspContextBlock + mcpContextBlock;
 }
 
 /** Build a single concatenated system prompt for backward compatibility. */
