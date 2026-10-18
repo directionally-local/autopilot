@@ -1,3 +1,15 @@
+export interface QueueDrainState {
+  busy: boolean;
+  queuePlanOpen: boolean;
+  supervisorIdle: boolean;
+  hasPendingWork: boolean;
+}
+
+/** Whether the app can start pending queue work at this point in the turn lifecycle. */
+export function canDrainQueue(state: QueueDrainState): boolean {
+  return !state.busy && !state.queuePlanOpen && state.supervisorIdle && state.hasPendingWork;
+}
+
 export interface QueuedPrompt {
   full: string;
   display: string;

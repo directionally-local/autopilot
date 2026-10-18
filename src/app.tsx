@@ -40,7 +40,7 @@ import { ResumePicker } from "./ui/resume-picker.js";
 import { CheckpointPicker } from "./ui/checkpoint-picker.js";
 import { PlanOptionsPicker } from "./ui/plan-options-picker.js";
 import { QueuePlanPicker } from "./ui/queue-plan-picker.js";
-import { createQueueBatch, type QueuedPrompt } from "./agent/queue-batch.js";
+import { createQueueBatch, canDrainQueue, type QueuedPrompt } from "./agent/queue-batch.js";
 import { isImmediateSubagentCommand, isRunNowCommand, SubagentPanel, useSubagentList } from "./ui/subagent-panel.js";
 import { planTriageAction, steerMessage, triageIncoming, type TriageResult } from "./agent/inbox-triage.js";
 import { answerAside } from "./agent/aside.js";
@@ -289,6 +289,9 @@ function App({
     hasAnyModal,
   } = modals;
   const [queue, setQueue] = useState<QueuedPrompt[]>([]);
+  // Completion must wake the drain effect even when busy was cleared earlier
+  // during an intermediate assistant/tool callback.
+  const [queueDrainRevision, setQueueDrainRevision] = useState(0);
   /** Running subagents, for the Camouflage activity panel (bridge snapshot). */
   const runningSubagents = useSubagentList();
   const announcedSubagentsRef = useRef<Set<string>>(new Set());
@@ -1900,6 +1903,7 @@ function App({
         const asstId = activeAsstIdRef.current;
         if (asstId !== null) updateAssistant(asstId, () => ({ streaming: false }));
         endTurn();
+        setQueueDrainRevision((revision) => revision + 1);
         activeAsstIdRef.current = null;
         activeScopeRef.current = null;
         clearPermissionResolveRef();
@@ -2380,7 +2384,12 @@ function App({
   );
 
   useEffect(() => {
-    if (!busy && queuePlanDraft === null && supervisorRef.current.phase === "idle") {
+    if (canDrainQueue({
+      busy,
+      queuePlanOpen: queuePlanDraft !== null,
+      supervisorIdle: supervisorRef.current.phase === "idle",
+      hasPendingWork: pendingPromptEditRef.current !== null || pendingSteersRef.current.length > 0 || queue.length > 0,
+    })) {
       const pendingEdit = pendingPromptEditRef.current;
       if (pendingEdit) {
         pendingPromptEditRef.current = null;
@@ -2410,7 +2419,7 @@ function App({
         });
       }
     }
-  }, [busy, queue, queuePlanDraft, processMessage]);
+  }, [busy, queue, queuePlanDraft, processMessage, queueDrainRevision]);
 
   const handleQueuePlanPick = useCallback(
     (choice: "group" | "separate" | null) => {
