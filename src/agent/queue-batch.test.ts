@@ -1,8 +1,27 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createQueueBatch, type QueuedPrompt } from "./queue-batch.js";
+import { canDrainQueue, createQueueBatch, type QueuedPrompt } from "./queue-batch.js";
 
 const prompt = (key: string, full: string): QueuedPrompt => ({ full, display: full, key });
+
+describe("canDrainQueue", () => {
+  it("waits for the supervisor to become idle, then permits every remaining queued item", () => {
+    const state = {
+      busy: false,
+      queuePlanOpen: false,
+      supervisorIdle: false,
+      hasPendingWork: true,
+    };
+
+    // Intermediate assistant/tool callbacks can clear busy before the turn is done.
+    assert.equal(canDrainQueue(state), false);
+
+    // Final cleanup wakes the effect after the supervisor has gone idle. The next
+    // queued prompt can start, and a subsequent completion can drain the rest.
+    assert.equal(canDrainQueue({ ...state, supervisorIdle: true, hasPendingWork: true }), true);
+    assert.equal(canDrainQueue({ ...state, supervisorIdle: true, hasPendingWork: false }), false);
+  });
+});
 
 describe("createQueueBatch", () => {
   it("combines ordinary follow-ups and preserves their source keys", () => {
