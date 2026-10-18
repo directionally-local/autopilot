@@ -53,12 +53,24 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish to npm (skips a version that's already published)
+      - name: Publish to npm and verify availability
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-            echo "$NAME@$VERSION is already on npm; nothing to publish."
+          if npm view --prefer-online "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already on npm."
           else
             npm publish --access public
           fi
+
+          for attempt in $(seq 1 30); do
+            if npm view --prefer-online "$NAME@$VERSION" version >/dev/null 2>&1; then
+              echo "$NAME@$VERSION is publicly available on npm."
+              exit 0
+            fi
+            echo "Waiting for $NAME@$VERSION to become visible on npm (attempt $attempt/30)."
+            sleep 10
+          done
+
+          echo "::error::$NAME@$VERSION was not publicly resolvable after publishing. npm may have staged the version without making it available; see npm/cli#9889."
+          exit 1
