@@ -65,6 +65,24 @@ describe("buildSessionPrefix", () => {
     assert.ok(p.includes("read"));
   });
 
+  it("includes artifact-selection guidance only when the artifact tool is available", () => {
+    const artifactTool: ToolSpec = {
+      name: "create_artifact",
+      description: "Create and open a temporary HTML artifact.",
+      parameters: { type: "object", properties: {}, required: [] },
+      needsPermission: true,
+      run: async () => "",
+    };
+    const withArtifact = buildSessionPrefix({ cwd: "/tmp", tools: [...DUMMY_TOOLS, artifactTool], model: "m" });
+    const withoutArtifact = buildSessionPrefix({ cwd: "/tmp", tools: DUMMY_TOOLS, model: "m" });
+    assert.match(withArtifact, /Choosing when to create an artifact/);
+    assert.match(withArtifact, /Prefer a normal terminal response for brief answers/);
+    assert.match(withArtifact, /first use `write` to save the complete HTML document/);
+    assert.match(withArtifact, /workspace-relative `sourcePath`/);
+    assert.match(withArtifact, /Never put the full HTML document in `create_artifact` arguments/);
+    assert.ok(!withoutArtifact.includes("Choosing when to create an artifact"));
+  });
+
   it("includes LSP guidance when LSP tools are present", () => {
     const lspTools: ToolSpec[] = [
       ...DUMMY_TOOLS,

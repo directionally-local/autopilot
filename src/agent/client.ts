@@ -26,7 +26,7 @@ export type KimiEvent =
   | { type: "text"; delta: string }
   | { type: "tool_call_start"; index: number; id: string; name: string }
   | { type: "tool_call_args"; index: number; argsDelta: string }
-  | { type: "tool_call_complete"; index: number; id: string; name: string; arguments: string }
+  | { type: "tool_call_complete"; index: number; id: string; name: string; arguments: string; finishReason: string | null }
   | { type: "usage"; usage: Usage }
   | { type: "done"; finishReason: string | null; usage: Usage | null };
 
@@ -692,6 +692,7 @@ async function* parseStream(
       id: buf.id,
       name: buf.name,
       arguments: buf.args,
+      finishReason,
     };
   }
 

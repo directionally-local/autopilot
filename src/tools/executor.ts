@@ -16,6 +16,7 @@ import { searchWebTool } from "./web-search.js";
 import { githubReadPrTool, githubReadIssueTool, githubReadCodeTool, githubListMergedPrsTool, githubListReleasesTool, githubCreatePrTool } from "./github.js";
 import { changelogImageTool } from "./changelog-image.js";
 import { browserFetchTool } from "./browser.js";
+import { htmlArtifactTool } from "./html-artifact.js";
 import { tasksSetTool } from "./tasks.js";
 import { memoryRememberTool, memoryRecallTool, memoryForgetTool } from "./memory.js";
 import { subagentTool } from "./subagent.js";
@@ -46,6 +47,7 @@ export const ALL_TOOLS: ToolSpec[] = [
   githubCreatePrTool,
   { ...changelogImageTool, isReadOnly: true },
   { ...browserFetchTool, isReadOnly: true },
+  htmlArtifactTool,
   tasksSetTool,
   memoryRememberTool,
   { ...memoryRecallTool, isReadOnly: true },
@@ -351,17 +353,26 @@ export class ToolExecutor {
 
     let args: Record<string, unknown>;
     try {
-      args = call.arguments.trim() ? JSON.parse(call.arguments) : {};
+      if (!call.arguments.trim()) throw new SyntaxError("tool arguments were empty");
+      const parsed: unknown = JSON.parse(call.arguments);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new SyntaxError("tool arguments must be a JSON object");
+      }
+      args = parsed as Record<string, unknown>;
     } catch (e) {
       tr?.call(null, tool.needsPermission);
+      const artifactSuggestion =
+        call.name === "create_artifact"
+          ? "Use write to save the complete HTML document as a workspace .html file, then call create_artifact with its title and sourcePath."
+          : "Retry with valid JSON object arguments for this tool.";
       return {
         tool_call_id: call.id,
         name: call.name,
-        content: `Error: invalid JSON arguments for ${call.name}: ${(e as Error).message}. Arguments received: ${truncateForError(call.arguments)}`,
+        content: `Error: invalid JSON arguments for ${call.name}: ${(e as Error).message}. No tool action was performed (${Buffer.byteLength(call.arguments, "utf8")} argument bytes).`,
         ok: false,
         errorCode: "invalid_args",
-        recoverable: false,
-        suggestion: "reformulate the tool call with valid JSON arguments",
+        recoverable: true,
+        suggestion: artifactSuggestion,
       };
     }
     tr?.call(args, tool.needsPermission);
@@ -742,8 +753,4 @@ function normalizeToolOutput(result: string | ToolOutput): ToolOutput {
     return { content: result, rawBytes: bytes, reducedBytes: bytes };
   }
   return result;
-}
-
-function truncateForError(s: string): string {
-  return s.length <= 200 ? s : `${s.slice(0, 200)}... [${s.length - 200} more chars]`;
 }

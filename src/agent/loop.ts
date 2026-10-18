@@ -887,11 +887,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           opts.callbacks.onToolCallArgs?.(ev.index, ev.argsDelta);
           break;
         case "tool_call_complete": {
-          const safeArgs = validateToolArguments(ev.arguments);
+          const callArgs = validateToolArguments(ev.arguments, ev.name, ev.id, ev.finishReason, opts.sessionId);
           const call: ToolCall = {
             id: ev.id,
             type: "function",
-            function: { name: normalizeToolName(ev.name, opts.tools), arguments: safeArgs },
+            function: { name: normalizeToolName(ev.name, opts.tools), arguments: callArgs },
           };
           toolCalls.push(call);
           tr.toolsUsed.push(call.function.name);
@@ -1891,14 +1891,29 @@ function normalizeToolName(name: string, tools: ToolSpec[]): string {
   return name === "spawn_worker" && tools.some((t) => t.name === "subagent") ? "subagent" : name;
 }
 
-function validateToolArguments(raw: string): string {
-  if (!raw || !raw.trim()) return "{}";
-  try {
-    JSON.parse(raw);
-    return raw;
-  } catch {
-    return "{}";
+function validateToolArguments(raw: string, name: string, id: string, finishReason: string | null, sessionId?: string): string {
+  let issue: string | null = null;
+  if (!raw.trim()) {
+    issue = "empty arguments";
+  } else {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) issue = "arguments must be a JSON object";
+    } catch (error) {
+      issue = error instanceof Error ? error.message : "invalid JSON";
+    }
   }
+  if (issue) {
+    logger.warn("turn:tool_arguments_invalid", {
+      sessionId,
+      tool: name,
+      toolCallId: id,
+      argumentBytes: Buffer.byteLength(raw, "utf8"),
+      finishReason,
+      issue,
+    });
+  }
+  return raw;
 }
 
 /** The credential subset of turn opts, for side-calls made on the turn's behalf. */

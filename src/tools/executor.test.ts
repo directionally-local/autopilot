@@ -144,17 +144,33 @@ describe("ToolExecutor — typed error classification", () => {
     assert.strictEqual(res.suggestion, undefined);
   });
 
-  it("classifies invalid JSON arguments as 'invalid_args'", async () => {
-    const tool = makeTool({ run: async () => "ok" });
+  it("classifies invalid JSON arguments as recoverable and does not echo the payload", async () => {
+    let ran = false;
+    const tool = makeTool({ run: async () => { ran = true; return "ok"; } });
     const exec = new ToolExecutor([tool]);
+    const raw = '{"content":"<h1>private generated content';
     const res = await exec.run(
-      { id: "c3", name: "test_tool", arguments: "not-json{" },
+      { id: "c3", name: "test_tool", arguments: raw },
       allowAll,
       ctx,
     );
     assert.strictEqual(res.ok, false);
     assert.strictEqual(res.errorCode, "invalid_args");
-    assert.strictEqual(res.recoverable, false);
+    assert.strictEqual(res.recoverable, true);
+    assert.match(res.content, /No tool action was performed/);
+    assert.ok(!res.content.includes("private generated content"));
+    assert.strictEqual(ran, false);
+  });
+
+  it("rejects empty tool arguments instead of treating them as an empty object", async () => {
+    let ran = false;
+    const exec = new ToolExecutor([makeTool({ run: async () => { ran = true; return "ok"; } })]);
+    const res = await exec.run({ id: "c-empty", name: "test_tool", arguments: "" }, allowAll, ctx);
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.errorCode, "invalid_args");
+    assert.strictEqual(res.recoverable, true);
+    assert.match(res.content, /arguments were empty/);
+    assert.strictEqual(ran, false);
   });
 
   it("classifies unknown tool name as 'not_found'", async () => {

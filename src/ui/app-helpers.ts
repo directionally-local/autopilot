@@ -7,10 +7,9 @@
  * keeps the component file focused on UI wiring.
  */
 import React from "react";
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { platform } from "node:os";
 
 import type { ResponseMeta } from "../agent/client.js";
 import { resolveCustomEndpoint } from "../agent/custom-endpoint.js";
@@ -238,21 +237,7 @@ export function costLookupFromConfig(cfg: Cfg, meta: ResponseMeta | null | undef
  * caller can fall back to printing the URL. Never throws: a missing opener
  * (no xdg-open on a server) must not crash the app.
  */
-export function openBrowser(url: string): boolean {
-  if (process.env.KIMIFLARE_NO_BROWSER === "1" || process.env.BROWSER === "none") return false;
-  try {
-    const os = platform();
-    // `start` is a cmd.exe builtin, not an executable; the empty "" is its window-title argument.
-    const [cmd, args] =
-      os === "darwin" ? ["open", [url]] : os === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-    const child = spawn(cmd, args as string[], { detached: true, stdio: "ignore" });
-    child.on("error", () => undefined);
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
-}
+export { openBrowser } from "../util/open-browser.js";
 
 export function detectGitHubRepo(cachedRepo?: string): { owner: string; name: string } | null {
   if (cachedRepo) {
