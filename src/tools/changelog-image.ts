@@ -422,7 +422,16 @@ export const changelogImageTool: ToolSpec<ChangelogImageArgs> = {
 
     // 5. Render to PNG. resvg ships a per-platform native binary; load it only
     // here so a missing binary can't crash the whole CLI at startup.
-    const { Resvg } = await import("@resvg/resvg-js");
+    let resvgModule: typeof import("@resvg/resvg-js");
+    try {
+      resvgModule = await import("@resvg/resvg-js");
+    } catch {
+      const content = "PNG rendering is unavailable because the optional @resvg/resvg-js dependency is not installed.";
+      setTask("4", "completed");
+      const bytes = Buffer.byteLength(content, "utf8");
+      return { content, rawBytes: bytes, reducedBytes: bytes };
+    }
+    const { Resvg } = resvgModule;
     const resvg = new Resvg(svg, {
       fitTo: { mode: "zoom", value: 2 },
       font: {

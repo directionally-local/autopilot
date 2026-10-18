@@ -22,5 +22,6 @@ export default defineConfig({
     "commander",
     "turndown",
     "camouflage-tui",
+    "@resvg/resvg-js",
   ],
 });
