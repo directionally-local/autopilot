@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.2](https://github.com/sinameraji/autopilot/compare/v1.24.1...v1.24.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* **ui:** resume draining queued prompts after turns ([#794](https://github.com/sinameraji/autopilot/issues/794)) ([8bce24f](https://github.com/sinameraji/autopilot/commit/8bce24fac3c549b99b5d4f46c33db2d52086398f))
+
 ## [1.24.1](https://github.com/sinameraji/autopilot/compare/v1.24.0...v1.24.1) (2026-10-18)
 
 
