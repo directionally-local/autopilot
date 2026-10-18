@@ -1,6 +1,6 @@
 {
   "name": "autopilot-ai",
-  "version": "1.23.0",
+  "version": "1.24.0",
   "description": "autopilot (formerly kimiflare): a terminal coding agent that runs any OpenRouter model with your own key. Per-turn billed cost, web search, GitHub, headless browser, LSP, MCP, local memory.",
   "keywords": [
     "autopilot",

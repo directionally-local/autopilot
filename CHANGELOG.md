@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0](https://github.com/sinameraji/autopilot/compare/v1.23.0...v1.24.0) (2026-10-18)
+
+
+### Features
+
+* bundle runtime dependencies for offline installers ([#790](https://github.com/sinameraji/autopilot/issues/790)) ([729589c](https://github.com/sinameraji/autopilot/commit/729589ca5dc5cc5b9cee7f423d639468f4768b9a))
+
 ## [1.23.0](https://github.com/sinameraji/autopilot/compare/v1.22.2...v1.23.0) (2026-10-17)
 
 
