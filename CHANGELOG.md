@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.1](https://github.com/sinameraji/autopilot/compare/v1.24.0...v1.24.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **release:** verify npm package availability ([#792](https://github.com/sinameraji/autopilot/issues/792)) ([589671f](https://github.com/sinameraji/autopilot/commit/589671ffebc23d8b1e4dd982b54f71fe51895a5a))
+
 ## [1.24.0](https://github.com/sinameraji/autopilot/compare/v1.23.0...v1.24.0) (2026-10-18)
 
 
