@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.25.1](https://github.com/sinameraji/autopilot/compare/v1.25.0...v1.25.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **tools:** serialize same-file edits and actually load the isolated-vm sandbox ([#800](https://github.com/sinameraji/autopilot/issues/800)) ([aa3755f](https://github.com/sinameraji/autopilot/commit/aa3755f31fc2e68a69d6d6949b8354348ad6b749))
+* **ui:** show checklists for multi-step tasks ([#798](https://github.com/sinameraji/autopilot/issues/798)) ([1fdb435](https://github.com/sinameraji/autopilot/commit/1fdb435611108c2ec8fdd576f96b162a3a3afa60))
+
 ## [1.25.0](https://github.com/sinameraji/autopilot/compare/v1.24.2...v1.25.0) (2026-10-18)
 
 
