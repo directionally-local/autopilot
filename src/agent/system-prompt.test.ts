@@ -37,6 +37,13 @@ describe("buildStaticPrefix", () => {
     assert.match(p, /do not answer an earlier message instead of addressing the latest one/);
   });
 
+  it("proactively asks for a visible checklist for multi-step requests", () => {
+    const p = buildStaticPrefix();
+    assert.match(p, /two or more distinct steps, proactively create a visible checklist/);
+    assert.match(p, /before doing work/);
+    assert.match(p, /skip it only for a genuinely quick single-action request/i);
+  });
+
   it("directs the agent to recover from blockers or give a concrete next action", () => {
     const p = buildStaticPrefix();
     assert.match(p, /Treat blockers as problems to work through/);

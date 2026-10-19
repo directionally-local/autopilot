@@ -9,8 +9,8 @@ export const tasksSetTool: ToolSpec<TasksSetArgs> = {
   name: "tasks_set",
   description: [
     "Set the visible task list shown to the user during this turn.",
-    "Call this when the user has given you a multi-step job, or whenever progress changes:",
-    "at the start (all tasks pending, with exactly one in_progress), and after each step completes",
+    "Call this proactively for any request that needs two or more distinct steps, before starting work, and whenever progress changes:",
+    "at the start (all tasks pending except exactly one in_progress), and after each step completes",
     "(flip that task to completed and the next to in_progress).",
     "Pass the ENTIRE task list each call — this replaces the panel.",
     "Keep tasks short (one imperative clause). Only one should be in_progress at a time.",

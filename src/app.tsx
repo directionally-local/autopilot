@@ -416,6 +416,21 @@ function App({
   const effortRef = useRef<ReasoningEffort>(effort);
   const usageRef = useRef<Usage | null>(null);
   const responseMetaRef = useRef<ResponseMeta | null>(null);
+  const updateTaskTracking = useCallback((nextTasks: Task[]) => {
+    const previousTasks = tasksRef.current;
+    const prevEmpty = previousTasks.length === 0;
+    const prevAllDone = previousTasks.length > 0 && previousTasks.every((task) => task.status === "completed");
+    tasksRef.current = nextTasks;
+    setTasks(nextTasks);
+    if ((prevEmpty || prevAllDone) && nextTasks.length > 0) {
+      setTasksStartedAt(Date.now());
+      setTasksStartTokens(usageRef.current?.prompt_tokens ?? 0);
+    }
+    if (nextTasks.length === 0) {
+      setTasksStartedAt(null);
+      setTasksStartTokens(0);
+    }
+  }, [tasksRef, setTasks, setTasksStartedAt, setTasksStartTokens]);
   const lastApiErrorRef = useRef<{ httpStatus?: number; code?: number; message: string } | null>(null);
   const updateCheckedRef = useRef(false);
   const sessionStateRef = useRef<SessionState>(emptySessionState());
@@ -1115,6 +1130,7 @@ function App({
       setUsage,
       setSessionUsage,
       setKimiMdStale,
+      onTasks: updateTaskTracking,
       beginTurn,
       endTurn,
       ensureSessionId,
@@ -1144,7 +1160,7 @@ function App({
       lastApiErrorRef,
       supervisorRef,
     });
-  }, [cfg, busy, updateAssistant, updateTool, updateResponseMeta]);
+  }, [cfg, busy, updateAssistant, updateTool, updateResponseMeta, updateTaskTracking]);
 
   const handleThemePick = useCallback(
     (picked: Theme | null) => {
@@ -1840,22 +1856,7 @@ function App({
           void getCostReport(sid).then((report) => setSessionUsage(report.session));
         },
         onResponseMeta: updateResponseMeta,
-        onTasks: (nextTasks: Task[]) => {
-          const prevEmpty = tasksRef.current.length === 0;
-          const prevAllDone =
-            tasksRef.current.length > 0 &&
-            tasksRef.current.every((t) => t.status === "completed");
-          tasksRef.current = nextTasks;
-          setTasks(nextTasks);
-          if ((prevEmpty || prevAllDone) && nextTasks.length > 0) {
-            setTasksStartedAt(Date.now());
-            setTasksStartTokens(usageRef.current?.prompt_tokens ?? 0);
-          }
-          if (nextTasks.length === 0) {
-            setTasksStartedAt(null);
-            setTasksStartTokens(0);
-          }
-        },
+        onTasks: updateTaskTracking,
         onPlanOptions: (options: PlanOption[]) => {
           planOptionsRef.current = options;
         },
@@ -2380,7 +2381,7 @@ function App({
         },
       );
     },
-    [cfg, handleSlash, updateAssistant, updateTool, saveSessionSafe, updateResponseMeta, setShowPlanCompletePicker, runUserShellCommand, ensureTraceStarted],
+    [cfg, handleSlash, updateAssistant, updateTool, saveSessionSafe, updateResponseMeta, setShowPlanCompletePicker, runUserShellCommand, ensureTraceStarted, updateTaskTracking],
   );
 
   useEffect(() => {

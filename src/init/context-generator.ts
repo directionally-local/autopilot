@@ -10,6 +10,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
+import type { Task } from "../tools/registry.js";
 
 export type ProjectFlavor =
   | "node"
@@ -463,6 +464,18 @@ export interface InitPromptResult {
   prompt: string;
   targetFilename: string;
   isRefresh: boolean;
+  tasks: Task[];
+}
+
+export function buildInitTasks(targetFilename: string): Task[] {
+  return [
+    { id: "identity", title: "Inspect project identity and configuration", status: "in_progress" },
+    { id: "structure", title: "Discover source structure, tests, and conventions", status: "pending" },
+    { id: "workflow", title: "Identify build and development workflows", status: "pending" },
+    { id: "architecture", title: "Map architecture and project patterns", status: "pending" },
+    { id: "write", title: "Write or refresh " + targetFilename, status: "pending" },
+    { id: "verify", title: "Re-read and verify " + targetFilename, status: "pending" },
+  ];
 }
 
 export function buildInitPrompt(cwd: string): InitPromptResult {
@@ -475,6 +488,7 @@ export function buildInitPrompt(cwd: string): InitPromptResult {
   const profile = analyzeProject(cwd);
   const checklist = discoveryChecklist(profile);
   const sections = sectionTemplate();
+  const tasks = buildInitTasks(targetFilename);
 
   const promptParts = [
     isRefresh
@@ -482,6 +496,8 @@ export function buildInitPrompt(cwd: string): InitPromptResult {
       : `Generate a \`${targetFilename}\` at the repository root so future agents have comprehensive project context.`,
     "",
     "This is a **structured investigation**. Follow the checklist below systematically. Use the `glob`, `read`, `grep`, and `bash` tools to gather information. Do not skip steps.",
+    `Visible task list (already initialized in the UI; keep these IDs and titles):\n${tasks.map((task) => "- " + task.id + ": " + task.status + ": " + task.title).join("\n")}`,
+    "Keep the visible task checklist synchronized with your progress using `tasks_set`: update the current phase and mark the next phase active before moving on. Map the detailed checklist below onto these high-level tasks.",
     "",
     `**Detected project profile:** ${profile.primaryLanguage} (${profile.flavor})`,
     profile.packageFile ? `- Package file: ${profile.packageFile}` : null,
@@ -505,10 +521,10 @@ export function buildInitPrompt(cwd: string): InitPromptResult {
       ? `After writing the file, re-read \`${targetFilename}\` and verify it is complete and accurate.`
       : "After writing the file, re-read it and verify all sections are present and accurate.",
     "",
-    "Do not call `tasks_set` for this. Just follow the checklist, gather information, then write the file.",
+    "The visible task checklist is already initialized. Mark investigation phases complete as you finish them, and complete the write and verification tasks only after re-reading the generated file.",
   ];
 
   const prompt = promptParts.filter((p): p is string => p !== null).join("\n");
 
-  return { prompt, targetFilename, isRefresh };
+  return { prompt, targetFilename, isRefresh, tasks };
 }
