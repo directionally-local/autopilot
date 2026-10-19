@@ -1,7 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ToolSpec } from "./registry.js";
 import { resolvePath, collapsePath } from "../util/paths.js";
+import { withFileLock } from "../util/file-lock.js";
+import { writeFileVerified } from "../util/safe-write.js";
 
 interface Args {
   path: string;
@@ -28,15 +30,17 @@ export const writeTool: ToolSpec<Args> = {
   }),
   async run(args, ctx) {
     const abs = resolvePath(ctx.cwd, args.path);
-    let before = "";
-    try {
-      before = await readFile(abs, "utf8");
-    } catch {
-      /* new file */
-    }
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, args.content, "utf8");
-    const verb = before ? "Overwrote" : "Created";
-    return `${verb} ${args.path} (${args.content.length} chars).`;
+    return withFileLock(abs, async () => {
+      let before = "";
+      try {
+        before = await readFile(abs, "utf8");
+      } catch {
+        /* new file */
+      }
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFileVerified(abs, args.content);
+      const verb = before ? "Overwrote" : "Created";
+      return `${verb} ${args.path} (${args.content.length} chars).`;
+    });
   },
 };

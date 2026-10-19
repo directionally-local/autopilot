@@ -20,6 +20,7 @@ export interface SandboxToolCall {
   name: string;
   args: unknown;
   result: string;
+  ok: boolean;
 }
 
 export interface SandboxOptions {
@@ -117,9 +118,54 @@ async function transpileOrStrip(code: string, cwd: string): Promise<{ js: string
   };
 }
 
+/**
+ * isolated-vm is a CommonJS native module. Under Node ESM (and in the tsup
+ * bundle) `import("isolated-vm")` exposes its exports only on `default`, so the
+ * previous `const { Isolate } = await import(...)` was always `undefined` and
+ * every session silently fell back to node:vm.
+ */
+async function loadIsolatedVm(): Promise<typeof import("isolated-vm")> {
+  const mod = (await import("isolated-vm")) as typeof import("isolated-vm") & { default?: typeof import("isolated-vm") };
+  const ivm = mod.default?.Isolate ? mod.default : mod;
+  if (typeof ivm.Isolate !== "function") throw new Error("isolated-vm loaded but exposes no Isolate constructor");
+  return ivm;
+}
+
+/**
+ * Tool calls from inside a script. Read-only (or explicitly concurrent) tools
+ * may overlap, but mutating tools run one at a time in call order — the same
+ * rule the standard agent loop applies to direct tool calls. Without this,
+ * `Promise.all([api.edit(f, …), api.edit(f, …)])` on the node:vm backend ran
+ * both edits concurrently and lost one of them.
+ */
+function makeToolBridge(opts: SandboxOptions, toolCalls: SandboxToolCall[]) {
+  let mutationTail: Promise<unknown> = Promise.resolve();
+  return (tool: ToolSpec) =>
+    async (args: unknown): Promise<string> => {
+      const invoke = async (): Promise<ToolResult> => {
+        const toolCallId = `code_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        return opts.executor.run(
+          { id: toolCallId, name: tool.name, arguments: JSON.stringify(args ?? {}) },
+          opts.askPermission,
+          opts.ctx,
+        );
+      };
+      let result: ToolResult;
+      if (tool.isReadOnly === true || tool.concurrent === true) {
+        result = await invoke();
+      } else {
+        const run = mutationTail.then(invoke, invoke);
+        mutationTail = run.catch(() => undefined);
+        result = await run;
+      }
+      toolCalls.push({ name: tool.name, args, result: result.content, ok: result.ok });
+      return result.content;
+    };
+}
+
 async function runWithIsolatedVm(opts: SandboxOptions): Promise<SandboxResult> {
-  const { Isolate } = await import("isolated-vm");
-  const isolate = new Isolate({ memoryLimit: opts.memoryLimitMB ?? 128 });
+  const ivm = await loadIsolatedVm();
+  const isolate = new ivm.Isolate({ memoryLimit: opts.memoryLimitMB ?? 128 });
   const context = await isolate.createContext();
   const jail = context.global;
   await jail.set("global", jail.derefInto());
@@ -138,35 +184,20 @@ async function runWithIsolatedVm(opts: SandboxOptions): Promise<SandboxResult> {
   await context.eval(`var console = { log: function(...args) { _log(args.map(String).join(" ")); } };`);
 
   // Build API bindings for each tool
-  const toolMap = new Map(opts.tools.map((t) => [t.name, t]));
+  const bridge = makeToolBridge(opts, toolCalls);
 
   for (const tool of opts.tools) {
-    const ref = new (await import("isolated-vm")).Reference(
-      async (argsJson: string): Promise<string> => {
-        const args = JSON.parse(argsJson);
-        const toolCallId = `code_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const call = bridge(tool);
+    const host = async (argsJson: string): Promise<string> => call(JSON.parse(argsJson));
 
-        const result = await opts.executor.run(
-          { id: toolCallId, name: tool.name, arguments: JSON.stringify(args) },
-          opts.askPermission,
-          opts.ctx,
-        );
-
-        toolCalls.push({
-          name: tool.name,
-          args,
-          result: result.content,
-        });
-
-        return result.content;
-      },
-    );
-
+    // `arguments.reference` wraps the host function in a Reference. Passing a
+    // pre-built `new ivm.Reference(fn)` here would wrap the Reference itself,
+    // and `applySyncPromise` would then fail with "Reference is not a function".
     await context.evalClosure(
       `globalThis["_api_${tool.name}"] = function(argsJson) {
         return $0.applySyncPromise(undefined, [argsJson], { arguments: { copy: true } });
       };`,
-      [ref],
+      [host],
       { arguments: { reference: true } },
     );
   }
@@ -250,25 +281,10 @@ async function runWithNodeVm(opts: SandboxOptions): Promise<SandboxResult> {
   };
 
   // Build API bindings
+  const bridge = makeToolBridge(opts, toolCalls);
   for (const tool of opts.tools) {
-    (sandbox.api as Record<string, unknown>)[tool.name] = async (input?: unknown): Promise<string> => {
-      const args = input ?? {};
-      const toolCallId = `code_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-      const result = await opts.executor.run(
-        { id: toolCallId, name: tool.name, arguments: JSON.stringify(args) },
-        opts.askPermission,
-        opts.ctx,
-      );
-
-      toolCalls.push({
-        name: tool.name,
-        args,
-        result: result.content,
-      });
-
-      return result.content;
-    };
+    const call = bridge(tool);
+    (sandbox.api as Record<string, unknown>)[tool.name] = (input?: unknown): Promise<string> => call(input ?? {});
   }
 
   const { js: jsCode, warnings } = await transpileOrStrip(opts.code, opts.ctx.cwd);

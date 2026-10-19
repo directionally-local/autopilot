@@ -2,8 +2,13 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { stripTypescript, runInSandbox, buildFallbackWarning, resetFallbackWarningFlag } from "./sandbox.js";
 import type { ToolSpec } from "../tools/registry.js";
-import type { ToolExecutor, PermissionAsker } from "../tools/executor.js";
+import type { PermissionAsker } from "../tools/executor.js";
 import type { ToolContext } from "../tools/registry.js";
+import * as fsPromises from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ToolExecutor } from "../tools/executor.js";
+import { editTool } from "../tools/edit.js";
 
 const mockTools: ToolSpec[] = [];
 
@@ -124,22 +129,23 @@ describe("buildFallbackWarning", () => {
   });
 });
 
+async function isolatedVmAvailable(): Promise<boolean> {
+  try {
+    const mod = (await import("isolated-vm")) as { Isolate?: unknown; default?: { Isolate?: unknown } };
+    return typeof (mod.default?.Isolate ?? mod.Isolate) === "function";
+  } catch {
+    return false;
+  }
+}
+
 describe("fallback warning deduplication", () => {
   it("only emits the fallback warning once per session", async () => {
     resetFallbackWarningFlag();
 
-    // Force a fallback by passing code that will cause isolated-vm to fail
-    // We simulate this by using a code that works in node:vm but we need to
-    // trigger the fallback path. Since we can't easily make isolated-vm fail
-    // in a controlled way, we verify the deduplication by checking that
-    // after the first fallback, subsequent calls don't add warnings.
-    //
-    // We test this indirectly: the first call to runInSandbox when isolated-vm
-    // is unavailable will set fallbackWarningShown = true. The second call
-    // should not add a warning even if it also falls back.
-    //
-    // In test environments isolated-vm is usually not installed, so both calls
-    // will fall back. We just verify at most one warning is ever present.
+    // When isolated-vm is installed no fallback happens and no warning fires.
+    // When it is absent, both calls fall back and the warning must appear
+    // exactly once for the session.
+    const expected = (await isolatedVmAvailable()) ? 0 : 1;
     const result1 = await runInSandbox({
       code: `console.log("first");`,
       tools: mockTools,
@@ -156,12 +162,11 @@ describe("fallback warning deduplication", () => {
       ctx: mockCtx,
     });
 
-    // At most one of the results should have a fallback warning
     const warningCount =
       (result1.warnings?.filter((w) => w.includes("Code Mode is using")).length ?? 0) +
       (result2.warnings?.filter((w) => w.includes("Code Mode is using")).length ?? 0);
 
-    assert.strictEqual(warningCount, 1);
+    assert.strictEqual(warningCount, expected);
   });
 
   it("re-emits the fallback warning for a new session in the same process", async () => {
@@ -210,5 +215,97 @@ describe("fallback warning deduplication", () => {
       // isolated-vm is available; no fallback warnings expected.
       assert.strictEqual(bWarnings, 0);
     }
+  });
+});
+
+describe("sandbox backend", () => {
+  it("uses isolated-vm when it is installed (no fallback warning)", async () => {
+    if (!(await isolatedVmAvailable())) return; // optional dependency absent: nothing to assert
+    resetFallbackWarningFlag();
+    const result = await runInSandbox({
+      code: `console.log(typeof setTimeout);`,
+      tools: mockTools,
+      executor: mockExecutor,
+      askPermission: mockAskPermission,
+      ctx: { ...mockCtx, sessionId: "backend-check" },
+    });
+    assert.strictEqual(result.error, undefined);
+    assert.deepEqual(result.warnings ?? [], [], "isolated-vm is installed, so the node:vm fallback must not fire");
+    // node:vm exposes the host setTimeout; the isolate does not.
+    assert.strictEqual(result.output, "undefined");
+  });
+});
+
+describe("concurrent tool calls from a script", () => {
+  const { mkdtemp, readFile, writeFile } = fsPromises;
+
+  it("keeps both edits when Promise.all targets the same file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandbox-edit-"));
+    const file = join(dir, "t.rs");
+    const executor = new ToolExecutor([editTool]);
+    for (let i = 0; i < 10; i++) {
+      await writeFile(file, "fn a() {\n    ALPHA\n}\nfn b() {\n    BETA\n}\n", "utf8");
+      const result = await runInSandbox({
+        code: `console.log(JSON.stringify(await Promise.all([
+          api.edit({ path: ${JSON.stringify(file)}, old_string: "ALPHA", new_string: "let alpha = 1111111111;" }),
+          api.edit({ path: ${JSON.stringify(file)}, old_string: "BETA", new_string: "let b = 2;" }),
+        ])));`,
+        tools: [editTool],
+        executor,
+        askPermission: mockAskPermission,
+        ctx: { cwd: dir, sessionId: "concurrent-edits" },
+        timeoutMs: 10000,
+      });
+      assert.strictEqual(result.error, undefined, `iteration ${i}: ${result.error}`);
+      assert.strictEqual(await readFile(file, "utf8"), "fn a() {\n    let alpha = 1111111111;\n}\nfn b() {\n    let b = 2;\n}\n", `iteration ${i}`);
+      assert.deepEqual(result.toolCalls.map((c) => c.ok), [true, true]);
+    }
+  });
+
+  it("runs mutating tools one at a time in call order while read-only tools may overlap", async () => {
+    const events: string[] = [];
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const mutating: ToolSpec = {
+      name: "mut",
+      description: "",
+      parameters: { type: "object", properties: { id: { type: "string" } } },
+      needsPermission: false,
+      run: async (args: { id: string }) => {
+        events.push(`${args.id}:start`);
+        await sleep(args.id === "m1" ? 30 : 5);
+        events.push(`${args.id}:end`);
+        return args.id;
+      },
+    };
+    const readOnly: ToolSpec = { ...mutating, name: "ro", isReadOnly: true };
+    const executor = new ToolExecutor([mutating, readOnly]);
+    const result = await runInSandbox({
+      code: `await Promise.all([
+        api.mut({ id: "m1" }), api.ro({ id: "r1" }), api.mut({ id: "m2" }), api.ro({ id: "r2" }),
+      ]); console.log("done");`,
+      tools: [mutating, readOnly],
+      executor,
+      askPermission: mockAskPermission,
+      ctx: { ...mockCtx, sessionId: "ordering" },
+      timeoutMs: 10000,
+    });
+    assert.strictEqual(result.error, undefined, result.error);
+    const m = events.filter((e) => e.startsWith("m"));
+    assert.deepEqual(m, ["m1:start", "m1:end", "m2:start", "m2:end"], "mutating calls must not interleave");
+    assert.ok(result.toolCalls.every((c) => c.ok));
+  });
+
+  it("marks a failed inner call as not ok instead of reporting success", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandbox-edit-"));
+    const executor = new ToolExecutor([editTool]);
+    const result = await runInSandbox({
+      code: `console.log(await api.edit({ path: "missing.txt", old_string: "a", new_string: "b" }));`,
+      tools: [editTool],
+      executor,
+      askPermission: mockAskPermission,
+      ctx: { cwd: dir, sessionId: "failed-call" },
+    });
+    assert.strictEqual(result.toolCalls.length, 1);
+    assert.strictEqual(result.toolCalls[0]!.ok, false);
   });
 });

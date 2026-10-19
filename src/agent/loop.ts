@@ -608,7 +608,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
             `IMPORTANT — explore through code, not direct tools: to read files, run shell commands, grep, or glob, ` +
             `call api.read(...), api.bash(...), api.grep(...), api.glob(...) INSIDE this code block and console.log only what you need. ` +
             `Do NOT call read/bash/grep/glob as separate tools — their full output floods your context, while here only what you log returns. ` +
-            `Batch multiple reads/greps/commands into a single execute_code call.` +
+            `Batch multiple reads/greps/commands into a single execute_code call.\n\n` +
+            `Mutating calls (edit, write, bash, …) run one at a time in call order even inside Promise.all; ` +
+            `apply edits to the same file sequentially and re-read the file before editing it again.` +
             (directTools.length > 0
               ? `\n\nNot in this API — call these as separate tools instead: ${directTools.map((t) => t.name).join(", ")}.`
               : ""),
@@ -1444,6 +1446,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           );
         }
 
+        logger.debug("turn:code_mode_start", { sessionId: opts.sessionId, toolCallId: tc.id, codeChars: code.length });
         const sandboxResult = await runInSandbox({
           code,
           tools: sandboxTools,
@@ -1466,13 +1469,25 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           memoryLimitMB: 128,
         });
 
+        logger.debug("turn:code_mode_end", {
+          sessionId: opts.sessionId,
+          toolCallId: tc.id,
+          durationMs: Math.round(performance.now() - sandboxStartedAt),
+          error: sandboxResult.error ?? null,
+          calls: sandboxResult.toolCalls.map((c) => ({
+            name: c.name,
+            ok: c.ok,
+            path: typeof (c.args as { path?: unknown })?.path === "string" ? (c.args as { path: string }).path : undefined,
+          })),
+        });
+
         // Emit individual tool results from inside the script
         for (const stc of sandboxResult.toolCalls) {
           const toolResult: ToolResult = {
             tool_call_id: tc.id,
             name: stc.name,
             content: stc.result,
-            ok: true,
+            ok: stc.ok,
           };
           toolResults.push(toolResult);
           opts.callbacks.onToolResult?.(toolResult);
