@@ -1860,6 +1860,11 @@ function App({
           planOptionsRef.current = options;
         },
         askPermission: askForPermission,
+        // Sandbox/memory warnings (e.g. Code Mode falling back to the plain
+        // node:vm sandbox) were previously dropped on the floor in the TUI.
+        onWarning: (msg: string) => {
+          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: msg }]);
+        },
         onGuardrail: (ev: GuardrailEvent) => {
           if (ev.kind === "loop_recovery" || ev.kind === "loop_stopped") return;
           setEvents((e) => [...e, { kind: "info", key: mkKey(), text: ev.message }]);

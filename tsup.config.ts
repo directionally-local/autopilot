@@ -23,5 +23,9 @@ export default defineConfig({
     "turndown",
     "camouflage-tui",
     "@resvg/resvg-js",
+    // Native optional dependency: bundling it inlines node-gyp-build, whose
+    // dynamic require() throws in the ESM bundle and silently disables the
+    // secure sandbox.
+    "isolated-vm",
   ],
 });

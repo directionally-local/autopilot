@@ -1297,8 +1297,34 @@ export function toolRow(name: string, title: string | undefined, rawArgs: string
     const rest = title.toLowerCase().startsWith(`${name.toLowerCase()} `) ? title.slice(name.length + 1) : title;
     return { label, args: rest.trim() };
   }
+  if (name === "execute_code") {
+    // execute_code is synthesized by the agent loop and has no ToolSpec.render,
+    // so without this the row shows the raw {"code":"…"} JSON payload.
+    return { label: "Code", args: clip(executeCodeSummary(rawArgs)) };
+  }
   const args = (rawArgs ?? "").replace(/\s+/g, " ").trim();
-  return { label, args: args.length > 120 ? `${args.slice(0, 119)}…` : args };
+  return { label, args: clip(args) };
+}
+
+function clip(s: string): string {
+  return s.length > 120 ? `${s.slice(0, 119)}…` : s;
+}
+
+/** The model's stated reasoning for a code batch, else its first meaningful line. */
+export function executeCodeSummary(rawArgs: string | undefined): string {
+  let parsed: { code?: unknown; reasoning?: unknown } = {};
+  try {
+    parsed = rawArgs ? (JSON.parse(rawArgs) as typeof parsed) : {};
+  } catch {
+    return "running a code batch";
+  }
+  if (typeof parsed.reasoning === "string" && parsed.reasoning.trim()) return parsed.reasoning.replace(/\s+/g, " ").trim();
+  const code = typeof parsed.code === "string" ? parsed.code : "";
+  const first = code
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith("//"));
+  return first ? first.replace(/\s+/g, " ") : "running a code batch";
 }
 
 /** One line under the tool row: what the result amounts to. */

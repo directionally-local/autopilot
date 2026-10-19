@@ -57,6 +57,11 @@ describe("tool rows", () => {
     assert.deepEqual(toolRow("read", "read src/a.ts", "{}"), { label: "Read", args: "src/a.ts" });
     assert.deepEqual(toolRow("mcp_x_y", undefined, '{"q":1}'), { label: "mcp_x_y", args: '{"q":1}' });
   });
+  it("describes execute_code by its reasoning or first code line instead of raw JSON", () => {
+    assert.deepEqual(toolRow("execute_code", undefined, '{"code":"const p = 1;\\nconsole.log(p);","reasoning":"Check the  worktree state"}'), { label: "Code", args: "Check the worktree state" });
+    assert.deepEqual(toolRow("execute_code", undefined, '{"code":"// read files\\nconst r = await api.read({path:\\"a\\"});"}'), { label: "Code", args: 'const r = await api.read({path:"a"});' });
+    assert.deepEqual(toolRow("execute_code", undefined, "not json"), { label: "Code", args: "running a code batch" });
+  });
   it("summarizes results", () => {
     assert.equal(toolSummary("read", true, false, "a\nb\nc\n"), "3 lines");
     assert.equal(toolSummary("grep", true, false, ""), "No matches");
