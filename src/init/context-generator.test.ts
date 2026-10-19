@@ -24,6 +24,12 @@ describe("buildInitPrompt", () => {
     assert.equal(result.targetFilename, "AGENTS.md");
     assert.equal(result.isRefresh, false);
     assert.match(result.prompt, /Generate a `AGENTS\.md`/);
+    assert.equal(result.tasks.length, 6);
+    assert.equal(result.tasks[0]?.status, "in_progress");
+    assert.equal(result.tasks[4]?.title, "Write or refresh AGENTS.md");
+    assert.equal(result.tasks[5]?.title, "Re-read and verify AGENTS.md");
+    assert.match(result.prompt, /visible task checklist is already initialized/i);
+    assert.doesNotMatch(result.prompt, /Do not call `tasks_set`/);
   });
 
   it("refreshes an existing legacy context file in place", () => {
@@ -34,6 +40,7 @@ describe("buildInitPrompt", () => {
 
     assert.equal(result.targetFilename, "KIMI.md");
     assert.equal(result.isRefresh, true);
+    assert.equal(result.tasks[4]?.title, "Write or refresh KIMI.md");
     assert.match(result.prompt, /Regenerate `KIMI\.md`/);
   });
 

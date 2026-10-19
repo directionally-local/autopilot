@@ -20,7 +20,7 @@ import { sanitizeString } from "../agent/messages.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
-import type { ToolSpec, ToolRender } from "../tools/registry.js";
+import type { ToolSpec, ToolRender, Task } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 import { classifyIntent } from "../intent/classify.js";
 import type { ReasoningEffort } from "../config.js";
@@ -55,6 +55,7 @@ export interface RunInitDeps {
   setUsage: React.Dispatch<React.SetStateAction<Usage | null>>;
   setSessionUsage: React.Dispatch<React.SetStateAction<DailyUsage | null>>;
   setKimiMdStale: (v: boolean) => void;
+  onTasks: (tasks: Task[]) => void;
 
   // Turn-lifecycle hooks
   beginTurn: () => void;
@@ -94,7 +95,7 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
     cfg, busy, mkKey, setEvents,
     setCodeMode, setTurnPhase, setCurrentToolName, setLastActivityAt,
     setUsage, setSessionUsage,
-    setKimiMdStale,
+    setKimiMdStale, onTasks,
     beginTurn, endTurn, ensureSessionId, onIterationEnd,
     updateAssistant, updateTool, updateResponseMeta,
     askForPermission, clearPermissionResolveRef,
@@ -111,7 +112,8 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
     return;
   }
   const cwd = process.cwd();
-  const { prompt, targetFilename, isRefresh } = buildInitPrompt(cwd);
+  const { prompt, targetFilename, isRefresh, tasks } = buildInitPrompt(cwd);
+  onTasks(tasks);
 
   setEvents((e) => [
     ...e,
@@ -251,6 +253,7 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
           void getCostReport(sid).then((report) => setSessionUsage(report.session));
         },
         onResponseMeta: updateResponseMeta,
+        onTasks,
         askPermission: (req) => askForPermission(req, { promptOnBlockedBash: true }),
         onGuardrail: (ev) => {
           setEvents((e) => [...e, { kind: "info", key: mkKey(), text: ev.message }]);
@@ -347,6 +350,7 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
   } finally {
     logger.info("runInit:finally");
     setCodeMode(false);
+    onTasks([]);
     const asstId = activeAsstIdRef.current;
     if (asstId !== null) updateAssistant(asstId, () => ({ streaming: false }));
     endTurn();
