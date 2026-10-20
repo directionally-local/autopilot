@@ -1,0 +1,50 @@
+name: deps auto-merge
+
+# Merges Dependabot's camouflage-tui / @hotcell/sdk PRs once CI has passed on
+# the exact commit that was tested. Runs on workflow_run (not pull_request) so
+# it has a write token and repository secrets.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/npm_and_yarn/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge if the PR only bumps our own packages
+        env:
+          # A merge made with the default GITHUB_TOKEN does not trigger other
+          # workflows, so release-please would not run. DEPS_BOT_TOKEN is a
+          # fine-grained PAT (contents + pull requests: write on this repo).
+          GH_TOKEN: ${{ secrets.DEPS_BOT_TOKEN || github.token }}
+          HAS_PAT: ${{ secrets.DEPS_BOT_TOKEN != '' }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          pr=$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number,author --jq '.[] | select(.author.login == "app/dependabot" or .author.login == "dependabot[bot]") | .number' | head -n1)
+          if [ -z "$pr" ]; then echo "No open Dependabot PR for $BRANCH"; exit 0; fi
+          files=$(gh pr view "$pr" -R "$REPO" --json files --jq '.files[].path' | sort -u | tr '\n' ' ')
+          for f in $files; do
+            case "$f" in package.json|package-lock.json) ;; *) echo "PR #$pr touches $f; leaving it for review"; exit 0 ;; esac
+          done
+          # package.json may differ from main only in our two packages' ranges.
+          strip='del(.. | objects | ."camouflage-tui"?, ."@hotcell/sdk"?)'
+          base=$(gh api "repos/$REPO/contents/package.json?ref=$(gh pr view "$pr" -R "$REPO" --json baseRefOid --jq .baseRefOid)" --jq .content | base64 -d | jq -S "$strip")
+          head=$(gh api "repos/$REPO/contents/package.json?ref=$SHA" --jq .content | base64 -d | jq -S "$strip")
+          if [ "$base" != "$head" ]; then echo "PR #$pr changes more than camouflage-tui/@hotcell/sdk; leaving it for review"; exit 0; fi
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::DEPS_BOT_TOKEN is not set; merging with GITHUB_TOKEN, so release-please will not run until the next push to main."
+          fi
+          gh pr merge "$pr" -R "$REPO" --squash --match-head-commit "$SHA"
