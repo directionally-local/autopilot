@@ -75,6 +75,32 @@ curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
 
 A resume may change the model, the budgets, or both.
 
+## Email notifications
+
+Autopilot can email you when an unattended run **completes, fails, needs input, is cancelled, or is interrupted**. It sends through [Resend](https://resend.com). Set a key and a recipient where `autopilot serve` runs:
+
+```sh
+export RESEND_API_KEY=re_...
+export AUTOPILOT_NOTIFY_EMAIL_TO=you@example.com            # comma-separated for several
+export AUTOPILOT_NOTIFY_EMAIL_FROM="Autopilot <bot@your-verified-domain.com>"   # optional
+```
+
+Or in the config file:
+
+```json
+{ "runNotifications": { "email": { "to": ["you@example.com"], "from": "Autopilot <bot@your-domain.com>", "events": ["needs_input", "failed", "completed"] } } }
+```
+
+The email gives the run id, the task (with credential-looking strings redacted), the status and stop reason, the branch, tokens and cost, and the command to inspect or resume it over SSH. It never includes transcript content.
+
+Delivery is separate from run state:
+- **Queued with the state change.** A notification is recorded in the same database transaction as the state change, before anything is sent. A provider outage never blocks a run.
+- **Rejections:** a rejected send is retried if the provider says it's temporary (429/5xx), and marked failed otherwise.
+- **Unknown outcomes:** a network error, a timeout, or a server crash mid-send marks the notification uncertain. It's retried with the **same idempotency key**, so Resend delivers it at most once.
+- **Stale notifications** older than 24 hours (Resend's idempotency window) are not sent, so turning email on later doesn't flood you with old runs.
+
+Each run's notifications (status, attempts, provider message id) are in the `run_notifications` table of the runs database.
+
 ## Restart and machine-lifetime guarantees
 
 Waiting runs and their timers are stored in SQLite, and the training process is detached from the Autopilot server process. If the server restarts while an agent turn is active, Autopilot resumes automatically only when the latest saved session checkpoint has no tool call with an unknown outcome. If any tool intent occurred after the last saved checkpoint—whether its result is missing or the result was journaled but not yet saved into the session—the run becomes `interrupted_unknown`; Autopilot will not risk replaying an action such as starting a second training job.

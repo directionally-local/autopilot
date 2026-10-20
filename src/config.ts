@@ -122,6 +122,9 @@ export interface KimiConfig {
   /** Attached images are downscaled to this long edge (px) and re-encoded
    *  before upload. 0 sends images unchanged. Default 1568. */
   imageMaxEdge?: number;
+  /** Email the operator about unattended runs (needs RESEND_API_KEY). Env:
+   *  AUTOPILOT_NOTIFY_EMAIL_TO / AUTOPILOT_NOTIFY_EMAIL_FROM override. */
+  runNotifications?: { email?: { to?: string | string[]; from?: string; events?: string[] } };
   /** JPEG quality (1–100) for re-encoded images. Default 75. */
   imageQuality?: number;
   /** Hard safety ceiling on tool iterations per turn, across automatic
@@ -397,6 +400,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     coauthorName: envCoauthor?.name ?? persisted.coauthorName,
     coauthorEmail: envCoauthor?.email ?? persisted.coauthorEmail,
     mcpServers: persisted.mcpServers,
+    runNotifications: persisted.runNotifications,
     cacheStablePrompts: persisted.cacheStablePrompts ?? cacheStablePrompts,
     compiledContext: persisted.compiledContext ?? compiledContext,
     imageHistoryTurns:
