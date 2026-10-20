@@ -91,7 +91,10 @@ Requires Node.js ≥ 20.
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | native Messages API: extended/adaptive thinking, explicit prompt caching (API keys only — Claude Pro/Max sign-in isn't permitted for third-party tools) |
 | OpenAI | `openai` | `OPENAI_API_KEY` | Responses API: reasoning carries across tool loops (encrypted, stateless), codex models |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | OpenAI-compatible endpoint; Gemini 3 thought signatures are kept with each tool call |
+| ChatGPT (Plus/Pro/Team plan) | `chatgpt` | `autopilot auth chatgpt` (browser sign-in with token sharing) | your plan's GPT models over the Responses API; tokens refresh automatically; usage counts against your plan. Uses OpenAI's official token-sharing sign-in, not the Codex backend |
 | GitHub Copilot | `copilot` | `autopilot auth copilot` (GitHub device login; `--enterprise <domain>`) | your Copilot plan's models — Claude over Messages, GPT over Responses; usage counts as premium requests. Not a documented public API, so GitHub may change it |
+| Google Vertex AI | `vertex` | Google credentials (`gcloud auth application-default login`, a service-account key in `GOOGLE_APPLICATION_CREDENTIALS`, or `GOOGLE_VERTEX_ACCESS_TOKEN`) + `GOOGLE_VERTEX_PROJECT` (or `autopilot auth vertex --project …`) | Gemini and partner models through Vertex's OpenAI-compatible endpoint, Claude through Anthropic's Messages API on Vertex; location `GOOGLE_VERTEX_LOCATION` (default `global`) |
+| Amazon Bedrock | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` (Bedrock API key), or AWS credentials (env or `~/.aws/credentials` / `AWS_PROFILE`; for SSO, `eval "$(aws configure export-credentials --format env)"`); region `AWS_REGION` | Converse API with SigV4 signing; Claude thinking and prompt caching; inference-profile ids like `global.anthropic.claude-sonnet-5-5` |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` | OpenAI-compatible endpoint with split reasoning (`<think>` tags are separated out if they appear) |
 | Moonshot AI (Kimi) | `moonshot` | `MOONSHOT_API_KEY` | |

@@ -13,6 +13,8 @@
  */
 
 import { getPreset, isProviderId, type ProviderId, type ProviderPreset } from "./presets.js";
+import { vertexBase, vertexLocation, vertexProject } from "./vertex.js";
+import { bedrockAuth, bedrockBase, bedrockRegion } from "./bedrock.js";
 
 /** Per-provider settings persisted under `providers.<id>` in config.json. */
 export interface ProviderSettings {
@@ -21,6 +23,16 @@ export interface ProviderSettings {
   baseUrl?: string;
   /** Last chat model used with this provider; restored when switching back. */
   model?: string;
+  /** OAuth sign-ins (ChatGPT): refresh token, access-token expiry (epoch ms), issued client id, host id. */
+  refreshToken?: string;
+  expiresAt?: number;
+  clientId?: string;
+  hostId?: string;
+  /** Google Vertex: project and location (also from GOOGLE_VERTEX_PROJECT / GOOGLE_VERTEX_LOCATION). */
+  project?: string;
+  location?: string;
+  /** Amazon Bedrock region (also from AWS_REGION / AWS_DEFAULT_REGION). */
+  region?: string;
 }
 
 /** The config fields provider resolution reads. */
@@ -89,7 +101,14 @@ export function resolveActiveProvider(
   const apiKey = resolveProviderKey(id, cfg, env);
   let baseUrl: string | undefined;
   if (id === "custom") baseUrl = nonEmpty(env.KIMIFLARE_BASE_URL) ?? nonEmpty(cfg?.baseUrl);
-  else if (id !== "openrouter" && id !== "requesty") baseUrl = fillPlaceholders(nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? preset.baseUrl, cfg, env);
+  else if (id === "vertex") {
+    const settings = cfg?.providers?.vertex;
+    const project = vertexProject(settings, env);
+    baseUrl = nonEmpty(settings?.baseUrl) ?? (project ? vertexBase(project, vertexLocation(settings, env)) : undefined);
+  } else if (id === "bedrock") {
+    const settings = cfg?.providers?.bedrock;
+    baseUrl = nonEmpty(settings?.baseUrl) ?? bedrockBase(bedrockRegion(settings, env));
+  } else if (id !== "openrouter" && id !== "requesty") baseUrl = fillPlaceholders(nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? preset.baseUrl, cfg, env);
   return { id, preset, ...(baseUrl ? { baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
 }
 
@@ -123,6 +142,10 @@ function fillPlaceholders(url: string | undefined, cfg: ProviderConfigFields | n
 export function isProviderUsable(p: ActiveProvider): boolean {
   // Providers whose URL comes from account details (Cloudflare account id, Azure resource) need it resolved.
   if (p.id === "custom" || p.id === "cloudflare" || p.id === "azure") return !!p.baseUrl && (p.id === "custom" || !!p.apiKey);
+  // Vertex authenticates with Google credentials at request time; it needs a project.
+  if (p.id === "vertex") return !!p.baseUrl;
+  // Bedrock: an API key or AWS credentials (env or ~/.aws/credentials).
+  if (p.id === "bedrock") return !!bedrockAuth();
   return !!p.apiKey || !p.preset.keyRequired;
 }
 

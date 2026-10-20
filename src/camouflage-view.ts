@@ -28,8 +28,6 @@ import { formatContext, formatModelPrice } from "./ui/model-picker.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-menu.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
-import { loadRemoteSessions, formatSessionLine, formatTokens } from "./ui/remote-dashboard.js";
-import { cancelRemoteSession } from "./remote/worker-client.js";
 import { PRESETS as LSP_PRESETS } from "./ui/lsp-wizard.js";
 import { getShellCommand } from "./tools/bash.js";
 import type { LspServerConfig } from "./config.js";
@@ -703,9 +701,6 @@ class View implements AppBridge {
           ], "7");
           if (days) a.generateChangelogImage(owner, name, Number(days));
         });
-      case "remoteDashboard":
-        a.closeModal("remoteDashboard");
-        return want("remoteDashboard", () => this.remoteDashboard());
       case "lspWizard":
         a.closeModal("lspWizard");
         return want("lspWizard", () => this.lspWizard(s.lsp));
@@ -1005,59 +1000,6 @@ class View implements AppBridge {
     a.saveLsp(next, true, where as "project" | "global");
   }
 
-  /** /remote list (Ink's RemoteDashboard + RemoteSessionDetail). */
-  private async remoteDashboard(): Promise<void> {
-    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
-    for (;;) {
-      let sessions;
-      try {
-        sessions = await loadRemoteSessions();
-      } catch (err) {
-        return say(`Couldn't load remote sessions: ${err instanceof Error ? err.message : String(err)}`, "error");
-      }
-      if (sessions.length === 0) return say("No remote sessions yet. Type /remote <prompt> to start one.");
-      const r = await this.select("Recent remote tasks", [
-        ...sessions.map((s) => ({ value: s.sessionId, label: formatSessionLine(s) })),
-        { value: "\0refresh", label: "↻ Refresh" },
-      ]);
-      if (r === null) return;
-      if (r === "\0refresh") continue;
-      const s = sessions.find((x) => x.sessionId === r);
-      if (!s) continue;
-      const tokens = s.tokensUsed !== undefined ? `${formatTokens(s.tokensUsed)}${s.tokensBudget ? ` / ${formatTokens(s.tokensBudget)}` : ""}` : null;
-      const rows: [string, string | null | undefined][] = [
-        ["ID", s.sessionId],
-        ["Repo", s.repo],
-        ["Status", s.status],
-        ["Prompt", s.prompt],
-        ["PR", s.prUrl],
-        ["Error", s.errorMessage],
-        ["Tokens", tokens],
-        ["Created", new Date(s.createdAt).toLocaleString()],
-        ["Finished", s.finishedAt ? new Date(s.finishedAt).toLocaleString() : null],
-      ];
-      this.cam.send("Splash", {
-        text: ["\x1b[1mRemote session\x1b[0m", ...rows.filter(([, v]) => v).map(([k, v]) => `\x1b[2m${k.padEnd(9)}\x1b[0m${v}`)].join("\n"),
-      });
-      const running = s.status === "running" || s.status === "pending";
-      const next = await this.select("Remote session", [
-        { value: "back", label: "Back to list" },
-        ...(s.prUrl ? [{ value: "pr", label: "Open PR", description: s.prUrl }] : []),
-        ...(running ? [{ value: "cancel", label: "Cancel session" }] : []),
-      ]);
-      if (next === null) return;
-      if (next === "pr" && s.prUrl) openBrowser(s.prUrl);
-      if (next === "cancel") {
-        try {
-          await cancelRemoteSession(s.workerUrl, s.sessionId);
-          say(`Cancelled session ${s.sessionId}`);
-        } catch (err) {
-          say(`Failed to cancel: ${err instanceof Error ? err.message : String(err)}`, "error");
-        }
-      }
-    }
-  }
-
   /** The voice-note inbox (Ink's InboxModal): handle + secret, then the
    *  messages; picking one opens it in the browser. */
   private async inbox(): Promise<void> {
@@ -1282,7 +1224,6 @@ function modalName(m: AppModal): string {
     commandWizard: "The command editor",
     commandPicker: "The command picker",
     lspWizard: "The LSP setup wizard",
-    remoteDashboard: "The remote dashboard",
     inbox: "The inbox",
     hooksDashboard: "The hooks dashboard",
     changelogImage: "/changelog-image",

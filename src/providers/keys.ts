@@ -62,6 +62,26 @@ export async function checkProviderKey(
       return { ok: false, reason: "network", message: `Couldn't reach Cloudflare: ${e instanceof Error ? e.message : String(e)}` };
     }
   }
+  if (id === "bedrock") {
+    const { bedrockAuth } = await import("./bedrock.js");
+    return bedrockAuth()
+      ? { ok: true }
+      : { ok: false, reason: "invalid", message: "No AWS credentials: set AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key), or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials (AWS_PROFILE)." };
+  }
+  if (id === "vertex") {
+    // Proves Google credentials work (no request to Vertex itself is needed).
+    try {
+      const { vertexAccessToken } = await import("./vertex.js");
+      await vertexAccessToken(fetchImpl);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: "invalid", message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  if (id === "chatgpt") {
+    // Tokens come from the browser sign-in; there is nothing cheap to check them against.
+    return key ? { ok: true } : { ok: false, reason: "invalid", message: "Sign in with `autopilot auth chatgpt`." };
+  }
   if (id === "copilot") {
     if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth copilot` (GitHub device login)." };
     try {
@@ -115,6 +135,12 @@ export async function keyPatch(id: ProviderId, key: string | undefined): Promise
   if (key) next.apiKey = key;
   else delete next.apiKey;
   return { providers: { ...providers, [id]: next } };
+}
+
+/** Merge settings into providers.<id> in config.json. */
+export async function patchProviderSettings(id: ProviderId, settings: Partial<ProviderSettings>): Promise<string> {
+  const providers = await persistedProviders();
+  return patchPersistedConfig({ providers: { ...providers, [id]: { ...providers[id], ...settings } } });
 }
 
 /** Save a provider's key (and optional base URL) to config.json. */
