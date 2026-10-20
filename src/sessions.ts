@@ -101,11 +101,14 @@ export async function saveSession(file: SessionFile): Promise<string> {
   return path;
 }
 
-/** Prune old session files to enforce retention policy. */
+/** Prune old session files (and their JSONL transcripts) to enforce retention policy. */
 export async function pruneSessions(): Promise<number> {
   const dir = sessionsDir();
   const files = await listFilesByMtime(dir, /\.json$/);
-  return pruneFiles(files, RETENTION.sessionMaxAgeDays, RETENTION.sessionMaxCount);
+  const pruned = await pruneFiles(files, RETENTION.sessionMaxAgeDays, RETENTION.sessionMaxCount);
+  // Claude-style JSONL transcripts (<id>.jsonl, src/transcript/) follow the same policy.
+  const transcripts = await listFilesByMtime(dir, /\.jsonl$/);
+  return pruned + (await pruneFiles(transcripts, RETENTION.sessionMaxAgeDays, RETENTION.sessionMaxCount));
 }
 
 export async function listSessions(limit = 30, cwd?: string): Promise<SessionSummary[]> {

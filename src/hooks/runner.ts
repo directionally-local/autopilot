@@ -10,8 +10,7 @@ import type {
   PreToolUsePayload,
 } from "./types.js";
 import { logger } from "../util/logger.js";
-import { join } from "node:path";
-import { sessionsDir } from "../sessions.js";
+import { hookTranscriptFields } from "../transcript/claude-jsonl.js";
 import { claudeToolFields, hookMatcherMatches, hookMatcherNames } from "./claude-compat.js";
 import { BEACON_HARNESS_ATTR, HARNESS_NAME } from "../util/harness.js";
 
@@ -132,7 +131,7 @@ export function buildHookEnv(payload: HookPayload, payloadJson?: string): Record
 /**
  * The payload as hooks receive it: Autopilot's own fields, plus the names
  * Claude Code hooks use (hook_event_name, tool_name, tool_input,
- * tool_response, transcript_path). Existing hooks keep working, Claude Code
+ * tool_response, transcript_path + transcript_format). Existing hooks keep working, Claude Code
  * hook scripts work unchanged, and tools that speak that shape (e.g. Agent
  * Beacon's `beacon-hooks`) can read Autopilot events. No credentials are
  * ever part of a payload.
@@ -144,7 +143,8 @@ export function hookWirePayload(payload: HookPayload): Record<string, unknown> {
     client: HARNESS_NAME,
     [BEACON_HARNESS_ATTR]: HARNESS_NAME,
   };
-  if (payload.session_id) wire.transcript_path = join(sessionsDir(), `${payload.session_id}.json`);
+  // Claude Code-style JSONL transcript (src/transcript/claude-jsonl.ts), and its format.
+  if (payload.session_id) Object.assign(wire, hookTranscriptFields(payload.session_id));
   // Claude Code's tool names and shapes (tool_name, tool_input, tool_response, error): see claude-compat.ts.
   if (payload.event === "PreToolUse" || payload.event === "PostToolUse") Object.assign(wire, claudeToolFields(payload));
   return wire;

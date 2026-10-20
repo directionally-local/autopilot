@@ -33,6 +33,7 @@ import { CONTINUE_NUDGE, INCOMPLETE_THRESHOLD, shouldCheckCompletion, toolsUsedS
 import type { Mode } from "../mode.js";
 import { createNoopRecorder, makeTurnId } from "../trace/recorder.js";
 import { beginGitDelta } from "../trace/git-delta.js";
+import { sessionTranscript } from "../transcript/claude-jsonl.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnEndReason } from "../trace/types.js";
 
@@ -499,6 +500,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   const lastUserPrompt = extractLastUserText(opts.messages);
   // Anchor for the transient per-turn directive (see withTurnDirective).
   const turnUserMessage = [...opts.messages].reverse().find((m) => m.role === "user");
+  // Claude Code-style JSONL transcript beside the session file (#892): what
+  // hook payloads' transcript_path points at. Appended as the turn runs.
+  const transcript = sessionTranscript(opts.sessionId, opts.cwd);
+  // The turn's prompt, unless the turn resumes without one (history already ends past it).
+  if (transcript && turnUserMessage && opts.messages.lastIndexOf(turnUserMessage) > opts.messages.findLastIndex((m) => m.role === "assistant")) {
+    transcript.appendUser(turnUserMessage);
+  }
   const userPromptPreview = lastUserPrompt.slice(0, 200);
 
   // Light + trivially short prompts skip skill routing entirely. These almost
@@ -724,12 +732,15 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // one) are delivered like steering input: at the next tool boundary, or
   // before the final answer ends the turn — no polling.
   const drainBackgroundResults = (): ChatMessage[] =>
-    workerRegistry.takeUndelivered(opts.sessionId).map((w) => ({
-      role: "user" as const,
-      content: `[Automatic notice — not typed by the user] ${finishedReport(w)}`,
-    }));
+    workerRegistry.takeUndelivered(opts.sessionId).map((w) => {
+      const notice: ChatMessage = { role: "user", content: `[Automatic notice — not typed by the user] ${finishedReport(w)}` };
+      transcript?.appendUser(notice, { meta: true });
+      return notice;
+    });
   const appendPendingInput = (): number => {
-    const pending = [...(opts.drainPendingInput?.() ?? []), ...drainBackgroundResults()];
+    const typed = opts.drainPendingInput?.() ?? [];
+    for (const msg of typed) if (msg.role === "user") transcript?.appendUser(msg);
+    const pending = [...typed, ...drainBackgroundResults()];
     for (const msg of pending) opts.messages.push(msg);
     return pending.length;
   };
@@ -799,6 +810,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     let content = "";
     let reasoning = "";
     let responseMeta: ResponseMeta | undefined;
+    /** This response's own usage (lastUsage carries over from earlier responses). */
+    let responseUsage: Usage | null = null;
     let reasoningDetails: ReasoningDetail[] = [];
     tr.partialText = "";
     opts.callbacks.onAssistantStart?.();
@@ -945,6 +958,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         }
         case "usage":
           lastUsage = ev.usage;
+          responseUsage = ev.usage;
           opts.callbacks.onUsage?.(ev.usage);
           break;
         case "done":
@@ -1001,6 +1015,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       }
     }
     opts.messages.push(assistantMsg);
+    transcript?.appendAssistant(assistantMsg, {
+      model: responseMeta?.model ?? opts.model,
+      usage: responseUsage,
+      ...(responseMeta?.generationId ? { responseId: responseMeta.generationId } : {}),
+    });
     tr.finalText = typeof assistantMsg.content === "string" ? assistantMsg.content : null;
     opts.callbacks.onAssistantFinal?.(assistantMsg);
 
@@ -1359,6 +1378,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       }
       toolResults.push(result);
       opts.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: sanitizeString(result.content), name: result.name });
+      transcript?.appendToolResult({ tool_call_id: result.tool_call_id, content: sanitizeString(result.content), ok: result.ok });
       opts.callbacks.onToolResult?.(result);
       // A Code Mode redirect isn't a repeated call; everything else feeds the loop guard.
       if (!(outcome.kind === "blocked" && outcome.redirected)) {

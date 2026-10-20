@@ -79,6 +79,42 @@ A failed call also gets Claude Code's failure fields at the top level:
 
 The event stays `PostToolUse` for failures (Claude Code fires `PostToolUseFailure`); check `error` or `tool_response.is_error`.
 
+## Transcript
+
+Every hook payload with a session id carries `transcript_path` and `transcript_format: "claude-jsonl"`. The path points at a transcript in Claude Code's JSONL format, which Autopilot writes next to its own session file:
+
+```
+~/.local/share/kimiflare/sessions/<session id>.json    Autopilot's session (unchanged)
+~/.local/share/kimiflare/sessions/<session id>.jsonl   the transcript
+```
+
+(`$XDG_DATA_HOME` replaces `~/.local/share` when set.) Every host that has a session id writes one: the TUI, print mode, `--emit-events`, `autopilot serve`'s `/prompt`, and the SDK.
+
+Each line is one JSON object. Entries are appended as the session runs, so the file can be read mid-session and every line on disk is complete:
+
+| When | Entry |
+| --- | --- |
+| A turn starts | `type: "user"`, `message: {role: "user", content: "<prompt>"}`, plus a new `promptId` |
+| A model response completes | `type: "assistant"`, `message: {id, type: "message", role: "assistant", model, content, stop_reason, usage}`, plus `requestId` |
+| A tool call finishes | `type: "user"`, `message: {role: "user", content: [{type: "tool_result", tool_use_id, content, is_error}]}`, plus `promptId` and `sourceToolAssistantUUID` |
+| Input typed during a turn | a `user` entry with its own `promptId` |
+| A background subagent's report is delivered | a `user` entry with `isMeta: true` (Claude Code's mark for injected messages) |
+
+Every entry also carries `uuid`, `parentUuid` (the previous entry's `uuid`, so the entries form one chain), `timestamp`, `sessionId`, `cwd`, `isSidechain: false`, `userType: "external"` and `entrypoint: "autopilot"`.
+
+- **Assistant `content`** is a list of blocks: `thinking` (the model's reasoning, when the provider returns it), `text`, and one `tool_use` block per tool call (`{type, id, name, input}`). The `tool_use` blocks use Claude Code's tool names and input shapes, the same as `tool_name` and `tool_input` in hook payloads (see [Tool names and result shapes](#tool-names-and-result-shapes)). Each `tool_result`'s `tool_use_id` matches the `id` of its `tool_use`.
+- **`usage`** uses Anthropic's field names: `input_tokens` (prompt tokens that were not read from or written to the cache), `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`. `message.id` and `requestId` are the provider's response id when it reports one, so Beacon counts each response once.
+- **Images** in a prompt are written as a `[Image]` text block, never as base64.
+- **Not written:** the system prompt and Autopilot's internal nudges (system messages).
+
+**Redaction and size.** The transcript is redacted the same way as the session trace (`KIMIFLARE_TRACE`): OpenRouter keys, GitHub tokens, `Bearer`/`Basic` credentials, private-key blocks, and the values of `api_key=`, `token:`, `secret`, `password` and `authorization` pairs become `<redacted>`. A block over 256 KB is cut and marked `[truncated: N bytes total]`, the way the trace cuts its blobs. A transcript stops growing at the trace's per-session cap (200 MB). Transcripts are pruned with their session files (30 days, 100 sessions).
+
+**Resume.** A resumed session (`--continue`, `--session`, `/resume`) appends to its existing transcript and continues the `parentUuid` chain.
+
+**Turning it off.** Set `KIMIFLARE_TRANSCRIPT=0`. Hook payloads then point `transcript_path` at the session JSON, with `transcript_format: "autopilot-json"`.
+
+With Beacon's Claude mode, hooks read the newest `promptId` from the transcript and stamp it as `prompt.id` on `tool.invoked`, `command.executed` and `agent.message`. Beacon's Claude session reader also parses the file: it finds the prompt, each assistant message, the tool calls and their results, and a `token.usage` event per response.
+
 ## OpenTelemetry
 
 Point Autopilot at Beacon's local OTLP/HTTP collector:
