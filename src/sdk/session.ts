@@ -19,6 +19,7 @@ import { calculateCost } from "../pricing.js";
 import type { OpenRouterProviderPrefs } from "../agent/client.js";
 import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerIdOf } from "../agent/llm-auth.js";
 import { assembleTurn, lastUserText, resolveTurnPolicy } from "../agent/session-core.js";
+import { workerRegistry } from "../tools/worker-registry.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { logger } from "../util/logger.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
@@ -231,6 +232,13 @@ class InternalSession implements KimiFlareSession {
   /** Persisted compaction state (session state + archived artifacts). */
   private readonly compactionState: Pick<SessionFile, "sessionState" | "artifactStore">;
   private readonly compaction: CompactionTarget;
+
+  /** Emits worker.finished for this session's background subagents. */
+  private unsubscribeWorkers: () => void = workerRegistry.onFinished((w) => {
+    if (w.background && w.sessionId === this.sessionId) {
+      this.emit({ type: "worker.finished", workerId: w.id, index: w.index, task: w.task, status: w.status, ...(w.costUsd !== undefined ? { costUsd: w.costUsd } : {}) });
+    }
+  });
 
   constructor(opts: InternalSessionOpts) {
     this.sessionId = opts.sessionFile.id;
@@ -465,6 +473,10 @@ class InternalSession implements KimiFlareSession {
   dispose(options?: { traceEndReason?: import("../trace/types.js").SessionEndReason }): void {
     if (this.disposed) return;
     this.disposed = true;
+    // Background subagents belong to this session: stop the running ones, forget the results.
+    this.unsubscribeWorkers();
+    for (const w of workerRegistry.list()) if (w.background && w.sessionId === this.sessionId) workerRegistry.cancel(w.id);
+    workerRegistry.clearFinished(this.sessionId);
     if (this.trace.enabled) {
       this.trace.emit(
         "session_end",

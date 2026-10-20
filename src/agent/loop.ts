@@ -2,6 +2,8 @@ import { runKimi } from "./client.js";
 import type { ResponseMeta } from "./client.js";
 import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
 import { resetSessionToolState, sessionToolState } from "./session-tool-state.js";
+import { workerRegistry } from "../tools/worker-registry.js";
+import { finishedReport } from "../tools/workers.js";
 import { toOpenAIToolDefs, type ToolSpec } from "../tools/registry.js";
 import type { ToolExecutor, PermissionAsker, ToolResult } from "../tools/executor.js";
 import { mergeReasoningDetails, sanitizeString, stableStringify, stripOldImages } from "./messages.js";
@@ -673,11 +675,21 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     originalOnTasks?.(tasks);
   };
 
+  // Background subagents that finished (during this turn or since the last
+  // one) are delivered like steering input: at the next tool boundary, or
+  // before the final answer ends the turn — no polling.
+  const drainBackgroundResults = (): ChatMessage[] =>
+    workerRegistry.takeUndelivered(opts.sessionId).map((w) => ({
+      role: "user" as const,
+      content: `[Automatic notice — not typed by the user] ${finishedReport(w)}`,
+    }));
   const appendPendingInput = (): number => {
-    const pending = opts.drainPendingInput?.() ?? [];
+    const pending = [...(opts.drainPendingInput?.() ?? []), ...drainBackgroundResults()];
     for (const msg of pending) opts.messages.push(msg);
     return pending.length;
   };
+  // Results that arrived between turns go in before this turn's first request.
+  for (const msg of drainBackgroundResults()) opts.messages.push(msg);
 
   while (true) {
     // Budget enforcement: before starting a new turn, if we've already hit the

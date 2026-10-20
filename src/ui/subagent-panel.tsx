@@ -47,6 +47,7 @@ export function SubagentPanel() {
         <Text key={w.id} color={theme.info.color}>
           <Text color={theme.accent}>⧉ #{w.index}</Text> {formatElapsed(now - w.startedAt)}{" "}
           {w.status === "cancelling" ? <Text dimColor>(cancelling) </Text> : null}
+          {w.background ? <Text dimColor>(background) </Text> : null}
           <Text dimColor={theme.info.dim}>{preview(w.task)}</Text>
         </Text>
       ))}
