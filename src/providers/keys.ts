@@ -50,6 +50,18 @@ export async function checkProviderKey(
     const res = await checkRequestyKey(key, fetchImpl);
     return res.ok ? { ok: true } : { ok: false, reason: res.reason === "config" ? "http" : res.reason, message: res.message };
   }
+  if (id === "cloudflare") {
+    // Workers AI has no /models on its OpenAI-compatible API; verify the token itself.
+    if (!key) return { ok: false, reason: "invalid", message: "A Cloudflare API token is required (Workers AI permission)." };
+    try {
+      const res = await fetchImpl("https://api.cloudflare.com/client/v4/user/tokens/verify", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
+      if (res.status === 401 || res.status === 403) return { ok: false, reason: "invalid", message: "Cloudflare rejected this token." };
+      if (!res.ok) return { ok: false, reason: "http", message: `Cloudflare returned HTTP ${res.status}.` };
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: "network", message: `Couldn't reach Cloudflare: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
   if (id === "copilot") {
     if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth copilot` (GitHub device login)." };
     try {

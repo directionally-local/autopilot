@@ -121,7 +121,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   );
   const body: Record<string, unknown> = {
     model: opts.model,
-    messages: sanitizeMessagesForApi(stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField)),
+    messages: sanitizeMessagesForApi(
+      normalizeToolIds(stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField), preset.compat.toolIdFormat),
+    ),
     stream: true,
   };
   if (customEndpoint || requesty) {
@@ -621,7 +623,10 @@ function buildKimiRequestTarget(
     }
     return {
       url: customChatCompletionsUrl(customEndpoint.baseUrl),
-      headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {},
+      headers: {
+        ...(customEndpoint.providerId ? getPreset(customEndpoint.providerId).compat.headers : {}),
+        ...(customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {}),
+      },
     };
   }
 
@@ -899,6 +904,49 @@ export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderComp
       ...(keepDetails && reasoning_details !== undefined ? { reasoning_details } : {}),
       ...(hasExtras ? { tool_calls: m.tool_calls!.map(({ extra_content: _drop, ...tc }) => tc) } : {}),
     };
+  });
+}
+
+/**
+ * Rewrite tool-call ids into the format a provider enforces. Mistral accepts
+ * only exactly nine alphanumerics; ids from other providers ("call_…",
+ * "toolu_…") are hashed to nine characters, the same way for a call and its
+ * result, with collisions resolved. Ids already in the format are kept.
+ */
+export function normalizeToolIds(messages: ChatMessage[], format: "mistral" | undefined): ChatMessage[] {
+  if (format !== "mistral") return messages;
+  const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  const toMistral = (id: string): string => {
+    const known = map.get(id);
+    if (known) return known;
+    let out: string;
+    if (/^[A-Za-z0-9]{9}$/.test(id) && !used.has(id)) out = id;
+    else {
+      let h = 2166136261;
+      for (let salt = 0; ; salt++) {
+        for (const ch of `${id}#${salt}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+        let n = h;
+        let s = "";
+        for (let i = 0; i < 9; i++) {
+          s += ALPHA[n % 62];
+          n = Math.imul(n, 31) + 7 + i >>> 0;
+        }
+        if (!used.has(s)) {
+          out = s;
+          break;
+        }
+      }
+    }
+    map.set(id, out!);
+    used.add(out!);
+    return out!;
+  };
+  return messages.map((m) => {
+    if (m.role === "assistant" && m.tool_calls?.length) return { ...m, tool_calls: m.tool_calls.map((tc) => ({ ...tc, id: toMistral(tc.id) })) };
+    if (m.role === "tool" && m.tool_call_id) return { ...m, tool_call_id: toMistral(m.tool_call_id) };
+    return m;
   });
 }
 

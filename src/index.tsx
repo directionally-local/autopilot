@@ -264,7 +264,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, gemini, minimax, copilot, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, gemini, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -294,7 +294,7 @@ const authCommand = program
       }),
   );
 
-for (const id of ["anthropic", "openai", "gemini", "minimax", "deepseek", "moonshot", "kimi-code", "zai", "zai-coding", "ollama", "lmstudio"] as const) {
+for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", "groq", "cerebras", "together", "fireworks", "deepinfra", "vercel", "cloudflare", "deepseek", "moonshot", "kimi-code", "zai", "zai-coding", "ollama", "lmstudio"] as const) {
   authCommand.addCommand(
     new Command(id)
       .description(
@@ -304,7 +304,8 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "deepseek", "moons
       )
       .argument("[key]", "the key to save instead of pasting one")
       .option("--base-url <url>", "use a different endpoint (e.g. Ollama on another host)")
-      .action(async (keyArg: string | undefined, cmdOpts: { baseUrl?: string }) => {
+      .option("--account-id <id>", "Cloudflare account id (Workers AI)")
+      .action(async (keyArg: string | undefined, cmdOpts: { baseUrl?: string; accountId?: string }) => {
         const { getPreset } = await import("./providers/presets.js");
         const { checkProviderKey, saveProviderKey, switchProvider } = await import("./providers/keys.js");
         const preset = getPreset(id);
@@ -316,6 +317,15 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "deepseek", "moons
         if (!key && preset.keyRequired) {
           console.error("No key entered.");
           process.exit(1);
+        }
+        if (id === "cloudflare") {
+          const accountId = cmdOpts.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? (await loadConfig().catch(() => null))?.accountId;
+          if (!accountId) {
+            console.error("Workers AI needs your Cloudflare account id: pass --account-id <id> or set CLOUDFLARE_ACCOUNT_ID.");
+            process.exit(1);
+          }
+          const { patchPersistedConfig } = await import("./config.js");
+          await patchPersistedConfig({ accountId });
         }
         const res = await checkProviderKey(id, key, cmdOpts.baseUrl);
         if (!res.ok) {

@@ -31,6 +31,10 @@ export interface ProviderConfigFields {
   requestyApiKey?: string;
   baseUrl?: string;
   apiKey?: string;
+  /** Cloudflare account id (Workers AI); also read from CLOUDFLARE_ACCOUNT_ID. */
+  accountId?: string;
+  /** Cloudflare API token from Cloudflare-era configs. */
+  apiToken?: string;
 }
 
 export interface ActiveProvider {
@@ -71,7 +75,7 @@ export function resolveProviderKey(
   if (id === "openrouter") return nonEmpty(cfg?.openrouterApiKey);
   if (id === "requesty") return nonEmpty(cfg?.requestyApiKey);
   if (id === "custom") return nonEmpty(cfg?.apiKey);
-  return nonEmpty(cfg?.providers?.[id]?.apiKey);
+  return nonEmpty(cfg?.providers?.[id]?.apiKey) ?? (id === "cloudflare" ? nonEmpty(cfg?.apiToken) : undefined);
 }
 
 export function resolveActiveProvider(
@@ -85,7 +89,7 @@ export function resolveActiveProvider(
   const apiKey = resolveProviderKey(id, cfg, env);
   let baseUrl: string | undefined;
   if (id === "custom") baseUrl = nonEmpty(env.KIMIFLARE_BASE_URL) ?? nonEmpty(cfg?.baseUrl);
-  else if (id !== "openrouter" && id !== "requesty") baseUrl = nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? preset.baseUrl;
+  else if (id !== "openrouter" && id !== "requesty") baseUrl = fillPlaceholders(nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? preset.baseUrl, cfg, env);
   return { id, preset, ...(baseUrl ? { baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
 }
 
@@ -101,16 +105,28 @@ export function lastActiveProviderName(): string | null {
   return lastLoaded ? getPreset(lastLoaded).name : null;
 }
 
+/** Fill `${CLOUDFLARE_ACCOUNT_ID}`-style placeholders in a base URL; undefined if one can't be filled. */
+function fillPlaceholders(url: string | undefined, cfg: ProviderConfigFields | null | undefined, env: NodeJS.ProcessEnv): string | undefined {
+  if (!url) return url;
+  let missing = false;
+  const filled = url.replace(/\$\{([A-Z_]+)\}/g, (_m, name: string) => {
+    const v = nonEmpty(env[name]) ?? (name === "CLOUDFLARE_ACCOUNT_ID" ? nonEmpty(env.CF_ACCOUNT_ID) ?? nonEmpty(cfg?.accountId) : undefined);
+    if (!v) missing = true;
+    return v ?? "";
+  });
+  return missing ? undefined : filled;
+}
+
 /** True when the provider can take requests: it has a key, or needs none (local runtimes, a custom gateway). */
 export function isProviderUsable(p: ActiveProvider): boolean {
-  if (p.id === "custom") return !!p.baseUrl;
+  if (p.id === "custom" || p.id === "cloudflare") return !!p.baseUrl && (p.id === "custom" || !!p.apiKey);
   return !!p.apiKey || !p.preset.keyRequired;
 }
 
 /** Providers with a key available in the environment, for onboarding to offer first. */
 export function detectEnvProviders(env: NodeJS.ProcessEnv = process.env): ProviderId[] {
   const out: ProviderId[] = [];
-  for (const id of ["openrouter", "anthropic", "openai", "gemini", "minimax", "deepseek", "moonshot", "kimi-code", "zai", "requesty"] as const) {
+  for (const id of ["openrouter", "anthropic", "openai", "gemini", "minimax", "xai", "mistral", "groq", "cerebras", "together", "fireworks", "deepinfra", "vercel", "deepseek", "moonshot", "kimi-code", "zai", "requesty"] as const) {
     if (getPreset(id).apiKeyEnv.some((n) => nonEmpty(env[n]))) out.push(id);
   }
   return out;
