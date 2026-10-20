@@ -1,3 +1,4 @@
+import { largeBodyWarning, largestBodyParts, shouldWarnLargeBody } from "./request-size.js";
 import * as zlib from "node:zlib";
 import { readSSE } from "../util/sse.js";
 import { KimiApiError } from "../util/errors.js";
@@ -63,6 +64,8 @@ export interface RunKimiOpts extends LlmAuth {
   trace?: TraceRecorder;
   /** Turn id stamped on the trace events of this request. */
   turnId?: string | null;
+  /** Called once per session when a request body is large (> 1 MB), naming its biggest parts. */
+  onLargeBody?: (warning: string) => void;
 }
 
 /**
@@ -319,6 +322,13 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       response,
     };
   }
+  // Serialized once: the body is the same on every retry, and its size matters —
+  // it is uploaded in full on every call, and on a slow uplink upload time
+  // dominates "time to first byte" (#826).
+  const serialized = stableStringify(wireBody, jsonReplacer);
+  const bodyBytes = Buffer.byteLength(serialized, "utf8");
+  /** Per attempt: response headers (≈ upload + provider queueing) and first streamed event. */
+  const timing: { headersMs?: number; firstTokenMs?: number } = {};
   const traceRequest = (attempt: number): void => {
     if (!trace || !captured) return;
     trace.emit(
@@ -332,6 +342,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
         messages_sha: captured.messagesSha,
         tools_sha: captured.toolsSha,
         estimated_tokens: captured.breakdown.estTokens,
+        body_bytes: bodyBytes,
       },
       opts.turnId ?? null,
     );
@@ -362,6 +373,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
           : {}),
         ...(response.generationId ? { generation_id: response.generationId } : {}),
         latency_ms: Math.round(performance.now() - startedAt),
+        ...(timing.headersMs !== undefined ? { headers_ms: timing.headersMs } : {}),
+        ...(timing.firstTokenMs !== undefined ? { first_token_ms: timing.firstTokenMs } : {}),
         aborted: opts.signal?.aborted === true,
         ...(error !== undefined ? { error } : {}),
       },
@@ -369,10 +382,15 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     );
   };
 
-  logger.debug("runKimi:request", { requestId, attempt: 0, model: opts.model });
+  logger.debug("runKimi:request", { requestId, attempt: 0, model: opts.model, body_bytes: bodyBytes });
+  if (opts.onLargeBody && shouldWarnLargeBody(opts.sessionId ?? getLogSessionId() ?? "default", bodyBytes)) {
+    opts.onLargeBody(largeBodyWarning(bodyBytes, largestBodyParts(body.messages as ChatMessage[])));
+  }
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     let res: Response;
     const attemptStartedAt = performance.now();
+    timing.headersMs = undefined;
+    timing.firstTokenMs = undefined;
     traceRequest(attempt);
     try {
       const headers: Record<string, string> = {
@@ -382,7 +400,6 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       };
       if (opts.sessionId) headers["X-Session-ID"] = opts.sessionId;
       headers["X-Request-ID"] = requestId;
-      const serialized = stableStringify(wireBody, jsonReplacer);
       if (bedrock) Object.assign(headers, bedrockHeaders(bedrock, url, serialized, bedrockRegionOf(url)));
       res = await fetch(url, {
         method: "POST",
@@ -409,6 +426,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       );
     }
 
+    timing.headersMs = Math.round(performance.now() - attemptStartedAt);
+    logger.debug("runKimi:headers", { requestId, attempt, status: res.status, headers_ms: timing.headersMs, body_bytes: bodyBytes });
     const contentType = res.headers.get("content-type") ?? "";
 
     // Errors come back as JSON (not SSE): OpenRouter's { error: { code,
@@ -475,6 +494,10 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
             ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
             : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs, customEndpoint ? preset.compat.thinkTags === true : false);
       for await (const ev of events) {
+        if (timing.firstTokenMs === undefined && ev.type !== "response_meta") {
+          timing.firstTokenMs = Math.round(performance.now() - attemptStartedAt);
+          logger.debug("runKimi:first_token", { requestId, attempt, first_token_ms: timing.firstTokenMs, headers_ms: timing.headersMs });
+        }
         if (captured) accumulateDumpResponse(response, ev);
         yield ev;
       }
