@@ -22,7 +22,27 @@ import type { ToolEventState } from "./ui/tool-view.js";
 import type { Cfg } from "./app.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { CustomCommand, CommandSource } from "./commands/types.js";
-import type { ReasoningEffort } from "./config.js";
+import { loadConfig, type ReasoningEffort } from "./config.js";
+import { getPreset, type ProviderId } from "./providers/presets.js";
+import { resolveProviderKey } from "./providers/resolve.js";
+import {
+  chatgptSignIn,
+  commitProvider,
+  copilotSignIn,
+  credentialLabel,
+  describeConnection,
+  isVertexProjectId,
+  maskKey,
+  normalizeEndpoint,
+  openRouterSignIn,
+  planConnect,
+  providerRows,
+  saveVertexProject,
+  verifyProvider,
+  type Connection,
+  type KeySource,
+} from "./providers/connect.js";
+import { OPENROUTER_KEYS_URL } from "./models/openrouter.js";
 import { featuredModels, listModels, type ModelEntry } from "./models/registry.js";
 import { formatContext, formatModelPrice } from "./ui/model-picker.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-menu.js";
@@ -121,7 +141,8 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     view.echoed.push(text.trim());
     view.actions?.submit(text);
   });
-  cam.on("cancelRequested", () => view.actions?.interrupt());
+  // Esc during a provider sign-in cancels the sign-in, not the turn.
+  cam.on("cancelRequested", () => (view.signIn ? view.signIn.abort() : view.actions?.interrupt()));
   // `@../`, `@~/`, `@/`: list the folder being typed (same rules as the Ink
   // picker). Read off the raw stream so any SDK version works.
   cam.on("event", (ev: { event_type?: string; payload?: { query?: string } }) => {
@@ -182,6 +203,8 @@ class View implements AppBridge {
   private todos = "";
   private permission: unknown = null;
   private openPrompt: string | null = null;
+  /** A provider sign-in waiting on the browser; Esc aborts it. */
+  signIn: AbortController | null = null;
   private commandsKey: string | undefined;
   private readonly sentSubagentPolicyNotices = new Set<string>();
   private readonly jobs = new JobManager();
@@ -587,6 +610,11 @@ class View implements AppBridge {
           const r = await this.select("Select a model", modelOptions(models, s.model), s.model, "Context · price per Mtok (input / output / cached) · type to search all models");
           a.pickModel(models.find((m) => m.id === r) ?? null);
         });
+      case "provider": {
+        const initial = s.providerSetup?.initial;
+        a.closeModal("provider");
+        return want("provider", () => this.providerSetup(initial));
+      }
       case "mode":
         return want("mode", async () => {
           const r = await this.select("Switch mode", MODES.map((m) => ({ value: m, label: m })), s.mode);
@@ -920,6 +948,244 @@ class View implements AppBridge {
     }
   }
 
+  /**
+   * `/provider` (Ink's ProviderSetup): pick a provider from a searchable list,
+   * connect it — sign in, a masked key, an endpoint, or nothing for local
+   * runtimes — then pick one of its models. Keys never reach the transcript.
+   */
+  private async providerSetup(initial?: ProviderId): Promise<void> {
+    const a = this.actions!;
+    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    const cfg = await loadConfig().catch(() => null);
+    let id: ProviderId | undefined = initial;
+    for (;;) {
+      if (!id) {
+        const rows = providerRows(cfg, { markActive: true });
+        const current = rows.find((r) => r.active)?.id;
+        const r = await this.select(
+          "Switch provider",
+          rows.map((row) => ({
+            value: row.id,
+            label: row.name,
+            columns: [credentialLabel(row)],
+            description: row.hint,
+            keywords: `${row.id} ${row.hint}`,
+          })),
+          current,
+          "Conversation history is kept · type to search · Enter to connect",
+        );
+        if (r === null) return;
+        id = r as ProviderId;
+      }
+      const connection = await this.connectProvider(id, cfg, say);
+      if (connection === "back") {
+        id = undefined;
+        continue;
+      }
+      if (!connection) return;
+      const preset = getPreset(id);
+      say(`✓ ${describeConnection(connection)}`);
+      if (connection.openRouter?.isFreeTier) {
+        say("This key has no credits yet: only free models work (search \"free\"). Add credits at https://openrouter.ai/settings/credits.");
+      }
+      const models = pickableModels();
+      const modelId = await this.select(
+        `Pick a ${preset.name} model`,
+        modelOptions(models, ""),
+        undefined,
+        "Context · price per Mtok (input / output / cached) · type to search · switch any time with /model",
+      );
+      if (modelId === null) {
+        id = undefined;
+        continue;
+      }
+      try {
+        await commitProvider(connection, modelId);
+      } catch (e) {
+        return say(`Couldn't save the config: ${(e as Error).message}`, "error");
+      }
+      a.providerSwitched(id);
+      return;
+    }
+  }
+
+  /** One provider's connect step. Null = cancelled, "back" = return to the list. */
+  private async connectProvider(
+    id: ProviderId,
+    cfg: Cfg | null,
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<Connection | null | "back"> {
+    const preset = getPreset(id);
+    const plan = planConnect(id, cfg);
+    let baseUrl: string | undefined;
+
+    const verify = async (key: string | undefined, source: KeySource, url?: string): Promise<Connection | null> => {
+      say(preset.keyRequired || id === "openrouter" ? `Checking the key with ${preset.name}…` : `Connecting to ${preset.name}…`);
+      const res = await verifyProvider(id, key, source, url);
+      if (res.ok) return res.connection;
+      say(res.message, "error");
+      return null;
+    };
+
+    /** A masked key form; retries until the key checks out or the user cancels. */
+    const askKey = async (): Promise<Connection | null | "back"> => {
+      for (;;) {
+        const f = await this.sdk.form(this.cam, {
+          id: `provider-key-${Date.now()}`,
+          title: `${preset.name} API key`,
+          fields: [
+            {
+              name: "key",
+              label: preset.keysUrl ? `Paste your key — create one at ${id === "openrouter" ? OPENROUTER_KEYS_URL : preset.keysUrl}` : "Paste your key",
+              kind: "password",
+              required: id !== "custom",
+            },
+          ],
+        });
+        if (f.cancelled) return "back";
+        const key = f.values?.key?.trim();
+        if (!key && id !== "custom") continue;
+        const c = await verify(key || undefined, "key", baseUrl);
+        if (c) return c;
+      }
+    };
+
+    /** Run a browser/device sign-in that Esc can cancel. */
+    const withSignIn = async <T,>(run: (signal: AbortSignal) => Promise<T>): Promise<T | null> => {
+      const ctrl = new AbortController();
+      this.signIn = ctrl;
+      try {
+        return await run(ctrl.signal);
+      } catch (e) {
+        say(ctrl.signal.aborted ? "Sign-in cancelled." : `Sign-in failed: ${(e as Error).message}`, ctrl.signal.aborted ? "info" : "error");
+        return null;
+      } finally {
+        this.signIn = null;
+      }
+    };
+
+    switch (plan.kind) {
+      case "openrouter": {
+        const existing = resolveProviderKey("openrouter", cfg);
+        const r = await this.select(
+          "Connect your OpenRouter account",
+          [
+            ...(existing ? [{ value: "saved", label: `Use the ${process.env.OPENROUTER_API_KEY ? "key from your environment" : "saved key"} (${maskKey(existing)})` }] : []),
+            { value: "signin", label: "Sign in with OpenRouter", description: "recommended — approve in your browser, no key to copy" },
+            { value: "key", label: "Paste an API key", description: `create one at ${OPENROUTER_KEYS_URL}` },
+          ],
+        );
+        if (r === null) return "back";
+        if (r === "saved") return (await verify(existing, process.env.OPENROUTER_API_KEY ? "env" : "config")) ?? "back";
+        if (r === "key") return askKey();
+        const key = await withSignIn((signal) =>
+          openRouterSignIn({
+            signal,
+            open: openBrowser,
+            show: (url, opened) =>
+              say(opened ? `Approve Autopilot in your browser — a key is created for you. Esc to cancel. (${url})` : `Open this link and approve Autopilot: ${url}`),
+            askCode: async () => {
+              const f = await this.sdk.form(this.cam, {
+                id: `or-code-${Date.now()}`,
+                title: "Paste the code OpenRouter shows",
+                fields: [{ name: "code", label: "Code", kind: "password", required: true }],
+              });
+              return f.cancelled ? null : f.values?.code ?? null;
+            },
+          }),
+        );
+        if (!key) return "back";
+        return (await verify(key, "signin")) ?? "back";
+      }
+      case "copilot":
+      case "chatgpt": {
+        const signedIn = resolveProviderKey(id, cfg);
+        if (signedIn) {
+          const r = await this.select(`Connect ${preset.name}`, [
+            { value: "use", label: `Use your existing ${id === "copilot" ? "GitHub" : "ChatGPT"} sign-in` },
+            { value: "again", label: "Sign in again" },
+          ]);
+          if (r === null) return "back";
+          if (r === "use") return (await verify(signedIn, "config", cfg?.providers?.[id]?.baseUrl)) ?? "back";
+        }
+        if (id === "copilot") {
+          const res = await withSignIn((signal) =>
+            copilotSignIn(({ uri, code }) => {
+              openBrowser(uri);
+              say(`Open ${uri} and enter the code ${code} — waiting for you to approve in the browser. Esc to cancel. Copilot usage counts against your plan.`);
+            }, signal),
+          );
+          if (!res) return "back";
+          return (await verify(res.key, "signin", res.baseUrl)) ?? "back";
+        }
+        const res = await withSignIn((signal) =>
+          chatgptSignIn((url) => {
+            const opened = openBrowser(url);
+            say(`${opened ? "Approve Autopilot in your browser" : `Open ${url}`} and allow token sharing. Esc to cancel. Usage counts against your ChatGPT plan.`);
+          }, signal),
+        );
+        if (!res) return "back";
+        return (await verify(res.key, "signin")) ?? "back";
+      }
+      case "baseUrl": {
+        for (;;) {
+          const f = await this.sdk.form(this.cam, {
+            id: `provider-url-${Date.now()}`,
+            title: plan.purpose === "azure" ? "Your Azure OpenAI resource" : "Your OpenAI-compatible endpoint",
+            fields: [
+              {
+                name: "url",
+                label: plan.purpose === "azure" ? "Resource name (the <name> in https://<name>.openai.azure.com) or endpoint URL" : "Base URL",
+                placeholder: plan.purpose === "azure" ? "my-resource" : "http://localhost:4000/v1",
+                required: true,
+              },
+            ],
+          });
+          if (f.cancelled) return "back";
+          const res = normalizeEndpoint(plan.purpose, f.values?.url ?? "");
+          if ("error" in res) {
+            say(res.error, "error");
+            continue;
+          }
+          baseUrl = res.url;
+          return askKey();
+        }
+      }
+      case "project": {
+        for (;;) {
+          const f = await this.sdk.form(this.cam, {
+            id: `vertex-project-${Date.now()}`,
+            title: "Google Cloud project",
+            fields: [{ name: "project", label: "Project id — credentials come from gcloud (gcloud auth application-default login)", required: true }],
+          });
+          if (f.cancelled) return "back";
+          const project = f.values?.project ?? "";
+          if (!isVertexProjectId(project)) {
+            say("Enter a Google Cloud project id", "error");
+            continue;
+          }
+          await saveVertexProject(project);
+          return (await verify(undefined, "none")) ?? "back";
+        }
+      }
+      case "key":
+        return askKey();
+      case "ready": {
+        if (plan.source === "none") return (await verify(undefined, "none", cfg?.providers?.[id]?.baseUrl)) ?? "back";
+        const r = await this.select(`Connect ${preset.name}`, [
+          {
+            value: "use",
+            label: `Use the ${plan.source === "env" ? "key from your environment" : "saved key"}${plan.key ? ` (${maskKey(plan.key)})` : ""}`,
+          },
+          { value: "new", label: "Enter a different key" },
+        ]);
+        if (r === null) return "back";
+        if (r === "use") return (await verify(plan.key, plan.source, cfg?.providers?.[id]?.baseUrl)) ?? "back";
+        return askKey();
+      }
+    }
+  }
+
   /** /lsp setup (Ink's LspWizard). */
   private async lspWizard(lsp: AppSnapshot["lsp"]): Promise<void> {
     const a = this.actions!;
@@ -1213,6 +1479,7 @@ function modalName(m: AppModal): string {
   const names: Record<AppModal, string> = {
     model: "The model picker",
     mode: "The mode picker",
+    provider: "/provider",
     theme: "/theme",
     ui: "/ui",
     help: "/help",

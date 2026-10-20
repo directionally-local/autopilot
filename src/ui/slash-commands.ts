@@ -23,9 +23,10 @@ import { activeOpenRouterKey, llmAuthFromConfig, providerPresetOf, usesRequesty 
 import { askJev, presentJevAnswer, type JevQuestion } from "../agent/jev.js";
 import { buildJevContext, formatJevContextReceipt } from "../agent/jev-context.js";
 import { checkOpenRouterKey, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
-import { getPreset, isProviderId } from "../providers/presets.js";
+import { getPreset, isProviderId, type ProviderId } from "../providers/presets.js";
 import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
+import { switchedMessage } from "../providers/connect.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { checkRequestyKey } from "../models/requesty.js";
 import type { Mode } from "../mode.js";
@@ -120,6 +121,8 @@ export interface SlashContext {
   // Modal setters
   setShowThemePicker: (v: boolean) => void;
   setShowModelPicker: (v: boolean) => void;
+  /** Open the step-by-step provider flow (`/provider`), optionally at one provider. */
+  setProviderSetup: (v: { initial?: ProviderId } | null) => void;
   setShowModePicker: (v: boolean) => void;
   setShowInboxModal: (v: boolean) => void;
   setShowLspWizard: (v: boolean) => void;
@@ -873,7 +876,17 @@ const handleProvider: Handler = async (ctx, rest) => {
   const info = (text: string, kind: "info" | "error" = "info") =>
     setEvents((e) => [...e, { kind, key: mkKey(), text }]);
   const target = rest[0]?.toLowerCase();
-  if (!target || target === "list") {
+  // `/provider` and `/provider <id>`: the step-by-step flow (searchable list,
+  // sign-in or a masked key, then a model). Keys never go through the transcript.
+  if (!target) {
+    ctx.setProviderSetup({});
+    return true;
+  }
+  if (isProviderId(target) && rest.length === 1) {
+    ctx.setProviderSetup({ initial: target });
+    return true;
+  }
+  if (target === "list") {
     const lines = ["providers (switch with /provider <id> [key]):"];
     for (const r of providerStatus(cfg)) {
       const key = r.key === null ? "no key" : r.key === "not needed" ? "no key needed" : `key in ${r.key}`;
@@ -919,14 +932,9 @@ const handleProvider: Handler = async (ctx, rest) => {
     info(`couldn't load the config after switching to ${preset.name}`, "error");
     return true;
   }
-  const effective = resolveActiveProvider(next);
   await ensureCatalogForProvider(llmAuthFromConfig(next));
   setCfg(next);
-  info(
-    effective.id === target
-      ? `provider: ${preset.name} · model ${next.model || "(none yet — pick one with /model)"}. Conversation history is kept; memory and skills re-index for this provider's embedding model.`
-      : `saved ${preset.name} as your provider, but ${process.env.AUTOPILOT_PROVIDER ? "AUTOPILOT_PROVIDER" : "KIMIFLARE_BASE_URL"} in the environment keeps ${effective.preset.name} active for this run`,
-  );
+  info(switchedMessage(next, target));
   return true;
 };
 /** Plan/edit/auto modes are feature-flagged (cfg.modesEnabled, off by default).

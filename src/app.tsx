@@ -52,7 +52,7 @@ import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { Onboarding } from "./ui/onboarding.js";
 import { Welcome } from "./ui/welcome.js";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
@@ -97,6 +97,8 @@ import {
 import { dispatchSlashCommand, type SlashContext, executeFreshStart } from "./ui/slash-commands.js";
 import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
+import { switchedMessage } from "./providers/connect.js";
+import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
@@ -265,6 +267,7 @@ function App({
     showThemePicker, setShowThemePicker,
     showUiPicker, setShowUiPicker,
     setShowModelPicker,
+    setProviderSetup,
     showModePicker, setShowModePicker,
     showInboxModal, setShowInboxModal,
     showHelpMenu, setShowHelpMenu,
@@ -1180,6 +1183,20 @@ function App({
     [busy, cfg?.model, mkKey, setShowModelPicker],
   );
 
+  /** `/provider` finished: the new config is saved and its catalog loaded. */
+  const handleProviderSwitched = useCallback(
+    async (next: KimiConfig | null, to: ProviderId) => {
+      const loaded = next ?? (await loadConfig());
+      if (!loaded) {
+        setEvents((e) => [...e, { kind: "error", key: mkKey(), text: "couldn't load the config after switching provider" }]);
+        return;
+      }
+      setCfg(loaded);
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: switchedMessage(loaded, to) }]);
+    },
+    [mkKey],
+  );
+
   const buildSlashContext = useCallback((): SlashContext => ({
     exit,
     busy,
@@ -1197,6 +1214,7 @@ function App({
     setLatestVersion,
     setShowThemePicker,
     setShowModelPicker,
+    setProviderSetup,
     setShowModePicker,
     setShowInboxModal,
     setShowHooksDashboard: modals.setShowHooksDashboard,
@@ -1255,7 +1273,7 @@ function App({
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage, setResponseMeta,
-    setHasUpdate, setLatestVersion, setShowThemePicker, setShowModelPicker, setShowModePicker,
+    setHasUpdate, setLatestVersion, setShowThemePicker, setShowModelPicker, setProviderSetup, setShowModePicker,
     setShowInboxModal, setShowHelpMenu,
     setShowMemoryPicker, setShowSkillsPicker, setShowShellPicker,
     setShowChangelogImagePicker, setChangelogImageRepo,
@@ -2207,6 +2225,7 @@ function App({
     if (!bridge) return;
     const open: AppModal[] = [];
     if (modals.showModelPicker) open.push("model");
+    if (modals.providerSetup) open.push("provider");
     if (modals.showModePicker) open.push("mode");
     if (modals.showThemePicker) open.push("theme");
     if (modals.showUiPicker) open.push("ui");
@@ -2232,6 +2251,10 @@ function App({
       },
       decidePermission,
       pickModel: handleModelPick,
+      providerSwitched: (to) => {
+        modals.setProviderSetup(null);
+        void handleProviderSwitched(null, to);
+      },
       pickMode: (m) => {
         setShowModePicker(false);
         if (m) {
@@ -2246,6 +2269,7 @@ function App({
       closeModal: (m) => {
         const close: Record<AppModal, () => void> = {
           model: () => setShowModelPicker(false),
+          provider: () => modals.setProviderSetup(null),
           mode: () => setShowModePicker(false),
           theme: () => modals.setShowThemePicker(false),
           ui: () => modals.setShowUiPicker(false),
@@ -2301,6 +2325,7 @@ function App({
     bridge.sync({
       events,
       busy,
+      providerSetup: modals.providerSetup,
       workers: runningSubagents,
       mode,
       model: cfg?.model ?? "",
@@ -2415,6 +2440,8 @@ function App({
         currentModel={cfg?.model ?? ""}
         modelSwitchBusy={busy}
         onPickModel={handleModelPick}
+        providerConfig={cfg}
+        onProviderSwitched={(next, connection) => void handleProviderSwitched(next, connection.id)}
         currentMode={mode}
         onPickMode={(m) => {
           if (m) {

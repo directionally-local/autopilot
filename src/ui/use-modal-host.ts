@@ -1,3 +1,4 @@
+import type { ProviderId } from "../providers/presets.js";
 import { useMemo, useState } from "react";
 import type { CustomCommand } from "../commands/types.js";
 import type { ModelEntry } from "../models/registry.js";
@@ -9,6 +10,10 @@ export interface CommandWizardState {
 
 export interface CommandPickerState {
   mode: "edit" | "delete";
+}
+
+export interface ProviderSetupState {
+  initial?: ProviderId;
 }
 
 export interface ModalHostController {
@@ -29,6 +34,9 @@ export interface ModalHostController {
   setShowUiPicker: (v: boolean) => void;
   showModelPicker: boolean;
   setShowModelPicker: (v: boolean) => void;
+  /** `/provider`: the connect/switch flow, optionally starting at one provider. */
+  providerSetup: ProviderSetupState | null;
+  setProviderSetup: (v: ProviderSetupState | null) => void;
   showModePicker: boolean;
   setShowModePicker: (v: boolean) => void;
   showInboxModal: boolean;
@@ -80,6 +88,7 @@ export function useModalHost(): ModalHostController {
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showUiPicker, setShowUiPicker] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [providerSetup, setProviderSetup] = useState<ProviderSetupState | null>(null);
   const [showModePicker, setShowModePicker] = useState(false);
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [showHooksDashboard, setShowHooksDashboard] = useState(false);
@@ -100,6 +109,7 @@ export function useModalHost(): ModalHostController {
       showThemePicker ||
       showUiPicker ||
       showModelPicker ||
+      providerSetup !== null ||
       showModePicker ||
       showInboxModal ||
       showHooksDashboard ||
@@ -122,6 +132,7 @@ export function useModalHost(): ModalHostController {
     showLspWizard,
     showThemePicker,
     showModelPicker,
+    providerSetup,
     showModePicker,
     showInboxModal,
     showHooksDashboard,
@@ -143,6 +154,7 @@ export function useModalHost(): ModalHostController {
     showThemePicker, setShowThemePicker,
     showUiPicker, setShowUiPicker,
     showModelPicker, setShowModelPicker,
+    providerSetup, setProviderSetup,
     showModePicker, setShowModePicker,
     showInboxModal, setShowInboxModal,
     showHooksDashboard, setShowHooksDashboard,

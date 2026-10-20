@@ -40,7 +40,7 @@ const HELPER_ALLOW: Record<string, string> = {
   "cost-attribution/reconcile.ts": "all-time spend via /key; gated on activeOpenRouterKey()",
   "index.tsx": "`autopilot auth openrouter` key management",
   "ui/slash-commands.ts": "`/key` OpenRouter key management",
-  "ui/onboarding.tsx": "OpenRouter sign-in during onboarding",
+  "providers/connect.ts": "checks an OpenRouter key when connecting (onboarding and /provider)",
   "server/aster-memory.ts": "Aster server memory; runs only with an OpenRouter key (Hotcell gateway)",
   "providers/keys.ts": "validates an OpenRouter key when the user connects OpenRouter",
 };
