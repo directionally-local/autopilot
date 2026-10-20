@@ -63,7 +63,7 @@ import { Welcome } from "./ui/welcome.js";
 import { configPath, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
-import { allowsSubagentDispatch, resolveSubagentGuidance } from "./intent/subagent-policy.js";
+import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
 import type { SemanticSkillRoutingResult } from "./skills/index.js";
 import { getMemoryDb } from "./memory/db.js";
 import { listAllSkills, createSkill, deleteSkill, setSkillEnabled, findSkillFile } from "./skills/manager.js";
@@ -1930,30 +1930,21 @@ function App({
         return;
       }
 
-      const delegationGuidance = await resolveSubagentGuidance({
-        prompt: display,
-        tier: classification.tier,
-        policy: cfg.subagentPolicy ?? "auto",
-        apiKey: activeOpenRouterKey(cfg),
-        signal: turnScope.signal,
-      });
-      if (delegationGuidance.kind !== "none") {
-        const probability = delegationGuidance.probability === undefined
-          ? ""
-          : ` (Jev estimate: ${Math.round(delegationGuidance.probability * 100)}%)`;
-        const text = delegationGuidance.kind === "explicit-delegate"
-          ? "Subagent policy: respecting your explicit request to delegate. Worker calls still require permission."
-          : delegationGuidance.kind === "explicit-sequential"
-            ? "Subagent policy: respecting your instruction to work without delegation."
-            : delegationGuidance.kind === "auto-delegate"
-              ? "Subagent policy: auto will assess this substantial task for independent work; worker calls remain permission-gated."
-              : `Subagent suggestion: independent work may help${probability}. No worker will launch without your confirmation.`;
-        setEvents((events) => [...events, { kind: "info", key: mkKey(), text }]);
-      }
-
-      const turnTools = [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current].filter(
-        (tool) => tool.name !== "subagent" || allowsSubagentDispatch(delegationGuidance.kind),
-      );
+      // SessionCore: subagent guidance, the tool set and the completion check,
+      // decided the same way as in every other host.
+      const policy = {
+        ...(await resolveTurnPolicy({
+          cfg,
+          prompt: display,
+          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          signal: turnScope.signal,
+        })),
+        classification,
+      };
+      const delegationGuidance = policy.guidance;
+      const guidanceText = describeSubagentGuidance(delegationGuidance);
+      if (guidanceText) setEvents((events) => [...events, { kind: "info", key: mkKey(), text: guidanceText }]);
+      const turnTools = policy.tools;
       void recordSubagentEvent({
         kind: "turn",
         ts: Date.now(),
@@ -1998,19 +1989,14 @@ function App({
       }
 
       supervisorRef.current.startTurn(
-        {
+        assembleTurn({ cfg, policy, host: {
           ...llmAuthFromConfig(cfg),
           model: overrideModel ?? cfg.model,
           messages: messagesRef.current,
-          tools: turnTools,
           executor: executorRef.current,
           cwd: process.cwd(),
           signal: turnScope.signal,
           reasoningEffort: turnReasoningEffort,
-          coauthor:
-            cfg.coauthor !== false
-              ? { name: cfg.coauthorName || "autopilot", email: cfg.coauthorEmail || "kimiflare@proton.me" }
-              : undefined,
           sessionId: ensureSessionId(),
           memoryManager: memoryManagerRef.current,
           hooks: hooksManagerRef.current,
@@ -2035,9 +2021,6 @@ function App({
             },
             getStore: () => artifactStoreRef.current,
           },
-          intentClassification: classification,
-          delegationDirective: delegationGuidance.refinedDirective ?? delegationGuidance.directive,
-          completionCheck: completionCheckFromConfig(cfg),
           sessionStartRecall: sessionStartRecallRef.current ?? undefined,
           skillsDb: getMemoryDb() ?? undefined,
           skillRoutingConfig: {
@@ -2061,7 +2044,7 @@ function App({
             }
           },
           callbacks: sharedCallbacks,
-        },
+        } }),
         {
           onDone: () => {
             noteTurnEnded(turnId);

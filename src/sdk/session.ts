@@ -18,6 +18,7 @@ import { recordUsage } from "../usage-tracker.js";
 import { calculateCost } from "../pricing.js";
 import type { OpenRouterProviderPrefs } from "../agent/client.js";
 import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerIdOf } from "../agent/llm-auth.js";
+import { assembleTurn, lastUserText, resolveTurnPolicy } from "../agent/session-core.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { logger } from "../util/logger.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
@@ -628,7 +629,10 @@ class InternalSession implements KimiFlareSession {
       },
     };
 
-    await runAgentTurn({
+    // SessionCore: classification, subagent policy (the subagent tool is only
+    // offered when guidance allows it) and the completion check, as in every host.
+    const policy = await resolveTurnPolicy({ cfg: this.config, prompt: lastUserText(this.messages), tools: this.allTools, signal });
+    await runAgentTurn(assembleTurn({ cfg: this.config, policy, host: {
       ...llmAuthFromConfig(this.config),
       // The SDK's `provider` option is OpenRouter routing preferences; it only
       // applies when OpenRouter is the active provider.
@@ -637,7 +641,6 @@ class InternalSession implements KimiFlareSession {
         : {}),
       model: this.model,
       messages: this.messages,
-      tools: this.allTools,
       executor: this.executor,
       cwd: this.cwd,
       signal,
@@ -683,7 +686,7 @@ class InternalSession implements KimiFlareSession {
             .catch(() => {});
         }
       },
-    });
+    } }));
 
     // Update system prompt if KIMI.md was generated
     if (["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(this.cwd, name)))) {
@@ -710,3 +713,4 @@ function costLookup(
   if (!apiKey || !meta?.generationId) return undefined;
   return { apiKey, meta };
 }
+

@@ -22,7 +22,7 @@ import type { ResponseMeta } from "../agent/client.js";
 import { llmAuthFromConfig, providerPresetOf } from "../agent/llm-auth.js";
 import type { ToolSpec, ToolRender, Task } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
-import { classifyIntent } from "../intent/classify.js";
+import { assembleTurn, resolveTurnPolicy } from "../agent/session-core.js";
 import type { ReasoningEffort } from "../config.js";
 import type { TurnPhase } from "../ui/status.js";
 import type { DailyUsage } from "../usage-tracker.js";
@@ -124,7 +124,15 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
   const turnScope = sessionScopeRef.current.createChild();
   activeScopeRef.current = turnScope;
 
-  const initClassification = classifyIntent(prompt);
+  // SessionCore: the same policy as every host (classification, subagent
+  // guidance and tool set, completion check).
+  const policy = await resolveTurnPolicy({
+    cfg,
+    prompt,
+    tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+    signal: turnScope.signal,
+  });
+  const initClassification = policy.classification;
   const initEffortForTier: Record<string, ReasoningEffort> = {
     light: "low",
     medium: "medium",
@@ -135,20 +143,14 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
   setCodeMode(effectiveCodeMode);
 
   try {
-    await runAgentTurn({
+    await runAgentTurn(assembleTurn({ cfg, policy, host: {
       ...llmAuthFromConfig(cfg),
       model: cfg.model,
       messages: messagesRef.current,
-      tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
       executor: executorRef.current,
       cwd,
       signal: turnScope.signal,
       reasoningEffort: initReasoningEffort,
-      intentClassification: initClassification,
-      coauthor:
-        cfg.coauthor !== false
-          ? { name: cfg.coauthorName || "autopilot", email: cfg.coauthorEmail || "kimiflare@proton.me" }
-          : undefined,
       sessionId: ensureSessionId(),
       memoryManager: memoryManagerRef.current,
       githubToken: cfg.githubOAuthToken,
@@ -273,7 +275,7 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
           }
         },
       },
-    });
+    } }));
 
     if (existsSync(join(cwd, targetFilename))) {
       if (cacheStableRef.current) {

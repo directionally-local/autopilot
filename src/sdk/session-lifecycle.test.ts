@@ -73,7 +73,8 @@ describe("SDK session turn lifecycle", () => {
   });
 
   async function start(script: Script): Promise<KimiFlareSession> {
-    const created = await createAgentSession({ cwd });
+    // This suite counts chat requests; Jev (completion check, subagent policy) is covered elsewhere.
+    const created = await createAgentSession({ cwd, config: { completionCheck: false, subagentPolicy: "off" } as never });
     session = created.session;
     requests = [];
     globalThis.fetch = async (_url, init) => {
