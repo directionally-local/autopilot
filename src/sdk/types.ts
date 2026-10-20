@@ -36,6 +36,19 @@ export interface CreateSessionOptions {
    * TUI's hook behavior).
    */
   enableHooks?: boolean;
+  /**
+   * End this session if the process exits without `dispose()`: on
+   * `beforeExit`, SIGTERM, SIGINT, SIGHUP or an uncaught exception, run
+   * SessionEnd hooks and flush OpenTelemetry within a 3 s budget. The SDK
+   * never calls `process.exit` and never changes whether the process exits:
+   * when the host has its own signal listener the host still decides; when
+   * it doesn't, the signal is re-raised after the work so the process dies
+   * from it as before. After an uncaught exception or `process.exit()` the
+   * work is only started (nothing asynchronous can finish). `dispose()`
+   * remains the reliable way to end a session. Default `true`; pass `false`
+   * if your app manages its lifecycle and calls `dispose()` itself.
+   */
+  handleProcessExit?: boolean;
 }
 
 export interface PromptOptions {

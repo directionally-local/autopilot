@@ -275,6 +275,32 @@ session.dispose();
 - Custom `permissionHandler` — decide programmatically whether to allow mutating tools
 - Optional `memoryEnabled`, `lspEnabled`, `costAttribution` flags
 
+#### Ending a session
+
+Call `session.dispose()` when you're done with a session: it is the reliable way to end it
+(SessionEnd [hooks](#hooks), the trace's `session_end`, background subagents, LSP and memory).
+
+As a safety net, a live session also ends if your process exits without `dispose()`. On
+`beforeExit`, SIGTERM, SIGINT or SIGHUP the SDK runs SessionEnd hooks and flushes OpenTelemetry
+events within a 3 s budget. It never calls `process.exit` and doesn't change whether your
+process exits:
+
+- If your app has its own listener for the signal, the SDK starts the shutdown work and your
+  handler decides what happens next.
+- If it doesn't, the SDK finishes the work, then re-raises the signal, so the process still dies
+  from it (exit status 143 for SIGTERM, 130 for SIGINT).
+
+An uncaught exception that would crash the process, or an explicit `process.exit()`, leaves no
+time for asynchronous work. The SDK only starts the SessionEnd hook commands, and buffered
+OpenTelemetry events may be lost. If your app handles `uncaughtException` itself, the SDK leaves
+its sessions alone; call `dispose()` from your handler.
+
+Apps that manage their own lifecycle can turn this off:
+
+```ts
+const { session } = await createAgentSession({ cwd, handleProcessExit: false });
+```
+
 #### SDK Authentication
 
 The SDK uses the active [provider](#providers) — `provider` in `config` (or `AUTOPILOT_PROVIDER`),
@@ -709,7 +735,8 @@ it as `tier: "light" | "medium" | "heavy"` (on `UserPromptSubmit`,
 
 SDK consumers opt in to hooks with `enableHooks: true` on
 `createAgentSession`. Default is off because the SDK is a primitive,
-not the TUI.
+not the TUI. SDK sessions fire SessionEnd on `dispose()`, or when the
+process exits without it (see [Ending a session](#ending-a-session)).
 
 ## Development
 
