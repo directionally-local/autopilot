@@ -98,6 +98,11 @@ Requires Node.js ≥ 20.
 | Kimi Code (subscription) | `kimi-code` | `KIMI_API_KEY` | |
 | Z.ai (GLM) | `zai` | `ZHIPU_API_KEY` | |
 | Z.ai GLM Coding Plan | `zai-coding` | `ZHIPU_API_KEY` | |
+| xAI | `xai` | `XAI_API_KEY` | Grok over the Responses API |
+| Mistral | `mistral` | `MISTRAL_API_KEY` | tool-call ids adapted to Mistral's format; `mistral-embed` |
+| Groq · Cerebras · Together AI · Fireworks AI · DeepInfra | `groq` · `cerebras` · `together` · `fireworks` · `deepinfra` | `GROQ_API_KEY` · `CEREBRAS_API_KEY` · `TOGETHER_API_KEY` · `FIREWORKS_API_KEY` · `DEEPINFRA_API_KEY` | fast / open-model hosts |
+| Vercel AI Gateway | `vercel` | `AI_GATEWAY_API_KEY` | many vendors with one key |
+| Cloudflare Workers AI | `cloudflare` | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (or `autopilot auth cloudflare --account-id …`) | Cloudflare-era kimiflare configs reuse their credentials, and memory stays on `bge-base-en-v1.5`. For **AI Gateway**, use its OpenAI-compatible URL as a `custom` endpoint |
 | Ollama (local) | `ollama` | none | installed models are discovered; `providers.ollama.baseUrl` for another host |
 | LM Studio (local) | `lmstudio` | none | |
 | Requesty | `requesty` | `REQUESTY_API_KEY` | |

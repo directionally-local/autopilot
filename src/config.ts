@@ -348,6 +348,8 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     requestyApiKey,
     baseUrl,
     apiKey,
+    accountId: persisted.accountId,
+    apiToken: persisted.apiToken,
   };
 
   // Every LLM default below follows the active provider.
@@ -482,6 +484,15 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   }
 
   return stripUndefined(cfg);
+}
+
+/** The config file as stored (no env, no defaults), or null when there is none. */
+export async function readPersistedConfig(): Promise<Partial<KimiConfig> | null> {
+  try {
+    return JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig>;
+  } catch {
+    return null;
+  }
 }
 
 /**

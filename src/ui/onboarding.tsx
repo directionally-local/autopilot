@@ -20,7 +20,7 @@ import { ModelPicker } from "./model-picker.js";
 import { OpenRouterSignIn } from "./openrouter-signin.js";
 import { useTheme } from "./theme-context.js";
 import { openBrowser } from "./app-helpers.js";
-import { hasLegacyCloudflareConfig, loadConfig, type KimiConfig } from "../config.js";
+import { hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type KimiConfig } from "../config.js";
 import { checkOpenRouterKey, OPENROUTER_KEYS_URL, type OpenRouterKeyInfo } from "../models/openrouter.js";
 import type { ModelEntry } from "../models/registry.js";
 import { getPreset, type ProviderId } from "../providers/presets.js";
@@ -44,6 +44,15 @@ const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "gemini", hint: "Gemini models with a Google AI Studio key" },
   { id: "minimax", hint: "MiniMax models with a MiniMax API key" },
   { id: "copilot", hint: "your GitHub Copilot plan — sign in with GitHub" },
+  { id: "xai", hint: "Grok models with an xAI API key" },
+  { id: "mistral", hint: "Mistral models with a Mistral API key" },
+  { id: "groq", hint: "fast open models with a Groq key" },
+  { id: "cerebras", hint: "fast open models with a Cerebras key" },
+  { id: "together", hint: "open models with a Together AI key" },
+  { id: "fireworks", hint: "open models with a Fireworks key" },
+  { id: "deepinfra", hint: "open models with a DeepInfra key" },
+  { id: "vercel", hint: "many vendors with one Vercel AI Gateway key" },
+  { id: "cloudflare", hint: "Workers AI with your Cloudflare account" },
   { id: "deepseek", hint: "DeepSeek API key" },
   { id: "moonshot", hint: "Kimi models with a Moonshot API key" },
   { id: "kimi-code", hint: "Kimi Code subscription" },
@@ -63,11 +72,13 @@ const OPENROUTER_METHODS = [
 export function Onboarding({ onDone, onCancel }: Props) {
   const theme = useTheme();
   const envProviders = useMemo(() => detectEnvProviders(), []);
-  // Providers with a key already in the environment come first.
-  const choices = useMemo(
-    () => [...CHOICES].sort((a, b) => Number(envProviders.includes(b.id)) - Number(envProviders.includes(a.id))),
-    [envProviders],
-  );
+  const [upgrading, setUpgrading] = useState(false);
+  // Providers with a key already in the environment come first — and for a
+  // Cloudflare-era kimiflare config, Workers AI (its credentials still work).
+  const choices = useMemo(() => {
+    const rank = (id: ProviderId) => (upgrading && id === "cloudflare" ? 2 : envProviders.includes(id) ? 1 : 0);
+    return [...CHOICES].sort((a, b) => rank(b.id) - rank(a.id));
+  }, [envProviders, upgrading]);
   const [step, setStep] = useState<Step>("provider");
   const [choiceIdx, setChoiceIdx] = useState(0);
   const [provider, setProvider] = useState<ProviderId>("openrouter");
@@ -79,11 +90,13 @@ export function Onboarding({ onDone, onCancel }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [orKeyInfo, setOrKeyInfo] = useState<OpenRouterKeyInfo | null>(null);
   const [detail, setDetail] = useState<string | undefined>(undefined);
-  const [upgrading, setUpgrading] = useState(false);
   const preset = getPreset(provider);
 
+  /** Raw config file (Cloudflare-era configs keep accountId/apiToken that Workers AI can reuse). */
+  const [persisted, setPersisted] = useState<Partial<KimiConfig> | null>(null);
   useEffect(() => {
     void hasLegacyCloudflareConfig().then(setUpgrading);
+    void readPersistedConfig().then(setPersisted);
   }, []);
 
   /** After choosing a provider: go straight to checking when nothing needs typing. */
@@ -95,7 +108,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
     if (id === "openrouter") return setStep("method");
     if (id === "copilot") return void copilotLogin();
     if (id === "custom") return setStep("baseUrl");
-    const envKey = resolveProviderKey(id, null);
+    const envKey = resolveProviderKey(id, persisted);
     if (envKey) return void accept(id, envKey, "env");
     if (!p.keyRequired) return void accept(id, undefined, "none");
     setStep("key");
@@ -141,6 +154,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
     }
     setKey(candidate ?? "");
     const auth = llmAuthFromConfig({
+      ...(id === "cloudflare" ? { accountId: persisted?.accountId, apiToken: persisted?.apiToken } : {}),
       provider: id,
       ...(id === "openrouter" ? { openrouterApiKey: candidate } : {}),
       ...(id === "requesty" ? { requestyApiKey: candidate } : {}),
@@ -241,7 +255,13 @@ export function Onboarding({ onDone, onCancel }: Props) {
               <Text key={c.id} color={i === choiceIdx ? theme.palette.primary : undefined}>
                 {i === choiceIdx ? "› " : "  "}
                 {getPreset(c.id).name}
-                <Text {...muted}>{`  ${envProviders.includes(c.id) ? "key found in your environment" : c.hint}`}</Text>
+                <Text {...muted}>{`  ${
+                  upgrading && c.id === "cloudflare"
+                    ? "your Cloudflare account from kimiflare — memory stays compatible"
+                    : envProviders.includes(c.id)
+                      ? "key found in your environment"
+                      : c.hint
+                }`}</Text>
               </Text>
             ))}
           </Box>
