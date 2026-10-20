@@ -56,8 +56,10 @@ program
   .action(async (cmdOpts) => {
     const cfg = await loadConfig();
     if (cmdOpts.verify) {
-      if (!cfg?.openrouterApiKey) {
-        console.error("autopilot cost --verify needs your OpenRouter key (OPENROUTER_API_KEY or `autopilot auth openrouter`).");
+      const { activeOpenRouterKey } = await import("./agent/llm-auth.js");
+      const orKey = activeOpenRouterKey(cfg);
+      if (!orKey) {
+        console.error("autopilot cost --verify checks costs against OpenRouter's records, so it needs OpenRouter as the active provider (OPENROUTER_API_KEY or `autopilot auth openrouter`).");
         process.exit(2);
       }
       const { pickSession, verifySession, formatVerifyReport } = await import("./cost-verify.js");
@@ -66,7 +68,7 @@ program
         console.error(cmdOpts.session ? `Session ${cmdOpts.session} not found.` : "No sessions with OpenRouter generations yet.");
         process.exit(1);
       }
-      const result = await verifySession(session, cfg.openrouterApiKey);
+      const result = await verifySession(session, orKey);
       console.log(formatVerifyReport(result));
       const bad = result.rows.some((r) => !r.missing && r.fields.some((f) => !f.ok));
       process.exit(bad ? 1 : 0);
@@ -514,20 +516,11 @@ async function main() {
 
 
 /** Read a line from the terminal without echoing it (for secrets). */
-/**
- * Load the model catalog of the gateway in use (cache-first, 6h TTL; public
- * endpoints, no key needed). Requesty's catalog only when Requesty is the
- * configured gateway; OpenRouter's otherwise.
- */
+/** Load the active provider's model catalog (see src/models/catalog.ts). */
 async function ensureModelCatalog(cfg: KimiConfig | null): Promise<void> {
-  const { llmAuthFromConfig, usesRequesty } = await import("./agent/llm-auth.js");
-  if (cfg && usesRequesty(llmAuthFromConfig(cfg))) {
-    const { ensureRequestyCatalog } = await import("./models/requesty-catalog.js");
-    await ensureRequestyCatalog();
-    return;
-  }
-  const { ensureOpenRouterCatalog } = await import("./models/openrouter-catalog.js");
-  await ensureOpenRouterCatalog();
+  const { llmAuthFromConfig } = await import("./agent/llm-auth.js");
+  const { ensureCatalogForProvider } = await import("./models/catalog.js");
+  await ensureCatalogForProvider(llmAuthFromConfig(cfg));
 }
 
 async function promptHidden(question: string): Promise<string> {

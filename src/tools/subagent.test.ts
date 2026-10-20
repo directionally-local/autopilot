@@ -79,7 +79,7 @@ describe("subagent tool", () => {
 
     await assert.rejects(
       () => subagentTool.run({ mission: "research" }, { cwd: process.cwd(), model: "openai/gpt-4o-mini" }),
-      /Subagents need an OpenRouter-backed session/,
+      /need OpenRouter as the active provider \(current: Requesty\)/,
     );
     assert.equal(fetchCalls, 0);
   });
@@ -92,7 +92,7 @@ describe("subagent tool", () => {
 
     await assert.rejects(
       () => subagentTool.run({ mission: "research" }, { cwd: process.cwd(), model: "openai/gpt-4o-mini" }),
-      /Subagents do not support custom model endpoints/,
+      /need OpenRouter as the active provider \(current: custom endpoint\)/,
     );
   });
 });

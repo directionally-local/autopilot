@@ -160,7 +160,7 @@ describe("TurnSupervisor.synthesizeFindings", () => {
     await assert.rejects(
       s.synthesizeFindings(
         [result("w1", [finding("OAuth", "high")])],
-        { strategy: "llm", auth: { openrouterApiKey: "sk-or-test" } },
+        { strategy: "llm", auth: { openrouterApiKey: "sk-or-test" }, model: "moonshotai/kimi-k2.5" },
       ),
       /network error/,
     );
@@ -182,7 +182,7 @@ describe("TurnSupervisor.synthesizeFindings", () => {
 
     await s.synthesizeFindings(
       [result("w1", [finding("OAuth", "high")], ["Use OAuth"])],
-      { strategy: "llm", auth: { openrouterApiKey: "sk-or-test" }, prompt: "Implement auth" },
+      { strategy: "llm", auth: { openrouterApiKey: "sk-or-test" }, model: "moonshotai/kimi-k2.5", prompt: "Implement auth" },
     );
     assert.ok(capturedUserContent.includes("Worker w1"));
     assert.ok(capturedUserContent.includes("Implement auth"));
@@ -202,6 +202,7 @@ describe("TurnSupervisor.synthesizeFindings", () => {
       {
         strategy: "llm",
         auth: { openrouterApiKey: "sk-or-test" },
+        model: "moonshotai/kimi-k2.5",
         onDelta: (d) => deltas.push(d),
       },
     );

@@ -1,17 +1,12 @@
+import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
 import { runKimi } from "./client.js";
-import type { OpenRouterProviderPrefs } from "./client.js";
-import type { CustomEndpoint } from "./custom-endpoint.js";
 import type { ChatMessage } from "./messages.js";
 
-export interface CompactOpts {
-  openrouterApiKey?: string;
-  requestyApiKey?: string;
-  customEndpoint?: CustomEndpoint;
+export interface CompactOpts extends LlmAuth {
   model: string;
   messages: ChatMessage[];
   keepLastTurns?: number;
   signal?: AbortSignal;
-  provider?: OpenRouterProviderPrefs;
 }
 
 export interface CompactResult {
@@ -89,9 +84,7 @@ export async function summarizeMessagesViaLlm(opts: CompactOpts): Promise<Compac
 
   let summary = "";
   const events = runKimi({
-    openrouterApiKey: opts.openrouterApiKey,
-    requestyApiKey: opts.requestyApiKey,
-    customEndpoint: opts.customEndpoint,
+    ...pickLlmAuth(opts),
     model: opts.model,
     messages: [
       { role: "system", content: SUMMARY_SYSTEM },
@@ -100,7 +93,6 @@ export async function summarizeMessagesViaLlm(opts: CompactOpts): Promise<Compac
     signal: opts.signal,
     temperature: 0.1,
     reasoningEffort: "low",
-    provider: opts.provider,
     idleTimeoutMs: 60_000,
   });
   for await (const ev of events) {

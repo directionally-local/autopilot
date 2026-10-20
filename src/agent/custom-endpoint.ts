@@ -15,11 +15,15 @@
  * the body unchanged — no OpenRouter id-shape validation.
  */
 
+import type { ProviderId } from "../providers/presets.js";
+
 export interface CustomEndpoint {
   /** OpenAI-compatible base URL. `/chat/completions` is appended unless the URL already ends with it. */
   baseUrl: string;
   /** Bearer sent as `Authorization` to `baseUrl`. Omitted entirely when unset (unauthenticated local gateways). */
   apiKey?: string;
+  /** The provider preset this endpoint belongs to (its quirks, defaults and name). Unset means a host-app gateway. */
+  providerId?: ProviderId;
 }
 
 /** Config fields a custom endpoint can be persisted under (see `KimiConfig`). */

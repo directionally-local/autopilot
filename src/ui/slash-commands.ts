@@ -15,11 +15,11 @@ import { unlink } from "node:fs/promises";
 import QRCode from "qrcode";
 
 import type { Cfg } from "../app.js";
-import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
+import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
 import type { ChatEvent } from "./chat.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
-import { llmAuthFromConfig, usesRequesty } from "../agent/llm-auth.js";
+import { activeOpenRouterKey, llmAuthFromConfig, usesRequesty } from "../agent/llm-auth.js";
 import { askJev, presentJevAnswer, type JevQuestion } from "../agent/jev.js";
 import { buildJevContext, formatJevContextReceipt } from "../agent/jev-context.js";
 import { checkOpenRouterKey, looksLikeOpenRouterKey, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
@@ -331,7 +331,7 @@ const handleFresh: Handler = async (ctx) => {
           messages: ctx.messagesRef.current,
           mode: ctx.mode,
           ...llmAuthFromConfig(cfg),
-          model: cfg?.plumbingModel ?? DEFAULT_PLUMBING_MODEL,
+          model: plumbingModelOf(cfg),
           memoryManager: ctx.memoryManagerRef.current,
           memoryEnabled: cfg?.memoryEnabled,
         });
@@ -390,9 +390,9 @@ const handleCost: Handler = (ctx, _rest, arg) => {
     return true;
   }
   if (arg === "verify") {
-    const key = cfg.openrouterApiKey;
+    const key = activeOpenRouterKey(cfg);
     if (!key) {
-      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "cost verify needs an OpenRouter key — run /key set <key>" }]);
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "cost verify checks against OpenRouter's generation records, so it needs OpenRouter as the active provider" }]);
       return true;
     }
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "checking this session's numbers against OpenRouter's generation records…" }]);
@@ -621,12 +621,10 @@ const handleJev: Handler = async (ctx, rest) => {
     info("Jev questions must be 4,000 characters or fewer", "error");
     return true;
   }
-  const apiKey =
-    process.env.OPENROUTER_API_KEY?.trim() ||
-    process.env.KIMIFLARE_OPENROUTER_KEY?.trim() ||
-    cfg?.openrouterApiKey?.trim();
+  // Jev is OpenRouter's Decisions API: only available while OpenRouter is the active provider.
+  const apiKey = activeOpenRouterKey(cfg);
   if (!apiKey) {
-    info(`no OpenRouter key configured — run /key set <key> or set OPENROUTER_API_KEY (create a key at ${OPENROUTER_KEYS_URL})`, "error");
+    info(`/jev uses OpenRouter's Decisions API — switch to OpenRouter (and set a key with /key set, from ${OPENROUTER_KEYS_URL}) to use it`, "error");
     return true;
   }
 

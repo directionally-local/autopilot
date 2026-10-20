@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
-import type { OpenRouterProviderPrefs } from "../agent/client.js";
-import type { CustomEndpoint } from "../agent/custom-endpoint.js";
+import { pickLlmAuth, type LlmAuth } from "../agent/llm-auth.js";
 import { runKimi } from "../agent/client.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { Memory, MemoryInput, MemoryQuery, HybridResult, MemoryStats, MemoryCategory } from "./schema.js";
@@ -26,40 +25,29 @@ import { DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
 import { retrieveMemories } from "./retrieval.js";
 import { runCleanup, shouldCleanup } from "./cleanup.js";
 
-export interface MemoryManagerOpts {
+export interface MemoryManagerOpts extends LlmAuth {
   dbPath: string;
-  openrouterApiKey?: string;
-  requestyApiKey?: string;
-  customEndpoint?: CustomEndpoint;
   model?: string;
   plumbingModel?: string;
   extractionModel?: string;
   embeddingModel?: string;
-  provider?: OpenRouterProviderPrefs;
   maxAgeDays?: number;
   maxEntries?: number;
   redactSecrets?: boolean;
 }
 
-interface LlmOpts {
-  openrouterApiKey?: string;
-  requestyApiKey?: string;
-  customEndpoint?: CustomEndpoint;
+interface LlmOpts extends LlmAuth {
   model: string;
-  provider?: OpenRouterProviderPrefs;
   signal?: AbortSignal;
 }
 
 async function runKimiText(opts: LlmOpts & { messages: ChatMessage[]; temperature?: number }): Promise<string> {
   const events = runKimi({
-    openrouterApiKey: opts.openrouterApiKey,
-    requestyApiKey: opts.requestyApiKey,
-    customEndpoint: opts.customEndpoint,
+    ...pickLlmAuth(opts),
     model: opts.model,
     messages: opts.messages,
     temperature: opts.temperature ?? 0.1,
     reasoningEffort: "low",
-    provider: opts.provider,
     signal: opts.signal,
   });
   let text = "";
@@ -164,31 +152,23 @@ export class MemoryManager {
 
   private get llmOpts(): LlmOpts {
     return {
-      openrouterApiKey: this.opts.openrouterApiKey,
-      requestyApiKey: this.opts.requestyApiKey,
-      customEndpoint: this.opts.customEndpoint,
+      ...pickLlmAuth(this.opts),
       model: this.opts.model ?? DEFAULT_MODEL,
-      provider: this.opts.provider,
     };
   }
 
   private get plumbingLlmOpts(): LlmOpts {
     return {
-      openrouterApiKey: this.opts.openrouterApiKey,
-      requestyApiKey: this.opts.requestyApiKey,
-      customEndpoint: this.opts.customEndpoint,
-      model: this.opts.plumbingModel ?? DEFAULT_PLUMBING_MODEL,
-      provider: this.opts.provider,
+      ...pickLlmAuth(this.opts),
+      // Side calls follow the active provider: its plumbing model, else the chat model.
+      model: this.opts.plumbingModel ?? this.opts.model ?? DEFAULT_MODEL,
     };
   }
 
   private get extractionLlmOpts(): LlmOpts {
     return {
-      openrouterApiKey: this.opts.openrouterApiKey,
-      requestyApiKey: this.opts.requestyApiKey,
-      customEndpoint: this.opts.customEndpoint,
-      model: this.opts.extractionModel ?? DEFAULT_PLUMBING_MODEL,
-      provider: this.opts.provider,
+      ...pickLlmAuth(this.opts),
+      model: this.opts.extractionModel ?? this.opts.plumbingModel ?? this.opts.model ?? DEFAULT_MODEL,
     };
   }
 
@@ -253,12 +233,9 @@ export class MemoryManager {
 
     // 6. Embed and store
     const embeddings = await fetchEmbeddings({
-      openrouterApiKey: this.opts.openrouterApiKey,
-      requestyApiKey: this.opts.requestyApiKey,
-      customEndpoint: this.opts.customEndpoint,
+      ...pickLlmAuth(this.opts),
       model: this.opts.embeddingModel,
       texts: [embedText],
-      provider: this.opts.provider,
     });
 
     const input: MemoryInput = {
@@ -397,12 +374,9 @@ export class MemoryManager {
     if (!query.embedding && query.text) {
       try {
         const embeddings = await fetchEmbeddings({
-          openrouterApiKey: this.opts.openrouterApiKey,
-          requestyApiKey: this.opts.requestyApiKey,
-          customEndpoint: this.opts.customEndpoint,
+          ...pickLlmAuth(this.opts),
           model: this.opts.embeddingModel,
           texts: [query.text],
-          provider: this.opts.provider,
         });
         query.embedding = embeddings[0];
       } catch {
@@ -478,12 +452,9 @@ export class MemoryManager {
     for (const mem of unvectorized) {
       try {
         const embeddings = await fetchEmbeddings({
-          openrouterApiKey: this.opts.openrouterApiKey,
-          requestyApiKey: this.opts.requestyApiKey,
-          customEndpoint: this.opts.customEndpoint,
+          ...pickLlmAuth(this.opts),
           model: this.opts.embeddingModel,
           texts: [mem.content],
-          provider: this.opts.provider,
         });
         updateMemoryEmbedding(this.db, mem.id, embeddings[0]!);
         fixed++;
