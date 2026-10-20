@@ -61,10 +61,6 @@ import type { UpdateCheckResult } from "./util/update-check.js";
 import { Onboarding } from "./ui/onboarding.js";
 import { Welcome } from "./ui/welcome.js";
 import { configPath, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
-import { startRemoteSession, streamRemoteProgress } from "./remote/worker-client.js";
-import { saveRemoteSession, type RemoteSession } from "./remote/session-store.js";
-import { deployForTui } from "./remote/deploy.js";
-import { authGitHubForTui } from "./remote/tui-auth.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { allowsSubagentDispatch, resolveSubagentGuidance } from "./intent/subagent-policy.js";
@@ -137,7 +133,6 @@ import {
   handleCommandDelete as handleCommandDeleteImpl,
   handleCommandSave as handleCommandSaveImpl,
   handleLspSave as handleLspSaveImpl,
-  handleRemoteCancel as handleRemoteCancelImpl,
 } from "./ui/command-handlers.js";
 import {
   AUTO_COMPACT_THRESHOLD,
@@ -277,7 +272,6 @@ function App({
     showUiPicker, setShowUiPicker,
     setShowModelPicker,
     showModePicker, setShowModePicker,
-    showRemoteDashboard, setShowRemoteDashboard,
     showInboxModal, setShowInboxModal,
     showHelpMenu, setShowHelpMenu,
     showMemoryPicker, setShowMemoryPicker,
@@ -320,7 +314,6 @@ function App({
   const [effort, setEffort] = useState<ReasoningEffort>(
     initialCfg?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
   );
-  const [selectedRemoteSession, setSelectedRemoteSession] = useState<RemoteSession | null>(null);
   const [verbose, setVerbose] = useState(false);
   const [hasUpdate, setHasUpdate] = useState(initialUpdateResult?.hasUpdate ?? false);
   const [latestVersion, setLatestVersion] = useState<string | null>(initialUpdateResult?.latestVersion ?? null);
@@ -534,7 +527,7 @@ function App({
   }, [customCommandsVersion, modesEnabled]);
 
   // Preserves the pre-refactor asymmetry: the picker close-on-modal check
-  // includes showInboxModal but EXCLUDES showRemoteDashboard and
+  // includes showInboxModal but EXCLUDES
   // showThemePicker. Likely an oversight from when those modals were
   // added later — kept as-is for this pure refactor; revisit when we
   // audit modal/keybinding semantics.
@@ -950,7 +943,7 @@ function App({
     if (key.escape) {
       const now = Date.now();
       // Preserves the pre-refactor asymmetry: this Esc-handler check
-      // EXCLUDES commandPicker, showInboxModal, and showRemoteDashboard
+      // EXCLUDES commandPicker and showInboxModal
       // (so Esc still fires the abort-turn path when those are open).
       // Kept as-is for this pure refactor.
       const modalOpen =
@@ -1249,7 +1242,6 @@ function App({
     setShowHooksDashboard: modals.setShowHooksDashboard,
     setShowHelpMenu,
     setShowLspWizard,
-    setShowRemoteDashboard,
     setShowCommandList,
     setCommandWizard,
     setCommandPicker,
@@ -1307,7 +1299,7 @@ function App({
     setShowInboxModal, setShowHelpMenu,
     setShowMemoryPicker, setShowSkillsPicker, setShowShellPicker,
     setShowChangelogImagePicker, setChangelogImageRepo,
-    setShowLspWizard, setShowRemoteDashboard, setShowCommandList,
+    setShowLspWizard, setShowCommandList,
     setCommandWizard, setCommandPicker,
     turn.setShowReasoning, turn.setTasks, turn.setTasksStartedAt,
     resetSession, clearTaskTracking, openResumePicker, runCompact, runInit,
@@ -1408,15 +1400,6 @@ function App({
         scope,
       ),
     [cfg, setCfg, setEvents, setShowLspWizard],
-  );
-
-  const handleRemoteCancel = useCallback(
-    (session: RemoteSession) =>
-      handleRemoteCancelImpl(
-        { setEvents, mkKey, setSelectedRemoteSession, setShowRemoteDashboard },
-        session,
-      ),
-    [setEvents, setShowRemoteDashboard],
   );
 
   // `! <command>`: run it in the user's terminal, show the output, and share
@@ -2845,7 +2828,6 @@ function App({
     if (modals.commandWizard) open.push("commandWizard");
     if (modals.commandPicker) open.push("commandPicker");
     if (modals.showLspWizard) open.push("lspWizard");
-    if (modals.showRemoteDashboard) open.push("remoteDashboard");
     if (modals.showInboxModal) open.push("inbox");
     if (modals.showHooksDashboard) open.push("hooksDashboard");
     if (modals.showChangelogImagePicker) open.push("changelogImage");
@@ -2885,7 +2867,6 @@ function App({
           commandWizard: () => modals.setCommandWizard(null),
           commandPicker: () => modals.setCommandPicker(null),
           lspWizard: () => modals.setShowLspWizard(false),
-          remoteDashboard: () => modals.setShowRemoteDashboard(false),
           inbox: () => modals.setShowInboxModal(false),
           hooksDashboard: () => modals.setShowHooksDashboard(false),
           changelogImage: () => modals.setShowChangelogImagePicker(false),
@@ -3051,9 +3032,6 @@ function App({
           }
           setShowModePicker(false);
         }}
-        selectedRemoteSession={selectedRemoteSession}
-        onSelectRemoteSession={setSelectedRemoteSession}
-        onCancelRemoteSession={handleRemoteCancel}
         onInboxOpen={openBrowser}
         getConfiguredHooks={configuredHooks}
         cwd={process.cwd()}

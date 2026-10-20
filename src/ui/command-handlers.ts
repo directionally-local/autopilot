@@ -18,7 +18,6 @@ import {
   type SaveCustomCommandOptions,
 } from "../commands/save.js";
 import type { CustomCommand } from "../commands/types.js";
-import type { RemoteSession } from "../remote/session-store.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -133,37 +132,4 @@ export function handleLspSave(
     ]);
   }
   setShowLspWizard(false);
-}
-
-export interface RemoteCancelDeps {
-  setEvents: SetEvents;
-  mkKey: () => string;
-  setSelectedRemoteSession: (v: null) => void;
-  setShowRemoteDashboard: (v: boolean) => void;
-}
-
-export async function handleRemoteCancel(
-  deps: RemoteCancelDeps,
-  session: RemoteSession,
-): Promise<void> {
-  const { setEvents, mkKey, setSelectedRemoteSession, setShowRemoteDashboard } = deps;
-  try {
-    const { cancelRemoteSession } = await import("../remote/worker-client.js");
-    await cancelRemoteSession(session.workerUrl, session.sessionId);
-    setEvents((e) => [
-      ...e,
-      { kind: "info", key: mkKey(), text: `Cancelled session ${session.sessionId}` },
-    ]);
-  } catch (err) {
-    setEvents((e) => [
-      ...e,
-      {
-        kind: "error",
-        key: mkKey(),
-        text: `Failed to cancel: ${err instanceof Error ? err.message : String(err)}`,
-      },
-    ]);
-  }
-  setSelectedRemoteSession(null);
-  setShowRemoteDashboard(false);
 }

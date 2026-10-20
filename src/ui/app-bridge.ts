@@ -41,7 +41,6 @@ export type AppModal =
   | "commandWizard"
   | "commandPicker"
   | "lspWizard"
-  | "remoteDashboard"
   | "inbox"
   | "hooksDashboard"
   | "changelogImage";
