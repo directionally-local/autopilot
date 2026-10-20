@@ -302,6 +302,14 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
         model: turn.conversation.model,
         allowCreate: true,
         onCellCreated: () => {},
+        ...(turn.conversation.kind === "code" && turn.conversation.repository ? {
+          project: {
+            kind: "code" as const,
+            repository: turn.conversation.repository,
+            baseBranch: turn.conversation.baseBranch ?? "main",
+            branch: turn.conversation.branch,
+          },
+        } : {}),
       });
       cellId = provisioned.cellId;
     }

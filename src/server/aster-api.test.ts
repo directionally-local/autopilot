@@ -144,6 +144,52 @@ describe("Aster control-plane API", () => {
     }
   });
 
+  it("lists GitHub repositories and creates a repo-bound code conversation", async () => {
+    const harness = await createHarness("hang");
+    const originalFetch = globalThis.fetch;
+    const rawRepository = {
+      full_name: "me/app",
+      name: "app",
+      owner: { login: "me" },
+      private: true,
+      description: "A private test repo",
+      default_branch: "main",
+      pushed_at: "2026-10-20T00:00:00Z",
+    };
+    setEnv("GITHUB_TOKEN", "placeholder-github-token");
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (!url.startsWith("https://api.github.com/")) return originalFetch(input, init);
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer placeholder-github-token");
+      if (url.includes("/user/repos?")) return new Response(JSON.stringify([rawRepository]), { status: 200 });
+      if (url.endsWith("/repos/me/app")) return new Response(JSON.stringify(rawRepository), { status: 200 });
+      return originalFetch(input, init);
+    };
+
+    try {
+      const listed = await request(harness, "GET", "/api/v1/github/repositories");
+      assert.equal(listed.status, 200);
+      const repositories = await listed.json() as { repositories: Array<{ fullName: string; private: boolean }> };
+      assert.deepEqual(repositories.repositories.map(({ fullName, private: isPrivate }) => [fullName, isPrivate]), [["me/app", true]]);
+
+      const created = await request(harness, "POST", "/api/v1/conversations", {
+        workspaceId: "default",
+        model: "test/model",
+        kind: "code",
+        repository: "me/app",
+      });
+      assert.equal(created.status, 201);
+      const conversation = await created.json() as { conversationId: string; kind: string; repository: string; branch: string };
+      assert.equal(conversation.kind, "code");
+      assert.equal(conversation.repository, "me/app");
+      assert.match(conversation.branch, /^aster\/[0-9a-f]{8}$/);
+      assert.equal(await exists(join(harness.worktreeRoot, conversation.conversationId)), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await harness.close();
+    }
+  });
+
   it("uses Bearer auth for Aster routes and keeps legacy Basic auth separate", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-auth-")));
     tempDirs.push(root);

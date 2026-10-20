@@ -315,6 +315,10 @@ describe("Aster Hotcell runtime", () => {
         workspaceId: "default",
         worktreePath: "/tmp/repo-worktree",
         model: "test/model",
+        branch: "aster/12345678",
+        kind: "code",
+        repository: "me/app",
+        baseBranch: "main",
       } as never,
       userText: "make a small change",
     });
@@ -325,7 +329,10 @@ describe("Aster Hotcell runtime", () => {
     const state = cells.get(conversationId);
     assert.ok(state, "The runtime should provision one cell for this API conversation");
     assert.deepEqual(state.sessions, [sessionId]);
-    assert.deepEqual(state.prompts.map(({ message }) => message), ["make a small change"]);
+    assert.ok(state.commands?.some((command) => command.includes("me/app") && command.includes("aster/12345678")));
+    assert.equal(state.prompts.length, 1);
+    assert.ok(state.prompts[0]?.message.includes("GitHub repository me/app"));
+    assert.ok(state.prompts[0]?.message.endsWith("make a small change"));
     assert.ok(turn.events.some((event) => event.type === "assistant.delta"));
     assert.deepEqual(turn.finished, ["completed"]);
   });

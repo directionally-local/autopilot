@@ -24,6 +24,9 @@ export interface AsterConversation {
   worktreePath: string;
   cwd: string;
   branch: string;
+  kind: "chat" | "code";
+  repository: string | null;
+  baseBranch: string | null;
   status: AsterConversationStatus;
   activeRunId: string | null;
   lastEventSequence: number;
@@ -100,6 +103,9 @@ interface ConversationRow extends Record<string, unknown> {
   worktree_path: string;
   cwd: string;
   branch: string;
+  kind: "chat" | "code";
+  repository: string | null;
+  base_branch: string | null;
   status: AsterConversationStatus;
   active_run_id: string | null;
   last_event_sequence: number;
@@ -167,6 +173,9 @@ export class AsterStore {
         worktree_path TEXT NOT NULL,
         cwd TEXT NOT NULL,
         branch TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'chat',
+        repository TEXT,
+        base_branch TEXT,
         status TEXT NOT NULL,
         active_run_id TEXT,
         last_event_sequence INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +219,12 @@ export class AsterStore {
         PRIMARY KEY (conversation_id, client_turn_id)
       );
     `);
+    const conversationColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(aster_conversations)").all() as Array<{ name: string }>).map(({ name }) => name),
+    );
+    if (!conversationColumns.has("kind")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'");
+    if (!conversationColumns.has("repository")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN repository TEXT");
+    if (!conversationColumns.has("base_branch")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN base_branch TEXT");
     try { chmodSync(dbPath, 0o600); } catch { /* existing/read-only database permissions are managed by the caller */ }
   }
 
@@ -266,13 +281,21 @@ export class AsterStore {
     worktreePath: string;
     cwd: string;
     branch: string;
+    kind?: "chat" | "code";
+    repository?: string | null;
+    baseBranch?: string | null;
   }): AsterConversation {
+    const kind = input.kind ?? "chat";
+    const repository = input.repository ?? null;
+    const baseBranch = input.baseBranch ?? null;
+    if (kind === "code" && (!repository || !baseBranch)) throw new Error("code conversation requires repository and base branch");
+    if (kind === "chat" && (repository !== null || baseBranch !== null)) throw new Error("chat conversation cannot bind a repository");
     const now = Date.now();
     const create = this.db.transaction(() => {
       this.db.prepare(`INSERT INTO aster_conversations
-        (id, workspace_id, model, session_id, worktree_path, cwd, branch, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`)
-        .run(input.id, input.workspaceId, input.model, input.sessionId, input.worktreePath, input.cwd, input.branch, now, now);
+        (id, workspace_id, model, session_id, worktree_path, cwd, branch, kind, repository, base_branch, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`)
+        .run(input.id, input.workspaceId, input.model, input.sessionId, input.worktreePath, input.cwd, input.branch, kind, repository, baseBranch, now, now);
       this.insertEvent(input.id, null, "status", { status: "ready" }, now);
     });
     create.immediate();
@@ -492,6 +515,9 @@ function rowToConversation(row: ConversationRow): AsterConversation {
     worktreePath: row.worktree_path,
     cwd: row.cwd,
     branch: row.branch,
+    kind: row.kind,
+    repository: row.repository,
+    baseBranch: row.base_branch,
     status: row.status,
     activeRunId: row.active_run_id,
     lastEventSequence: row.last_event_sequence,

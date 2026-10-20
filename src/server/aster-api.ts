@@ -11,6 +11,7 @@ import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager } from "../runs/worktrees.js";
 import { loadSession, saveSession, sessionsDir, type SessionFile } from "../sessions.js";
 import { getAppVersion } from "../util/version.js";
+import { AsterGitHub, AsterGitHubError, REPOSITORY_FULL_NAME_RE } from "./aster-github.js";
 import { AsterStore, type AsterConversation, type AsterConversationStatus, type AsterPrincipal, type AsterScope } from "./aster-store.js";
 import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig } from "./aster-workspaces.js";
 import { containsLikelyProviderSecret, createAsterTools, redactLikelySecrets, assertAsterWorkspacePath } from "./aster-tools.js";
@@ -98,6 +99,12 @@ export class AsterApi {
         });
       }
 
+      if (path === `${API_PREFIX}/github/repositories` && method === "GET") {
+        if (!this.hasScope(principal, "conversations:read")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/read scope");
+        const repositories = await new AsterGitHub().listRepositories(url.searchParams.get("q") ?? "");
+        return json(res, 200, { repositories });
+      }
+
       if (path === `${API_PREFIX}/workspaces` && method === "GET") {
         if (!this.hasScope(principal, "workspaces:read")) return sendError(res, 403, "insufficient_scope", "Credential lacks workspace/read scope");
         return json(res, 200, {
@@ -115,8 +122,8 @@ export class AsterApi {
       if (path === `${API_PREFIX}/conversations` && method === "POST") {
         if (!this.hasScope(principal, "conversations:write")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/write scope");
         const body = await readJsonBody(req);
-        if (Object.keys(body).some((key) => key !== "workspaceId" && key !== "model")) {
-          return sendError(res, 400, "unsupported_field", "Conversation creation accepts only workspaceId and model; paths are server-configured");
+        if (Object.keys(body).some((key) => !["workspaceId", "model", "kind", "repository"].includes(key))) {
+          return sendError(res, 400, "unsupported_field", "Conversation creation accepts workspaceId, model, kind, and repository");
         }
         if (typeof body.workspaceId !== "string" || !principal.workspaceIds.includes(body.workspaceId)) {
           return sendError(res, 403, "workspace_forbidden", "Workspace ID is not in this credential's scope");
@@ -126,7 +133,17 @@ export class AsterApi {
         if (typeof body.model !== "string" || !config.models.includes(body.model)) {
           return sendError(res, 400, "model_not_allowed", "Select a model from the configured model list");
         }
-        return await this.createConversation(res, store, workspace, body.model);
+        const kind = body.kind === undefined ? "chat" : body.kind;
+        if (kind !== "chat" && kind !== "code") return sendError(res, 400, "invalid_session_kind", "kind must be chat or code");
+        if (kind === "chat" && body.repository !== undefined) return sendError(res, 400, "repository_requires_code_session", "Select kind=code to bind a GitHub repository");
+        let repository: Awaited<ReturnType<AsterGitHub["getRepository"]>> | undefined;
+        if (kind === "code") {
+          if (typeof body.repository !== "string" || !REPOSITORY_FULL_NAME_RE.test(body.repository)) {
+            return sendError(res, 400, "invalid_repository", "Code sessions require a valid owner/name GitHub repository");
+          }
+          repository = await new AsterGitHub().getRepository(body.repository);
+        }
+        return await this.createConversation(res, store, workspace, body.model, kind, repository);
       }
 
       const eventsMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/events$/);
@@ -196,6 +213,7 @@ export class AsterApi {
       return sendError(res, 404, "not_found", "Aster endpoint not found");
     } catch (error) {
       if (isHttpFailure(error)) return sendError(res, error.status, error.code, error.message);
+      if (error instanceof AsterGitHubError) return sendError(res, error.status, error.code, error.message);
       if (error instanceof AsterConfigError) return sendError(res, 503, "aster_not_configured", "Aster workspaces/models are not configured");
       return sendError(res, 500, "internal_error", "Aster request could not be completed");
     }
@@ -272,25 +290,39 @@ export class AsterApi {
     return this.recovery;
   }
 
-  private async createConversation(res: ServerResponse, store: AsterStore, workspace: { id: string; displayName: string; rootPath: string }, model: string): Promise<void> {
+  private async createConversation(
+    res: ServerResponse,
+    store: AsterStore,
+    workspace: { id: string; displayName: string; rootPath: string },
+    model: string,
+    kind: "chat" | "code" = "chat",
+    repository?: Awaited<ReturnType<AsterGitHub["getRepository"]>>,
+  ): Promise<void> {
     const id = randomUUID();
     const sessionId = randomUUID();
     const worktreeManager = new RunWorktreeManager();
-    let worktree;
-    try {
-      worktree = await worktreeManager.create(id, workspace.rootPath);
-    } catch {
-      sendError(res, 409, "workspace_repository_unavailable", "Configured workspace must be an accessible Git repository");
-      return;
+    let worktree: Awaited<ReturnType<RunWorktreeManager["create"]>> | undefined;
+    if (kind === "chat") {
+      try {
+        worktree = await worktreeManager.create(id, workspace.rootPath);
+      } catch {
+        sendError(res, 409, "workspace_repository_unavailable", "Configured workspace must be an accessible Git repository");
+        return;
+      }
     }
-    const tools = createAsterTools(worktree.cwd);
+    const cwd = worktree?.cwd ?? workspace.rootPath;
+    const worktreePath = worktree?.worktreePath ?? workspace.rootPath;
+    const branch = worktree?.branch ?? `aster/${id.slice(0, 8)}`;
+    const tools = createAsterTools(cwd);
     const messages: ChatMessage[] = [
-      { role: "system", content: buildSystemPrompt({ cwd: worktree.cwd, tools, model, preferPullRequests: true }) },
-      { role: "system", content: "You are operating through Aster. Only read, write, and edit tools are available. All file access is confined to the selected workspace. Never request, reveal, store, or repeat provider credentials or secrets." },
+      { role: "system", content: buildSystemPrompt({ cwd, tools, model, preferPullRequests: true }) },
+      { role: "system", content: kind === "code"
+        ? `You are operating through Aster in an isolated code cell for ${repository!.fullName} on branch ${branch}. Work autonomously in the selected repository. Never request, reveal, store, or repeat provider credentials or secrets.`
+        : "You are operating through Aster. Only read, write, and edit tools are available. All file access is confined to the selected workspace. Never request, reveal, store, or repeat provider credentials or secrets." },
     ];
     const sessionFile: SessionFile = {
       id: sessionId,
-      cwd: worktree.cwd,
+      cwd,
       model,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -304,15 +336,24 @@ export class AsterApi {
         workspaceId: workspace.id,
         model,
         sessionId,
-        worktreePath: worktree.worktreePath,
-        cwd: worktree.cwd,
-        branch: worktree.branch,
+        worktreePath,
+        cwd,
+        branch,
+        kind,
+        repository: repository?.fullName ?? null,
+        baseBranch: repository?.defaultBranch ?? null,
       });
-      store.appendEvent(id, null, "conversation.created", { conversationId: id, workspaceId: workspace.id, model });
+      store.appendEvent(id, null, "conversation.created", {
+        conversationId: id,
+        workspaceId: workspace.id,
+        model,
+        kind,
+        ...(repository ? { repository: repository.fullName, branch } : {}),
+      });
       json(res, 201, publicConversation(conversation));
     } catch {
       await unlink(resolve(sessionsDir(), `${sessionId}.json`)).catch(() => {});
-      await worktreeManager.discard(worktree).catch(() => {});
+      if (worktree) await worktreeManager.discard(worktree).catch(() => {});
       sendError(res, 500, "conversation_create_failed", "Conversation could not be created");
     }
   }
@@ -677,6 +718,9 @@ function publicConversation(conversation: AsterConversation): Record<string, unk
     conversationId: conversation.id,
     workspaceId: conversation.workspaceId,
     model: conversation.model,
+    kind: conversation.kind,
+    repository: conversation.repository,
+    branch: conversation.branch,
     status: conversation.status,
     activeRunId: conversation.activeRunId,
     lastEventId: conversation.lastEventSequence,
