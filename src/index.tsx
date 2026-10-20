@@ -473,6 +473,7 @@ program
       console.error(`autopilot serve: ${await noCredentialsMessage()}`);
       process.exit(2);
     }
+    await initOtel();
     await ensureModelCatalog(cfg);
     const { startServer } = await import("./server/index.js");
     await startServer({
@@ -484,6 +485,10 @@ program
 
 program.action(async () => {
   await main();
+  // Every mode that returns normally (TUI, print, emit, RPC): end open
+  // sessions and flush OTel before the event loop drains (#877).
+  const { runShutdownTasks } = await import("./util/exit.js");
+  await runShutdownTasks();
 });
 program.parse();
 
@@ -511,15 +516,26 @@ const opts = program.opts<{
   attach?: string;
 }>();
 
+/** Start the OTLP exporter when KIMIFLARE_OTEL_ENDPOINT is set, flushed at exit. */
+async function initOtel(): Promise<void> {
+  const { initOtelSink, installOtelExitHook, shutdownOtelSink } = await import("./util/otel-sink.js");
+  const { onShutdown, SHUTDOWN_PHASE } = await import("./util/exit.js");
+  if (initOtelSink()) {
+    installOtelExitHook();
+    onShutdown("otel-flush", shutdownOtelSink, SHUTDOWN_PHASE.flush);
+  }
+}
+
 async function main() {
   // Initialize the OTLP/HTTP log exporter if `KIMIFLARE_OTEL_ENDPOINT`
   // is set. No-op otherwise — the env-var gate keeps this zero-cost for
   // users who don't care. Done before loadConfig so any early errors
   // ship too.
-  const { initOtelSink, installOtelExitHook } = await import("./util/otel-sink.js");
-  if (initOtelSink()) {
-    installOtelExitHook();
-  }
+  await initOtel();
+  // SessionEnd hooks and the OTel flush on SIGTERM/SIGHUP and crashes too
+  // (#877). SIGINT stays with each mode: it cancels the turn first.
+  const { installExitHandlers } = await import("./util/exit.js");
+  installExitHandlers({ crashes: true });
 
   const globalCfg = await loadConfig();
   const updateResult = await checkForUpdate();
@@ -676,7 +692,8 @@ async function main() {
         version: getAppVersion(),
         runApp: (bridge) => renderAppWithBridge({ ...cfg, model }, bridge, updateResult, lspScope, lspProjectPath),
       });
-      process.exit(0);
+      const { gracefulExit } = await import("./util/exit.js");
+      await gracefulExit(0);
     } catch (err) {
       if (err instanceof CamouflageCrashed) {
         // The renderer died mid-session (#862): the session was saved, so

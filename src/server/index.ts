@@ -10,6 +10,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { logger } from "../util/logger.js";
+import { installExitHandlers, onShutdown } from "../util/exit.js";
 import { setupRoutes } from "./routes.js";
 import type { AsterApiRuntime } from "./aster-api.js";
 
@@ -70,25 +71,23 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
   server.requestTimeout = 30_000;
   server.keepAliveTimeout = 5_000;
 
-  server.on("close", () => {
-    cleanup();
+  // Graceful shutdown (#877): stop sessions (awaiting their SessionEnd
+  // hooks), close the listener, flush OTel — bounded by the shared exit
+  // deadline — then exit.
+  const unregisterShutdown = onShutdown("server", async () => {
+    // Abort turns and close session SSE streams, stop accepting connections,
+    // then drop the rest: a global /event stream never ends on its own and
+    // would hold server.close() open until the deadline.
+    const ended = cleanup();
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    server.closeAllConnections();
+    await Promise.all([ended, closed]);
   });
-
-  // Graceful shutdown
-  const shutdown = () => {
-    logger.info("server: shutting down gracefully");
-    server.close(() => {
-      cleanup();
-      process.exit(0);
-    });
-    // Force close after 10s
-    setTimeout(() => {
-      logger.warn("server: forced shutdown");
-      process.exit(1);
-    }, 10000);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  server.on("close", () => {
+    unregisterShutdown();
+    void cleanup();
+  });
+  installExitHandlers({ signals: ["SIGINT", "SIGTERM"], exitCode: () => 0, crashes: true });
 
   return new Promise((resolve, reject) => {
     server.listen(opts.port, opts.hostname, () => {
