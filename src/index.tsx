@@ -722,28 +722,41 @@ async function main() {
 
   // UI engine: Camouflage for everyone. A saved `uiEngine` is ignored;
   // only the hidden `--ui ink` / KIMIFLARE_UI=ink picks Ink. First-run setup
-  // (no credentials yet) goes through Ink, and so does any machine where the
-  // renderer can't start (no prebuilt binary for the platform).
+  // (no credentials yet) runs inside Camouflage before the session starts;
+  // only a machine where the renderer can't start (no prebuilt binary for
+  // the platform) falls back to Ink.
   const uiEngine = (opts.ui ?? process.env.KIMIFLARE_UI ?? "camouflage").toLowerCase();
-  if (uiEngine !== "ink" && cfg) {
-    const model = requireModel(opts.model || cfg.model);
+  if (uiEngine !== "ink") {
+    // Null on first run until Camouflage's onboarding saves a provider and model.
+    let sessionCfg: KimiConfig | null = cfg ? { ...cfg, model: requireModel(opts.model || cfg.model) } : null;
     const { runCamouflageView, CamouflageUnavailable, CamouflageCrashed } = await import("./camouflage-view.js");
     const { renderAppWithBridge } = await import("./app.js");
     try {
-      await runCamouflageView({
-        cfg: { ...cfg, model },
+      const result = await runCamouflageView({
+        cfg: sessionCfg,
         version: getAppVersion(),
-        runApp: (bridge) => renderAppWithBridge({ ...cfg, model }, bridge, updateResult, lspScope, lspProjectPath),
+        runApp: async (bridge, appCfg) => {
+          if (appCfg !== sessionCfg) {
+            // Just onboarded: pick up the project's LSP settings like a normal start.
+            const resolved = await resolveLspConfig(appCfg, process.cwd());
+            appCfg = { ...appCfg, lspEnabled: resolved.lspEnabled, lspServers: resolved.lspServers };
+            lspScope = resolved.scope;
+            lspProjectPath = resolved.projectPath;
+            sessionCfg = appCfg;
+          }
+          return renderAppWithBridge(appCfg, bridge, updateResult, lspScope, lspProjectPath);
+        },
       });
       const { gracefulExit } = await import("./util/exit.js");
-      await gracefulExit(0);
+      await gracefulExit(result === "setup-failed" ? 1 : 0);
     } catch (err) {
       if (err instanceof CamouflageCrashed) {
         // The renderer died mid-session (#862): the session was saved, so
-        // reopen it in the Ink UI instead of ending the user's work.
+        // reopen it in the Ink UI instead of ending the user's work. (A crash
+        // during first-run setup reopens setup there.)
         logger.warn("camouflage.crashed_fallback", { error: err.message });
         const { renderApp } = await import("./app.js");
-        await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath, err.sessionId ? { resumeSessionId: err.sessionId } : {});
+        await renderApp(sessionCfg, updateResult, lspScope, lspProjectPath, err.sessionId ? { resumeSessionId: err.sessionId } : {});
         return;
       }
       if (!(err instanceof CamouflageUnavailable)) throw err;
