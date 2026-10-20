@@ -24,13 +24,27 @@ export interface ServerOpts {
 export async function startServer(opts: ServerOpts): Promise<Server> {
   const { handleRequest, cleanup } = setupRoutes(opts.config, { asterRuntime: opts.asterRuntime });
 
+  const password = process.env.KIMIFLARE_SERVER_PASSWORD;
+  if (!password && !isLoopbackHost(opts.hostname)) {
+    throw new Error(`Refusing to listen on ${opts.hostname} without KIMIFLARE_SERVER_PASSWORD: the API can run tools on this machine.`);
+  }
+  const corsOrigins = parseOrigins(process.env.KIMIFLARE_SERVER_CORS_ORIGINS);
+
   const server = createServer((req, res) => {
     const isAsterApi = req.url?.startsWith("/api/v1/") === true;
     if (!isAsterApi) {
-      // Legacy local API CORS. Aster is native and deliberately has no wildcard CORS policy.
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Last-Event-ID");
+      const verdict = checkLegacyRequest(req.headers, { listenHost: opts.hostname, corsOrigins });
+      if (!verdict.ok) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: verdict.error }));
+        return;
+      }
+      if (verdict.allowOrigin) {
+        res.setHeader("Access-Control-Allow-Origin", verdict.allowOrigin);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Last-Event-ID");
+      }
     }
 
     if (req.method === "OPTIONS" && !isAsterApi) {
@@ -40,7 +54,6 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
     }
 
     // Legacy local API Basic auth. The versioned Aster API authenticates its own scoped bearer token.
-    const password = process.env.KIMIFLARE_SERVER_PASSWORD;
     if (!isAsterApi && password) {
       const auth = req.headers.authorization ?? "";
       const expected = "Basic " + Buffer.from(`kimiflare:${password}`).toString("base64");
@@ -87,4 +100,48 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
     });
     server.on("error", reject);
   });
+}
+
+const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+export function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return LOOPBACK_NAMES.has(h) || h.startsWith("127.");
+}
+
+function parseOrigins(value: string | undefined): string[] {
+  return (value ?? "").split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean);
+}
+
+/** Host header without its port (`[::1]:4096` -> `[::1]`). */
+function hostName(header: string): string {
+  return header.startsWith("[") ? header.slice(0, header.indexOf("]") + 1) : (header.split(":")[0] ?? "");
+}
+
+/**
+ * Browser protections for the legacy local API, which can run tools on this
+ * machine. A web page the user has open must not be able to reach it:
+ *  - cross-origin requests are refused unless the origin is listed in
+ *    KIMIFLARE_SERVER_CORS_ORIGINS (no wildcard CORS);
+ *  - on a loopback listener the Host header must be a loopback name, which
+ *    defeats DNS rebinding (attacker.example resolving to 127.0.0.1).
+ * Non-browser clients (curl, SDKs, editor plugins) send no Origin and are unaffected.
+ */
+export function checkLegacyRequest(
+  headers: { host?: string; origin?: string },
+  opts: { listenHost: string; corsOrigins: string[] },
+): { ok: true; allowOrigin?: string } | { ok: false; error: string } {
+  if (isLoopbackHost(opts.listenHost) && !isLoopbackHost(hostName(headers.host ?? ""))) {
+    return { ok: false, error: "Host not allowed" };
+  }
+  const origin = headers.origin;
+  if (!origin) return { ok: true };
+  if (opts.corsOrigins.includes(origin)) return { ok: true, allowOrigin: origin };
+  // Same-origin requests (a page this server served) are fine.
+  try {
+    if (headers.host && new URL(origin).host === headers.host) return { ok: true };
+  } catch {
+    // malformed Origin: refuse below
+  }
+  return { ok: false, error: "Cross-origin request refused; set KIMIFLARE_SERVER_CORS_ORIGINS to allow an origin" };
 }
