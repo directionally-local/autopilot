@@ -16,6 +16,7 @@ import type { Usage } from "../agent/messages.js";
 import type { DailyUsage } from "../usage-tracker.js";
 import type { Task } from "../tools/registry.js";
 import type { ModelEntry } from "../models/registry.js";
+import type { ProviderId } from "../providers/presets.js";
 import type { SessionSummary, Checkpoint } from "../sessions.js";
 import type { PlanOption } from "../tools/registry.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
@@ -29,6 +30,7 @@ import type { RunningWorker } from "../tools/worker-registry.js";
 /** Which Ink dialog App currently wants open. */
 export type AppModal =
   | "model"
+  | "provider"
   | "mode"
   | "theme"
   | "ui"
@@ -61,6 +63,8 @@ export interface AppSnapshot {
   permission: { tool: PermissionRequest["tool"]; args: Record<string, unknown> } | null;
   /** Open dialogs, in App's own terms. */
   modals: AppModal[];
+  /** `/provider`: the provider to start the connect flow at, if one was named. */
+  providerSetup: { initial?: ProviderId } | null;
   resumeSessions: SessionSummary[] | null;
   checkpoints: { session: SessionSummary; list: Checkpoint[] } | null;
   planOptions: PlanOption[] | null;
@@ -92,6 +96,8 @@ export interface AppActions {
   cycleMode: () => void;
   decidePermission: (decision: PermissionDecision) => void;
   pickModel: (model: ModelEntry | null) => void;
+  /** The view finished `/provider` (credentials and model saved): reload the config. */
+  providerSwitched: (to: ProviderId) => void;
   pickMode: (mode: Mode | null) => void;
   pickResume: (session: SessionSummary | null) => void;
   pickCheckpoint: (checkpointId: string | null) => void;

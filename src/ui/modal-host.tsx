@@ -9,6 +9,9 @@ import { LspWizard } from "./lsp-wizard.js";
 import { ThemePicker } from "./theme-picker.js";
 import { UiPicker, type UiEngineChoice } from "./ui-picker.js";
 import { ModelPicker } from "./model-picker.js";
+import { ProviderSetup } from "./provider-setup.js";
+import type { Connection } from "../providers/connect.js";
+import type { KimiConfig } from "../config.js";
 import { ModePicker } from "./mode-picker.js";
 import { ShellPicker } from "./shell-picker.js";
 import { MemoryPicker } from "./memory-picker.js";
@@ -62,6 +65,9 @@ export interface ModalHostProps {
   currentModel: string;
   modelSwitchBusy: boolean;
   onPickModel: (model: ModelEntry | null) => void;
+  // Provider setup (/provider)
+  providerConfig: KimiConfig | null;
+  onProviderSwitched: (cfg: KimiConfig, connection: Connection) => void;
   // Mode picker
   currentMode: import("../mode.js").Mode;
   onPickMode: (mode: import("../mode.js").Mode | null) => void;
@@ -318,6 +324,26 @@ export function ModalHost(props: ModalHostProps): React.ReactElement | null {
       <ThemeProvider theme={theme}>
         <Box flexDirection="column">
           <UiPicker current={currentUiEngine} onPick={onPickUi} />
+        </Box>
+      </ThemeProvider>
+    );
+  }
+
+  if (modals.providerSetup) {
+    return (
+      <ThemeProvider theme={theme}>
+        <Box flexDirection="column">
+          <ProviderSetup
+            purpose="switch"
+            cfg={props.providerConfig}
+            {...(modals.providerSetup.initial ? { initialProvider: modals.providerSetup.initial } : {})}
+            turnInProgress={props.modelSwitchBusy}
+            onDone={(cfg, connection) => {
+              modals.setProviderSetup(null);
+              props.onProviderSwitched(cfg, connection);
+            }}
+            onCancel={() => modals.setProviderSetup(null)}
+          />
         </Box>
       </ThemeProvider>
     );

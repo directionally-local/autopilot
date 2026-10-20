@@ -17,7 +17,7 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "cost", argHint: "[verify|on|off]", description: "Show cost report or toggle attribution", source: "builtin" },
   { name: "settings", argHint: "[modes on|off]", description: "Show or change feature settings (e.g. plan/edit/auto modes)", source: "builtin" },
   { name: "key", argHint: "[set <key>|clear]", description: "Show or replace the active provider's API key", source: "builtin" },
-  { name: "provider", argHint: "[<id> [key]]", description: "List LLM providers or switch (OpenRouter, OpenAI, DeepSeek, Ollama, …)", source: "builtin" },
+  { name: "provider", argHint: "[<id>]", description: "Connect or switch LLM provider — sign in or add a key (OpenRouter, Anthropic, OpenAI, Gemini, Ollama, …)", source: "builtin" },
   { name: "mcp", argHint: "[list|reload]", description: "Manage MCP servers", source: "builtin" },
   { name: "lsp", argHint: "[config|list|reload|scope]", description: "Manage language servers", source: "builtin" },
   { name: "hooks", argHint: "[list|recommended|enable <id>|disable <id>|path|reload]", description: "Manage lifecycle hooks", source: "builtin" },
