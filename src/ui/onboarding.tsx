@@ -20,12 +20,12 @@ import { ModelPicker } from "./model-picker.js";
 import { OpenRouterSignIn } from "./openrouter-signin.js";
 import { useTheme } from "./theme-context.js";
 import { openBrowser } from "./app-helpers.js";
-import { hasLegacyCloudflareConfig, loadConfig, type KimiConfig } from "../config.js";
+import { hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type KimiConfig } from "../config.js";
 import { checkOpenRouterKey, OPENROUTER_KEYS_URL, type OpenRouterKeyInfo } from "../models/openrouter.js";
 import type { ModelEntry } from "../models/registry.js";
 import { getPreset, type ProviderId } from "../providers/presets.js";
-import { detectEnvProviders, resolveProviderKey } from "../providers/resolve.js";
-import { checkProviderKey, saveProviderKey, switchProvider } from "../providers/keys.js";
+import { detectEnvProviders, resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
+import { checkProviderKey, patchProviderSettings, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 
@@ -34,14 +34,29 @@ interface Props {
   onCancel?: () => void;
 }
 
-type Step = "provider" | "method" | "signin" | "baseUrl" | "key" | "checking" | "model" | "saving";
+type Step = "provider" | "method" | "signin" | "device" | "baseUrl" | "key" | "checking" | "model" | "saving";
 
 /** Providers offered on the first screen, in order. */
 const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "openrouter", hint: "recommended — hundreds of models with one account" },
   { id: "anthropic", hint: "Claude models with an Anthropic API key" },
   { id: "openai", hint: "GPT models with an OpenAI API key" },
+  { id: "chatgpt", hint: "your ChatGPT plan — sign in with ChatGPT" },
   { id: "gemini", hint: "Gemini models with a Google AI Studio key" },
+  { id: "vertex", hint: "Gemini and Claude on Google Cloud (gcloud credentials)" },
+  { id: "bedrock", hint: "Claude and more on AWS (your AWS credentials)" },
+  { id: "minimax", hint: "MiniMax models with a MiniMax API key" },
+  { id: "copilot", hint: "your GitHub Copilot plan — sign in with GitHub" },
+  { id: "xai", hint: "Grok models with an xAI API key" },
+  { id: "mistral", hint: "Mistral models with a Mistral API key" },
+  { id: "groq", hint: "fast open models with a Groq key" },
+  { id: "cerebras", hint: "fast open models with a Cerebras key" },
+  { id: "together", hint: "open models with a Together AI key" },
+  { id: "fireworks", hint: "open models with a Fireworks key" },
+  { id: "deepinfra", hint: "open models with a DeepInfra key" },
+  { id: "vercel", hint: "many vendors with one Vercel AI Gateway key" },
+  { id: "cloudflare", hint: "Workers AI with your Cloudflare account" },
+  { id: "azure", hint: "your Azure OpenAI resource and deployments" },
   { id: "deepseek", hint: "DeepSeek API key" },
   { id: "moonshot", hint: "Kimi models with a Moonshot API key" },
   { id: "kimi-code", hint: "Kimi Code subscription" },
@@ -61,11 +76,13 @@ const OPENROUTER_METHODS = [
 export function Onboarding({ onDone, onCancel }: Props) {
   const theme = useTheme();
   const envProviders = useMemo(() => detectEnvProviders(), []);
-  // Providers with a key already in the environment come first.
-  const choices = useMemo(
-    () => [...CHOICES].sort((a, b) => Number(envProviders.includes(b.id)) - Number(envProviders.includes(a.id))),
-    [envProviders],
-  );
+  const [upgrading, setUpgrading] = useState(false);
+  // Providers with a key already in the environment come first — and for a
+  // Cloudflare-era kimiflare config, Workers AI (its credentials still work).
+  const choices = useMemo(() => {
+    const rank = (id: ProviderId) => (upgrading && id === "cloudflare" ? 2 : envProviders.includes(id) ? 1 : 0);
+    return [...CHOICES].sort((a, b) => rank(b.id) - rank(a.id));
+  }, [envProviders, upgrading]);
   const [step, setStep] = useState<Step>("provider");
   const [choiceIdx, setChoiceIdx] = useState(0);
   const [provider, setProvider] = useState<ProviderId>("openrouter");
@@ -77,11 +94,13 @@ export function Onboarding({ onDone, onCancel }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [orKeyInfo, setOrKeyInfo] = useState<OpenRouterKeyInfo | null>(null);
   const [detail, setDetail] = useState<string | undefined>(undefined);
-  const [upgrading, setUpgrading] = useState(false);
   const preset = getPreset(provider);
 
+  /** Raw config file (Cloudflare-era configs keep accountId/apiToken that Workers AI can reuse). */
+  const [persisted, setPersisted] = useState<Partial<KimiConfig> | null>(null);
   useEffect(() => {
     void hasLegacyCloudflareConfig().then(setUpgrading);
+    void readPersistedConfig().then(setPersisted);
   }, []);
 
   /** After choosing a provider: go straight to checking when nothing needs typing. */
@@ -91,11 +110,53 @@ export function Onboarding({ onDone, onCancel }: Props) {
     setKey("");
     const p = getPreset(id);
     if (id === "openrouter") return setStep("method");
+    if (id === "copilot") return void copilotLogin();
+    if (id === "chatgpt") return void chatgptLogin();
     if (id === "custom") return setStep("baseUrl");
-    const envKey = resolveProviderKey(id, null);
+    if (id === "azure" && !resolveActiveProvider({ provider: "azure" }).baseUrl) return setStep("baseUrl");
+    if (id === "vertex" && !resolveActiveProvider({ provider: "vertex" }).baseUrl) return setStep("baseUrl");
+    const envKey = resolveProviderKey(id, persisted);
     if (envKey) return void accept(id, envKey, "env");
     if (!p.keyRequired) return void accept(id, undefined, "none");
     setStep("key");
+  };
+
+  /** GitHub device login for Copilot: show the code, wait for approval, then continue like a key. */
+  const [device, setDevice] = useState<{ uri: string; code: string } | null>(null);
+  const copilotLogin = async () => {
+    setStep("device");
+    try {
+      const { startDeviceFlow, pollDeviceFlow, checkCopilotAccess } = await import("../providers/copilot.js");
+      const code = await startDeviceFlow();
+      setDevice({ uri: code.verificationUri, code: code.userCode });
+      openBrowser(code.verificationUri);
+      const token = await pollDeviceFlow(code);
+      const access = await checkCopilotAccess(token);
+      setBaseUrl(access.apiBase);
+      setKeySource("signin");
+      await accept("copilot", token, "signin", access.apiBase);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep("provider");
+    }
+  };
+
+  /** "Sign in with ChatGPT": browser sign-in with token sharing; tokens (and refresh token) are saved right away. */
+  const chatgptLogin = async () => {
+    setDevice(null);
+    setStep("device");
+    try {
+      const { hostId, startChatGPTSignIn, saveChatGPTSettings } = await import("../providers/chatgpt.js");
+      const signIn = await startChatGPTSignIn({ savedClientId: persisted?.providers?.chatgpt?.clientId, hostId: await hostId() });
+      setDevice({ uri: signIn.url, code: "" });
+      openBrowser(signIn.url);
+      const settings = await signIn.done;
+      await saveChatGPTSettings(settings);
+      await accept("chatgpt", settings.apiKey, "signin");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep("provider");
+    }
   };
 
   /** Validate the key (or reach the local runtime), load the provider's models, then pick one. */
@@ -105,7 +166,9 @@ export function Onboarding({ onDone, onCancel }: Props) {
     setStep("checking");
     const p = getPreset(id);
     const effectiveUrl = url ?? p.baseUrl;
-    if (id === "openrouter" && candidate) {
+    if (id === "copilot" && candidate) {
+      // Access was checked during the device login.
+    } else if (id === "openrouter" && candidate) {
       const res = await checkOpenRouterKey(candidate);
       if (res.ok) setOrKeyInfo(res.info);
       else return fail(res.reason === "invalid" ? "OpenRouter rejected this key. Check it was copied in full, or create a new one." : `Couldn't reach OpenRouter (${res.message}).`, id, source);
@@ -116,13 +179,15 @@ export function Onboarding({ onDone, onCancel }: Props) {
     }
     setKey(candidate ?? "");
     const auth = llmAuthFromConfig({
+      ...(id === "cloudflare" ? { accountId: persisted?.accountId, apiToken: persisted?.apiToken } : {}),
       provider: id,
       ...(id === "openrouter" ? { openrouterApiKey: candidate } : {}),
       ...(id === "requesty" ? { requestyApiKey: candidate } : {}),
       ...(id === "custom" ? { baseUrl: effectiveUrl, apiKey: candidate } : {}),
       providers: { [id]: { ...(candidate ? { apiKey: candidate } : {}), ...(url ? { baseUrl: url } : {}) } },
     }, id);
-    await ensureCatalogForProvider(auth);
+    // Vertex's project lives in the saved settings (or gcloud config), not in a key.
+    await ensureCatalogForProvider(id === "vertex" ? llmAuthFromConfig({ ...(await readPersistedConfig()), provider: "vertex" }, "vertex") : auth);
     setStep("model");
   };
 
@@ -139,7 +204,9 @@ export function Onboarding({ onDone, onCancel }: Props) {
     try {
       // Env keys stay in the env; only typed or signed-in keys are saved.
       const toSave = keySource === "key" || keySource === "signin" ? key : undefined;
-      if (toSave || (provider === "custom" && baseUrl)) await saveProviderKey(provider, toSave, provider === "custom" ? baseUrl : undefined);
+      if (toSave || (provider === "custom" && baseUrl)) {
+        await saveProviderKey(provider, toSave, provider === "custom" || provider === "copilot" || provider === "azure" ? baseUrl || undefined : undefined);
+      }
       await switchProvider(null, provider, modelId);
       const cfg = await loadConfig();
       if (!cfg) throw new Error("config did not load after saving");
@@ -214,7 +281,13 @@ export function Onboarding({ onDone, onCancel }: Props) {
               <Text key={c.id} color={i === choiceIdx ? theme.palette.primary : undefined}>
                 {i === choiceIdx ? "› " : "  "}
                 {getPreset(c.id).name}
-                <Text {...muted}>{`  ${envProviders.includes(c.id) ? "key found in your environment" : c.hint}`}</Text>
+                <Text {...muted}>{`  ${
+                  upgrading && c.id === "cloudflare"
+                    ? "your Cloudflare account from kimiflare — memory stays compatible"
+                    : envProviders.includes(c.id)
+                      ? "key found in your environment"
+                      : c.hint
+                }`}</Text>
               </Text>
             ))}
           </Box>
@@ -260,17 +333,60 @@ export function Onboarding({ onDone, onCancel }: Props) {
         />
       )}
 
+      {step === "device" && (
+        <Box marginTop={1} flexDirection="column">
+          <Text>{provider === "chatgpt" ? "Sign in with ChatGPT" : "Sign in to GitHub Copilot"}</Text>
+          {device && provider === "chatgpt" ? (
+            <>
+              <Text>Approve Autopilot in your browser and allow token sharing.</Text>
+              <Text {...muted}>If the browser didn't open: {device.uri}</Text>
+              <Text {...muted}>Usage counts against your ChatGPT plan.</Text>
+            </>
+          ) : device ? (
+            <>
+              <Text>
+                Open <Text color={theme.accent}>{device.uri}</Text> and enter the code{" "}
+                <Text bold color={theme.palette.primary}>{device.code}</Text>
+              </Text>
+              <Text {...muted}>Waiting for you to approve in the browser… Copilot usage counts against your plan.</Text>
+            </>
+          ) : (
+            <Text {...muted}>Contacting GitHub…</Text>
+          )}
+        </Box>
+      )}
+
       {step === "baseUrl" && (
         <Box marginTop={1} flexDirection="column">
-          <Text>Base URL of your OpenAI-compatible endpoint</Text>
-          <Text {...muted}>e.g. http://localhost:4000/v1 for LiteLLM, http://localhost:8000/v1 for vLLM. Esc to go back.</Text>
+          <Text>
+            {provider === "azure"
+              ? "Your Azure OpenAI resource name (or its endpoint URL)"
+              : provider === "vertex"
+                ? "Your Google Cloud project id"
+                : "Base URL of your OpenAI-compatible endpoint"}
+          </Text>
+          <Text {...muted}>
+            {provider === "azure"
+              ? "The <name> in https://<name>.openai.azure.com. Esc to go back."
+              : "e.g. http://localhost:4000/v1 for LiteLLM, http://localhost:8000/v1 for vLLM. Esc to go back."}
+          </Text>
           <Box marginTop={1}>
             <Text color={theme.palette.primary}>› </Text>
             <CustomTextInput
               value={baseUrl}
               onChange={setBaseUrl}
               onSubmit={(v) => {
-                const url = v.trim();
+                let url = v.trim();
+                if (provider === "vertex") {
+                  // A project id: keep it in settings, credentials come from gcloud.
+                  if (!/^[a-z][a-z0-9-]{4,}$/.test(url)) return setError("Enter a Google Cloud project id");
+                  setBaseUrl("");
+                  setError(null);
+                  void patchProviderSettings("vertex", { project: url }).then(() => accept("vertex", undefined, "none"));
+                  return;
+                }
+                // Azure: a bare resource name is enough.
+                if (provider === "azure" && /^[a-z0-9-]+$/i.test(url)) url = `https://${url}.openai.azure.com/openai/v1`;
                 if (!/^https?:\/\//.test(url)) return setError("Enter a URL starting with http:// or https://");
                 setBaseUrl(url);
                 setError(null);
@@ -303,7 +419,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
               onSubmit={(v) => {
                 const k = v.trim();
                 if (!k && provider !== "custom") return;
-                void accept(provider, k || undefined, "key", provider === "custom" ? baseUrl : undefined);
+                void accept(provider, k || undefined, "key", provider === "custom" || (provider === "azure" && baseUrl) ? baseUrl : undefined);
               }}
             />
           </Box>
