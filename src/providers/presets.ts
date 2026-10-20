@@ -38,6 +38,7 @@ export const PROVIDER_IDS = [
   "azure",
   "chatgpt",
   "vertex",
+  "bedrock",
   "zai",
   "zai-coding",
   "ollama",
@@ -103,7 +104,7 @@ export interface EmbeddingPreset {
  * Messages API, or the OpenAI Responses API. The agent loop always speaks
  * Chat Completions shapes; src/agent/protocols/ converts.
  */
-export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses";
+export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses" | "bedrock-converse";
 
 /** Where the model list for the picker comes from. */
 export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "chatgpt" | "none";
@@ -524,6 +525,23 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     catalog: "models.dev",
     modelsDevId: "google-vertex",
     compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, toolCallExtras: true, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  bedrock: {
+    id: "bedrock",
+    name: "Amazon Bedrock",
+    protocol: "bedrock-converse",
+    // Built from the region (src/providers/bedrock.ts); credentials are AWS's (SigV4) or a Bedrock API key.
+    apiKeyEnv: ["AWS_BEARER_TOKEN_BEDROCK"],
+    keyRequired: false,
+    keysUrl: "https://console.aws.amazon.com/bedrock/home#/api-keys",
+    statusUrl: "https://health.aws.amazon.com/health/status",
+    defaultModel: "global.anthropic.claude-sonnet-5-5",
+    plumbingModel: "global.anthropic.claude-haiku-5-5",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "amazon-bedrock",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   "kimi-code": {

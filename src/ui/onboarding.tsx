@@ -44,6 +44,7 @@ const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "chatgpt", hint: "your ChatGPT plan — sign in with ChatGPT" },
   { id: "gemini", hint: "Gemini models with a Google AI Studio key" },
   { id: "vertex", hint: "Gemini and Claude on Google Cloud (gcloud credentials)" },
+  { id: "bedrock", hint: "Claude and more on AWS (your AWS credentials)" },
   { id: "minimax", hint: "MiniMax models with a MiniMax API key" },
   { id: "copilot", hint: "your GitHub Copilot plan — sign in with GitHub" },
   { id: "xai", hint: "Grok models with an xAI API key" },

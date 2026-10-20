@@ -51,8 +51,8 @@ describe("presets", () => {
       assert.strictEqual(p.id, id);
       assert.ok(p.name);
       assert.ok(p.apiKeyEnv.length > 0, `${id} needs at least one key env var`);
-      // Vertex builds its URL from the project and location.
-      if (!["openrouter", "requesty", "custom", "vertex"].includes(id)) assert.match(p.baseUrl ?? "", /^https?:\/\//, `${id} base URL`);
+      // Vertex and Bedrock build their URLs from project/location and region.
+      if (!["openrouter", "requesty", "custom", "vertex", "bedrock"].includes(id)) assert.match(p.baseUrl ?? "", /^https?:\/\//, `${id} base URL`);
       // OpenRouter-only features stay off everywhere but OpenRouter.
       if (id !== "openrouter") assert.deepStrictEqual(p.capabilities, { costConfirmation: false, decisionsApi: false, hotcellGateway: false });
       // Defaults never borrow another provider's model ids.
