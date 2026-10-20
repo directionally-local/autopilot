@@ -15,6 +15,13 @@ export interface Memory {
   supersededBy: string | null;
   forgotten: boolean;
   vectorized: boolean;
+  /**
+   * Embedding model that produced `embedding`. Vectors are only compared with
+   * vectors from the same model; null for rows with no real vector (plans and
+   * other topic-key-only rows, or rows written before models were recorded
+   * and not recognisable by size).
+   */
+  embeddingModel: string | null;
   /** Agent role that created this memory (plan, build, general). */
   agentRole: string | null;
 }
@@ -40,6 +47,8 @@ export interface MemoryQuery {
   maxAgeDays?: number;
   /** Filter recalled memories by the agent role that created them. */
   agentRole?: string;
+  /** Model that produced `embedding`; only rows from the same model are vector-compared. */
+  embeddingModel?: string;
 }
 
 export interface HybridResult {

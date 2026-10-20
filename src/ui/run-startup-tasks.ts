@@ -8,7 +8,7 @@
  * `setEvents` and otherwise don't block startup. Identical behavior to
  * the prior in-component implementation.
  */
-import { llmAuthFromConfig } from "../agent/llm-auth.js";
+import { embeddingAuthFromConfig, llmAuthFromConfig } from "../agent/llm-auth.js";
 import React from "react";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -71,6 +71,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
       plumbingModel: cfg.plumbingModel,
       extractionModel: cfg.memoryExtractionModel,
       embeddingModel: cfg.memoryEmbeddingModel,
+      embeddingAuth: embeddingAuthFromConfig(cfg),
       maxAgeDays: cfg.memoryMaxAgeDays ?? RETENTION.memoryMaxAgeDays,
       maxEntries: cfg.memoryMaxEntries ?? RETENTION.memoryMaxEntries,
     });
@@ -91,7 +92,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
       if (fixed > 0) {
         setEvents((e) => [
           ...e,
-          { kind: "memory", key: mkKey(), text: `memory backfill: embedded ${fixed} un-vectorized entries` },
+          { kind: "memory", key: mkKey(), text: `memory: indexed ${fixed} entr${fixed === 1 ? "y" : "ies"} for ${manager.embeddingModel ?? "vector recall"}` },
         ]);
       }
     });
@@ -123,7 +124,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   void indexSkills({
     cwd: process.cwd(),
     db: skillDb,
-    ...auth,
+    ...embeddingAuthFromConfig(cfg),
     embeddingModel: cfg.memoryEmbeddingModel,
   }).then((result) => {
     if (result.indexed > 0) {

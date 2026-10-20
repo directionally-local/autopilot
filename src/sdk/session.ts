@@ -17,7 +17,7 @@ import type { SessionFile } from "../sessions.js";
 import { recordUsage } from "../usage-tracker.js";
 import { calculateCost } from "../pricing.js";
 import type { OpenRouterProviderPrefs } from "../agent/client.js";
-import { activeOpenRouterKey, llmAuthFromConfig, providerIdOf } from "../agent/llm-auth.js";
+import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerIdOf } from "../agent/llm-auth.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { logger } from "../util/logger.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
@@ -60,6 +60,7 @@ export async function createAgentSession(
       plumbingModel: config.plumbingModel,
       extractionModel: config.memoryExtractionModel,
       embeddingModel: config.memoryEmbeddingModel,
+      embeddingAuth: embeddingAuthFromConfig(config),
       maxAgeDays: config.memoryMaxAgeDays,
       maxEntries: config.memoryMaxEntries,
     });

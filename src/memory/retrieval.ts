@@ -80,7 +80,7 @@ export async function retrieveMemories(opts: RetrieveOpts): Promise<HybridResult
   // 2. Vector search candidates (recent memories in repo)
   let vectorCandidates: Memory[] = [];
   if (query.embedding) {
-    vectorCandidates = listMemoriesForVectorSearch(db, repoPath, since, 2000, query.agentRole);
+    vectorCandidates = listMemoriesForVectorSearch(db, repoPath, since, 2000, query.agentRole, query.embeddingModel);
   }
 
   // 3. Combine and score using RRF across channels
