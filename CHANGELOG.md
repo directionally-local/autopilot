@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.26.0](https://github.com/sinameraji/autopilot/compare/v1.25.1...v1.26.0) (2026-10-20)
+
+
+### Features
+
+* **client:** per-provider request quirks and provider-aware errors ([#830](https://github.com/sinameraji/autopilot/issues/830)) ([da08d05](https://github.com/sinameraji/autopilot/commit/da08d05cb412ab0d6fda502d2fe1a00c37bddcc0))
+* **cost:** final cost estimates for providers without cost confirmation ([#832](https://github.com/sinameraji/autopilot/issues/832)) ([07ceda9](https://github.com/sinameraji/autopilot/commit/07ceda948c4721f6563b655a010fa8e7fef5b600))
+* land the stacked work from [#836](https://github.com/sinameraji/autopilot/issues/836)–[#851](https://github.com/sinameraji/autopilot/issues/851) onto main ([#854](https://github.com/sinameraji/autopilot/issues/854)) ([a4a4c37](https://github.com/sinameraji/autopilot/commit/a4a4c37c4901050e8e6bf5580e5ad52577afea11))
+* **memory:** embeddings follow the active provider ([#828](https://github.com/sinameraji/autopilot/issues/828)) ([89c7154](https://github.com/sinameraji/autopilot/commit/89c7154c1f782874effb5419452d0c7cb4fe0486))
+* **models:** catalogs for non-OpenRouter providers via models.dev ([#829](https://github.com/sinameraji/autopilot/issues/829)) ([ad9fa06](https://github.com/sinameraji/autopilot/commit/ad9fa062b26ae190e5f1b73e54f020a280a5294a))
+* **onboarding:** choose a provider at first run; add /provider and per-provider keys ([#831](https://github.com/sinameraji/autopilot/issues/831)) ([3a98cd3](https://github.com/sinameraji/autopilot/commit/3a98cd3fda2e9e0a7a54ba2742dfb1cc7f7a468c))
+* **providers:** add a provider registry that every LLM call follows ([#827](https://github.com/sinameraji/autopilot/issues/827)) ([e8c62f5](https://github.com/sinameraji/autopilot/commit/e8c62f514e8ea907d1908a1f479474ddd899e9fe))
+* **providers:** name the active provider everywhere; update docs and ACP ([#833](https://github.com/sinameraji/autopilot/issues/833)) ([7f07946](https://github.com/sinameraji/autopilot/commit/7f07946df75c9a2e8f06caf2afbd7a233684ddde))
+* **providers:** native Anthropic Messages adapter ([#835](https://github.com/sinameraji/autopilot/issues/835)) ([76a1507](https://github.com/sinameraji/autopilot/commit/76a1507d4f8dd1ed6516dd7a800f73d227f42645))
+
+
+### Bug Fixes
+
+* **server:** restore Aster API code accidentally reverted in [#777](https://github.com/sinameraji/autopilot/issues/777) ([#820](https://github.com/sinameraji/autopilot/issues/820)) ([c0fd310](https://github.com/sinameraji/autopilot/commit/c0fd31004a33df0353a8a1176d87f22cf3c7b1dc))
+
 ## [1.25.1](https://github.com/sinameraji/autopilot/compare/v1.25.0...v1.25.1) (2026-10-19)
 
 
