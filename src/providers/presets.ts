@@ -37,6 +37,7 @@ export const PROVIDER_IDS = [
   "cloudflare",
   "azure",
   "chatgpt",
+  "vertex",
   "zai",
   "zai-coding",
   "ollama",
@@ -506,6 +507,23 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     catalog: "chatgpt",
     modelsDevId: "openai",
     compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  vertex: {
+    id: "vertex",
+    name: "Google Vertex AI",
+    // Built from the project and location (src/providers/vertex.ts); Claude goes to
+    // Anthropic's Messages API on Vertex, everything else to the OpenAI-compatible endpoint.
+    apiKeyEnv: ["GOOGLE_VERTEX_ACCESS_TOKEN"],
+    keyRequired: false,
+    keysUrl: "https://cloud.google.com/docs/authentication/provide-credentials-adc",
+    statusUrl: "https://status.cloud.google.com",
+    defaultModel: "gemini-3.8-flash",
+    plumbingModel: "gemini-3.5-flash-lite",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "google-vertex",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, toolCallExtras: true, reasoningEcho: { content: false, details: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   "kimi-code": {

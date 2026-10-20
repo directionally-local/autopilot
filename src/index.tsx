@@ -264,7 +264,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, vertex, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -345,6 +345,34 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", 
       }),
   );
 }
+
+authCommand.addCommand(
+  new Command("vertex")
+    .description("Use Google Vertex AI with your Google credentials (ADC) and make it the active provider")
+    .option("--project <id>", "Google Cloud project (default: GOOGLE_VERTEX_PROJECT / GOOGLE_CLOUD_PROJECT / gcloud config)")
+    .option("--location <location>", "Vertex location (default: global)")
+    .action(async (cmdOpts: { project?: string; location?: string }) => {
+      const { vertexAccessToken, vertexProject, adcProject } = await import("./providers/vertex.js");
+      const { switchProvider } = await import("./providers/keys.js");
+      const { patchPersistedConfig } = await import("./config.js");
+      const cfg = await loadConfig().catch(() => null);
+      const project = cmdOpts.project ?? vertexProject(cfg?.providers?.vertex) ?? (await adcProject());
+      if (!project) {
+        console.error("No Google Cloud project: pass --project <id> or set GOOGLE_VERTEX_PROJECT.");
+        process.exit(1);
+      }
+      try {
+        await vertexAccessToken();
+      } catch (e) {
+        console.error(e instanceof Error ? e.message : String(e));
+        process.exit(1);
+      }
+      const settings = { ...cfg?.providers?.vertex, project, ...(cmdOpts.location ? { location: cmdOpts.location } : {}) };
+      await patchPersistedConfig({ providers: { ...cfg?.providers, vertex: settings } });
+      await switchProvider(await loadConfig().catch(() => null), "vertex");
+      console.log(`✓ Google Vertex AI (project ${project}, ${cmdOpts.location ?? settings.location ?? "global"}) is now the active provider.`);
+    }),
+);
 
 authCommand.addCommand(
   new Command("chatgpt")

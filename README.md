@@ -93,6 +93,7 @@ Requires Node.js ≥ 20.
 | Google Gemini | `gemini` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | OpenAI-compatible endpoint; Gemini 3 thought signatures are kept with each tool call |
 | ChatGPT (Plus/Pro/Team plan) | `chatgpt` | `autopilot auth chatgpt` (browser sign-in with token sharing) | your plan's GPT models over the Responses API; tokens refresh automatically; usage counts against your plan. Uses OpenAI's official token-sharing sign-in, not the Codex backend |
 | GitHub Copilot | `copilot` | `autopilot auth copilot` (GitHub device login; `--enterprise <domain>`) | your Copilot plan's models — Claude over Messages, GPT over Responses; usage counts as premium requests. Not a documented public API, so GitHub may change it |
+| Google Vertex AI | `vertex` | Google credentials (`gcloud auth application-default login`, a service-account key in `GOOGLE_APPLICATION_CREDENTIALS`, or `GOOGLE_VERTEX_ACCESS_TOKEN`) + `GOOGLE_VERTEX_PROJECT` (or `autopilot auth vertex --project …`) | Gemini and partner models through Vertex's OpenAI-compatible endpoint, Claude through Anthropic's Messages API on Vertex; location `GOOGLE_VERTEX_LOCATION` (default `global`) |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` | OpenAI-compatible endpoint with split reasoning (`<think>` tags are separated out if they appear) |
 | Moonshot AI (Kimi) | `moonshot` | `MOONSHOT_API_KEY` | |
