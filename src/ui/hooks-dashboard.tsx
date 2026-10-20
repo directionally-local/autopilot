@@ -34,6 +34,8 @@ const EVENT_EXPLANATIONS: Record<HookEvent, string> = {
   UserPromptSubmit: "when you hit Enter — can veto the prompt",
   Stop: "when the agent finishes a turn — informational only",
   PreCompact: "before auto-compaction shrinks the conversation",
+  SessionStart: "when a session starts or is resumed — informational only",
+  SessionEnd: "when autopilot exits or the session is cleared — informational only",
 };
 
 interface ConfiguredEntry {

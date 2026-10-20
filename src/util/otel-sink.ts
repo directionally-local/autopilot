@@ -212,7 +212,7 @@ export async function flushOtelSink(): Promise<void> {
 
 interface OtlpAttribute {
   key: string;
-  value: { stringValue?: string; intValue?: string; boolValue?: boolean };
+  value: { stringValue?: string; intValue?: string; doubleValue?: number; boolValue?: boolean };
 }
 
 function attr(key: string, value: unknown): OtlpAttribute | null {
@@ -220,7 +220,8 @@ function attr(key: string, value: unknown): OtlpAttribute | null {
   if (typeof value === "string") return { key, value: { stringValue: value } };
   if (typeof value === "boolean") return { key, value: { boolValue: value } };
   if (typeof value === "number" && Number.isFinite(value)) {
-    return { key, value: { intValue: String(Math.trunc(value)) } };
+    // Costs and durations need their fractions; counts stay integers.
+    return Number.isInteger(value) ? { key, value: { intValue: String(value) } } : { key, value: { doubleValue: value } };
   }
   // Fallback: JSON-stringify so structured data still gets shipped.
   return { key, value: { stringValue: JSON.stringify(value) } };

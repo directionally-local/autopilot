@@ -27,6 +27,7 @@ import { getPreset, isProviderId, type ProviderId } from "../providers/presets.j
 import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { switchedMessage } from "../providers/connect.js";
+import { endSession } from "../hooks/session-lifecycle.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { checkRequestyKey } from "../models/requesty.js";
 import type { Mode } from "../mode.js";
@@ -213,6 +214,7 @@ const handleClear: Handler = (ctx) => {
   } else {
     ctx.messagesRef.current = [ctx.messagesRef.current[0]!];
   }
+  if (ctx.sessionIdRef.current) void endSession(ctx.sessionIdRef.current, "clear");
   ctx.resetSession();
   ctx.executorRef.current.clearArtifacts();
   if (ctx.flushTimeoutRef.current) {

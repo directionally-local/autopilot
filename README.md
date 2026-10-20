@@ -468,20 +468,26 @@ on the resource.
 
 ## Hooks
 
-autopilot can fire shell commands at five points in an agent turn,
-configured per-project (`.kimiflare/settings.json`) or globally
+autopilot can fire shell commands at these points, configured
+per-project (`.kimiflare/settings.json`) or globally
 (`~/.config/kimiflare/settings.json`):
 
 | Event              | Fires when                                      | Veto? |
 |--------------------|-------------------------------------------------|-------|
+| `SessionStart`     | A session's first turn (`source`: startup/resume) | No  |
 | `PreToolUse`       | A tool call is about to run                     | Yes   |
 | `PostToolUse`      | A tool call just finished                       | No    |
 | `UserPromptSubmit` | You hit Enter on a prompt                       | Yes   |
 | `Stop`             | A turn ended cleanly                            | No    |
 | `PreCompact`       | Auto-compaction is about to run                 | No    |
+| `SessionEnd`       | autopilot exits, or `/clear` (`reason`)         | No    |
 
 Hooks receive the event payload as JSON on stdin **and** as
-`KIMIFLARE_HOOK_*` env vars (for shell-one-liner ergonomics).
+`KIMIFLARE_HOOK_*` env vars (for shell-one-liner ergonomics). Payloads
+also carry Claude Code's field names (`hook_event_name`, `tool_name`,
+`tool_input`, `tool_response`, `tool_call_id`, `transcript_path`), so
+Claude Code hook scripts — and tools built for them, like
+[Agent Beacon](docs/beacon.md) — work unchanged.
 Non-zero exit on a veto event cancels the underlying action and
 surfaces the hook's stdout as the rejection reason.
 
