@@ -2,7 +2,7 @@ import { readFile, mkdir, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isProviderId, PROVIDER_PRESETS, type ProviderId } from "./providers/presets.js";
-import { isProviderUsable, resolveActiveProvider, resolveProviderId, type ProviderSettings } from "./providers/resolve.js";
+import { isProviderUsable, noteActiveProvider, resolveActiveProvider, resolveProviderId, type ProviderSettings } from "./providers/resolve.js";
 import { migrateLegacyModelId } from "./models/registry.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
@@ -353,6 +353,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   // Every LLM default below follows the active provider.
   const active = resolveActiveProvider(providerFields);
   if (!isProviderUsable(active)) return null;
+  noteActiveProvider(active.id);
   const preset = active.preset;
 
   // KIMI_MODEL is an override, not a default: leave it undefined when unset so

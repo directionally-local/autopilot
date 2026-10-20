@@ -551,7 +551,7 @@ const handleSubagents: Handler = (ctx, rest, arg) => {
     return true;
   }
   if (!cfg) {
-    setEvents((events) => [...events, { kind: "error", key: mkKey(), text: "configure an OpenRouter key or custom endpoint before changing subagent policy" }]);
+    setEvents((events) => [...events, { kind: "error", key: mkKey(), text: "connect a provider (/provider) before changing subagent policy" }]);
     return true;
   }
   const next = { ...cfg, subagentPolicy: policy, subagentPolicyExplicit: true };

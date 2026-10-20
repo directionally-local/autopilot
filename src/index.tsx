@@ -15,7 +15,7 @@ import type { PrintFormat } from "./print-mode.js";
 const program = new Command();
 program
   .name("autopilot")
-  .description("Terminal coding agent. Runs any OpenRouter model with your own OpenRouter key.")
+  .description("Terminal coding agent. Bring your own provider: OpenRouter, OpenAI, DeepSeek, Kimi, Z.ai, Ollama, any OpenAI-compatible endpoint.")
   .version(getAppVersion())
   .option("-p, --print <prompt>", "one-shot mode: send prompt, stream reply to stdout, exit")
   .option("-m, --model <id>", "model id for the active provider (defaults to its configured model)")
@@ -432,7 +432,7 @@ async function main() {
   await ensureModelCatalog(cfg);
 
   if (opts.cloud) {
-    console.error("autopilot: --cloud ignored — KimiFlare Cloud was retired; autopilot runs on your own OpenRouter key.");
+    console.error("autopilot: --cloud ignored — KimiFlare Cloud was retired; autopilot runs on your own provider key.");
   }
 
   if (opts.mode === "rpc") {
@@ -543,7 +543,8 @@ async function main() {
   // renderer as a Splash event so it stays visible until the user's
   // first prompt — console.log here would get swallowed by Camouflage's
   // alt-screen and flash for a fraction of a second.
-  const logoText = renderLogo(getAppVersion(), opts.model ?? cfg?.model);
+  const { lastActiveProviderName } = await import("./providers/resolve.js");
+  const logoText = renderLogo(getAppVersion(), opts.model ?? cfg?.model, lastActiveProviderName() ?? "your own provider");
 
   // UI engine: Camouflage for everyone. A saved `uiEngine` is ignored;
   // only the hidden `--ui ink` / KIMIFLARE_UI=ink picks Ink. First-run setup
