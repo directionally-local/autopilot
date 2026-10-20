@@ -12,6 +12,8 @@ import type {
 import { logger } from "../util/logger.js";
 import { join } from "node:path";
 import { sessionsDir } from "../sessions.js";
+import { claudeToolFields } from "./claude-compat.js";
+import { BEACON_HARNESS_ATTR, HARNESS_NAME } from "../util/harness.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const STREAM_CAP_BYTES = 4 * 1024;
@@ -130,13 +132,15 @@ export function buildHookEnv(payload: HookPayload, payloadJson?: string): Record
  * ever part of a payload.
  */
 export function hookWirePayload(payload: HookPayload): Record<string, unknown> {
-  const wire: Record<string, unknown> = { ...payload, hook_event_name: payload.event, client: "autopilot" };
+  const wire: Record<string, unknown> = {
+    ...payload,
+    hook_event_name: payload.event,
+    client: HARNESS_NAME,
+    [BEACON_HARNESS_ATTR]: HARNESS_NAME,
+  };
   if (payload.session_id) wire.transcript_path = join(sessionsDir(), `${payload.session_id}.json`);
-  if (payload.event === "PreToolUse" || payload.event === "PostToolUse") {
-    wire.tool_name = payload.tool;
-    wire.tool_input = payload.args;
-    if (payload.event === "PostToolUse") wire.tool_response = payload.result;
-  }
+  // Claude Code's tool names and shapes (tool_name, tool_input, tool_response, error): see claude-compat.ts.
+  if (payload.event === "PreToolUse" || payload.event === "PostToolUse") Object.assign(wire, claudeToolFields(payload));
   return wire;
 }
 
