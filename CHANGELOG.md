@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.30.0](https://github.com/sinameraji/autopilot/compare/v1.29.0...v1.30.0) (2026-10-20)
+
+
+### Features
+
+* **aster:** add repo-scoped coding sessions and PR lifecycle ([#865](https://github.com/sinameraji/autopilot/issues/865)) ([8841061](https://github.com/sinameraji/autopilot/commit/884106120d7174826d88b28e5d7f9500780e24a6))
+* **hooks:** read hooks from autopilot paths and match Claude tool names ([#896](https://github.com/sinameraji/autopilot/issues/896)) ([7054e01](https://github.com/sinameraji/autopilot/commit/7054e0154faf7b7ac52b991049dfe68deaca9aaa))
+* **hooks:** surface hook failures, add failClosed, PostToolUseFailure and PermissionRequest ([#900](https://github.com/sinameraji/autopilot/issues/900)) ([b0bd92e](https://github.com/sinameraji/autopilot/commit/b0bd92e71d9b9ac0f169518ef13242b6fc813254))
+* **hooks:** write a Claude Code-style JSONL transcript at transcript_path ([#898](https://github.com/sinameraji/autopilot/issues/898)) ([1b09311](https://github.com/sinameraji/autopilot/commit/1b09311794b439b970f7c2cdff34689029d776ed)), closes [#892](https://github.com/sinameraji/autopilot/issues/892)
+* **package:** ship dependencies unbundled ([#902](https://github.com/sinameraji/autopilot/issues/902)) ([0a65dec](https://github.com/sinameraji/autopilot/commit/0a65dec979fa5a8e6b29d4633c3b757b83270b1e))
+* **sdk:** end live sessions when the host process exits without dispose() ([#897](https://github.com/sinameraji/autopilot/issues/897)) ([f63292b](https://github.com/sinameraji/autopilot/commit/f63292bcb53c75fb91a37d112aeebca71d6c5e10))
+
+
+### Bug Fixes
+
+* **serve:** print startup failures as a message, not a stack trace ([#886](https://github.com/sinameraji/autopilot/issues/886)) ([1491c96](https://github.com/sinameraji/autopilot/commit/1491c96375f2844fc568c5bd0744a9faf8336b14))
+
 ## [1.29.0](https://github.com/sinameraji/autopilot/compare/v1.28.0...v1.29.0) (2026-10-20)
 
 
