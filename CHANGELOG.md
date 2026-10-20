@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.28.0](https://github.com/sinameraji/autopilot/compare/v1.27.1...v1.28.0) (2026-10-20)
+
+
+### Features
+
+* **hooks:** Agent Beacon support — Claude-Code-compatible hooks, session lifecycle, OTel GenAI events ([#875](https://github.com/sinameraji/autopilot/issues/875)) ([6f4706e](https://github.com/sinameraji/autopilot/commit/6f4706e663fe4e159346737d3ed1d14e88a7784a))
+
+
+### Bug Fixes
+
+* **edit:** accept edits[] when the model also sends empty old_string/new_string ([#873](https://github.com/sinameraji/autopilot/issues/873)) ([7d96b12](https://github.com/sinameraji/autopilot/commit/7d96b12b96216fbcebe4b1aaa0704d191855efbf))
+* **subagents:** stop announcing the default auto policy every turn ([#872](https://github.com/sinameraji/autopilot/issues/872)) ([b1126ff](https://github.com/sinameraji/autopilot/commit/b1126ff1ab0285b27b7dde31c9203f69c894a49f))
+
 ## [1.27.1](https://github.com/sinameraji/autopilot/compare/v1.27.0...v1.27.1) (2026-10-20)
 
 
