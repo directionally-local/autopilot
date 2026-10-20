@@ -61,6 +61,23 @@ describe("P0 presets end to end", () => {
       if (url.endsWith("/api/tags")) return new Response(JSON.stringify({ models: [{ name: "llama3.1:8b" }] }), { status: 200 });
       if (url.endsWith("/api/show")) return new Response(JSON.stringify({ capabilities: ["completion", "tools"], model_info: { "llama.context_length": 131072 } }), { status: 200 });
       if (url.endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "qwen2.5-coder-32b" }] }), { status: 200 });
+      // Responses API (OpenAI): a reasoning item + tool call, then text.
+      if (url.endsWith("/responses")) {
+        const first = body.tools && chatCalls++ === 0;
+        return sse(
+          first
+            ? [
+                { type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", encrypted_content: "enc-1", summary: [] } },
+                { type: "response.output_item.added", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "read", arguments: "" } },
+                { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: '{"path":"README.md"}' },
+                { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 20, input_tokens_details: { cached_tokens: 600 } } } },
+              ]
+            : [
+                { type: "response.output_text.delta", delta: '{"valid":true,"corrected_content":null}' },
+                { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 20, input_tokens_details: { cached_tokens: 600 } } } },
+              ],
+        );
+      }
       // Agent turn: first a tool call (with reasoning), then the answer; side calls get plain text.
       if (body.tools && chatCalls++ === 0) {
         return sse([
@@ -115,11 +132,17 @@ describe("P0 presets end to end", () => {
         callbacks: { askPermission: async () => "allow" },
         reasoningEffort: "medium",
       });
-      const turnRequests = requests.filter((r) => r.url.endsWith("/chat/completions") && r.body.tools);
+      const turnRequests = requests.filter((r) => /\/(chat\/completions|responses)$/.test(r.url) && r.body.tools);
       assert.strictEqual(turnRequests.length, 2, "tool call, then the answer");
-      const followUp = (turnRequests[1]!.body.messages as ChatMessage[]).find((m) => m.role === "assistant" && m.tool_calls);
-      assert.strictEqual("reasoning_content" in followUp!, preset.compat.reasoningEcho.content, "reasoning echo per provider");
-      assert.ok(!("reasoning_details" in followUp!));
+      if (preset.protocol === "openai-responses") {
+        // Encrypted reasoning from the first response is replayed before the call it preceded.
+        const input = turnRequests[1]!.body.input as Array<Record<string, unknown>>;
+        assert.deepStrictEqual(input.find((i) => i.type === "reasoning"), { type: "reasoning", id: "rs_1", encrypted_content: "enc-1", summary: [] });
+      } else {
+        const followUp = (turnRequests[1]!.body.messages as ChatMessage[]).find((m) => m.role === "assistant" && m.tool_calls);
+        assert.strictEqual("reasoning_content" in followUp!, preset.compat.reasoningEcho.content, "reasoning echo per provider");
+        assert.ok(!("reasoning_details" in followUp!));
+      }
 
       await summarizeMessagesViaLlm({ ...auth, model: preset.plumbingModel ?? model, messages: [...messages, { role: "user", content: "next" }], keepLastTurns: 1 });
 
