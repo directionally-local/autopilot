@@ -100,6 +100,16 @@ async function loadTypescript(cwd: string): Promise<typeof import("typescript") 
 }
 
 async function transpileOrStrip(code: string, cwd: string): Promise<{ js: string; warnings: string[] }> {
+  // Node's built-in type stripper (22.13+): reliable, and no 23 MB
+  // typescript dependency in the package. "transform" also handles enums.
+  const builtin = (await import("node:module")) as { stripTypeScriptTypes?: (code: string, opts?: { mode?: "strip" | "transform" }) => string };
+  if (typeof builtin.stripTypeScriptTypes === "function") {
+    try {
+      return { js: builtin.stripTypeScriptTypes(code, { mode: "transform" }), warnings: [] };
+    } catch {
+      // unsupported syntax for the built-in: try typescript, then the regex fallback
+    }
+  }
   const ts = await loadTypescript(cwd);
   if (ts) {
     const result = ts.transpileModule(code, {
@@ -114,7 +124,7 @@ async function transpileOrStrip(code: string, cwd: string): Promise<{ js: string
   }
   return {
     js: stripTypescript(code),
-    warnings: ["TypeScript not found in node_modules. Using fallback parser; install typescript for reliable transpilation."],
+    warnings: ["Using the fallback TypeScript stripper: upgrade to Node 22.13+ (or install typescript) for reliable transpilation."],
   };
 }
 
