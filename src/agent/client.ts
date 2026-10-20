@@ -1,3 +1,4 @@
+import * as zlib from "node:zlib";
 import { readSSE } from "../util/sse.js";
 import { KimiApiError } from "../util/errors.js";
 import { getUserAgent } from "../util/version.js";
@@ -18,6 +19,7 @@ import { getModelOrInfer, vendorOf } from "../models/registry.js";
 import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
 import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
 import { copilotRequestHeaders } from "../providers/copilot.js";
+import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
 import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
@@ -90,6 +92,8 @@ const MAX_ATTEMPTS = 5;
 
 function isRetryable(err: KimiApiError, attempt: number, openrouter = true): boolean {
   if (attempt >= MAX_ATTEMPTS - 1) return false;
+  // ChatGPT token sharing: usage limits and eligibility don't change on retry (even as a 429).
+  if (NON_RETRYABLE_SHARING_CODES.some((c) => err.message.includes(c))) return false;
   if (err.httpStatus === 408 || err.httpStatus === 429) return true;
   // OpenRouter's 402 "in-flight budget" is transient (a concurrent request is
   // holding the key's remaining credit); a plain out-of-credits 402 is not.
@@ -228,6 +232,12 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     };
   }
 
+  if (customEndpoint?.providerId === "chatgpt") {
+    // A fresh token (refreshed shortly before expiry) and the Codex session headers.
+    const token = (await chatgptAccessToken()) ?? customEndpoint.apiKey;
+    targetHeaders = { ...targetHeaders, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...chatgptSessionHeaders(opts.sessionId) };
+  }
+
   // Observers of the finalized request body: the debug payload dump
   // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body
   // immediately before fetch — they cannot alter what is sent — and share
@@ -328,10 +338,11 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       };
       if (opts.sessionId) headers["X-Session-ID"] = opts.sessionId;
       headers["X-Request-ID"] = requestId;
+      const serialized = stableStringify(wireBody, jsonReplacer);
       res = await fetch(url, {
         method: "POST",
         headers,
-        body: stableStringify(wireBody, jsonReplacer),
+        body: customEndpoint?.providerId === "chatgpt" ? compressLargeBody(serialized, headers) : serialized,
         signal: opts.signal,
       });
     } catch (fetchErr) {
@@ -432,6 +443,21 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     logger.debug("runKimi:stream_end", { requestId });
     return;
   }
+}
+
+/**
+ * ChatGPT token sharing rejects uncompressed request bodies over ~1 MiB and
+ * accepts zstd. Compress large bodies when this Node has zstd (22.15+);
+ * otherwise send them as they are.
+ */
+export function compressLargeBody(serialized: string, headers: Record<string, string>, threshold = 512 * 1024): string | Uint8Array<ArrayBuffer> {
+  const zstd = (zlib as { zstdCompressSync?: (b: Buffer) => Buffer }).zstdCompressSync;
+  if (Buffer.byteLength(serialized) < threshold || !zstd) return serialized;
+  headers["Content-Encoding"] = "zstd";
+  const compressed = zstd(Buffer.from(serialized));
+  const out = new Uint8Array(new ArrayBuffer(compressed.byteLength));
+  out.set(compressed);
+  return out;
 }
 
 function isAbortError(e: unknown): boolean {

@@ -280,6 +280,13 @@ export async function ensureProviderCatalog(
       models = await loadCopilotModels(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
     } else if (preset.catalog === "azure" && endpoint.baseUrl && endpoint.apiKey) {
       models = await discoverAzureDeployments(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
+    } else if (preset.catalog === "chatgpt") {
+      // OpenAI's catalog, limited to the models token sharing serves; billed by plan.
+      const { CHATGPT_MODELS } = await import("../providers/chatgpt.js");
+      const p = await loadModelsDevProvider("openai", { fetchImpl });
+      models = (p ? mapModelsDevProvider(p) : [])
+        .filter((m) => CHATGPT_MODELS.has(m.id))
+        .map((m) => ({ ...m, pricing: { inputPerMtok: 0, outputPerMtok: 0 } }));
     } else if (preset.catalog === "ollama" && endpoint.baseUrl) {
       models = await discoverOllamaModels(endpoint.baseUrl, fetchImpl);
     } else if ((preset.catalog === "openai-models" || preset.catalog === "none") && endpoint.baseUrl) {

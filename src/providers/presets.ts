@@ -36,6 +36,7 @@ export const PROVIDER_IDS = [
   "vercel",
   "cloudflare",
   "azure",
+  "chatgpt",
   "zai",
   "zai-coding",
   "ollama",
@@ -104,7 +105,7 @@ export interface EmbeddingPreset {
 export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses";
 
 /** Where the model list for the picker comes from. */
-export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "none";
+export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "chatgpt" | "none";
 
 export interface ProviderPreset {
   id: ProviderId;
@@ -485,6 +486,25 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     // Model ids are your deployment names: discovered from the resource.
     embedding: null,
     catalog: "azure",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  chatgpt: {
+    id: "chatgpt",
+    name: "ChatGPT",
+    // Token sharing: your ChatGPT plan's GPT models through the normal Responses API.
+    protocol: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+    // Set by `autopilot auth chatgpt` (refreshed automatically); the env var is for short headless runs.
+    apiKeyEnv: ["CHATGPT_ACCESS_TOKEN"],
+    keyRequired: true,
+    statusUrl: "https://status.openai.com",
+    subscription: true,
+    defaultModel: "gpt-6.1-sol",
+    plumbingModel: "gpt-6-luna",
+    embedding: null,
+    catalog: "chatgpt",
+    modelsDevId: "openai",
     compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },

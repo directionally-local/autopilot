@@ -21,6 +21,11 @@ export interface ProviderSettings {
   baseUrl?: string;
   /** Last chat model used with this provider; restored when switching back. */
   model?: string;
+  /** OAuth sign-ins (ChatGPT): refresh token, access-token expiry (epoch ms), issued client id, host id. */
+  refreshToken?: string;
+  expiresAt?: number;
+  clientId?: string;
+  hostId?: string;
 }
 
 /** The config fields provider resolution reads. */
