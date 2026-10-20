@@ -394,3 +394,61 @@ describe("PermissionRequest and PostToolUseFailure (#891)", () => {
     assert.strictEqual(parseHookDecision(`{"hookSpecificOutput":{"decision":{"behavior":"maybe"}}}`), null);
   });
 });
+
+describe("failure tracking and the new events with Claude-style matchers (#896 + #889/#891)", () => {
+  it("a failing hook matched by its Claude name is reported, and failClosed blocks", async () => {
+    const cwd = project({
+      PreToolUse: [
+        { id: "claude-name", matcher: "Write", command: "exit 1" },
+        { id: "policy", matcher: "Bash|Write", command: "ap-no-such-binary-889", failClosed: true },
+      ],
+    });
+    const hooks = new HooksManager(cwd);
+    const seen: HookFailureNotice[] = [];
+    hooks.onFailure((n) => seen.push(n));
+    const out = await hooks.fire("PreToolUse", prePayload(cwd), "write");
+    assert.strictEqual(out.vetoed, true);
+    assert.match(out.vetoReason, /^hook policy failed \(command not found/);
+    assert.deepStrictEqual(seen.map((n) => [n.hookId, n.kind, n.allowed]), [
+      ["claude-name", "nonzero_exit", true],
+      ["policy", "command_not_found", false],
+    ]);
+    assert.strictEqual(hooks.failureCount("policy"), 1);
+  });
+
+  it("PermissionRequest and PostToolUseFailure hooks match Claude names, MultiEdit included", async () => {
+    const cwd = project({
+      PermissionRequest: [{ id: "deny-bash", matcher: "^Bash$", command: "echo no >&2; exit 2" }],
+      PostToolUseFailure: [{ id: "multi", matcher: "^MultiEdit$", command: "exit 1" }],
+    });
+    const hooks = new HooksManager(cwd);
+    const seen: HookFailureNotice[] = [];
+    hooks.onFailure((n) => seen.push(n));
+    const perm = await hooks.fire(
+      "PermissionRequest",
+      { event: "PermissionRequest", session_id: null, cwd, tool: "bash", args: { command: "ls" }, mode: "edit" },
+      "bash",
+    );
+    assert.strictEqual(perm.vetoed, true);
+    const notBash = await hooks.fire(
+      "PermissionRequest",
+      { event: "PermissionRequest", session_id: null, cwd, tool: "write", args: { path: "a" }, mode: "edit" },
+      "write",
+    );
+    assert.strictEqual(notBash.vetoed, false);
+    assert.strictEqual(notBash.outcomes.length, 0);
+    const failure = (args: Record<string, unknown>): HookPayload => ({
+      event: "PostToolUseFailure",
+      session_id: null,
+      cwd,
+      tool: "edit",
+      args,
+      error: "boom",
+      result: { ok: false, content: "boom" },
+    });
+    await hooks.fire("PostToolUseFailure", failure({ path: "a", old_string: "x", new_string: "y" }), "edit");
+    assert.strictEqual(seen.length, 0, "a single edit isn't MultiEdit");
+    await hooks.fire("PostToolUseFailure", failure({ path: "a", edits: [] }), "edit");
+    assert.deepStrictEqual(seen.map((n) => [n.hookId, n.event]), [["multi", "PostToolUseFailure"]]);
+  });
+});
