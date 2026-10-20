@@ -343,8 +343,9 @@ describe("PermissionRequest and PostToolUseFailure (#891)", () => {
     const failOut = join(root, "failure-payload.json");
     const postOut = join(root, "post-payload.json");
     const cwd = project({
-      PostToolUse: [{ id: "post", command: `cat > '${postOut}'` }],
-      PostToolUseFailure: [{ id: "fail", matcher: "^write$", command: `cat > '${failOut}'` }],
+      // Write then rename, so the file only appears once it is complete.
+      PostToolUse: [{ id: "post", command: `cat > '${postOut}.tmp' && mv '${postOut}.tmp' '${postOut}'` }],
+      PostToolUseFailure: [{ id: "fail", matcher: "^write$", command: `cat > '${failOut}.tmp' && mv '${failOut}.tmp' '${failOut}'` }],
     });
     // Writing to a path whose parent is a regular file fails.
     writeFileSync(join(cwd, "blocker"), "file");
