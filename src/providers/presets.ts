@@ -24,6 +24,7 @@ export const PROVIDER_IDS = [
   "kimi-code",
   "anthropic",
   "gemini",
+  "minimax",
   "zai",
   "zai-coding",
   "ollama",
@@ -52,6 +53,10 @@ export interface ProviderCompat {
    * to). Stripped for every other provider.
    */
   toolCallExtras?: boolean;
+  /** Extra request fields the provider needs (e.g. MiniMax's `reasoning_split`). */
+  extraBody?: Record<string, unknown>;
+  /** The model may stream its reasoning inline as `<think>…</think>` in the content; split it out. */
+  thinkTags?: boolean;
   /**
    * Reasoning fields to echo back on assistant history. DeepSeek and Kimi
    * thinking models require `reasoning_content` during tool loops; strict
@@ -257,6 +262,31 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     catalog: "models.dev",
     modelsDevId: "google",
     compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, toolCallExtras: true },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  minimax: {
+    id: "minimax",
+    name: "MiniMax",
+    baseUrl: "https://api.minimax.io/v1",
+    apiKeyEnv: ["MINIMAX_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://platform.minimax.io/user-center/basic-information/interface-key",
+    defaultModel: "MiniMax-M3",
+    plumbingModel: "MiniMax-M3.1-Flash",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "minimax",
+    compat: {
+      ...OPENAI_COMPAT,
+      maxTokensField: "max_tokens",
+      parallelToolCalls: false,
+      reasoningEffort: false,
+      // reasoning_split returns thinking as reasoning_details (which MiniMax
+      // needs back during tool loops) instead of <think> tags in the content.
+      reasoningEcho: { content: false, details: true },
+      extraBody: { reasoning_split: true },
+      thinkTags: true,
+    },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   "kimi-code": {

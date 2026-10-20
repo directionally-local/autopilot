@@ -139,6 +139,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // OpenAI's streaming API omits `usage` unless asked; OpenRouter always
     // sends it (and documents this flag as a no-op).
     if (compat.streamUsage) body.stream_options = { include_usage: true };
+    if (compat.extraBody) Object.assign(body, compat.extraBody);
   } else {
     // Only send optional parameters the model's endpoints accept. With
     // `require_parameters` (below) a single unsupported parameter would leave
@@ -397,7 +398,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
           ? parseAnthropicStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
           : protocol === "openai-responses"
             ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
-            : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs);
+            : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs, customEndpoint ? preset.compat.thinkTags === true : false);
       for await (const ev of events) {
         if (captured) accumulateDumpResponse(response, ev);
         yield ev;
@@ -643,12 +644,59 @@ function buildKimiRequestTarget(
 const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 const DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS = 30_000;
 
+/**
+ * Splits `<think>…</think>` out of streamed content into reasoning, for
+ * models that inline their reasoning. Tags may be cut across chunks, so a
+ * possible partial tag at the end of a chunk is held back until the next.
+ */
+export class ThinkTagSplitter {
+  private inThink = false;
+  private held = "";
+
+  push(chunk: string): Array<{ kind: "text" | "reasoning"; text: string }> {
+    const out: Array<{ kind: "text" | "reasoning"; text: string }> = [];
+    let s = this.held + chunk;
+    this.held = "";
+    for (;;) {
+      const tag = this.inThink ? "</think>" : "<think>";
+      const kind = this.inThink ? "reasoning" : "text";
+      const at = s.indexOf(tag);
+      if (at >= 0) {
+        if (at > 0) out.push({ kind, text: s.slice(0, at) });
+        s = s.slice(at + tag.length);
+        this.inThink = !this.inThink;
+        continue;
+      }
+      // Hold back a suffix that could be the start of the tag.
+      let keep = 0;
+      for (let n = Math.min(tag.length - 1, s.length); n > 0; n--) {
+        if (tag.startsWith(s.slice(-n))) {
+          keep = n;
+          break;
+        }
+      }
+      const emit = s.slice(0, s.length - keep);
+      if (emit) out.push({ kind, text: emit });
+      this.held = s.slice(s.length - keep);
+      return out;
+    }
+  }
+
+  flush(): Array<{ kind: "text" | "reasoning"; text: string }> {
+    const rest = this.held;
+    this.held = "";
+    return rest ? [{ kind: this.inThink ? "reasoning" : "text", text: rest }] : [];
+  }
+}
+
 async function* parseStream(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   postFirstByteIdleTimeoutMs = DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS,
+  thinkTags = false,
 ): AsyncGenerator<KimiEvent, void, void> {
+  const splitter = thinkTags ? new ThinkTagSplitter() : null;
   const toolCalls = new Map<number, { id: string; name: string; args: string; extra?: Record<string, unknown> }>();
   let lastUsage: Usage | null = null;
   let finishReason: string | null = null;
@@ -711,7 +759,13 @@ async function* parseStream(
           yield { type: "reasoning_details", details: d.reasoning_details };
         }
         if (typeof d.content === "string" && d.content.length) {
-          yield { type: "text", delta: d.content };
+          if (splitter) {
+            for (const part of splitter.push(d.content)) {
+              yield part.kind === "text" ? { type: "text", delta: part.text } : { type: "reasoning", delta: part.text };
+            }
+          } else {
+            yield { type: "text", delta: d.content };
+          }
         }
         if (Array.isArray(d.tool_calls)) {
           for (const tc of d.tool_calls) {
@@ -745,6 +799,10 @@ async function* parseStream(
 
       if (choice.finish_reason) finishReason = choice.finish_reason;
     }
+  }
+
+  for (const part of splitter?.flush() ?? []) {
+    yield part.kind === "text" ? { type: "text", delta: part.text } : { type: "reasoning", delta: part.text };
   }
 
   for (const [idx, buf] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
