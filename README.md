@@ -92,6 +92,7 @@ Requires Node.js ≥ 20.
 | OpenAI | `openai` | `OPENAI_API_KEY` | Responses API: reasoning carries across tool loops (encrypted, stateless), codex models |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | OpenAI-compatible endpoint; Gemini 3 thought signatures are kept with each tool call |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | |
+| MiniMax | `minimax` | `MINIMAX_API_KEY` | OpenAI-compatible endpoint with split reasoning (`<think>` tags are separated out if they appear) |
 | Moonshot AI (Kimi) | `moonshot` | `MOONSHOT_API_KEY` | |
 | Kimi Code (subscription) | `kimi-code` | `KIMI_API_KEY` | |
 | Z.ai (GLM) | `zai` | `ZHIPU_API_KEY` | |

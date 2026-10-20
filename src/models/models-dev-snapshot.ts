@@ -1676,6 +1676,228 @@ export const MODELS_DEV_SNAPSHOT: Record<string, ModelsDevProvider> = {
    }
   }
  },
+ "minimax": {
+  "id": "minimax",
+  "name": "MiniMax (minimax.io)",
+  "models": {
+   "MiniMax-M2.5-highspeed": {
+    "id": "MiniMax-M2.5-highspeed",
+    "name": "MiniMax-M2.5-highspeed",
+    "release_date": "2026-02-13",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 204800,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    },
+    "cost": {
+     "input": 0.6,
+     "output": 2.4,
+     "cache_read": 0.03,
+     "cache_write": 0.375
+    }
+   },
+   "MiniMax-M3.1-Flash": {
+    "id": "MiniMax-M3.1-Flash",
+    "name": "MiniMax-M3.1-Flash",
+    "release_date": "2026-10-19",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 512000
+    },
+    "canonical_model_id": "minimax/MiniMax-M3.1-Flash",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    },
+    "cost": {
+     "input": 0.15,
+     "output": 0.6,
+     "cache_read": 0.015
+    }
+   },
+   "MiniMax-M2.7-highspeed": {
+    "id": "MiniMax-M2.7-highspeed",
+    "name": "MiniMax-M2.7-highspeed",
+    "release_date": "2026-03-18",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 204800,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    },
+    "cost": {
+     "input": 0.6,
+     "output": 2.4,
+     "cache_read": 0.06,
+     "cache_write": 0.375
+    }
+   },
+   "MiniMax-M2.7": {
+    "id": "MiniMax-M2.7",
+    "name": "MiniMax-M2.7",
+    "release_date": "2026-03-18",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 204800,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    },
+    "cost": {
+     "input": 0.3,
+     "output": 1.2,
+     "cache_read": 0.06,
+     "cache_write": 0.375
+    }
+   },
+   "MiniMax-M2.5": {
+    "id": "MiniMax-M2.5",
+    "name": "MiniMax-M2.5",
+    "release_date": "2026-02-12",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 204800,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    },
+    "cost": {
+     "input": 0.3,
+     "output": 1.2,
+     "cache_read": 0.03,
+     "cache_write": 0.375
+    }
+   },
+   "MiniMax-M2": {
+    "id": "MiniMax-M2",
+    "name": "MiniMax-M2",
+    "release_date": "2025-10-27",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 204800,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    },
+    "cost": {
+     "input": 0.3,
+     "output": 1.2
+    }
+   },
+   "MiniMax-M2.1": {
+    "id": "MiniMax-M2.1",
+    "name": "MiniMax-M2.1",
+    "release_date": "2025-12-23",
+    "attachment": false,
+    "reasoning": true,
+    "reasoning_options": [],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 204800,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    },
+    "cost": {
+     "input": 0.3,
+     "output": 1.2,
+     "cache_read": 0.03,
+     "cache_write": 0.375
+    }
+   },
+   "MiniMax-M3": {
+    "id": "MiniMax-M3",
+    "name": "MiniMax-M3",
+    "release_date": "2026-06-01",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 1000000,
+     "output": 512000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    },
+    "cost": {
+     "input": 0.3,
+     "output": 1.2,
+     "cache_read": 0.06
+    }
+   }
+  }
+ },
  "moonshotai": {
   "id": "moonshotai",
   "name": "Moonshot AI",
