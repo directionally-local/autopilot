@@ -69,7 +69,8 @@ export interface ModelEntry {
   /**
    * Reasoning effort levels the model accepts (models.dev `reasoning_options`),
    * e.g. ["low","high","max"]. The client maps the user's /reasoning level onto
-   * this list. Undefined: low/medium/high are assumed.
+   * this list. Undefined: low/medium/high are assumed. Empty: the model takes
+   * no reasoning_effort (thinking is a toggle, or always on).
    */
   reasoningEfforts?: string[];
   /** Field the API expects reasoning echoed back in on assistant history (e.g. "reasoning_content"). */

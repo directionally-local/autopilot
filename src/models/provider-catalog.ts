@@ -53,14 +53,16 @@ export interface ModelsDevProvider {
 
 /** Pure mapping into the registry's shape. */
 export function mapModelsDevModel(m: ModelsDevModel): ModelEntry {
-  const efforts = m.reasoning_options?.find((o) => o.type === "effort")?.values;
+  // Options listed without an "effort" entry (e.g. only an on/off toggle)
+  // mean the model takes no reasoning_effort: record that as an empty list.
+  const efforts = m.reasoning_options ? (m.reasoning_options.find((o) => o.type === "effort")?.values ?? []) : undefined;
   const echo = typeof m.interleaved === "object" ? m.interleaved.field : undefined;
   const created = m.release_date ? Date.parse(m.release_date) / 1000 : NaN;
   return {
     id: m.id,
     ...(m.name ? { name: m.name } : {}),
     ...(Number.isFinite(created) ? { created } : {}),
-    ...(efforts && efforts.length > 0 ? { reasoningEfforts: efforts } : {}),
+    ...(efforts ? { reasoningEfforts: efforts } : {}),
     ...(echo ? { reasoningEchoField: echo } : {}),
     contextWindow: m.limit?.context ?? 128_000,
     maxOutputTokens: m.limit?.output ?? 16_384,

@@ -6,9 +6,11 @@ interface Props {
   httpStatus?: number;
   code?: number;
   message: string;
+  /** The active provider's status page (presets.ts `statusUrl`). */
+  statusUrl?: string;
 }
 
-export function ApiErrorMessage({ httpStatus, code, message }: Props) {
+export function ApiErrorMessage({ httpStatus, code, message, statusUrl }: Props) {
   const theme = useTheme();
 
   const parts: string[] = [];
@@ -27,7 +29,7 @@ export function ApiErrorMessage({ httpStatus, code, message }: Props) {
         </Text>
       )}
       <Text color={theme.muted?.color ?? theme.info.color} dimColor={theme.muted?.dim ?? true}>
-        Provider status: https://status.openrouter.ai · switch models with /model
+        {statusUrl ? `Provider status: ${statusUrl} · ` : ""}switch models with /model
       </Text>
     </Box>
   );

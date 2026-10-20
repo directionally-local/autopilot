@@ -19,7 +19,7 @@ import { buildSessionPrefix, buildSystemPrompt } from "../agent/system-prompt.js
 import { sanitizeString } from "../agent/messages.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
-import { llmAuthFromConfig } from "../agent/llm-auth.js";
+import { llmAuthFromConfig, providerPresetOf } from "../agent/llm-auth.js";
 import type { ToolSpec, ToolRender, Task } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 import { classifyIntent } from "../intent/classify.js";
@@ -341,7 +341,8 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
     ) {
       const err = { httpStatus: e.httpStatus, code: e.code, message: humanizeApiError(e) };
       lastApiErrorRef.current = err;
-      setEvents((es) => [...es, { kind: "api_error", key: mkKey(), ...err }]);
+      const statusUrl = providerPresetOf(llmAuthFromConfig(cfg)).statusUrl;
+      setEvents((es) => [...es, { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) }]);
     } else {
       const displayText =
         e instanceof KimiApiError ? humanizeApiError(e) : `init failed: ${(e as Error).message}`;
