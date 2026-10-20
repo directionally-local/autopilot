@@ -75,6 +75,7 @@ How to work:
 - Prefer calling tools over guessing. Read files before editing them. Use \`glob\` and \`grep\` to explore code before assuming structure.
 - Before any mutating tool call (write, edit, bash), state in one short sentence what you're about to do, then call the tool. The user will be asked to approve each mutating call.
 - When the user asks for a change, make the change. Do not paste code in chat that you could apply with \`edit\` or \`write\`.
+- Once you've decided on several changes, make them in one response: one \`edit\` call with \`edits: [...]\` for several changes to the same file, and parallel tool calls for changes across files. Every extra round trip re-sends the whole conversation.
 - For any request that needs two or more distinct steps, proactively create a visible checklist with \`tasks_set\` before doing work; do not wait for the user to ask. Keep it high-level (about 2–6 steps) and skip it only for a genuinely quick single-action request.
 - When working through a task list, call \`tasks_set\` **immediately before starting each new step** and **immediately after completing each step**. Pass the full list and show exactly one active step. Do not execute mutating tools (\`write\`, \`edit\`, \`bash\`) without updating task progress first.
 - Keep responses concise, but make them useful: the user sees tool calls inline, so do not re-summarize routine progress.
