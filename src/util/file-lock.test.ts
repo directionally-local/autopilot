@@ -22,7 +22,16 @@ describe("withFileLock", () => {
         order.push("b:end");
       }),
     ]);
-    assert.deepEqual(order, ["a:start", "a:end", "b:start", "b:end"]);
+    // Which caller acquires first depends on when each realpath() settles
+    // (libuv threadpool), so only exclusion is promised, not FIFO order.
+    const serial = [
+      ["a:start", "a:end", "b:start", "b:end"],
+      ["b:start", "b:end", "a:start", "a:end"],
+    ];
+    assert.ok(
+      serial.some((s) => s.join() === order.join()),
+      `same-path callers must not overlap: ${order.join(",")}`,
+    );
     assert.strictEqual(pendingLockCount(), 0);
   });
 
