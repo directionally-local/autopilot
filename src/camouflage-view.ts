@@ -63,6 +63,8 @@ import { logger } from "./util/logger.js";
 import { JobManager, type JobRecord } from "./jobs/manager.js";
 import { activityFromJob, activityFromSubagent, diffActivityItems, isActiveJob, type ActivityItem } from "./ui/activity.js";
 import { workerRegistry, type RunningWorker } from "./tools/worker-registry.js";
+import { humanizePhase } from "./ui/narrator.js";
+import { resumeHint } from "./interactive-resume.js";
 
 interface CamouflageHandle {
   send(eventType: string, payload?: Record<string, unknown>): boolean;
@@ -71,7 +73,7 @@ interface CamouflageHandle {
 }
 interface CamouflageSdk {
   mount(opts: Record<string, unknown>): Promise<CamouflageHandle>;
-  permission(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ choice: "allow_once" | "allow_session" | "deny" }>;
+  permission(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ choice: "allow_once" | "allow_session" | "deny"; feedback?: string }>;
   selectList(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ id: string; value?: string; cancelled: boolean }>;
   confirm(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ id: string; value?: boolean; cancelled: boolean }>;
   form(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ id: string; values?: Record<string, string>; cancelled: boolean }>;
@@ -226,7 +228,11 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     view.actions?.submit(text);
   });
   // Esc during a provider sign-in cancels the sign-in, not the turn.
-  cam.on("cancelRequested", () => (view.signIn ? view.signIn.abort() : view.actions?.interrupt()));
+  cam.on("cancelRequested", () => {
+    view.cancels++;
+    if (view.signIn) view.signIn.abort();
+    else view.actions?.interrupt();
+  });
   // `@../`, `@~/`, `@/`: list the folder being typed (same rules as the Ink
   // picker). Read off the raw stream so any SDK version works.
   cam.on("event", (ev: { event_type?: string; payload?: { query?: string } }) => {
@@ -302,13 +308,13 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     const c = crashed as { code: number | null; signal: string | null };
     throw new CamouflageCrashed(`renderer exited (${c.signal ?? `code ${c.code}`})`, view.sessionId);
   }
-  if (view.hadConversation) process.stdout.write("Resume this conversation with: autopilot -c\n");
+  const hint = resumeHint(view.sessionId);
+  if (hint) process.stdout.write(hint);
 }
 
-/** Translates App snapshots into renderer events, sending only what changed. */
-class View implements AppBridge {
+/** Translates App snapshots into renderer events, sending only what changed. Exported for tests. */
+export class View implements AppBridge {
   actions: AppActions | null = null;
-  hadConversation = false;
   /** Prompts the renderer already printed when the user submitted them. */
   echoed: string[] = [];
   /** Per-event state already sent, keyed by ChatEvent.key. */
@@ -324,6 +330,9 @@ class View implements AppBridge {
   private openPrompt: string | null = null;
   /** A provider sign-in waiting on the browser; Esc aborts it. */
   signIn: AbortController | null = null;
+  /** Esc presses (cancelRequested) so far: a permission prompt denied with
+   *  Esc interrupts the turn instead of asking for feedback. */
+  cancels = 0;
   private commandsKey: string | undefined;
   private readonly sentSubagentPolicyNotices = new Set<string>();
   private readonly jobs = new JobManager();
@@ -567,7 +576,6 @@ class View implements AppBridge {
     switch (e.kind) {
       case "user": {
         if (e.queued) return false;
-        this.hadConversation = true;
         // The renderer printed what the user typed when they submitted it;
         // don't print App's copy again. (Messages App adds on its own,
         // e.g. from a resumed session, still go through.)
@@ -655,17 +663,10 @@ class View implements AppBridge {
   }
 
   private syncStatus(s: AppSnapshot): void {
-    const next: Record<string, string> = {
-      // With modes off (the default) every turn is auto; show no mode badge.
-      mode: !s.modesEnabled ? "" : s.mode === "auto" ? "auto" : s.mode === "plan" ? "plan" : "edit",
-      phase: s.busy ? "thinking" : "idle",
-      model: shortModel(s.model),
-      tokens: s.usage ? `${formatK(s.usage.prompt_tokens)} tokens` : "",
-      cost: s.sessionUsage ? `${s.sessionUsage.reconcilePending ? "≈" : ""}$${s.sessionUsage.cost.toFixed(2)}` : "",
-    };
+    const next = statusSegments(s);
     const changed: Record<string, string> = {};
     for (const [k, v] of Object.entries(next)) {
-      if (this.segments[k] !== v) changed[k] = v;
+      if ((this.segments[k] ?? "") !== v) changed[k] = v;
     }
     if (Object.keys(changed).length > 0) {
       this.segments = next;
@@ -687,6 +688,7 @@ class View implements AppBridge {
     } catch {
       render = undefined;
     }
+    const cancelsBefore = this.cancels;
     void this.sdk
       .permission(this.cam, {
         request_id: `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -694,10 +696,34 @@ class View implements AppBridge {
         action: render?.title ?? tool.name,
         ...(render?.diff ? { diff: render.diff } : {}),
       })
-      .then((answer) => {
-        const decision = answer.choice === "allow_once" ? "allow" : answer.choice === "allow_session" ? "allow_session" : "deny";
-        this.actions?.decidePermission(decision);
+      .then(async (answer) => {
+        if (answer.choice !== "deny") {
+          this.actions?.decidePermission(answer.choice === "allow_once" ? "allow" : "allow_session");
+          return;
+        }
+        const feedback = await this.denyFeedback(answer.feedback, () => this.cancels !== cancelsBefore);
+        if (feedback) this.actions?.denyWithFeedback(feedback);
+        else this.actions?.decidePermission("deny");
       });
+  }
+
+  /**
+   * "No, and tell autopilot what to do differently" (Ink's "Something
+   * else"): ask what the model should do instead. The renderer's own prompt
+   * has no text field, so a form follows the denial. Esc on the prompt also
+   * denies but interrupts the turn: no form then. Returns "" for a plain deny.
+   */
+  private async denyFeedback(given: string | undefined, escaped: () => boolean): Promise<string> {
+    if (given?.trim()) return given.trim();
+    // Esc sends the denial, then cancelRequested; let the latter arrive.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (escaped() || this.disposed) return "";
+    const r = await this.sdk.form(this.cam, {
+      id: `deny-${Date.now()}`,
+      title: "Tell autopilot what to do differently",
+      fields: [{ name: "feedback", label: "Instead…", placeholder: "Enter with nothing typed just denies" }],
+    });
+    return r.cancelled ? "" : r.values?.feedback?.trim() ?? "";
   }
 
   /** Map App's pickers to renderer prompts; dialogs without one yet are
@@ -743,6 +769,14 @@ class View implements AppBridge {
       return want("planOptions", async () => {
         const r = await this.select("Choose a plan", options.map((o, i) => ({ value: String(i), label: o.label })));
         a.pickPlanOption(r === null ? null : options[Number(r)] ?? null);
+      });
+    }
+    if (s.queuePlan) {
+      const prompts = s.queuePlan.prompts;
+      return want("queuePlan", async () => {
+        this.cam.send("Splash", { text: queuePlanSplash(prompts) });
+        const r = await this.select("Coordinate queued follow-ups?", queuePlanOptions(prompts.length), undefined, "Worker calls still require permission; grouping doesn't authorize parallel edits");
+        a.pickQueuePlan(r === "group" || r === "separate" ? r : null);
       });
     }
     const modal = s.modals[0];
@@ -1705,6 +1739,66 @@ export function toolSummary(name: string, ok: boolean, declined: boolean, conten
     default:
       return lines === 0 ? "Done" : `${lines} ${lines === 1 ? "line" : "lines"} of output`;
   }
+}
+
+/** The `/queue plan` choices (Ink's QueuePlanPicker). */
+export function queuePlanOptions(count: number): PickOption[] {
+  return [
+    { value: "group", label: `Group ${count} follow-ups into one coordinated turn`, description: "the coordinator finds dependencies and handles them together" },
+    { value: "separate", label: "Keep separate and continue the FIFO queue" },
+    { value: "cancel", label: "Cancel and leave the queue unchanged" },
+  ];
+}
+
+/** The follow-ups a `/queue plan` covers, printed above its picker. */
+export function queuePlanSplash(prompts: string[]): string {
+  return [
+    "\x1b[1mQueued follow-ups\x1b[0m",
+    ...prompts.map((p, i) => `\x1b[2m${i + 1}.\x1b[0m ${queuePreview(p)}`),
+  ].join("\n");
+}
+
+export type StatusInput = Pick<
+  AppSnapshot,
+  "modesEnabled" | "mode" | "busy" | "model" | "usage" | "sessionUsage" | "contextLimit" | "turnPhase" | "currentTool" | "kimiMdStale" | "codeMode" | "intentTier"
+>;
+
+/**
+ * Renderer status segments (Ink's StatusBar). Well-known keys drive the
+ * renderer: `phase` the spinner, `activity` its verb, `warn` the left footer;
+ * `context`, `code` and `intent` are plain footer badges. Empty removes one.
+ */
+export function statusSegments(s: StatusInput): Record<string, string> {
+  const tier = s.intentTier ?? undefined;
+  const executing = s.busy && s.turnPhase === "executing" && !!s.currentTool;
+  const pct = s.usage && s.contextLimit > 0 ? Math.round((s.usage.prompt_tokens / s.contextLimit) * 100) : null;
+  const warn = [
+    pct !== null && pct >= 80 ? `ctx ${pct}% · /compact recommended` : "",
+    s.kimiMdStale ? "⚠ project context stale · run /init" : "",
+  ].filter(Boolean);
+  return {
+    // With modes off (the default) every turn is auto; show no mode badge.
+    mode: !s.modesEnabled ? "" : s.mode === "auto" ? "auto" : s.mode === "plan" ? "plan" : "edit",
+    phase: !s.busy ? "idle" : executing ? "tool" : "thinking",
+    // Empty lets the renderer name the running tool row itself.
+    activity: executing ? `${capitalize(humanizePhase("executing", tier))} ${s.currentTool}` : s.busy && tier === "heavy" ? "Reasoning" : "",
+    model: shortModel(s.model),
+    tokens: s.usage ? `${formatK(s.usage.prompt_tokens)} tokens` : "",
+    context: pct !== null ? `ctx ${pct}%` : "",
+    cost: s.sessionUsage ? `${s.sessionUsage.reconcilePending ? "≈" : ""}$${s.sessionUsage.cost.toFixed(2)}` : "",
+    code: s.codeMode ? "code mode" : "",
+    intent: s.busy && tier ? `${tier} task` : "",
+    warn: warn.join(" · "),
+  };
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function queuePreview(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > 110 ? `${line.slice(0, 107)}…` : line;
 }
 
 function relTime(iso: string): string {

@@ -26,6 +26,9 @@ import type { SaveCustomCommandOptions } from "../commands/save.js";
 import type { LspServerConfig } from "../config.js";
 import type { HookConfig, HookEvent } from "../hooks/types.js";
 import type { RunningWorker } from "../tools/worker-registry.js";
+import type { TurnPhase } from "./status.js";
+import type { IntentTier } from "./narrator.js";
+import type { QueuePlanChoice } from "./queue-plan-picker.js";
 
 /** Which Ink dialog App currently wants open. */
 export type AppModal =
@@ -62,6 +65,18 @@ export interface AppSnapshot {
   model: string;
   usage: Usage | null;
   sessionUsage: DailyUsage | null;
+  /** The model's context window, for the context-used percentage. */
+  contextLimit: number;
+  /** What the running turn is doing (Ink's status bar phase). */
+  turnPhase: TurnPhase;
+  /** The tool running right now, if any. */
+  currentTool: string | null;
+  /** AGENTS.md/KIMI.md looks out of date (suggest /init). */
+  kimiMdStale: boolean;
+  /** The current turn runs tools through generated code (code mode). */
+  codeMode: boolean;
+  /** How heavy the classifier judged the current turn. */
+  intentTier: IntentTier | null;
   tasks: Task[];
   /** A tool waiting for the user's permission. */
   permission: { tool: PermissionRequest["tool"]; args: Record<string, unknown> } | null;
@@ -72,6 +87,9 @@ export interface AppSnapshot {
   resumeSessions: SessionSummary[] | null;
   checkpoints: { session: SessionSummary; list: Checkpoint[] } | null;
   planOptions: PlanOption[] | null;
+  /** `/queue plan`: the queued follow-ups to group or keep separate. The
+   *  queue doesn't drain while this is open. */
+  queuePlan: { prompts: string[] } | null;
   /** The user's custom slash commands, for the `/` picker. */
   customCommands: { name: string; description?: string }[];
   themes: { name: string; label: string }[];
@@ -99,6 +117,9 @@ export interface AppActions {
   /** Shift+Tab. */
   cycleMode: () => void;
   decidePermission: (decision: PermissionDecision) => void;
+  /** Deny the pending permission and tell the model what to do instead
+   *  (Ink's "Something else"): the text is sent as the next message. */
+  denyWithFeedback: (feedback: string) => void;
   pickModel: (model: ModelEntry | null) => void;
   /** The view finished `/provider` (credentials and model saved): reload the config. */
   providerSwitched: (to: ProviderId) => void;
@@ -107,6 +128,8 @@ export interface AppActions {
   pickCheckpoint: (checkpointId: string | null) => void;
   pickPlanOption: (option: PlanOption | null) => void;
   pickPlanComplete: (choice: PlanCompleteChoice | null) => void;
+  /** Answer `/queue plan` (null cancels and leaves the queue as it was). */
+  pickQueuePlan: (choice: QueuePlanChoice) => void;
   pickTheme: (name: string | null) => void;
   pickShell: (shell: string | null) => void;
   generateChangelogImage: (owner: string, repo: string, days: number) => void;

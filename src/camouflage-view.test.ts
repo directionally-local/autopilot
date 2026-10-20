@@ -3,7 +3,8 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpOptions, listMentionDir, modelOptions, noticeSeverity, shouldSendSubagentPolicyNotice, splitBangResult, syncSlashCommands, toolRow, toolSummary, validateCommandName } from "./camouflage-view.js";
+import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolRow, toolSummary, validateCommandName } from "./camouflage-view.js";
+import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import { listModels } from "./models/registry.js";
 
 describe("Camouflage event sync helpers", () => {
@@ -121,5 +122,150 @@ describe("rendererInfo (#862)", () => {
       (({ source, binary }) => ({ source, binary }))(rendererInfo({ CAMOUFLAGE_BIN: "/opt/custom/camouflage-tui" })),
       { source: "CAMOUFLAGE_BIN", binary: "/opt/custom/camouflage-tui" },
     );
+  });
+});
+
+// ----- parity with the Ink UI ------------------------------------------------
+
+type Sent = { type: string; payload: Record<string, unknown> };
+
+function baseSnapshot(over: Partial<AppSnapshot> = {}): AppSnapshot {
+  return {
+    events: [], busy: false, turnRunning: false, sessionId: null, workers: [], mode: "auto", modesEnabled: false,
+    model: "vendor/model-x", usage: null, sessionUsage: null, contextLimit: 100_000, turnPhase: "waiting", currentTool: null,
+    kimiMdStale: false, codeMode: false, intentTier: null, tasks: [], permission: null, modals: [], providerSetup: null,
+    resumeSessions: null, checkpoints: null, planOptions: null, queuePlan: null, customCommands: [], themes: [], currentTheme: "",
+    currentShell: "auto", memoryEnabled: false, customCommandDefs: [], commandWizard: null, commandPickerMode: null,
+    changelogImageRepo: null, hooks: [], lsp: { servers: {}, scope: "global", hasProjectDir: false },
+    ...over,
+  };
+}
+
+/** A View on a fake renderer: records what it sends and answers prompts from queues. */
+async function fakeView(answers: { permission?: { choice: "allow_once" | "allow_session" | "deny"; feedback?: string }[]; form?: { values?: Record<string, string>; cancelled: boolean }[]; select?: (string | null)[] }) {
+  process.env.AUTOPILOT_JOBS_DB = join(await mkdtemp(join(tmpdir(), "cam-view-")), "jobs.db");
+  const { View } = await import("./camouflage-view.js");
+  const sent: Sent[] = [];
+  const prompts: Sent[] = [];
+  const cam = { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 };
+  const sdk = {
+    mount: async () => cam,
+    permission: async (_c: unknown, spec: Record<string, unknown>) => (prompts.push({ type: "permission", payload: spec }), answers.permission!.shift()!),
+    selectList: async (_c: unknown, spec: Record<string, unknown>) => {
+      prompts.push({ type: "select", payload: spec });
+      const value = answers.select!.shift();
+      return value === null || value === undefined ? { id: "", cancelled: true } : { id: "", value, cancelled: false };
+    },
+    confirm: async () => ({ id: "", cancelled: true }),
+    form: async (_c: unknown, spec: Record<string, unknown>) => (prompts.push({ type: "form", payload: spec }), { id: "", ...answers.form!.shift()! }),
+  };
+  const view = new View(cam as never, sdk as never);
+  const calls: [string, unknown][] = [];
+  const record = (name: string) => (arg?: unknown) => void calls.push([name, arg]);
+  view.connect(new Proxy({}, { get: (_t, name) => record(String(name)) }) as AppActions);
+  return { view, sent, prompts, calls, cam };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 120));
+const permission = { tool: { name: "bash", description: "", parameters: {}, needsPermission: true, run: async () => "" } as never, args: { command: "rm -rf build" } };
+
+describe("Camouflage /queue plan", () => {
+  it("shows the queued follow-ups and answers the picker, so the queue can drain", async () => {
+    const { view, sent, prompts, calls } = await fakeView({ select: ["group"] });
+    view.sync(baseSnapshot({ queuePlan: { prompts: ["fix the tests", "then update the docs"] } }));
+    await settle();
+    assert.deepStrictEqual(calls, [["pickQueuePlan", "group"]]);
+    const splash = sent.find((s) => s.type === "Splash");
+    assert.match(String(splash?.payload.text), /1\..*fix the tests[\s\S]*2\..*then update the docs/);
+    assert.strictEqual((prompts[0]?.payload.options as { value: string }[]).map((o) => o.value).join(), "group,separate,cancel");
+    view.dispose();
+  });
+
+  it("cancelling (Esc or the cancel option) clears the plan with null", async () => {
+    for (const answer of [null, "cancel"]) {
+      const { view, calls } = await fakeView({ select: [answer] });
+      view.sync(baseSnapshot({ queuePlan: { prompts: ["a", "b"] } }));
+      await settle();
+      assert.deepStrictEqual(calls, [["pickQueuePlan", null]]);
+      view.dispose();
+    }
+  });
+
+  it("queuePlanOptions counts the follow-ups", () => {
+    assert.match(queuePlanOptions(3)[0]!.label, /Group 3 follow-ups/);
+  });
+});
+
+describe("Camouflage permission: deny with feedback", () => {
+  it("asks what to do instead and sends it to the model", async () => {
+    const { view, prompts, calls } = await fakeView({ permission: [{ choice: "deny" }], form: [{ values: { feedback: "  use git clean instead " }, cancelled: false }] });
+    view.sync(baseSnapshot({ permission }));
+    await settle();
+    assert.strictEqual(prompts[1]?.type, "form");
+    assert.deepStrictEqual(calls, [["denyWithFeedback", "use git clean instead"]]);
+    view.dispose();
+  });
+
+  it("an empty or cancelled form is a plain deny", async () => {
+    for (const form of [{ values: { feedback: "" }, cancelled: false }, { cancelled: true }]) {
+      const { view, calls } = await fakeView({ permission: [{ choice: "deny" }], form: [form] });
+      view.sync(baseSnapshot({ permission }));
+      await settle();
+      assert.deepStrictEqual(calls, [["decidePermission", "deny"]]);
+      view.dispose();
+    }
+  });
+
+  it("Esc (deny + cancelRequested) denies without asking", async () => {
+    const { view, prompts, calls } = await fakeView({ permission: [{ choice: "deny" }], form: [] });
+    view.sync(baseSnapshot({ permission }));
+    view.cancels++; // what the cancelRequested handler does
+    await settle();
+    assert.deepStrictEqual(calls, [["decidePermission", "deny"]]);
+    assert.ok(!prompts.some((p) => p.type === "form"));
+    view.dispose();
+  });
+
+  it("uses feedback the renderer collected itself, and still allows", async () => {
+    const a = await fakeView({ permission: [{ choice: "deny", feedback: "try the dry run" }] });
+    a.view.sync(baseSnapshot({ permission }));
+    await settle();
+    assert.deepStrictEqual(a.calls, [["denyWithFeedback", "try the dry run"]]);
+    a.view.dispose();
+    const b = await fakeView({ permission: [{ choice: "allow_session" }] });
+    b.view.sync(baseSnapshot({ permission }));
+    await settle();
+    assert.deepStrictEqual(b.calls, [["decidePermission", "allow_session"]]);
+    b.view.dispose();
+  });
+});
+
+describe("statusSegments", () => {
+  const usage = { prompt_tokens: 85_000, completion_tokens: 10, total_tokens: 85_010 };
+  it("shows context used, and warns near the limit", () => {
+    const low = statusSegments(baseSnapshot({ usage: { ...usage, prompt_tokens: 42_000 } }));
+    assert.strictEqual(low.context, "ctx 42%");
+    assert.strictEqual(low.warn, "");
+    assert.match(statusSegments(baseSnapshot({ usage })).warn!, /ctx 85% · \/compact recommended/);
+  });
+
+  it("names the running tool and the turn's intent", () => {
+    const seg = statusSegments(baseSnapshot({ busy: true, turnPhase: "executing", currentTool: "bash", intentTier: "light" }));
+    assert.strictEqual(seg.phase, "tool");
+    assert.strictEqual(seg.activity, "Running bash");
+    assert.strictEqual(seg.intent, "light task");
+    const thinking = statusSegments(baseSnapshot({ busy: true, turnPhase: "generating", intentTier: "medium" }));
+    assert.strictEqual(thinking.phase, "thinking");
+    assert.strictEqual(thinking.activity, "");
+    const idle = statusSegments(baseSnapshot({ intentTier: "heavy" }));
+    assert.strictEqual(idle.phase, "idle");
+    assert.strictEqual(idle.intent, "");
+  });
+
+  it("badges code mode and a stale project context file", () => {
+    const seg = statusSegments(baseSnapshot({ codeMode: true, kimiMdStale: true }));
+    assert.strictEqual(seg.code, "code mode");
+    assert.match(seg.warn!, /stale · run \/init/);
+    assert.strictEqual(statusSegments(baseSnapshot()).code, "");
   });
 });

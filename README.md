@@ -87,6 +87,8 @@ npx autopilot-ai
 
 Requires Node.js ≥ 20.
 
+To pick up an earlier conversation, run `autopilot resume <id>` (the exact command is printed when you exit), `autopilot resume` to choose one from this directory, or `autopilot -c` for the most recent one. Inside autopilot, `/resume` does the same.
+
 ### Providers
 
 | Provider | id | Key | Notes |
