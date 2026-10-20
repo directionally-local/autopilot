@@ -19,7 +19,7 @@ export type ChatEvent =
       streaming: boolean;
     }
   | ({ kind: "tool"; key: string } & ToolEventState)
-  | { kind: "info"; key: string; text: string; pending?: boolean }
+  | { kind: "info"; key: string; text: string; pending?: boolean; /** "warn": shown in the warning colour (e.g. a failed hook). */ tone?: "warn" }
   | { kind: "error"; key: string; text: string }
   | { kind: "jev"; key: string; result: string; probability?: string; tone: "yes" | "no" | "neutral"; receipt: string }
   | { kind: "memory"; key: string; text: string }
@@ -240,7 +240,7 @@ const EventView = React.memo(function EventView({
     const isSubagentHint = /^(Subagent policy|Subagent suggestion):/.test(evt.text);
     return (
       <Text
-        color={isSubagentHint ? (theme.muted?.color ?? theme.info.color) : theme.info.color}
+        color={evt.tone === "warn" ? theme.warn : isSubagentHint ? (theme.muted?.color ?? theme.info.color) : theme.info.color}
         dimColor={isSubagentHint || undefined}
       >
         · {humanizeInfo(evt.text, intentTier)}

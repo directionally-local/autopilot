@@ -8,7 +8,8 @@ import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "../agent/loo
 import type { AgentCallbacks } from "../agent/loop.js";
 import type { ChatMessage, ContentPart, Usage } from "../agent/messages.js";
 import { buildSystemPrompt, buildSystemMessages, buildSessionPrefix } from "../agent/system-prompt.js";
-import { ToolExecutor, ALL_TOOLS } from "../tools/executor.js";
+import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "../tools/executor.js";
+import { formatHookFailureNotice } from "../hooks/manager.js";
 import type { PermissionDecision, PermissionRequest, ToolResult } from "../tools/executor.js";
 import type { ToolSpec } from "../tools/registry.js";
 import { MemoryManager } from "../memory/manager.js";
@@ -235,6 +236,9 @@ class InternalSession implements KimiFlareSession {
   private readonly compactionState: Pick<SessionFile, "sessionState" | "artifactStore">;
   private readonly compaction: CompactionTarget;
 
+  /** Stops forwarding hook failures as `hook.failed` events. */
+  private unsubscribeHookFailures: () => void;
+
   /** Emits worker.finished for this session's background subagents. */
   private unsubscribeWorkers: () => void = workerRegistry.onFinished((w) => {
     if (w.background && w.sessionId === this.sessionId) {
@@ -261,6 +265,21 @@ class InternalSession implements KimiFlareSession {
     this.provider = opts.provider;
     this.hooks = opts.hooks;
     this.trace = opts.trace;
+    this.unsubscribeHookFailures =
+      this.hooks?.onFailure((n) => {
+        if (!n.firstInSession) return;
+        this.emit({
+          type: "hook.failed",
+          hookId: n.hookId,
+          event: n.event,
+          failure: n.kind,
+          reason: n.reason,
+          allowed: n.allowed,
+          failClosed: n.failClosed,
+          count: n.count,
+          message: formatHookFailureNotice(n),
+        });
+      }) ?? (() => {});
 
     this.permissionHandler =
       opts.permissionHandler ??
@@ -477,6 +496,7 @@ class InternalSession implements KimiFlareSession {
     this.disposed = true;
     // Background subagents belong to this session: stop the running ones, forget the results.
     this.unsubscribeWorkers();
+    this.unsubscribeHookFailures();
     for (const w of workerRegistry.list()) if (w.background && w.sessionId === this.sessionId) workerRegistry.cancel(w.id);
     workerRegistry.clearFinished(this.sessionId);
     if (this.trace.enabled) {
@@ -610,7 +630,10 @@ class InternalSession implements KimiFlareSession {
           return "allow";
         }
 
-        // edit mode: emit event and wait for external resolution
+        // edit mode: a PermissionRequest hook may decide; otherwise emit
+        // the event and wait for external resolution.
+        const fromHook = await permissionFromHook(req, mode);
+        if (fromHook) return fromHook;
         const requestId = `req_${this.nextRequestId++}`;
         this.emit({
           type: "permission.request",

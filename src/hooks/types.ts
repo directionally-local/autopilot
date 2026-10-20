@@ -11,14 +11,23 @@
  * See README "## Hooks" for the user-facing schema docs and examples.
  */
 
-/** The five lifecycle events a hook can subscribe to. */
+/** The lifecycle events a hook can subscribe to. */
 export type HookEvent =
   /** A tool call is about to run. Blocking: exit 2 (reason on stderr) or a
    *  `permissionDecision: "deny"` JSON on stdout cancels the call; other
    *  failures (non-zero exit, timeout, missing command) log and allow. */
   | "PreToolUse"
-  /** A tool call just finished. Informational; exit code ignored. */
+  /** A tool call just finished, successfully or not. Informational. */
   | "PostToolUse"
+  /** A tool call failed (error, denied, or a shell command that exited
+   *  non-zero / was killed). Fires alongside PostToolUse, which still fires
+   *  for failures too. Informational. */
+  | "PostToolUseFailure"
+  /** Autopilot is about to ask the user to approve a tool call. Exit 2 or a
+   *  `permissionDecision: "deny"` JSON denies it without prompting;
+   *  `"allow"` approves it without prompting (never in plan mode, never past
+   *  a config deny rule); `"ask"` or nothing shows the normal prompt. */
+  | "PermissionRequest"
   /** The user submitted a prompt. Blocking, same rules as PreToolUse
    *  (exit 2 or `decision: "block"` cancels the turn). */
   | "UserPromptSubmit"
@@ -33,10 +42,20 @@ export type HookEvent =
   /** The host is shutting down (or the session was cleared). Informational. */
   | "SessionEnd";
 
+/** Events whose payload is one tool call; their `matcher` tests the tool name. */
+export const TOOL_HOOK_EVENTS: ReadonlySet<HookEvent> = new Set<HookEvent>([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
+]);
+
 /** All hook events, useful for iteration. */
 export const HOOK_EVENTS: readonly HookEvent[] = [
   "PreToolUse",
   "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
   "UserPromptSubmit",
   "Stop",
   "PreCompact",
@@ -64,6 +83,11 @@ export interface HookConfig {
    *  user opts in via `/hooks enable <id>`. User-written hooks default
    *  to `enabled: true`. */
   enabled?: boolean;
+  /** Blocking events only (PreToolUse, UserPromptSubmit,
+   *  PermissionRequest): when the hook itself fails (non-zero exit other
+   *  than 2, timeout, missing command, spawn error), block the action
+   *  instead of failing open. Default false. */
+  failClosed?: boolean;
   /** Optional one-liner shown by `/hooks list`. */
   description?: string;
   /** Internal: where the hook came from. Set by the loader, not by
@@ -127,6 +151,30 @@ export interface PostToolUsePayload extends BaseHookPayload {
   };
 }
 
+export interface PostToolUseFailurePayload extends BaseHookPayload {
+  event: "PostToolUseFailure";
+  tool: string;
+  tool_call_id?: string;
+  args: Record<string, unknown>;
+  tier?: IntentTier;
+  /** What went wrong, as text (Claude Code's `error`). */
+  error: string;
+  /** The same result fields PostToolUse carries. */
+  result: PostToolUsePayload["result"];
+}
+
+export interface PermissionRequestPayload extends BaseHookPayload {
+  event: "PermissionRequest";
+  tool: string;
+  tool_call_id?: string;
+  args: Record<string, unknown>;
+  tier?: IntentTier;
+  /** The host's permission mode when it asks ("edit", "plan", …). */
+  mode: string;
+  /** Set when a PreToolUse hook's `ask` forced this prompt. */
+  hook_ask_reason?: string;
+}
+
 export interface UserPromptSubmitPayload extends BaseHookPayload {
   event: "UserPromptSubmit";
   prompt: string;
@@ -159,6 +207,8 @@ export interface SessionEndPayload extends BaseHookPayload {
 export type HookPayload =
   | PreToolUsePayload
   | PostToolUsePayload
+  | PostToolUseFailurePayload
+  | PermissionRequestPayload
   | UserPromptSubmitPayload
   | StopPayload
   | PreCompactPayload
@@ -185,11 +235,28 @@ export interface HookOutcome {
   decisionReason?: string;
 }
 
+/** Why a hook failed to give an answer. */
+export type HookFailureKind = "timeout" | "spawn_failed" | "command_not_found" | "nonzero_exit";
+
+/** One hook that failed (did not run to a clean answer) during an event. */
+export interface HookFailure {
+  hookId: string;
+  event: HookEvent;
+  kind: HookFailureKind;
+  /** Human-readable cause, e.g. "timed out after 30000 ms". */
+  reason: string;
+  /** True when the action went ahead anyway (fail-open, or an event that
+   *  can't block); false when `failClosed` made it block. */
+  allowed: boolean;
+  failClosed: boolean;
+}
+
 /** Aggregated outcome of all hooks fired for one event. */
 export interface HookEventOutcome {
   outcomes: HookOutcome[];
-  /** True if a hook blocked the action: exit 2, or a deny/block JSON
-   *  decision. Only meaningful for `PreToolUse` and `UserPromptSubmit`. */
+  /** True if a hook blocked the action: exit 2, a deny/block JSON
+   *  decision, or a failing `failClosed` hook. Only meaningful for
+   *  `PreToolUse`, `UserPromptSubmit` and `PermissionRequest`. */
   vetoed: boolean;
   /** Why it was blocked (exit 2: stderr, else stdout; JSON: the decision
    *  reason) — shown to the model / user. */
@@ -199,4 +266,6 @@ export interface HookEventOutcome {
    *  even if the tool or session would otherwise skip it. */
   permissionDecision?: "allow" | "deny" | "ask";
   permissionDecisionReason?: string;
+  /** Hooks that failed (timeout, crash, missing command) during this event. */
+  failures: HookFailure[];
 }

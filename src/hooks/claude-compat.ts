@@ -9,7 +9,12 @@
  *
  * The mapping is documented in docs/beacon.md; keep the two in step.
  */
-import type { PostToolUsePayload, PreToolUsePayload } from "./types.js";
+import type {
+  PermissionRequestPayload,
+  PostToolUseFailurePayload,
+  PostToolUsePayload,
+  PreToolUsePayload,
+} from "./types.js";
 import { editPairs } from "../tools/edit.js";
 import { resolvePath } from "../util/paths.js";
 
@@ -153,7 +158,7 @@ export function claudeToolResponse(tool: string, args: Record<string, unknown>, 
  * command that ran and exited non-zero starts with `Exit code N`, then its
  * output; anything else carries Autopilot's error text.
  */
-function claudeError(result: ToolResultFields): string {
+export function claudeError(result: ToolResultFields): string {
   if (isNum(result.exitCode) && result.exitCode !== 0) {
     const output = [result.stdout, result.stderr].filter((s) => s && s.trim()).map((s) => s!.trimEnd()).join("\n");
     return output ? `Exit code ${result.exitCode}\n${output}` : `Exit code ${result.exitCode}`;
@@ -162,14 +167,17 @@ function claudeError(result: ToolResultFields): string {
 }
 
 /**
- * The Claude Code tool fields of a PreToolUse / PostToolUse payload.
+ * The Claude Code tool fields of a PreToolUse / PostToolUse /
+ * PostToolUseFailure / PermissionRequest payload.
  *
- * A failed write or edit keeps its native name (`write`, `edit`) in
+ * A failed write or edit (PostToolUse or PostToolUseFailure) keeps its native name (`write`, `edit`) in
  * `tool_name`: `Write`, `Edit` and `MultiEdit` tell Claude-mode consumers
  * that the file changed, and Beacon's Claude mode builds a `file.modified`
  * diff from any payload so named, failed or not.
  */
-export function claudeToolFields(payload: PreToolUsePayload | PostToolUsePayload): Record<string, unknown> {
+export function claudeToolFields(
+  payload: PreToolUsePayload | PostToolUsePayload | PostToolUseFailurePayload | PermissionRequestPayload,
+): Record<string, unknown> {
   const { tool, args, cwd } = payload;
   let toolName = claudeToolName(tool, args);
   const fields: Record<string, unknown> = {
@@ -184,6 +192,12 @@ export function claudeToolFields(payload: PreToolUsePayload | PostToolUsePayload
       fields.is_interrupt = result.interrupted === true || result.errorCode === "aborted";
       if (FILE_EDIT_NAMES.has(toolName)) toolName = tool;
     }
+  } else if (payload.event === "PostToolUseFailure") {
+    const { result } = payload;
+    fields.tool_response = claudeToolResponse(tool, args, cwd, result);
+    fields.error = payload.error;
+    fields.is_interrupt = result.interrupted === true || result.errorCode === "aborted";
+    if (FILE_EDIT_NAMES.has(toolName)) toolName = tool;
   }
   return { tool_name: toolName, ...fields };
 }

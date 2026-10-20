@@ -21,8 +21,8 @@ import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
 import type { ToolSpec } from "./tools/registry.js";
 import { McpManager } from "./mcp/manager.js";
 import { LspManager } from "./lsp/manager.js";
-import { HooksManager } from "./hooks/manager.js";
 import { takeHookStartupNotices } from "./hooks/notices.js";
+import { HooksManager, formatHookFailureNotice } from "./hooks/manager.js";
 import { sanitizeString, appendStoppedToolResults } from "./agent/messages.js";
 import type { ChatMessage, Usage } from "./agent/messages.js";
 import { AbortScope } from "./util/abort-scope.js";
@@ -464,6 +464,16 @@ function App({
       cancelled = true;
     };
   }, []);
+  // #889: a hook that times out, crashes or can't start is shown once per
+  // hook per session (both UIs read `events`); later failures are counted.
+  useEffect(
+    () =>
+      hooksManagerRef.current.onFailure((notice) => {
+        if (!notice.firstInSession) return;
+        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: formatHookFailureNotice(notice), tone: "warn" }]);
+      }),
+    [],
+  );
   const sessionStartRecallRef = useRef<Promise<import("./memory/schema.js").HybridResult[]> | null>(null);
   const kimiMdStaleNudgedRef = useRef(false);
   /** Trace turn id of the turn in flight (set by processMessage). */
@@ -2223,7 +2233,7 @@ function App({
 
   function configuredHooks(): { event: HookEvent; hook: HookConfig }[] {
     const out: { event: HookEvent; hook: HookConfig }[] = [];
-    for (const ev of ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "PreCompact"] as const) {
+    for (const ev of ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "UserPromptSubmit", "Stop", "PreCompact"] as const) {
       for (const h of hooksManagerRef.current.hooksFor(ev)) out.push({ event: ev, hook: h });
     }
     return out;

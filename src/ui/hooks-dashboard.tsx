@@ -31,6 +31,8 @@ import { HooksWizard } from "./hooks-wizard.js";
 const EVENT_EXPLANATIONS: Record<HookEvent, string> = {
   PreToolUse: "before every tool call — can veto (block) it",
   PostToolUse: "after every tool call — informational only",
+  PostToolUseFailure: "after a tool call fails — informational only",
+  PermissionRequest: "before you're asked to approve a call — can allow or deny it",
   UserPromptSubmit: "when you hit Enter — can veto the prompt",
   Stop: "when the agent finishes a turn — informational only",
   PreCompact: "before auto-compaction shrinks the conversation",
@@ -269,6 +271,8 @@ export function HooksDashboard(props: HooksDashboardProps): React.ReactElement {
         <Text color={theme.info.color} dimColor>Events:</Text>
         <Text>  <Text bold>PreToolUse</Text>       — {EVENT_EXPLANATIONS.PreToolUse}</Text>
         <Text>  <Text bold>PostToolUse</Text>      — {EVENT_EXPLANATIONS.PostToolUse}</Text>
+        <Text>  <Text bold>PostToolUseFailure</Text> — {EVENT_EXPLANATIONS.PostToolUseFailure}</Text>
+        <Text>  <Text bold>PermissionRequest</Text> — {EVENT_EXPLANATIONS.PermissionRequest}</Text>
         <Text>  <Text bold>UserPromptSubmit</Text> — {EVENT_EXPLANATIONS.UserPromptSubmit}</Text>
         <Text>  <Text bold>Stop</Text>             — {EVENT_EXPLANATIONS.Stop}</Text>
         <Text>  <Text bold>PreCompact</Text>       — {EVENT_EXPLANATIONS.PreCompact}</Text>

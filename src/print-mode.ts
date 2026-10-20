@@ -12,7 +12,8 @@ import type { AgentCallbacks } from "./agent/loop.js";
 import { llmAuthFromConfig } from "./agent/llm-auth.js";
 import { recordUsage } from "./usage-tracker.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
-import { ToolExecutor, getWorkerTools, RESEARCH_WORKER_TOOL_NAMES } from "./tools/executor.js";
+import { ToolExecutor, getWorkerTools, RESEARCH_WORKER_TOOL_NAMES, permissionFromHook } from "./tools/executor.js";
+import type { HookFailureNotice } from "./hooks/manager.js";
 import type { ChatMessage, ContentPart } from "./agent/messages.js";
 import { KimiApiError, humanizeApiError } from "./util/errors.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "./sessions.js";
@@ -93,6 +94,8 @@ interface JsonOutput {
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
   durationMs: number;
   sessionId: string;
+  /** Hooks that failed this run (#889): one entry per hook, with its count. */
+  hookFailures?: HookFailureNotice[];
 }
 
 async function resolveSession(opts: PrintModeOpts): Promise<{ sessionFile: SessionFile; isNew: boolean }> {
@@ -169,7 +172,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   // M6.1: print mode loads the same hooks as the TUI.
   const baseWorkerTools = getWorkerTools(opts.workerProfile);
-  const { HooksManager } = await import("./hooks/manager.js");
+  const { HooksManager, formatHookFailureNotice, hookFailureEvent } = await import("./hooks/manager.js");
   const hooks = new HooksManager(cwd);
   const { takeHookStartupNotices } = await import("./hooks/notices.js");
   for (const notice of await takeHookStartupNotices(cwd)) process.stderr.write(`${notice}\n`);
@@ -275,6 +278,21 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     }
   }
 
+  // #889: tell the user when a hook fails (once per hook; later failures
+  // only bump the count, which the json output reports in full).
+  hooks.onFailure((notice) => {
+    const failures = (jsonOutput.hookFailures ??= []);
+    const at = failures.findIndex((f) => f.hookId === notice.hookId);
+    if (at === -1) failures.push(notice);
+    else failures[at] = notice;
+    if (!notice.firstInSession) return;
+    if (format === "stream-json") {
+      emitStreamJson("hook_failed", hookFailureEvent(notice));
+    } else {
+      process.stderr.write(`\x1b[33mautopilot: ${formatHookFailureNotice(notice)}\x1b[0m\n`);
+    }
+  });
+
   // Usage is recorded like the TUI does, so `autopilot cost` and /cost see
   // headless runs too. Writes are awaited before exit.
   const usageWrites: Promise<void>[] = [];
@@ -376,7 +394,8 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
         emitStreamJson("warning", { message: msg });
       }
     },
-    askPermission: async ({ tool, args }) => {
+    askPermission: async (req) => {
+      const { tool, args } = req;
       if (opts.workerProfile === "research") {
         return RESEARCH_WORKER_TOOL_NAMES.has(tool.name) && tool.isReadOnly === true ? "allow" : "deny";
       }
@@ -393,6 +412,17 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
           return "deny";
         }
         // "ask" falls through to default deny in headless mode
+      }
+
+      // No one to ask in print mode, but PermissionRequest hooks may decide.
+      const fromHook = await permissionFromHook(req, "edit");
+      if (fromHook) {
+        if (fromHook.decision === "deny") {
+          const msg = `[permission denied by a PermissionRequest hook: ${tool.name}]`;
+          if (format === "text") process.stderr.write(`\x1b[31m${msg}\x1b[0m\n`);
+          else if (format === "stream-json") emitStreamJson("permission_denied", { tool: tool.name, args, reason: "hook" });
+        }
+        return fromHook;
       }
 
       const msg = `[permission denied: ${tool.name}(${JSON.stringify(args)}) — pass --dangerously-allow-all to approve in print mode, or configure permissions in config.json]`;

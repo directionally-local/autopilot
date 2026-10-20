@@ -217,6 +217,7 @@ const handleClear: Handler = (ctx) => {
     ctx.messagesRef.current = [ctx.messagesRef.current[0]!];
   }
   if (ctx.sessionIdRef.current) void endSession(ctx.sessionIdRef.current, "clear");
+  ctx.hooksManagerRef.current.resetFailureCounts();
   ctx.resetSession();
   ctx.executorRef.current.clearArtifacts();
   if (ctx.flushTimeoutRef.current) {
@@ -1475,8 +1476,11 @@ const handleHooks: Handler = (ctx, rest, arg) => {
         const en = h.enabled === false ? " [disabled]" : "";
         const src = h.source ? ` (${h.source})` : "";
         const matcher = h.matcher ? `  matcher=${h.matcher}` : "";
+        const closed = h.failClosed ? "  failClosed" : "";
+        const failures = h.id ? ctx.hooksManagerRef.current.failureCount(h.id) : 0;
+        const failed = failures > 0 ? `  [failed ${failures}× this session]` : "";
         const desc = h.description ? `\n      ${h.description}` : "";
-        lines.push(`  ${id}${en}${src}${matcher}\n      $ ${h.command}${desc}`);
+        lines.push(`  ${id}${en}${src}${matcher}${closed}${failed}\n      $ ${h.command}${desc}`);
       }
     }
     if (!any) {

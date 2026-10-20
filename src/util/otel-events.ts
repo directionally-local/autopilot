@@ -17,14 +17,19 @@ import type { AgentCallbacks } from "../agent/loop.js";
 export const OTEL_EVENT_PREFIX = "autopilot.";
 
 /** Emit one event (no-op unless an OTLP endpoint is configured). */
-export function emitOtelEvent(name: string, sessionId: string | null | undefined, attributes: Record<string, string | number | boolean | undefined>): void {
+export function emitOtelEvent(
+  name: string,
+  sessionId: string | null | undefined,
+  attributes: Record<string, string | number | boolean | undefined>,
+  level: "info" | "warn" = "info",
+): void {
   if (!isOtelEnabled()) return;
   const eventName = `${OTEL_EVENT_PREFIX}${name}`;
   const data: Record<string, unknown> = { "event.name": eventName };
   for (const [key, value] of Object.entries(attributes)) if (value !== undefined) data[key] = value;
   enqueueOtelLog({
     ts: new Date().toISOString(),
-    level: "info",
+    level,
     event: eventName,
     ...(sessionId ? { session_id: sessionId } : {}),
     data: { ...data, ...(sessionId ? { "session.id": sessionId } : {}) },

@@ -423,8 +423,8 @@ describe("ToolExecutor — M6.1 executor-level hooks", () => {
       { cwd: "/tmp" },
     );
     assert.strictEqual(res.ok, false);
-    assert.strictEqual(hooks.fired.length, 2);
-    assert.strictEqual(hooks.fired[1]!.event, "PostToolUse");
+    // PostToolUse keeps firing for failures; PostToolUseFailure fires too (#891).
+    assert.deepStrictEqual(hooks.fired.map((f) => f.event), ["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
     const post = hooks.fired[1]!.payload as { result: { ok: boolean; errorCode?: string } };
     assert.strictEqual(post.result.ok, false);
     assert.strictEqual(post.result.errorCode, "unknown");
@@ -463,9 +463,9 @@ describe("ToolExecutor — M6.1 executor-level hooks", () => {
       { cwd: "/tmp" },
     );
     assert.strictEqual(res.errorCode, "permission_denied");
-    // PreToolUse + PostToolUse — confirms hooks fire even on the
-    // permission-denied path so the user can observe denials.
-    assert.strictEqual(hooks.fired.length, 2);
+    // PreToolUse + PostToolUse (+ PostToolUseFailure) — confirms hooks fire
+    // even on the permission-denied path so the user can observe denials.
+    assert.deepStrictEqual(hooks.fired.map((f) => f.event), ["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
     const post = hooks.fired[1]!.payload as { result: { errorCode?: string } };
     assert.strictEqual(post.result.errorCode, "permission_denied");
   });

@@ -77,6 +77,20 @@ export type SessionEvent =
 
   // Warnings
   | { type: "warning"; message: string }
+  /** A hook timed out, crashed or couldn't start (#889). Sent once per hook
+   *  per session; `count` is how many times it has failed so far. `allowed`
+   *  is false when the hook's `failClosed` made the action block. */
+  | {
+      type: "hook.failed";
+      hookId: string;
+      event: string;
+      failure: "timeout" | "spawn_failed" | "command_not_found" | "nonzero_exit";
+      reason: string;
+      allowed: boolean;
+      failClosed: boolean;
+      count: number;
+      message: string;
+    }
   /** Older turns were archived so the next request fits the model's input budget. */
   | { type: "context.compacted"; tokensBefore: number; tokensAfter: number; turnsRemoved: number; artifactsArchived: number }
 

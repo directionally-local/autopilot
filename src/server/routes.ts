@@ -6,7 +6,7 @@ import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { endSessions } from "../hooks/session-lifecycle.js";
-import { HooksManager } from "../hooks/manager.js";
+import { HooksManager, hookFailureEvent } from "../hooks/manager.js";
 import { SHUTDOWN_TIMEOUT_MS } from "../util/exit.js";
 import { listModels } from "../models/registry.js";
 import { JobManager } from "../jobs/manager.js";
@@ -25,7 +25,7 @@ import type { ToolSpec } from "../tools/registry.js";
 import { runAgentTurn } from "../agent/loop.js";
 import type { AgentCallbacks } from "../agent/loop.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
-import { ToolExecutor, ALL_TOOLS } from "../tools/executor.js";
+import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "../tools/executor.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
 import type { ChatMessage, ContentPart } from "../agent/messages.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "../sessions.js";
@@ -68,6 +68,8 @@ interface ActiveSession {
   executor: ToolExecutor;
   /** Lifecycle hooks (SessionStart/SessionEnd, Stop) for interactive sessions. */
   hooks?: HooksManager;
+  /** Hooks that failed in this session, latest count per hook (#889). */
+  hookFailures?: Map<string, Record<string, unknown>>;
   sseClients: Set<SseClient>;
   runId?: string;
   allowedTools?: Set<string>;
@@ -717,6 +719,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
             messages: active.messages,
             title: active.sessionFile.title,
             updatedAt: active.sessionFile.updatedAt,
+            ...(active.hookFailures?.size ? { hookFailures: [...active.hookFailures.values()] } : {}),
           });
           return;
         }
@@ -806,6 +809,14 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
           nextTurnId: firstTurnId,
         };
         activeSessions.set(sessionId, active);
+        // #889: a failing hook is reported once per hook per session.
+        active.hookFailures = new Map();
+        hooks.onFailure((notice) => {
+          const event = hookFailureEvent(notice);
+          active.hookFailures?.set(notice.hookId, event);
+          if (!notice.firstInSession) return;
+          for (const client of active.sseClients) client.send("hook.failed", event);
+        });
 
         // Start agent turn in background
         launchAgentTurnForSession(active, config, allowAll);
@@ -1025,8 +1036,9 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
       yielded = true;
     },
     onRunBudgetExceeded: (reason) => controller.abort(new Error(reason)),
-    askPermission: async ({ tool, args, sessionKey }) => {
-      if (active.askAsterPermission) return active.askAsterPermission({ tool, args, sessionKey });
+    askPermission: async (req) => {
+      const { tool, args } = req;
+      if (active.askAsterPermission) return active.askAsterPermission(req);
       if (active.runId) {
         if (active.allowedTools?.has(tool.name)) return "allow";
         return "deny";
@@ -1043,6 +1055,15 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
           }
           return "deny";
         }
+      }
+
+      // A PermissionRequest hook may decide before anyone is asked.
+      const fromHook = await permissionFromHook(req, "edit");
+      if (fromHook) {
+        for (const client of active.sseClients) {
+          client.send(fromHook.decision === "allow" ? "permission.granted" : "permission.denied", { tool: tool.name, args, reason: "hook" });
+        }
+        return fromHook;
       }
 
       for (const client of active.sseClients) {
