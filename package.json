@@ -1,7 +1,7 @@
 {
   "name": "autopilot-ai",
   "version": "1.28.0",
-  "description": "autopilot (formerly kimiflare): a terminal coding agent that runs any OpenRouter model with your own key. Per-turn billed cost, web search, GitHub, headless browser, LSP, MCP, local memory.",
+  "description": "autopilot (formerly kimiflare): a terminal coding agent for any model with your own key: OpenRouter, Anthropic, OpenAI, Gemini, Bedrock, Vertex, Ollama and more. Per-turn cost, web search, GitHub, headless browser, LSP, MCP, local memory.",
   "keywords": [
     "autopilot",
     "kimiflare",
@@ -10,7 +10,6 @@
     "coding-agent",
     "terminal",
     "kimi",
-    "k2.6",
     "openrouter",
     "vision",
     "image-understanding",
@@ -18,7 +17,12 @@
     "code-generation",
     "tui",
     "mcp",
-    "model-context-protocol"
+    "model-context-protocol",
+    "anthropic",
+    "openai",
+    "gemini",
+    "ollama",
+    "multi-provider"
   ],
   "repository": {
     "type": "git",
