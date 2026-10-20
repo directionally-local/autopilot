@@ -39,3 +39,9 @@ Legacy workerEndpoint, workerApiKey, KIMIFLARE_WORKER_ENDPOINT, and KIMIFLARE_WO
 Autopilot reports Hotcell setup, repository, provider, and spend failures as tool errors. It does not silently fall back to a remote service. The coordinator can continue locally, but should not claim a worker ran when it did not.
 
 For upstream design inspiration, see [Anthropic’s guide to when to use subagents](https://claude.com/blog/subagents-in-claude-code) and the [Claude Code subagents documentation](https://code.claude.com/docs/en/sub-agents).
+
+## Background subagents
+
+`subagent` takes `background: true`: the call returns a worker id at once and the agent keeps working (or answers you) while the subagent runs. When it finishes, its findings are delivered to the agent automatically — at the next tool step if a turn is running, or with your next message — with no polling. The agent can also check early with `worker_status`, fetch one with `worker_result` (optionally `wait=true`), or `wait_for` with `worker_id`.
+
+Background subagents keep every safeguard: the same permission prompt, spend cap, concurrency limit and read-only profile. They are not tied to a turn — interrupting a turn doesn't stop them — so stop one with `/subagents cancel <n>`. They live as long as the Autopilot session (the TUI shows "Background subagent #n …" when one finishes; the SDK emits `worker.finished`); disposing an SDK session cancels its running background subagents.
