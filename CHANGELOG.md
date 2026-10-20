@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.27.1](https://github.com/sinameraji/autopilot/compare/v1.27.0...v1.27.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **camouflage:** the verified [#862](https://github.com/sinameraji/autopilot/issues/862) fixes that [#867](https://github.com/sinameraji/autopilot/issues/867) lost ([#870](https://github.com/sinameraji/autopilot/issues/870)) ([1854db8](https://github.com/sinameraji/autopilot/commit/1854db8700186125e52e4aa035c8e9e6423bd1ae))
+* **deps:** require camouflage-tui 2.8.1 ([#868](https://github.com/sinameraji/autopilot/issues/868)) ([7cbeb5e](https://github.com/sinameraji/autopilot/commit/7cbeb5e426c9eea69322a18723721c2d75200243))
+
 ## [1.27.0](https://github.com/sinameraji/autopilot/compare/v1.26.0...v1.27.0) (2026-10-20)
 
 
