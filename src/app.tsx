@@ -156,7 +156,7 @@ function App({
   initialLspScope,
   initialLspProjectPath,
   bridge,
-  initialResumeLatest,
+  initialResumeSessionId,
 }: {
   initialCfg: Cfg | null;
   initialUpdateResult?: UpdateCheckResult;
@@ -164,8 +164,8 @@ function App({
   initialLspProjectPath: string | null;
   /** Render through another view (e.g. Camouflage) instead of Ink. */
   bridge?: AppBridge;
-  /** Reopen the most recent session in this directory on start (after a renderer crash). */
-  initialResumeLatest?: boolean;
+  /** Reopen this session on start (after a renderer crash). */
+  initialResumeSessionId?: string;
 }) {
   const { exit } = useApp();
   const { columns } = useWindowSize();
@@ -505,22 +505,24 @@ function App({
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
 
   // After a Camouflage renderer crash (#862) the Ink UI reopens the session
-  // that was just saved: the newest one in this directory.
-  const resumedLatestRef = useRef(false);
+  // the crashed view was saving.
+  const resumedAfterCrashRef = useRef(false);
   useEffect(() => {
-    if (!initialResumeLatest || resumedLatestRef.current || !cfg) return;
-    resumedLatestRef.current = true;
+    if (!initialResumeSessionId || resumedAfterCrashRef.current || !cfg) return;
+    resumedAfterCrashRef.current = true;
     void (async () => {
-      const { listSessions } = await import("./sessions.js");
-      const [latest] = await listSessions(1, process.cwd());
-      if (!latest) return;
-      await doResumeSession(latest.filePath);
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed, so this conversation reopened here in the classic UI. Nothing was lost." },
-      ]);
+      const { sessionsDir } = await import("./sessions.js");
+      try {
+        await doResumeSession(join(sessionsDir(), `${initialResumeSessionId}.json`));
+        setEvents((e) => [
+          ...e,
+          { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed, so this conversation reopened here in the classic UI. Nothing was lost." },
+        ]);
+      } catch (err) {
+        setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `Couldn't reopen the conversation after the renderer crash: ${(err as Error).message}. Use /resume.` }]);
+      }
     })();
-  }, [initialResumeLatest, cfg, doResumeSession]);
+  }, [initialResumeSessionId, cfg, doResumeSession]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customCommandsRef = useRef<CustomCommand[]>([]);
   const recentFilesRef = useRef<Map<string, number>>(new Map());
@@ -2346,6 +2348,8 @@ function App({
     bridge.sync({
       events,
       busy,
+      turnRunning: busy || supervisorRef.current.isRunning,
+      sessionId: sessionIdRef.current,
       providerSetup: modals.providerSetup,
       workers: runningSubagents,
       mode,
@@ -2722,7 +2726,7 @@ export async function renderApp(
   updateResult?: UpdateCheckResult,
   lspScope: "project" | "global" = "global",
   lspProjectPath: string | null = null,
-  opts: { resumeLatest?: boolean } = {},
+  opts: { resumeSessionId?: string } = {},
 ) {
   // The TUI is the only host that supports `!` commands (see agent/user-shell.ts).
   enableUserShellCommands();
@@ -2732,7 +2736,7 @@ export async function renderApp(
       initialUpdateResult={updateResult}
       initialLspScope={lspScope}
       initialLspProjectPath={lspProjectPath}
-      initialResumeLatest={opts.resumeLatest}
+      initialResumeSessionId={opts.resumeSessionId}
     />,
     {
       incrementalRendering: true,

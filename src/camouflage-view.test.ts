@@ -102,3 +102,17 @@ describe("validateCommandName", () => {
     assert.match(validateCommandName("review", ["review"])!, /already exists/);
   });
 });
+
+describe("rendererInfo (#862)", () => {
+  it("reports the package's own binary and version, and CAMOUFLAGE_BIN when set", async () => {
+    const { rendererInfo } = await import("./camouflage-view.js");
+    const info = rendererInfo({});
+    assert.strictEqual(info.source, "package");
+    assert.match(String(info.packageVersion), /^\d+\.\d+\.\d+/);
+    assert.match(info.binary, /node_modules\/camouflage-tui\/bin\/camouflage-tui$/);
+    assert.deepStrictEqual(
+      (({ source, binary }) => ({ source, binary }))(rendererInfo({ CAMOUFLAGE_BIN: "/opt/custom/camouflage-tui" })),
+      { source: "CAMOUFLAGE_BIN", binary: "/opt/custom/camouflage-tui" },
+    );
+  });
+});
