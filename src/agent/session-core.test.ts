@@ -90,3 +90,20 @@ describe("hosts go through SessionCore", () => {
     assert.deepStrictEqual(offenders, [], "build turn options with assembleTurn()");
   });
 });
+
+describe("runStopForError", () => {
+  it("pauses a run whose active turn outgrew the context, with the numbers and the choices", async () => {
+    const { runStopForError } = await import("./session-core.js");
+    const { ContextBudgetError } = await import("./context-budget.js");
+    const stop = runStopForError(new ContextBudgetError(215_000, 120_000, 128_000), { model: "moonshotai/kimi-k2.6" });
+    assert.strictEqual(stop.status, "needs_input");
+    assert.match(stop.reason, /^context_budget_exceeded: the current turn needs ~215,000 tokens but moonshotai\/kimi-k2\.6 has 120,000 available \(context window 128,000\)/);
+    assert.match(stop.reason, /larger-context model .*or cancel/);
+  });
+
+  it("pauses on the runtime budget and fails on anything else", async () => {
+    const { runStopForError } = await import("./session-core.js");
+    assert.deepStrictEqual(runStopForError(new Error("aborted"), { runtimeBudgetExceeded: true }), { status: "needs_input", reason: "max_runtime_exceeded" });
+    assert.deepStrictEqual(runStopForError(new Error("HTTP 500")), { status: "failed", reason: "HTTP 500" });
+  });
+});
