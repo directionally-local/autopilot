@@ -10,6 +10,21 @@ Aster is a native iOS client. Autopilot on the VM owns model credentials, prompt
 - The API exposes only `read`, `write`, and `edit`; no shell, external job, browser, web, GitHub, or artifact-expansion tools. Reads/writes/edits resolve inside the conversation worktree, reject traversal/symlinks out of root, and block credential/VCS paths. `write` and `edit` require a per-action human approval.
 - Provider credentials remain in the VM service environment/config. They are never sent to Aster or included in API responses/events. Provider-like secrets in turn text or proposed write arguments are rejected; assistant deltas are redacted defensively.
 
+## Local macOS bootstrap
+
+On a Mac, Autopilot can own the Aster workspace config and issue a short-lived, workspace-scoped credential without a system-wide `/etc` config. The config contains repository roots and model policy only; the database stores only the credential hash. The Mac app stores the one-time bearer token in Keychain.
+
+```sh
+autopilot aster setup --workspace "$HOME/src/my-project" --json
+# Use the returned workspace ID:
+autopilot aster token create --name "Aster for Mac" --workspace my-project --expires-in-days 30 --json
+autopilot serve --hostname 127.0.0.1 --port 4096
+```
+
+`aster setup` writes `~/.config/autopilot/aster.json` with mode `0600` in a mode `0700` directory. It validates that each workspace is an existing Git repository root. Repeating setup for an already-configured root returns its existing workspace ID; it refuses to replace a config or silently widen its workspace list. Set `AUTOPILOT_ASTER_CONFIG` to select another config path. `aster token create --json` emits the token once on stdout for a trusted local caller; never log or persist that output except in Keychain. The default database is `~/.local/state/autopilot/aster.db` and can be overridden with `AUTOPILOT_ASTER_DB`.
+
+The local Mac app launches Hotcell and Autopilot as loopback-only child processes and supplies the daemon API key to Autopilot through its environment. Provider credentials remain in Autopilot's existing provider configuration and Hotcell's host Keychain keystore; they are not copied into the Aster config or token database.
+
 ## Configure server-owned workspaces and models
 
 Create `/etc/autopilot/aster.json` (do not put credentials in it):

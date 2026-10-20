@@ -92,20 +92,5 @@
   },
   "overrides": {
     "esbuild": "^0.28.2"
-  },
-  "bundleDependencies": [
-    "@hotcell/sdk",
-    "@modelcontextprotocol/sdk",
-    "better-sqlite3",
-    "commander",
-    "ink",
-    "ink-select-input",
-    "ink-spinner",
-    "ink-text-input",
-    "qrcode",
-    "react",
-    "turndown",
-    "typescript",
-    "vscode-languageserver-protocol"
-  ]
+  }
 }

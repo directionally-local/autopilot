@@ -89,6 +89,31 @@ program.addCommand(createRemoteCommand());
 registerEvalCommand(program);
 
 const asterCommand = program.command("aster").description("Manage the Aster mobile API");
+asterCommand
+  .command("setup")
+  .description("Configure Aster for one or more local Git workspaces")
+  .requiredOption("-w, --workspace <path>", "Local Git repository root (repeatable)", (value, previous: string[] = []) => [...previous, value])
+  .option("--json", "Print the selected workspace IDs as JSON")
+  .action(async (options: { workspace: string[]; json?: boolean }) => {
+    const { setupLocalAsterConfig } = await import("./server/aster-setup.js");
+    try {
+      const setup = await setupLocalAsterConfig({ workspacePaths: options.workspace });
+      const result = {
+        configPath: setup.path,
+        workspaces: setup.selectedWorkspaces.map(({ id, displayName, rootPath }) => ({ id, displayName, rootPath })),
+      };
+      if (options.json) {
+        console.log(JSON.stringify(result));
+      } else {
+        console.log(`Aster config: ${setup.path}`);
+        for (const workspace of result.workspaces) console.log(`Workspace: ${workspace.id} · ${workspace.displayName}`);
+      }
+    } catch (error) {
+      console.error(`autopilot aster setup: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 2;
+    }
+  });
+
 const asterTokenCommand = asterCommand.command("token").description("Manage scoped Aster API credentials");
 asterTokenCommand
   .command("create")
@@ -96,7 +121,8 @@ asterTokenCommand
   .requiredOption("-n, --name <name>", "Credential label")
   .requiredOption("-w, --workspace <id>", "Allowed workspace ID (repeatable)", (value, previous: string[] = []) => [...previous, value])
   .option("--expires-in-days <days>", "Expiry in days (1-365)", (value) => Number.parseInt(value, 10), 30)
-  .action(async (options: { name: string; workspace: string[]; expiresInDays: number }) => {
+  .option("--json", "Print the newly created credential as JSON (includes the one-time token)")
+  .action(async (options: { name: string; workspace: string[]; expiresInDays: number; json?: boolean }) => {
     const { loadAsterServerConfig } = await import("./server/aster-workspaces.js");
     const { AsterStore } = await import("./server/aster-store.js");
     try {
@@ -116,11 +142,22 @@ asterTokenCommand
           scopes: ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"],
           expiresAt: Date.now() + options.expiresInDays * 24 * 60 * 60 * 1000,
         });
-        console.log(`Credential ID: ${created.id}`);
-        console.log(`Workspace scope: ${created.workspaceIds.join(", ")}`);
-        console.log(`Expires: ${new Date(created.expiresAt).toISOString()}`);
-        console.log("Copy this token into the Aster app's Keychain now; it will not be shown again:");
-        console.log(created.token);
+        if (options.json) {
+          console.log(JSON.stringify({
+            credentialId: created.id,
+            workspaceIds: created.workspaceIds,
+            scopes: created.scopes,
+            createdAt: created.createdAt,
+            expiresAt: created.expiresAt,
+            token: created.token,
+          }));
+        } else {
+          console.log(`Credential ID: ${created.id}`);
+          console.log(`Workspace scope: ${created.workspaceIds.join(", ")}`);
+          console.log(`Expires: ${new Date(created.expiresAt).toISOString()}`);
+          console.log("Copy this token into the Aster app's Keychain now; it will not be shown again:");
+          console.log(created.token);
+        }
       } finally {
         store.close();
       }

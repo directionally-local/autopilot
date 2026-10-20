@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export interface AsterWorkspace {
   id: string;
@@ -23,8 +25,22 @@ export class AsterConfigError extends Error {
   }
 }
 
+const SYSTEM_ASTER_CONFIG_PATH = "/etc/autopilot/aster.json";
+
+export function localAsterConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configHome = env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config");
+  return resolve(configHome, "autopilot", "aster.json");
+}
+
+export function resolveAsterServerConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configuredPath = env.AUTOPILOT_ASTER_CONFIG?.trim();
+  if (configuredPath) return resolve(configuredPath);
+  const userConfigPath = localAsterConfigPath(env);
+  return existsSync(userConfigPath) ? userConfigPath : SYSTEM_ASTER_CONFIG_PATH;
+}
+
 export async function loadAsterServerConfig(
-  configPath = process.env.AUTOPILOT_ASTER_CONFIG || "/etc/autopilot/aster.json",
+  configPath = resolveAsterServerConfigPath(),
 ): Promise<AsterServerConfig> {
   let raw: unknown;
   try {
