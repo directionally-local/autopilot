@@ -403,6 +403,20 @@ describe("loadConfig", () => {
       assert.strictEqual((await loadConfig())?.model, "gpt-5.6");
     });
 
+    it("saves a model chosen under a one-off provider override for that provider only", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", model: "moonshotai/kimi-k3" });
+      process.env.AUTOPILOT_PROVIDER = "openai";
+      process.env.OPENAI_API_KEY = "sk-openai";
+      const cfg = await loadConfig();
+      await saveConfig({ ...cfg!, model: "gpt-5.6" });
+      const onDisk = await readConfigFile();
+      assert.strictEqual(onDisk.model, "moonshotai/kimi-k3", "OpenRouter's model is untouched");
+      assert.deepStrictEqual((onDisk.providers as Record<string, { model?: string }>).openai?.model, "gpt-5.6");
+      assert.strictEqual((await loadConfig())?.model, "gpt-5.6");
+      delete process.env.AUTOPILOT_PROVIDER;
+      assert.strictEqual((await loadConfig())?.model, "moonshotai/kimi-k3");
+    });
+
     it("does not persist preset-derived side-call models", async () => {
       await writeConfigFile({ provider: "deepseek", providers: { deepseek: { apiKey: "sk-ds" } } });
       const cfg = await loadConfig();

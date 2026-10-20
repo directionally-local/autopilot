@@ -24,6 +24,8 @@ export interface ModelPricing {
   cachedInputPerMtok?: number;
   /** USD per million output tokens. */
   outputPerMtok: number;
+  /** USD per million tokens written to the prompt cache (Anthropic-style explicit caching). */
+  cacheWritePerMtok?: number;
 }
 
 export interface ModelCapabilities {
@@ -64,6 +66,14 @@ export interface ModelEntry {
    * sent. Undefined when unknown (seed entries, ids not in the catalog).
    */
   parameters?: string[];
+  /**
+   * Reasoning effort levels the model accepts (models.dev `reasoning_options`),
+   * e.g. ["low","high","max"]. The client maps the user's /reasoning level onto
+   * this list. Undefined: low/medium/high are assumed.
+   */
+  reasoningEfforts?: string[];
+  /** Field the API expects reasoning echoed back in on assistant history (e.g. "reasoning_content"). */
+  reasoningEchoField?: string;
   contextWindow: number;
   maxOutputTokens: number;
   pricing: ModelPricing;
@@ -121,6 +131,24 @@ let openRouterIndex: Map<string, ModelEntry> = new Map();
 let requestyIndex: Map<string, ModelEntry> = new Map();
 /** Requesty managed policy ids, in catalog order: the picker's default list on Requesty. */
 let requestyFeatured: string[] = [];
+/**
+ * The active provider's own catalog (models.dev or local discovery), for
+ * every provider but OpenRouter and Requesty. When set, it is the picker's
+ * whole list and the first place capabilities/pricing are looked up.
+ */
+let providerIndex: Map<string, ModelEntry> = new Map();
+let providerCatalogId: string | null = null;
+
+/** Register (or clear, with an empty list) the active provider's catalog (see provider-catalog.ts). */
+export function registerProviderModels(providerId: string, entries: ModelEntry[]): void {
+  providerIndex = new Map(entries.map((m) => [m.id, m]));
+  providerCatalogId = entries.length > 0 ? providerId : null;
+}
+
+/** The provider whose catalog is registered, or null when OpenRouter/Requesty (or nothing) is. */
+export function activeProviderCatalog(): string | null {
+  return providerCatalogId;
+}
 
 /** Register or replace entries from a user-supplied config (e.g. ~/.kimiflare/models.json). */
 export function registerUserModels(entries: ModelEntry[]): void {
@@ -156,25 +184,33 @@ export function hasOpenRouterCatalog(): boolean {
 
 /** Look up a model by id. Returns undefined for unknown models. */
 export function getModel(id: string): ModelEntry | undefined {
-  return userOverrides.get(id) ?? openRouterIndex.get(id) ?? requestyIndex.get(id) ?? seedIndex.get(id);
+  return userOverrides.get(id) ?? providerIndex.get(id) ?? openRouterIndex.get(id) ?? requestyIndex.get(id) ?? seedIndex.get(id);
 }
 
 /** Look up a model, falling back to a generic entry for ids not in the catalog. */
 export function getModelOrInfer(id: string): ModelEntry {
   const hit = getModel(id);
   if (hit) return hit;
-  // Conservative defaults for unknown models — context/output kept small so
-  // the harness errs on the side of compaction rather than wasted prompt tokens.
+  // Conservative defaults for unknown models — context kept small so the
+  // harness errs on the side of compaction rather than wasted prompt tokens.
+  // Output is not capped at a few thousand tokens: one unknown model must not
+  // truncate every long answer (the request asks for 16k by default anyway).
   return {
     id,
     contextWindow: 128_000,
-    maxOutputTokens: 4_096,
+    maxOutputTokens: 16_384,
     pricing: { inputPerMtok: 0, outputPerMtok: 0 },
     supports: { tools: true, reasoning: false, streaming: true },
   };
 }
 
 export function listModels(): ModelEntry[] {
+  // Another provider's catalog is its whole list: OpenRouter's ids can't be served there.
+  if (providerCatalogId) {
+    const own = new Map(providerIndex);
+    for (const [k, v] of userOverrides) own.set(k, v);
+    return [...own.values()];
+  }
   // The seed ids are OpenRouter ids; a Requesty-only catalog can't serve them.
   const requestyOnly = requestyIndex.size > 0 && openRouterIndex.size === 0;
   const out = new Map(requestyOnly ? [] : seedIndex);
@@ -196,6 +232,9 @@ export function vendorOf(id: string): string {
  * zero pricing (see `getModelOrInfer`), but that means "unknown", not free.
  */
 export function isFreeModel(entry: ModelEntry): boolean {
+  // "Free" is OpenRouter's notion; other catalogs' $0 means subscription
+  // (coding plans) or local (Ollama), not a free tier.
+  if (providerCatalogId) return false;
   const zero = entry.pricing.inputPerMtok === 0 && entry.pricing.outputPerMtok === 0;
   return zero && (entry.id.endsWith(":free") || getModel(entry.id) !== undefined);
 }
@@ -275,6 +314,13 @@ export function featuredModels(
     if (out.length >= limit) break;
   }
   if (out.length > 0) return out;
+  // Provider catalogs carry no benchmark scores: newest tool-capable models first.
+  if (providerCatalogId) {
+    return models
+      .filter((m) => m.supports.tools)
+      .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
+      .slice(0, limit);
+  }
   // Requesty publishes no benchmark scores: show its managed policies instead.
   if (requestyFeatured.length > 0) {
     const tools = models.filter((m) => m.supports.tools && requestyFeatured.includes(m.id));
