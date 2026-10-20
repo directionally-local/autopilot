@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { pickLlmAuth, type LlmAuth } from "../agent/llm-auth.js";
+import { pickLlmAuth, providerPresetOf, type LlmAuth } from "../agent/llm-auth.js";
 import { runKimi } from "../agent/client.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { Memory, MemoryInput, MemoryQuery, HybridResult, MemoryStats, MemoryCategory } from "./schema.js";
@@ -15,12 +15,14 @@ import {
   findMemoriesByTopicKey,
   supersedeMemory,
   forgetMemory,
-  listUnvectorizedMemories,
+  listMemoriesNeedingEmbedding,
+  countMemoriesByEmbeddingModel,
   updateMemoryEmbedding,
+  type VectorInfo,
   getMemoryById,
   countHighSignalMemoriesSince,
 } from "./db.js";
-import { fetchEmbeddings } from "./embeddings.js";
+import { embeddingModelFor, fetchEmbeddings } from "./embeddings.js";
 import { DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
 import { retrieveMemories } from "./retrieval.js";
 import { runCleanup, shouldCleanup } from "./cleanup.js";
@@ -30,7 +32,13 @@ export interface MemoryManagerOpts extends LlmAuth {
   model?: string;
   plumbingModel?: string;
   extractionModel?: string;
+  /** Override for the embedding model; defaults to the embedding provider's preset model. */
   embeddingModel?: string;
+  /**
+   * Credentials for embeddings when they come from a different provider than
+   * chat (config `embeddingProvider`). Defaults to the chat credentials.
+   */
+  embeddingAuth?: LlmAuth;
   maxAgeDays?: number;
   maxEntries?: number;
   redactSecrets?: boolean;
@@ -231,12 +239,10 @@ export class MemoryManager {
     const hypotheticalQueries = await this.generateHypotheticalQueries(safeContent, signal);
     const embedText = hypotheticalQueries.join(" | ") + " " + safeContent;
 
-    // 6. Embed and store
-    const embeddings = await fetchEmbeddings({
-      ...pickLlmAuth(this.opts),
-      model: this.opts.embeddingModel,
-      texts: [embedText],
-    });
+    // 6. Embed and store. A provider without embeddings (or a failed call)
+    // never loses the memory: it is stored without a vector, recalled by
+    // text and topic key, and embedded later by backfill().
+    const { embedding, vector } = await this.embedOne(embedText);
 
     const input: MemoryInput = {
       content: safeContent,
@@ -248,7 +254,7 @@ export class MemoryManager {
       agentRole,
     };
 
-    const memory = insertMemory(this.db, input, embeddings[0]!);
+    const memory = insertMemory(this.db, input, embedding, vector);
 
     // 7. Update superseded pointers to point to the new memory
     for (const oldId of supersededIds) {
@@ -371,20 +377,21 @@ export class MemoryManager {
   async recall(query: MemoryQuery): Promise<HybridResult[]> {
     if (!this.db) return [];
 
+    const model = this.embeddingModel;
+    if (!model) {
+      // No embeddings for this provider: text, topic-key and exact channels only.
+      return retrieveMemories({ db: this.db, query: { ...query, embedding: undefined } });
+    }
     if (!query.embedding && query.text) {
       try {
-        const embeddings = await fetchEmbeddings({
-          ...pickLlmAuth(this.opts),
-          model: this.opts.embeddingModel,
-          texts: [query.text],
-        });
+        const embeddings = await fetchEmbeddings({ ...this.embedAuth, model, texts: [query.text] });
         query.embedding = embeddings[0];
       } catch {
         // Continue without vector search
       }
     }
 
-    return retrieveMemories({ db: this.db, query });
+    return retrieveMemories({ db: this.db, query: { ...query, embeddingModel: model } });
   }
 
   /**
@@ -441,28 +448,57 @@ export class MemoryManager {
   }
 
   /**
-   * Backfill un-vectorized memories at startup.
+   * Embed memories that have no vector yet, or whose vector came from a
+   * different embedding model (the provider or model changed). Runs at
+   * startup in batches of up to `limit`, so a large database is re-indexed
+   * over a few sessions instead of all at once.
    */
-  async backfill(repoPath: string): Promise<number> {
+  async backfill(repoPath: string, limit = 100, signal?: AbortSignal): Promise<number> {
     if (!this.db) return 0;
-    const unvectorized = listUnvectorizedMemories(this.db, repoPath, 100);
-    if (unvectorized.length === 0) return 0;
-
+    const model = this.embeddingModel;
+    if (!model) return 0;
+    const stale = listMemoriesNeedingEmbedding(this.db, repoPath, model, limit);
     let fixed = 0;
-    for (const mem of unvectorized) {
+    for (const mem of stale) {
+      if (signal?.aborted) break;
       try {
-        const embeddings = await fetchEmbeddings({
-          ...pickLlmAuth(this.opts),
-          model: this.opts.embeddingModel,
-          texts: [mem.content],
-        });
-        updateMemoryEmbedding(this.db, mem.id, embeddings[0]!);
+        const embeddings = await fetchEmbeddings({ ...this.embedAuth, model, texts: [mem.content] });
+        updateMemoryEmbedding(this.db, mem.id, embeddings[0]!, model);
         fixed++;
       } catch {
         // Skip on failure; will retry next startup
       }
     }
     return fixed;
+  }
+
+  /** The embedding model in use, or null when the provider has none. */
+  get embeddingModel(): string | null {
+    return embeddingModelFor(this.embedAuth, this.opts.embeddingModel);
+  }
+
+  /** Vector-recall status for `/memory`: model, provider, and how many rows still need (re-)embedding. */
+  embeddingStatus(repoPath: string): { model: string | null; provider: string; current: number; stale: number } {
+    const model = this.embeddingModel;
+    const counts = this.db ? countMemoriesByEmbeddingModel(this.db, repoPath, model) : { current: 0, stale: 0 };
+    return { model, provider: providerPresetOf(this.embedAuth).name, ...counts };
+  }
+
+  private get embedAuth(): LlmAuth {
+    return this.opts.embeddingAuth ?? pickLlmAuth(this.opts);
+  }
+
+  private async embedOne(text: string): Promise<{ embedding: Float32Array; vector: VectorInfo }> {
+    const model = this.embeddingModel;
+    if (model) {
+      try {
+        const embeddings = await fetchEmbeddings({ ...this.embedAuth, model, texts: [text] });
+        return { embedding: embeddings[0]!, vector: { model } };
+      } catch {
+        // Fall through: store now, embed on a later backfill.
+      }
+    }
+    return { embedding: new Float32Array(0), vector: { pending: true } };
   }
 
   async cleanup(repoPath: string): Promise<{ oldDeleted: number; excessDeleted: number; duplicatesMerged: number }> {
@@ -480,6 +516,7 @@ export class MemoryManager {
       repoPath,
       maxAgeDays,
       maxEntries,
+      embeddingModel: this.embeddingModel,
     });
 
     return result;

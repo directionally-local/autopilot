@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import type { LlmAuth } from "../agent/llm-auth.js";
-import { fetchEmbeddings } from "../memory/embeddings.js";
+import { pickLlmAuth, type LlmAuth } from "../agent/llm-auth.js";
+import { embeddingModelFor, fetchEmbeddings } from "../memory/embeddings.js";
 import { discoverSkills, readSkillFile } from "./discovery.js";
 import { parseSkillFile, parseAgentsMd } from "./parser.js";
 import type { ParsedSkill } from "./types.js";
@@ -10,6 +10,7 @@ import {
   insertSections,
   deleteOrphanedSkills,
   getSkillByPath,
+  setSkillEmbeddingModel,
 } from "./db.js";
 
 export interface IndexerOpts extends LlmAuth {
@@ -70,10 +71,18 @@ export async function indexSkills(opts: IndexerOpts): Promise<{
 
   let indexed = 0;
   let skipped = 0;
+  // Embeddings follow the provider: a changed provider/model re-embeds every
+  // skill; a provider without embeddings stores sections for keyword search.
+  const model = embeddingModelFor(opts, opts.embeddingModel);
 
   for (const skill of deduped) {
     const existing = getSkillByPath(opts.db, skill.filePath);
-    if (existing && existing.contentHash === skill.contentHash && existing.parserVersion === skill.parserVersion) {
+    if (
+      existing &&
+      existing.contentHash === skill.contentHash &&
+      existing.parserVersion === skill.parserVersion &&
+      existing.embeddingModel === model
+    ) {
       skipped++;
       continue;
     }
@@ -83,22 +92,21 @@ export async function indexSkills(opts: IndexerOpts): Promise<{
 
     // Embed sections
     if (skill.sections.length > 0) {
-      const inputs = skill.sections.map((section) => buildEmbeddingInput(skill, section));
-      try {
-        const embeddings = await fetchEmbeddings({
-          openrouterApiKey: opts.openrouterApiKey,
-          requestyApiKey: opts.requestyApiKey,
-          customEndpoint: opts.customEndpoint,
-          model: opts.embeddingModel,
-          texts: inputs,
-        });
-        insertSections(opts.db, skillId, skill.sections, embeddings);
-      } catch (err) {
-        errors.push(
-          `Failed to embed sections for ${skill.filePath}: ${err instanceof Error ? err.message : String(err)}`
-        );
-        continue;
+      let embeddings: Float32Array[] = [];
+      let embeddedWith: string | null = null;
+      if (model) {
+        const inputs = skill.sections.map((section) => buildEmbeddingInput(skill, section));
+        try {
+          embeddings = await fetchEmbeddings({ ...pickLlmAuth(opts), model, texts: inputs });
+          embeddedWith = model;
+        } catch (err) {
+          errors.push(
+            `Failed to embed sections for ${skill.filePath} (keyword search only until the next index): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
+      insertSections(opts.db, skillId, skill.sections, embeddings);
+      setSkillEmbeddingModel(opts.db, skillId, embeddedWith);
     }
 
     indexed++;

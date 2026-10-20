@@ -24,17 +24,32 @@ export function initSkillsSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_skill_path ON skill_index(file_path);
   `);
+  // Embedding model the sections were embedded with (null: no vectors, keyword search only).
+  const cols = db.prepare("PRAGMA table_info(skill_index)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "embedding_model")) {
+    db.exec("ALTER TABLE skill_index ADD COLUMN embedding_model TEXT");
+    // Indexed before models were recorded: OpenRouter's bge-base (768 floats) or unknown.
+    db.exec(`
+      UPDATE skill_index SET embedding_model = 'baai/bge-base-en-v1.5'
+      WHERE id IN (SELECT skill_id FROM skill_sections WHERE length(embedding) = 3072)
+    `);
+  }
 }
 
 export function getSkillByPath(
   db: Database.Database,
   filePath: string
-): { id: number; contentHash: string; parserVersion: number } | null {
+): { id: number; contentHash: string; parserVersion: number; embeddingModel: string | null } | null {
   const row = db
-    .prepare("SELECT id, content_hash, parser_version FROM skill_index WHERE file_path = ?")
-    .get(filePath) as { id: number; content_hash: string; parser_version: number } | undefined;
+    .prepare("SELECT id, content_hash, parser_version, embedding_model FROM skill_index WHERE file_path = ?")
+    .get(filePath) as { id: number; content_hash: string; parser_version: number; embedding_model: string | null } | undefined;
   if (!row) return null;
-  return { id: row.id, contentHash: row.content_hash, parserVersion: row.parser_version };
+  return { id: row.id, contentHash: row.content_hash, parserVersion: row.parser_version, embeddingModel: row.embedding_model ?? null };
+}
+
+/** Record which embedding model a skill's sections were embedded with (null: none). */
+export function setSkillEmbeddingModel(db: Database.Database, skillId: number, model: string | null): void {
+  db.prepare("UPDATE skill_index SET embedding_model = ? WHERE id = ?").run(model, skillId);
 }
 
 export function upsertSkill(db: Database.Database, skill: ParsedSkill): number {
@@ -69,6 +84,7 @@ export function insertSections(
   db: Database.Database,
   skillId: number,
   sections: ParsedSkillSection[],
+  /** One vector per section, or empty when the sections are stored without vectors. */
   embeddings: Float32Array[]
 ): void {
   const insert = db.prepare(
@@ -77,7 +93,7 @@ export function insertSections(
   );
   for (let i = 0; i < sections.length; i++) {
     const section = sections[i]!;
-    const embedding = embeddings[i]!;
+    const embedding = embeddings[i] ?? new Float32Array(0);
     insert.run(skillId, section.heading, section.body, Buffer.from(embedding.buffer));
   }
 }
@@ -112,10 +128,11 @@ export function listAllSectionRows(
   name: string;
   description: string;
   file_path: string;
+  embedding_model: string | null;
 }> {
   return db
     .prepare(
-      `SELECT s.id, s.heading, s.body, s.embedding, i.name, i.description, i.file_path
+      `SELECT s.id, s.heading, s.body, s.embedding, i.name, i.description, i.file_path, i.embedding_model
        FROM skill_sections s
        JOIN skill_index i ON s.skill_id = i.id`
     )
@@ -127,6 +144,7 @@ export function listAllSectionRows(
     name: string;
     description: string;
     file_path: string;
+    embedding_model: string | null;
   }>;
 }
 

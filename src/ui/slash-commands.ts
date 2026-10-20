@@ -1152,6 +1152,16 @@ const handleMemory: Handler = (ctx, _rest, arg) => {
       `  task: ${stats.byCategory.task}, preference: ${stats.byCategory.preference}`,
       `last cleanup: ${stats.lastCleanupAt ? new Date(stats.lastCleanupAt).toISOString() : "never"}`,
     ];
+    const vec = memoryManagerRef.current?.embeddingStatus(process.cwd());
+    if (vec) {
+      lines.push(
+        vec.model
+          ? `vector recall: ${vec.model} via ${vec.provider} — ${vec.current} indexed` +
+              (vec.stale > 0 ? `, ${vec.stale} waiting to be (re-)embedded (100 per startup)` : "")
+          : `vector recall: off — ${vec.provider} has no embeddings API; recall uses text and topic keys. ` +
+              `Set memoryEmbeddingModel, or embeddingProvider to a provider with embeddings.`,
+      );
+    }
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: lines.join("\n") }]);
   } else {
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "memory manager not initialized" }]);

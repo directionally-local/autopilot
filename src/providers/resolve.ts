@@ -77,8 +77,10 @@ export function resolveProviderKey(
 export function resolveActiveProvider(
   cfg: ProviderConfigFields | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  /** Use this provider instead of resolving one (e.g. a separate embedding provider). */
+  forced?: ProviderId,
 ): ActiveProvider {
-  const id = resolveProviderId(cfg, env);
+  const id = forced ?? resolveProviderId(cfg, env);
   const preset = getPreset(id);
   const apiKey = resolveProviderKey(id, cfg, env);
   let baseUrl: string | undefined;

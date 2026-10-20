@@ -159,6 +159,8 @@ export interface AgentTurnOpts extends LlmAuth {
   /** Config for skill routing. */
   skillRoutingConfig?: {
     embeddingModel?: string;
+    /** Embedding credentials when they differ from chat (config `embeddingProvider`). */
+    embeddingAuth?: LlmAuth;
     maxSkillTokens?: number;
   };
   /** Current mode for system prompt. */
@@ -503,7 +505,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           },
           {
             db: opts.skillsDb,
-            ...llmAuthOf(opts),
+            ...(opts.skillRoutingConfig.embeddingAuth ?? llmAuthOf(opts)),
             embeddingModel: opts.skillRoutingConfig.embeddingModel,
           },
         )

@@ -16,6 +16,8 @@ export interface CleanupOpts {
   maxAgeDays: number;
   maxEntries: number;
   deduplicate?: boolean;
+  /** Only rows embedded by this model are compared; null skips vector dedup. */
+  embeddingModel?: string | null;
 }
 
 export interface CleanupResult {
@@ -56,10 +58,10 @@ export async function runCleanup(opts: CleanupOpts): Promise<CleanupResult> {
   result.oldDeleted = deleteOldMemories(opts.db, maxAgeMs);
 
   // 2. Deduplicate if requested
-  if (opts.deduplicate !== false) {
+  if (opts.deduplicate !== false && opts.embeddingModel !== null) {
     const { listMemoriesForVectorSearch } = await import("./db.js");
     const since = Date.now() - opts.maxAgeDays * 24 * 60 * 60 * 1000;
-    const candidates = listMemoriesForVectorSearch(opts.db, opts.repoPath, since, 5000);
+    const candidates = listMemoriesForVectorSearch(opts.db, opts.repoPath, since, 5000, undefined, opts.embeddingModel);
     const duplicates = findDuplicates(candidates);
 
     if (duplicates.length > 0) {

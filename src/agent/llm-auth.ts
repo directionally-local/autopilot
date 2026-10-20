@@ -12,7 +12,7 @@
 
 import type { OpenRouterProviderPrefs } from "./client.js";
 import type { CustomEndpoint } from "./custom-endpoint.js";
-import { getPreset, type ProviderId, type ProviderPreset } from "../providers/presets.js";
+import { getPreset, isProviderId, type ProviderId, type ProviderPreset } from "../providers/presets.js";
 import { resolveActiveProvider, type ProviderConfigFields } from "../providers/resolve.js";
 
 export interface LlmAuth {
@@ -28,10 +28,14 @@ export interface LlmAuth {
   openrouterRouting?: OpenRouterProviderPrefs;
 }
 
-type AuthConfigFields = ProviderConfigFields & { openrouterProvider?: OpenRouterProviderPrefs };
+type AuthConfigFields = ProviderConfigFields & { openrouterProvider?: OpenRouterProviderPrefs; embeddingProvider?: ProviderId };
 
-export function llmAuthFromConfig(cfg: Partial<AuthConfigFields> | null | undefined): LlmAuth {
-  const active = resolveActiveProvider(cfg ?? null);
+export function llmAuthFromConfig(
+  cfg: Partial<AuthConfigFields> | null | undefined,
+  /** Credentials for this provider instead of the active one (see embeddingAuthFromConfig). */
+  forced?: ProviderId,
+): LlmAuth {
+  const active = resolveActiveProvider(cfg ?? null, process.env, forced);
   switch (active.id) {
     case "openrouter":
       return {
@@ -103,4 +107,14 @@ export function pickLlmAuth(o: LlmAuth): LlmAuth {
 export function activeOpenRouterKey(cfg: Partial<AuthConfigFields> | null | undefined): string | undefined {
   const auth = llmAuthFromConfig(cfg);
   return usesOpenRouter(auth) ? auth.openrouterApiKey : undefined;
+}
+
+/**
+ * Credentials for memory and skill embeddings: the active provider, unless
+ * `embeddingProvider` names another one (for providers with no embeddings
+ * API, e.g. keep an OpenAI or OpenRouter key just for embeddings).
+ */
+export function embeddingAuthFromConfig(cfg: Partial<AuthConfigFields> | null | undefined): LlmAuth {
+  const forced = process.env.AUTOPILOT_EMBEDDING_PROVIDER?.trim() || cfg?.embeddingProvider;
+  return llmAuthFromConfig(cfg, forced && isProviderId(forced) ? forced : undefined);
 }

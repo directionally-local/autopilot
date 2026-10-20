@@ -130,8 +130,15 @@ export interface KimiConfig {
   memoryMaxAgeDays?: number;
   /** Max memories per repo. Default: 1000. */
   memoryMaxEntries?: number;
-  /** Embedding model for memory vectors (OpenRouter id). Default: baai/bge-base-en-v1.5. */
+  /** Embedding model for memory and skill vectors. Default: the embedding provider's preset model. */
   memoryEmbeddingModel?: string;
+  /**
+   * Provider for memory/skill embeddings when it should differ from the chat
+   * provider (env: AUTOPILOT_EMBEDDING_PROVIDER) — e.g. keep an OpenAI key
+   * for embeddings while chatting with Anthropic or DeepSeek, which have no
+   * embeddings API. Unset: the active provider.
+   */
+  embeddingProvider?: ProviderId;
   /** Model for internal plumbing tasks (memory verification, hypothetical queries). Default: DEFAULT_PLUMBING_MODEL. */
   plumbingModel?: string;
   /** Model for auto-extracting high-signal edit events. Default: DEFAULT_PLUMBING_MODEL. */
@@ -423,6 +430,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     memoryMaxAgeDays: readNumberEnv("KIMIFLARE_MEMORY_MAX_AGE_DAYS") ?? persisted.memoryMaxAgeDays,
     memoryMaxEntries: readNumberEnv("KIMIFLARE_MEMORY_MAX_ENTRIES") ?? persisted.memoryMaxEntries,
     memoryEmbeddingModel: m(process.env.KIMIFLARE_MEMORY_EMBEDDING_MODEL ?? own(persisted.memoryEmbeddingModel)),
+    embeddingProvider: isProviderId(persisted.embeddingProvider) ? persisted.embeddingProvider : undefined,
     plumbingModel: m(process.env.KIMIFLARE_PLUMBING_MODEL ?? own(persisted.plumbingModel)) ?? plumbingDefault,
     memoryExtractionModel:
       m(process.env.KIMIFLARE_MEMORY_EXTRACTION_MODEL ?? own(persisted.memoryExtractionModel)) ?? plumbingDefault,

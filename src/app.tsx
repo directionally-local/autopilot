@@ -4,7 +4,7 @@ import Spinner from "./ui/spinner.js";
 
 import { runAgentTurn, AgentLoopError, type GuardrailEvent } from "./agent/loop.js";
 import type { ResponseMeta } from "./agent/client.js";
-import { activeOpenRouterKey, llmAuthFromConfig } from "./agent/llm-auth.js";
+import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig } from "./agent/llm-auth.js";
 import { buildSystemPrompt, buildSessionPrefix } from "./agent/system-prompt.js";
 import { summarizeMessagesViaLlm } from "./agent/llm-summarize.js";
 import {
@@ -2059,6 +2059,7 @@ function App({
           skillsDb: getMemoryDb() ?? undefined,
           skillRoutingConfig: {
             embeddingModel: cfg.memoryEmbeddingModel,
+            embeddingAuth: embeddingAuthFromConfig(cfg),
             maxSkillTokens: modelContextLimit - 10_000,
           },
           mode: modeRef.current,
