@@ -68,6 +68,7 @@
     "@hotcell/sdk": "^0.1.23",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.11.1",
+    "camouflage-tui": "^2.8.1",
     "commander": "^12.1.0",
     "imapflow": "2.2.5",
     "ink": "^7.1.1",
@@ -81,7 +82,6 @@
   },
   "optionalDependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "camouflage-tui": "^2.8.1",
     "isolated-vm": "^6.1.2"
   },
   "devDependencies": {

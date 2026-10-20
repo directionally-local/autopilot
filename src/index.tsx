@@ -722,32 +722,45 @@ async function main() {
 
   // UI engine: Camouflage for everyone. A saved `uiEngine` is ignored;
   // only the hidden `--ui ink` / KIMIFLARE_UI=ink picks Ink. First-run setup
-  // (no credentials yet) goes through Ink, and so does any machine where the
-  // renderer can't start (no prebuilt binary for the platform).
+  // (no credentials yet) goes through Ink. A machine where the renderer can't
+  // start gets an explanation and exit code 2, not a different UI.
   const uiEngine = (opts.ui ?? process.env.KIMIFLARE_UI ?? "camouflage").toLowerCase();
   if (uiEngine !== "ink" && cfg) {
     const model = requireModel(opts.model || cfg.model);
-    const { runCamouflageView, CamouflageUnavailable, CamouflageCrashed } = await import("./camouflage-view.js");
+    const { runCamouflageView } = await import("./camouflage-view.js");
+    const { CamouflageUnavailable, runWithCrashRestarts, crashGiveUpMessage } = await import("./camouflage-launch.js");
     const { renderAppWithBridge } = await import("./app.js");
+    const { gracefulExit } = await import("./util/exit.js");
     try {
-      await runCamouflageView({
-        cfg: { ...cfg, model },
-        version: getAppVersion(),
-        runApp: (bridge) => renderAppWithBridge({ ...cfg, model }, bridge, updateResult, lspScope, lspProjectPath),
-      });
-      const { gracefulExit } = await import("./util/exit.js");
+      // The renderer dying mid-session (#862) doesn't end the user's work: the
+      // session is saved after every turn, so mount a fresh renderer on it, a
+      // bounded number of times.
+      const outcome = await runWithCrashRestarts(
+        (resumeSessionId) =>
+          runCamouflageView({
+            cfg: { ...cfg, model },
+            version: getAppVersion(),
+            runApp: (bridge) =>
+              renderAppWithBridge({ ...cfg, model }, bridge, updateResult, lspScope, lspProjectPath, resumeSessionId ? { resumeSessionId } : {}),
+          }),
+        {
+          onRestart: ({ sessionId, restart, error }) => {
+            logger.warn("camouflage.crash_restart", { error: error.message, sessionId, restart });
+            process.stderr.write(sessionId ? "Reopening this conversation…\n" : "Restarting the renderer…\n");
+          },
+        },
+      );
+      if (outcome.gaveUp) {
+        logger.error("camouflage.crash_gave_up", { error: outcome.lastError.message, sessionId: outcome.sessionId, crashes: outcome.crashes });
+        process.stderr.write(crashGiveUpMessage(outcome));
+        await gracefulExit(1);
+      }
       await gracefulExit(0);
     } catch (err) {
-      if (err instanceof CamouflageCrashed) {
-        // The renderer died mid-session (#862): the session was saved, so
-        // reopen it in the Ink UI instead of ending the user's work.
-        logger.warn("camouflage.crashed_fallback", { error: err.message });
-        const { renderApp } = await import("./app.js");
-        await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath, err.sessionId ? { resumeSessionId: err.sessionId } : {});
-        return;
-      }
       if (!(err instanceof CamouflageUnavailable)) throw err;
-      logger.warn("camouflage.unavailable", { error: err.message });
+      logger.warn("camouflage.unavailable", { error: err.reason });
+      process.stderr.write(err.message);
+      process.exit(2);
     }
   }
   console.log(logoText);
