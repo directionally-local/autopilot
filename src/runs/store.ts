@@ -1,12 +1,12 @@
 import Database from "better-sqlite3";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunWorktree } from "./worktrees.js";
 
 export type RunStatus = "queued" | "running" | "waiting" | "needs_input" | "completed" | "failed" | "cancelled" | "interrupted_unknown";
-export type RunEventType = "state" | "tool_intent" | "tool_result" | "usage" | "checkpoint";
+export type RunEventType = "state" | "tool_intent" | "tool_result" | "usage" | "checkpoint" | "decision";
 export type TimerCondition = "time" | "job" | "approval";
 export type TimerStatus = "scheduled" | "claimed" | "completed" | "failed" | "cancelled";
 
@@ -250,6 +250,14 @@ export class RunStore {
       );
       CREATE INDEX IF NOT EXISTS idx_run_timers_due ON run_timers(status, wake_at);
       CREATE INDEX IF NOT EXISTS idx_run_timers_run ON run_timers(run_id, status);
+      CREATE TABLE IF NOT EXISTS run_decisions (
+        token TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER,
+        outcome TEXT
+      );
       CREATE TABLE IF NOT EXISTS run_notifications (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -292,6 +300,43 @@ export class RunStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * A single-use, expiring token that lets an emailed reply decide one paused
+   * run (#671 1.6). 80 random bits, base32 — typed only by whoever received
+   * the email.
+   */
+  createDecisionToken(runId: string, ttlMs = 72 * 60 * 60 * 1000): string {
+    const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    const bytes = randomBytes(16);
+    const token = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+    const now = Date.now();
+    this.db.prepare(`INSERT INTO run_decisions (token, run_id, created_at, expires_at) VALUES (?, ?, ?, ?)`).run(token, runId, now, now + ttlMs);
+    return token;
+  }
+
+  /** The run's open (unused, unexpired) token, or a new one: a retried email carries the same token. */
+  openDecisionToken(runId: string): string {
+    const row = this.db.prepare(`SELECT token FROM run_decisions WHERE run_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1`).get(runId, Date.now()) as { token: string } | undefined;
+    return row?.token ?? this.createDecisionToken(runId);
+  }
+
+  decisionToken(token: string): { token: string; runId: string; expiresAt: number; usedAt: number | null } | null {
+    const row = this.db.prepare(`SELECT token, run_id, expires_at, used_at FROM run_decisions WHERE token = ?`).get(token.toUpperCase()) as
+      | { token: string; run_id: string; expires_at: number; used_at: number | null }
+      | undefined;
+    return row ? { token: row.token, runId: row.run_id, expiresAt: row.expires_at, usedAt: row.used_at } : null;
+  }
+
+  /** Mark a token used; false if it was already used (replay). */
+  consumeDecisionToken(token: string, outcome: string): boolean {
+    return this.db.prepare(`UPDATE run_decisions SET used_at = ?, outcome = ? WHERE token = ? AND used_at IS NULL`).run(Date.now(), outcome, token.toUpperCase()).changes === 1;
+  }
+
+  /** Audit trail entry for an emailed decision (accepted or rejected). */
+  recordDecision(runId: string, entry: Record<string, unknown>): void {
+    this.appendEvent(runId, "decision", null, null, entry);
   }
 
   /** The operator kill switch: while halted, no run is created, resumed or woken. Survives restarts. */

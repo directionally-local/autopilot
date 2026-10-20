@@ -23,6 +23,8 @@ import { logger } from "../util/logger.js";
 export interface EmailMessage {
   to: string[];
   from: string;
+  /** Where replies go (the decisions mailbox), when email decisions are on. */
+  replyTo?: string;
   subject: string;
   text: string;
   /** Same for every attempt of one notification. */
@@ -57,7 +59,13 @@ export function resendTransport(apiKey: string, opts: { fetchImpl?: typeof fetch
           "Content-Type": "application/json",
           "Idempotency-Key": message.idempotencyKey,
         },
-        body: JSON.stringify({ from: message.from, to: message.to, subject: message.subject, text: message.text }),
+        body: JSON.stringify({
+          from: message.from,
+          to: message.to,
+          subject: message.subject,
+          text: message.text,
+          ...(message.replyTo ? { reply_to: message.replyTo } : {}),
+        }),
         signal: signal ?? AbortSignal.timeout(opts.timeoutMs ?? 15_000),
       });
       const body = (await res.json().catch(() => ({}))) as { id?: string; message?: string; name?: string };
@@ -76,6 +84,8 @@ export interface NotificationSettings {
   /** Run states to send; defaults to all notifiable states. */
   events?: string[];
   transport: EmailTransport;
+  /** Email decisions (#671 1.6): replies to "needs input" emails go to this mailbox. */
+  decisionsReplyTo?: string;
 }
 
 /** Notification settings from config + env (RESEND_API_KEY, AUTOPILOT_NOTIFY_EMAIL_TO / _FROM), or null when off. */
@@ -93,6 +103,7 @@ export function notificationSettingsFromConfig(
     from: env.AUTOPILOT_NOTIFY_EMAIL_FROM ?? email?.from ?? "Autopilot <onboarding@resend.dev>",
     ...(email?.events ? { events: email.events } : {}),
     transport: resendTransport(apiKey),
+    ...(env.AUTOPILOT_DECISIONS_REPLY_TO?.trim() ? { decisionsReplyTo: env.AUTOPILOT_DECISIONS_REPLY_TO.trim() } : {}),
   };
 }
 
@@ -117,7 +128,11 @@ const HEADLINE: Record<string, string> = {
 };
 
 /** The email for one notification. */
-export function notificationEmail(n: RunNotification, run: RunRecord, opts: { from: string; to: string[]; host?: string }): EmailMessage {
+export function notificationEmail(
+  n: RunNotification,
+  run: RunRecord,
+  opts: { from: string; to: string[]; host?: string; decision?: { token: string; replyTo: string } },
+): EmailMessage {
   const task = redactForEmail(run.task.replace(/\s+/g, " ").trim());
   const short = task.length > 60 ? `${task.slice(0, 57)}…` : task;
   const lines = [
@@ -130,6 +145,17 @@ export function notificationEmail(n: RunNotification, run: RunRecord, opts: { fr
     `Cost so far: $${run.totalCostUsd.toFixed(2)}${run.costUnknownResponses > 0 ? " (some responses had no cost)" : ""}`,
     `Tokens: ${(run.totalPromptTokens + run.totalCompletionTokens).toLocaleString("en-US")}`,
     "",
+    ...(n.kind === "needs_input" && opts.decision
+      ? [
+          "Reply to this email with one line to decide:",
+          "  resume                 continue (a budget that ran out is doubled once)",
+          "  resume model <id>      continue on another model (e.g. a larger context window)",
+          "  cancel                 stop the run",
+          "  answer: <text>         tell the agent something, then continue",
+          "The reply must come from your address and works once, for 72 hours.",
+          "",
+        ]
+      : []),
     n.kind === "needs_input"
       ? "Inspect it over SSH, then resume or cancel:"
       : "Inspect it over SSH:",
@@ -141,9 +167,10 @@ export function notificationEmail(n: RunNotification, run: RunRecord, opts: { fr
   return {
     to: opts.to,
     from: opts.from,
-    subject: `[autopilot] ${short} — ${HEADLINE[n.kind] ?? n.kind}`,
+    subject: `[autopilot] ${short} — ${HEADLINE[n.kind] ?? n.kind}${opts.decision ? ` [ref:${opts.decision.token}]` : ""}`,
     text: lines.join("\n"),
     idempotencyKey: n.id,
+    ...(opts.decision ? { replyTo: opts.decision.replyTo } : {}),
   };
 }
 
@@ -172,7 +199,11 @@ export async function dispatchNotifications(store: RunStore, settings: Notificat
     }
     store.updateNotification(n.id, { status: "sending" });
     try {
-      const { messageId } = await settings.transport.send(notificationEmail(n, run, { from: settings.from, to: settings.to, ...(opts.host ? { host: opts.host } : {}) }));
+      const decision =
+        n.kind === "needs_input" && settings.decisionsReplyTo ? { token: store.openDecisionToken(run.id), replyTo: settings.decisionsReplyTo } : undefined;
+      const { messageId } = await settings.transport.send(
+        notificationEmail(n, run, { from: settings.from, to: settings.to, ...(opts.host ? { host: opts.host } : {}), ...(decision ? { decision } : {}) }),
+      );
       store.updateNotification(n.id, { status: "sent", providerMessageId: messageId, countAttempt: true });
       sent++;
     } catch (err) {
