@@ -906,7 +906,9 @@ const handleProvider: Handler = async (ctx, rest) => {
     info(
       target === "custom"
         ? "set the endpoint first: KIMIFLARE_BASE_URL, or `baseUrl` (and `apiKey`) in config"
-        : `no ${preset.name} key — run /provider ${target} <key>${preset.apiKeyEnv[0] ? ` or set ${preset.apiKeyEnv[0]}` : ""}${preset.keysUrl ? ` (create one at ${preset.keysUrl})` : ""}`,
+        : target === "copilot"
+          ? "sign in to GitHub Copilot first: run `autopilot auth copilot` in a terminal (GitHub device login), then /provider copilot"
+          : `no ${preset.name} key — run /provider ${target} <key>${preset.apiKeyEnv[0] ? ` or set ${preset.apiKeyEnv[0]}` : ""}${preset.keysUrl ? ` (create one at ${preset.keysUrl})` : ""}`,
       "error",
     );
     return true;

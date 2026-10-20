@@ -16,7 +16,8 @@ import {
 } from "../util/llm-dump.js";
 import { getModelOrInfer, vendorOf } from "../models/registry.js";
 import { getPreset, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
-import { anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { copilotRequestHeaders } from "../providers/copilot.js";
 import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
@@ -104,7 +105,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   const customEndpoint = opts.customEndpoint ?? resolveCustomEndpoint();
   const requesty = !customEndpoint && !opts.openrouterApiKey && !!opts.requestyApiKey;
   const requestId = opts.requestId ?? crypto.randomUUID();
-  const { url, headers: targetHeaders } = buildKimiRequestTarget(opts, customEndpoint, requesty);
+  let { url, headers: targetHeaders } = buildKimiRequestTarget(opts, customEndpoint, requesty);
   // Per-model capability gates, from the OpenRouter catalog. OpenRouter drops
   // params a model doesn't support, but a few models reject a supported param
   // outright for non-default values (Kimi K3 only allows temperature=1).
@@ -183,7 +184,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
 
   // The wire body: Chat Completions as built above, or converted for
   // providers that speak another protocol (src/agent/protocols/).
-  const protocol = customEndpoint ? (preset.protocol ?? "openai-chat") : "openai-chat";
+  // A model's catalog entry can pick the protocol (Copilot serves Claude over
+  // Messages and GPT-5 over Responses from one account).
+  const protocol = customEndpoint ? (entry.protocol ?? preset.protocol ?? "openai-chat") : "openai-chat";
   const wireBody: Record<string, unknown> =
     protocol === "anthropic-messages"
       ? toAnthropicRequest({
@@ -212,6 +215,16 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
             parallelToolCalls: preset.compat.parallelToolCalls,
           })
         : body;
+
+  if (customEndpoint && preset.id === "copilot") {
+    // Copilot routes by endpoint and needs its own headers per request.
+    const base = customEndpoint.baseUrl.replace(/\/+$/, "");
+    url = protocol === "anthropic-messages" ? `${base}/v1/messages` : protocol === "openai-responses" ? `${base}/responses` : `${base}/chat/completions`;
+    targetHeaders = {
+      ...copilotRequestHeaders(customEndpoint.apiKey, wireBody, protocol),
+      ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}),
+    };
+  }
 
   // Observers of the finalized request body: the debug payload dump
   // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body

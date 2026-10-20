@@ -25,6 +25,7 @@ export const PROVIDER_IDS = [
   "anthropic",
   "gemini",
   "minimax",
+  "copilot",
   "zai",
   "zai-coding",
   "ollama",
@@ -89,14 +90,16 @@ export interface EmbeddingPreset {
 export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses";
 
 /** Where the model list for the picker comes from. */
-export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "none";
+export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "none";
 
 export interface ProviderPreset {
   id: ProviderId;
   /** Display name: "served through <name>", "/cost — <name>", error messages. */
   name: string;
-  /** Wire protocol; default "openai-chat". */
+  /** Wire protocol; default "openai-chat". A model's catalog entry can override it (Copilot). */
   protocol?: WireProtocol;
+  /** Billed by a subscription plan rather than per token (cost shows $0 with a note). */
+  subscription?: boolean;
   /** OpenAI-compatible base URL (without /chat/completions). Unset for custom/OpenRouter/Requesty. */
   baseUrl?: string;
   /** Env vars that hold the key, in priority order. */
@@ -287,6 +290,23 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
       extraBody: { reasoning_split: true },
       thinkTags: true,
     },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  copilot: {
+    id: "copilot",
+    name: "GitHub Copilot",
+    // Overridden per account by the API base /copilot_internal/user reports (providers.copilot.baseUrl).
+    baseUrl: "https://api.githubcopilot.com",
+    // A Copilot OAuth token from `autopilot auth copilot`. Deliberately not GITHUB_TOKEN:
+    // ordinary PATs aren't Copilot tokens, and that variable is set in many CI environments.
+    apiKeyEnv: ["GITHUB_COPILOT_TOKEN"],
+    keyRequired: true,
+    statusUrl: "https://www.githubstatus.com",
+    subscription: true,
+    embedding: null,
+    catalog: "copilot",
+    // Per-model protocol from the live list: Claude → Messages, GPT-5+ → Responses, others → chat.
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, streamUsage: true, reasoningEcho: { content: false, details: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   "kimi-code": {
