@@ -10,6 +10,8 @@ import type {
   PreToolUsePayload,
 } from "./types.js";
 import { logger } from "../util/logger.js";
+import { join } from "node:path";
+import { sessionsDir } from "../sessions.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const STREAM_CAP_BYTES = 4 * 1024;
@@ -30,7 +32,7 @@ function buildHookEnv(payload: HookPayload): Record<string, string> {
   const env: Record<string, string> = {
     KIMIFLARE_HOOK_EVENT: payload.event,
     KIMIFLARE_HOOK_CWD: payload.cwd,
-    KIMIFLARE_HOOK_PAYLOAD: JSON.stringify(payload),
+    KIMIFLARE_HOOK_PAYLOAD: JSON.stringify(hookWirePayload(payload)),
   };
   if (payload.session_id) env.KIMIFLARE_HOOK_SESSION_ID = payload.session_id;
   if (payload.event === "PreToolUse" || payload.event === "PostToolUse") {
@@ -51,6 +53,25 @@ function buildHookEnv(payload: HookPayload): Record<string, string> {
     if (p.tier) env.KIMIFLARE_HOOK_TIER = p.tier;
   }
   return env;
+}
+
+/**
+ * The payload as hooks receive it: Autopilot's own fields, plus the names
+ * Claude Code hooks use (hook_event_name, tool_name, tool_input,
+ * tool_response, transcript_path). Existing hooks keep working, Claude Code
+ * hook scripts work unchanged, and tools that speak that shape (e.g. Agent
+ * Beacon's `beacon-hooks`) can read Autopilot events. No credentials are
+ * ever part of a payload.
+ */
+export function hookWirePayload(payload: HookPayload): Record<string, unknown> {
+  const wire: Record<string, unknown> = { ...payload, hook_event_name: payload.event, client: "autopilot" };
+  if (payload.session_id) wire.transcript_path = join(sessionsDir(), `${payload.session_id}.json`);
+  if (payload.event === "PreToolUse" || payload.event === "PostToolUse") {
+    wire.tool_name = payload.tool;
+    wire.tool_input = payload.args;
+    if (payload.event === "PostToolUse") wire.tool_response = payload.result;
+  }
+  return wire;
 }
 
 function capStream(s: string): string {
@@ -143,7 +164,7 @@ export async function runHook(
   const start = Date.now();
   const timeoutMs = hook.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const env = { ...process.env, ...buildHookEnv(payload) };
-  const json = JSON.stringify(payload);
+  const json = JSON.stringify(hookWirePayload(payload));
   const id = hook.id ?? "anonymous";
   let result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
   try {

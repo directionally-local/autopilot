@@ -98,6 +98,7 @@ import { dispatchSlashCommand, type SlashContext, executeFreshStart } from "./ui
 import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
 import { switchedMessage } from "./providers/connect.js";
+import { endSessions } from "./hooks/session-lifecycle.js";
 import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
@@ -2719,6 +2720,7 @@ export async function renderAppWithBridge(
     },
   );
   await instance.waitUntilExit();
+  await endSessions("exit");
 }
 
 export async function renderApp(
@@ -2753,5 +2755,6 @@ export async function renderApp(
   );
   registerInkInstance(instance);
   await instance.waitUntilExit();
+  await endSessions("exit");
   registerInkInstance(null);
 }

@@ -1,3 +1,6 @@
+import { noteSessionStart } from "../hooks/session-lifecycle.js";
+import { providerPresetOf } from "./llm-auth.js";
+import { withOtelEvents } from "../util/otel-events.js";
 import { runKimi } from "./client.js";
 import type { ResponseMeta } from "./client.js";
 import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
@@ -327,6 +330,18 @@ interface TurnTrace {
 }
 
 export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
+  // Observability (#871): SessionStart once per session, and model usage /
+  // tool results as OpenTelemetry events when an OTLP endpoint is set.
+  const provider = providerPresetOf(llmAuthOf(opts)).id;
+  opts = { ...opts, callbacks: withOtelEvents(opts.callbacks, { ...(opts.sessionId ? { sessionId: opts.sessionId } : {}), model: opts.model, provider }) };
+  await noteSessionStart({
+    ...(opts.hooks ? { hooks: opts.hooks } : {}),
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+    cwd: opts.cwd,
+    resumed: opts.messages.some((m) => m.role === "assistant"),
+    model: opts.model,
+    provider,
+  });
   const tr: TurnTrace = {
     trace: opts.trace ?? createNoopRecorder(opts.sessionId ?? ""),
     turnId: opts.turnId ?? makeTurnId(),

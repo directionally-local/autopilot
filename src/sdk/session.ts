@@ -1,4 +1,5 @@
 import { encodeImageFile, imageNote, normalizeImageData } from "../util/image.js";
+import { endSession } from "../hooks/session-lifecycle.js";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -471,6 +472,7 @@ class InternalSession implements KimiFlareSession {
   }
 
   dispose(options?: { traceEndReason?: import("../trace/types.js").SessionEndReason }): void {
+    if (this.sessionId) void endSession(this.sessionId, "exit");
     if (this.disposed) return;
     this.disposed = true;
     // Background subagents belong to this session: stop the running ones, forget the results.

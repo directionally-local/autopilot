@@ -393,6 +393,7 @@ export class ToolExecutor {
           session_id: ctx.sessionId ?? null,
           cwd: ctx.cwd,
           tool: call.name,
+          tool_call_id: call.id,
           args,
           tier: ctx.intentTier,
         },
@@ -572,6 +573,7 @@ export class ToolExecutor {
           session_id: ctx.sessionId ?? null,
           cwd: ctx.cwd,
           tool: call.name,
+          tool_call_id: call.id,
           args,
           tier: ctx.intentTier,
           result: {

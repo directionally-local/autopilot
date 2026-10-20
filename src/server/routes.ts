@@ -5,6 +5,7 @@
 import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { endSessions } from "../hooks/session-lifecycle.js";
 import { listModels } from "../models/registry.js";
 import { JobManager } from "../jobs/manager.js";
 import { hostname } from "node:os";
@@ -863,6 +864,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
   }
 
   function cleanup(): void {
+    void endSessions("exit");
     wakeScheduler.dispose();
     stopNotifications();
     stopDecisions();

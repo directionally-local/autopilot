@@ -40,6 +40,8 @@ export const EVENT_DESCRIPTIONS: Record<HookEvent, string> = {
   UserPromptSubmit: "when you hit Enter — can VETO the prompt",
   Stop: "when the agent finishes a turn — informational only",
   PreCompact: "before auto-compaction shrinks the conversation",
+  SessionStart: "when a session starts or is resumed — informational only",
+  SessionEnd: "when autopilot exits or the session is cleared — informational only",
 };
 
 /** Concrete, copy-pasteable command examples per event. Shown in the
@@ -77,6 +79,14 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
   PreCompact: [
     `# Snapshot the session file before compaction shrinks it:`,
     `mkdir -p ~/snapshots && cp ~/.config/kimiflare/sessions/$KIMIFLARE_HOOK_SESSION_ID.json ~/snapshots/`,
+  ],
+  SessionStart: [
+    `# Record session starts:`,
+    `echo "$(date -u +%FT%TZ) start $KIMIFLARE_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
+  ],
+  SessionEnd: [
+    `# Record session ends:`,
+    `echo "$(date -u +%FT%TZ) end $KIMIFLARE_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
   ],
 };
 

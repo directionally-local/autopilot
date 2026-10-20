@@ -20,6 +20,7 @@ import { sessionFileCompactionTarget } from "./agent/context-budget.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
 import { completionCheckFromConfig } from "./agent/completion-check.js";
 import { isImagePath } from "./util/image.js";
+import { endSessions } from "./hooks/session-lifecycle.js";
 import { buildAttachmentMessage } from "./util/attachments.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
@@ -455,6 +456,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     traceEndReason = "crash";
     throw err;
   } finally {
+    await endSessions("exit");
     await Promise.all(usageWrites);
     trace.emit("session_end", { reason: traceEndReason, total_cost_usd: traceCostUsd || undefined }, null);
     await trace.flush();
