@@ -11,7 +11,9 @@ import {
   globalSettingsPath,
   projectSettingsPath,
   deriveHookId,
+  SettingsFileError,
 } from "./settings.js";
+import { getRecommendedHook, LEGACY_RECOMMENDED_COMMANDS } from "./recommended.js";
 
 let projectDir: string;
 let xdgDir: string;
@@ -134,6 +136,24 @@ describe("loadHooksSettings", () => {
   });
 });
 
+describe("legacy recommended guards", () => {
+  it("loads the old exit-1 commands as the current exit-2 ones, keeping their id", () => {
+    const settingsFile = projectSettingsPath(projectDir);
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    const [oldCommand] = [...LEGACY_RECOMMENDED_COMMANDS.keys()];
+    assert.match(oldCommand!, /exit 1/);
+    writeFileSync(
+      settingsFile,
+      JSON.stringify({ hooks: { PreToolUse: [{ id: "block-env-file-writes", matcher: "^(edit|write)$", command: oldCommand }] } }),
+      "utf8",
+    );
+    const hook = loadHooksSettings(projectDir).hooks!.PreToolUse![0]!;
+    assert.strictEqual(hook.id, "block-env-file-writes");
+    assert.strictEqual(hook.command, getRecommendedHook("block-env-file-writes")!.hook.command);
+    assert.match(hook.command, />&2; exit 2/);
+  });
+});
+
 describe("deriveHookId", () => {
   it("is stable across runs", () => {
     assert.strictEqual(
@@ -234,6 +254,46 @@ describe("appendHook + setHookEnabled", () => {
     assert.strictEqual(path, projectSettingsPath(projectDir));
     const parsed = JSON.parse(readFileSync(projectSettingsPath(projectDir), "utf8"));
     assert.strictEqual(parsed.hooks.Stop[0].enabled, false);
+  });
+
+  it("appendHook refuses (and does not touch) a settings file that isn't valid JSON", () => {
+    const settingsFile = projectSettingsPath(projectDir);
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    const broken = '{ "hooks": { "Stop": [ ] }, "theme": "dark", }\n'; // trailing comma
+    writeFileSync(settingsFile, broken, "utf8");
+    assert.throws(
+      () => appendHook("project", projectDir, "Stop", { command: "printf '\\a'" }),
+      (e: unknown) => e instanceof SettingsFileError && /not valid JSON/.test(e.message) && e.message.includes(settingsFile),
+    );
+    assert.strictEqual(readFileSync(settingsFile, "utf8"), broken);
+  });
+
+  it("appendHook refuses a JSON file that isn't an object, or whose hooks aren't the right shape", () => {
+    const settingsFile = projectSettingsPath(projectDir);
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    for (const body of ["[]", "null", '{"hooks": []}', '{"hooks": {"Stop": {}}}']) {
+      writeFileSync(settingsFile, body, "utf8");
+      assert.throws(() => appendHook("project", projectDir, "Stop", { command: "x" }), SettingsFileError, body);
+      assert.strictEqual(readFileSync(settingsFile, "utf8"), body);
+    }
+  });
+
+  it("appendHook keeps unrelated keys in a valid file", () => {
+    const settingsFile = projectSettingsPath(projectDir);
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    writeFileSync(settingsFile, JSON.stringify({ theme: "dark" }), "utf8");
+    appendHook("project", projectDir, "Stop", { command: "x" });
+    const parsed = JSON.parse(readFileSync(settingsFile, "utf8"));
+    assert.strictEqual(parsed.theme, "dark");
+    assert.strictEqual(parsed.hooks.Stop.length, 1);
+  });
+
+  it("setHookEnabled leaves an invalid JSON file untouched", () => {
+    const settingsFile = projectSettingsPath(projectDir);
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    writeFileSync(settingsFile, "{oops", "utf8");
+    assert.strictEqual(setHookEnabled(projectDir, "anything", false), null);
+    assert.strictEqual(readFileSync(settingsFile, "utf8"), "{oops");
   });
 
   it("setHookEnabled returns null when no hook matches", () => {

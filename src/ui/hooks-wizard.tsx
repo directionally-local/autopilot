@@ -50,10 +50,10 @@ export const EVENT_DESCRIPTIONS: Record<HookEvent, string> = {
 export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
   PreToolUse: [
     `# Block edits to secrets / .env files:`,
-    `case "$KIMIFLARE_HOOK_PATH" in *.env|*.pem|*.key) echo blocked; exit 1 ;; esac`,
+    `case "$KIMIFLARE_HOOK_PATH" in *.env|*.pem|*.key) echo blocked >&2; exit 2 ;; esac`,
     ``,
     `# Block writes anywhere outside src/:`,
-    `case "$KIMIFLARE_HOOK_PATH" in src/*) exit 0 ;; *) echo "writes restricted to src/"; exit 1 ;; esac`,
+    `case "$KIMIFLARE_HOOK_PATH" in src/*) exit 0 ;; *) echo "writes restricted to src/" >&2; exit 2 ;; esac`,
   ],
   PostToolUse: [
     `# Auto-format JS/TS files with prettier after every edit:`,
@@ -64,10 +64,10 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
   ],
   UserPromptSubmit: [
     `# Block prompts that contain "password":`,
-    `echo "$KIMIFLARE_HOOK_PAYLOAD" | jq -r .prompt | grep -qiv password || { echo "no passwords in prompts"; exit 1; }`,
+    `jq -r .prompt | grep -qiv password || { echo "no passwords in prompts" >&2; exit 2; }`,
     ``,
     `# Log every prompt with its tier:`,
-    `echo "[$KIMIFLARE_HOOK_TIER] $(echo "$KIMIFLARE_HOOK_PAYLOAD" | jq -r .prompt)" >> ~/.local/state/kimiflare/prompts.log`,
+    `echo "[$KIMIFLARE_HOOK_TIER] $(jq -r .prompt)" >> ~/.local/state/kimiflare/prompts.log`,
   ],
   Stop: [
     `# Terminal bell when the agent finishes:`,
@@ -233,9 +233,13 @@ export function HooksWizard(props: HooksWizardProps): React.ReactElement {
           (TOOL_EVENTS.has(event!) ? `  $KIMIFLARE_HOOK_PATH      — the path arg, when the tool takes one\n` : "") +
           `  $KIMIFLARE_HOOK_TIER      — light | medium | heavy (when classified)\n` +
           `  $KIMIFLARE_HOOK_SESSION_ID — id of the current session\n` +
-          `  $KIMIFLARE_HOOK_PAYLOAD   — the full JSON event payload (also on stdin)` +
+          `  stdin                     — the full JSON event payload (also $KIMIFLARE_HOOK_PAYLOAD when under 32 KB)` +
           (event === "PreToolUse" || event === "UserPromptSubmit"
-            ? `\n\nNote: this is a VETO event — exit non-zero (e.g. \`exit 1\`) to cancel\nthe ${event === "PreToolUse" ? "tool call" : "prompt"}. Stdout becomes the rejection reason shown to the user.`
+            ? `\n\nNote: this is a VETO event — \`exit 2\` cancels the ${event === "PreToolUse" ? "tool call" : "prompt"}; stderr becomes the\nreason shown to the model.` +
+              (event === "PreToolUse"
+                ? ` Or exit 0 and print {"hookSpecificOutput":{"permissionDecision":"deny"|"ask"|"allow",\n"permissionDecisionReason":"..."}}.`
+                : ` Or exit 0 and print {"decision":"block","reason":"..."}.`) +
+              `\nAny other non-zero exit, a timeout or a missing command only logs a warning\nand lets it through (fail-open).`
             : "")
         }
         error={error}

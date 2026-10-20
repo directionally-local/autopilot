@@ -192,6 +192,10 @@ export interface PermissionRequest {
   tool: ToolSpec;
   args: Record<string, unknown>;
   sessionKey: string;
+  /** Set when a PreToolUse hook answered `permissionDecision: "ask"`: the
+   *  prompt is forced (even for tools that skip it) and this is the hook's
+   *  `permissionDecisionReason`, if it gave one. */
+  hookAskReason?: string;
 }
 
 export type PermissionAsker = (req: PermissionRequest) => Promise<PermissionDecision>;
@@ -380,11 +384,14 @@ export class ToolExecutor {
     }
     tr?.call(args, tool.needsPermission);
 
-    // M6.1: PreToolUse hook (veto-able). Fires here — after JSON-args
+    // M6.1: PreToolUse hook (blocking). Fires here — after JSON-args
     // parsing, BEFORE the permission check — so a hook can block a
     // call without the user being asked. Hooks live on the executor
     // so every caller (standard loop, code-mode sandbox, init, SDK,
-    // print mode) gets the same behavior automatically.
+    // print mode) gets the same behavior automatically. Exit 2 or a
+    // `deny` JSON decision blocks; a broken hook fails open (see runHooks).
+    let hookForcesAsk = false;
+    let hookAskReason: string | undefined;
     if (this.hooks?.hasEnabledHooks("PreToolUse")) {
       const preOutcome = await this.hooks.fire(
         "PreToolUse",
@@ -415,13 +422,27 @@ export class ToolExecutor {
         // ran, so "post" is meaningless. Documented behavior.
         return synthetic;
       }
+      // `ask`: route through the host's normal permission prompt even if
+      // the tool or the session cache would skip it. Non-interactive hosts
+      // answer as they do for any prompt (print mode denies unless
+      // --dangerously-allow-all). `allow` does NOT bypass the user's own
+      // permission rules or mode — it only means the hook raised no objection.
+      if (preOutcome.permissionDecision === "ask") {
+        hookForcesAsk = true;
+        hookAskReason = preOutcome.permissionDecisionReason;
+      }
     }
 
-    if (tool.needsPermission) {
+    if (tool.needsPermission || hookForcesAsk) {
       const sessionKey = this.permissionKey(tool, args);
-      if (!this.sessionAllowed.has(sessionKey)) {
+      if (hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
         const askedAt = performance.now();
-        const raw = await askPermission({ tool, args, sessionKey });
+        const raw = await askPermission({
+          tool,
+          args,
+          sessionKey,
+          ...(hookForcesAsk && hookAskReason ? { hookAskReason } : {}),
+        });
         const result = toPermissionResult(raw);
         tr?.permission(tracePermissionDecision(result), Math.round(performance.now() - askedAt), result.feedback);
         if (result.decision === "deny") {

@@ -1547,7 +1547,16 @@ const handleHooks: Handler = (ctx, rest, arg) => {
         ]);
         return true;
       }
-      const path = appendHook(scope, cwd, rec.event, { ...rec.hook, enabled: true });
+      let path: string;
+      try {
+        path = appendHook(scope, cwd, rec.event, { ...rec.hook, enabled: true });
+      } catch (e) {
+        setEvents((ev) => [
+          ...ev,
+          { kind: "error", key: mkKey(), text: `could not enable ${rec.id}: ${(e as Error).message}` },
+        ]);
+        return true;
+      }
       ctx.hooksManagerRef.current.reload();
       setEvents((e) => [
         ...e,
