@@ -77,6 +77,11 @@ export interface ToolOutput {
 export interface ToolOutputMeta {
   exitCode?: number | null;
   timedOut?: boolean;
+  /** bash: killed because the turn was aborted. */
+  aborted?: boolean;
+  /** bash: the raw streams, kept apart for PostToolUse hooks (not traced). */
+  stdout?: string;
+  stderr?: string;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

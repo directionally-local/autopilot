@@ -1,6 +1,7 @@
-import type { ToolSpec, ToolContext, ToolOutput, RunWaitRequest } from "./registry.js";
+import type { ToolSpec, ToolContext, ToolOutput, ToolOutputMeta, RunWaitRequest } from "./registry.js";
 import { wrapAsToolError, type ToolErrorCode } from "./tool-error.js";
 import type { HooksManager } from "../hooks/manager.js";
+import type { PostToolUsePayload } from "../hooks/types.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import { classifyVerification } from "../trace/verification.js";
 import { detectGitRevert } from "../trace/git-delta.js";
@@ -258,6 +259,17 @@ export interface ToolResult {
  *  still available via the tool's artifact id if the user needs it. */
 const HOOK_RESULT_CONTENT_CAP_BYTES = 4 * 1024;
 
+/** bash's exit code and separate streams, for the PostToolUse payload. */
+function shellResultForHook(meta: ToolOutputMeta | undefined): Partial<PostToolUsePayload["result"]> {
+  if (!meta || meta.exitCode === undefined) return {};
+  return {
+    exitCode: meta.exitCode,
+    stdout: capContentForHook(meta.stdout ?? ""),
+    stderr: capContentForHook(meta.stderr ?? ""),
+    interrupted: meta.timedOut === true || meta.aborted === true,
+  };
+}
+
 function capContentForHook(s: string): string {
   if (Buffer.byteLength(s, "utf8") <= HOOK_RESULT_CONTENT_CAP_BYTES) return s;
   let cut = s;
@@ -491,7 +503,7 @@ export class ToolExecutor {
       if (isDiffCommand(cmd)) {
         const artifactId = this.artifactStore.store(normalized.content);
         const bytes = Buffer.byteLength(normalized.content, "utf8");
-        return {
+        const diffResult: ToolResult = {
           tool_call_id: call.id,
           name: call.name,
           content: normalized.content,
@@ -500,6 +512,8 @@ export class ToolExecutor {
           reducedBytes: bytes,
           artifactId,
         };
+        this.firePostToolUse(call, args, diffResult, ctx, normalized.meta);
+        return diffResult;
       }
 
       const reduced = reduceToolOutput(
@@ -519,7 +533,7 @@ export class ToolExecutor {
         artifactId: reduced.artifactId,
         ...(normalized.waitRequest ? { waitRequest: normalized.waitRequest } : {}),
       };
-      this.firePostToolUse(call, args, success, ctx);
+      this.firePostToolUse(call, args, success, ctx, normalized.meta);
       return success;
     } catch (e) {
       if (e instanceof RunToolBudgetExceededError) ctx.onRunBudgetExceeded?.(e.reason);
@@ -563,6 +577,7 @@ export class ToolExecutor {
     args: Record<string, unknown>,
     result: ToolResult,
     ctx: ToolContext,
+    meta?: ToolOutputMeta,
   ): void {
     if (!this.hooks?.hasEnabledHooks("PostToolUse")) return;
     void this.hooks
@@ -580,6 +595,7 @@ export class ToolExecutor {
             ok: result.ok,
             content: capContentForHook(result.content),
             errorCode: result.errorCode,
+            ...shellResultForHook(meta),
           },
         },
         call.name,

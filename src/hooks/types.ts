@@ -113,6 +113,13 @@ export interface PostToolUsePayload extends BaseHookPayload {
     ok: boolean;
     content: string;
     errorCode?: string;
+    /** bash only: the command's exit code (null when killed). */
+    exitCode?: number | null;
+    /** bash only: stdout and stderr, separately (capped like `content`). */
+    stdout?: string;
+    stderr?: string;
+    /** bash only: the command was killed by its timeout or an abort. */
+    interrupted?: boolean;
   };
 }
 
@@ -124,6 +131,8 @@ export interface UserPromptSubmitPayload extends BaseHookPayload {
 
 export interface StopPayload extends BaseHookPayload {
   event: "Stop";
+  /** The text of the turn's final assistant reply, when it ended on one. */
+  last_assistant_message?: string;
 }
 
 export interface PreCompactPayload extends BaseHookPayload {

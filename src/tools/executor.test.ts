@@ -1,4 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert";
 import { isDiffCommand, ToolExecutor, toPermissionResult, getWorkerTools, ALL_TOOLS } from "./executor.js";
 import { ToolError } from "./tool-error.js";
@@ -420,6 +423,28 @@ describe("ToolExecutor — M6.1 executor-level hooks", () => {
     const post = hooks.fired[1]!.payload as { result: { ok: boolean; errorCode?: string } };
     assert.strictEqual(post.result.ok, false);
     assert.strictEqual(post.result.errorCode, "unknown");
+  });
+
+  it("passes bash's exit code and separate streams to PostToolUse, diff commands included", async () => {
+    const hooks = new CapturingHooks();
+    const exec = new ToolExecutor(ALL_TOOLS.filter((t) => t.name === "bash"));
+    exec.setHooks(hooks as never);
+    const cwd = mkdtempSync(join(tmpdir(), "kf-hook-bash-"));
+    try {
+      await exec.run({ id: "b1", name: "bash", arguments: JSON.stringify({ command: "echo out; echo err >&2; exit 3" }) }, allowAll, { cwd });
+      await exec.run({ id: "b2", name: "bash", arguments: JSON.stringify({ command: "git diff --no-index /dev/null /dev/null" }) }, allowAll, { cwd });
+      const posts = hooks.fired.filter((f) => f.event === "PostToolUse").map((f) => f.payload as { tool_call_id: string; result: Record<string, unknown> });
+      assert.deepStrictEqual(posts.map((p) => p.tool_call_id), ["b1", "b2"]);
+      const r = posts[0]!.result;
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.exitCode, 3);
+      assert.strictEqual(r.stdout, "out\n");
+      assert.strictEqual(r.stderr, "err\n");
+      assert.strictEqual(r.interrupted, false);
+      assert.strictEqual(posts[1]!.result.exitCode, 0);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("fires PostToolUse when permission is denied", async () => {
