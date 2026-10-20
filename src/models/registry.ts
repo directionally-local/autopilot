@@ -73,6 +73,8 @@ export interface ModelEntry {
    * no reasoning_effort (thinking is a toggle, or always on).
    */
   reasoningEfforts?: string[];
+  /** The model takes an explicit thinking token budget (Anthropic `budget_tokens`) rather than only an effort level. */
+  reasoningBudget?: boolean;
   /** Field the API expects reasoning echoed back in on assistant history (e.g. "reasoning_content"). */
   reasoningEchoField?: string;
   contextWindow: number;

@@ -75,7 +75,6 @@ describe("request body per provider", () => {
     echoContent: boolean;
     effort?: string;
   }> = [
-    { provider: "openai", model: "gpt-6.1-sol", url: "https://api.openai.com/v1/chat/completions", maxField: "max_completion_tokens", parallel: true, echoContent: false, effort: "medium" },
     { provider: "deepseek", model: "deepseek-v4-pro", url: "https://api.deepseek.com/chat/completions", maxField: "max_tokens", parallel: false, echoContent: true, effort: "high" },
     { provider: "moonshot", model: "kimi-k2.6", url: "https://api.moonshot.ai/v1/chat/completions", maxField: "max_tokens", parallel: false, echoContent: true },
     { provider: "zai", model: "glm-5.3", url: "https://api.z.ai/api/paas/v4/chat/completions", maxField: "max_tokens", parallel: false, echoContent: true, effort: "high" },
@@ -97,9 +96,19 @@ describe("request body per provider", () => {
     });
   }
 
-  it("OpenAI omits temperature for models that reject it", async () => {
-    const { body } = await send("openai", "gpt-6.1-sol");
-    assert.ok(!("temperature" in body));
+  it("OpenAI uses the Responses API: stateless, encrypted reasoning, no OpenRouter fields", async () => {
+    const { url, body } = await send("openai", "gpt-6.1-sol", "medium");
+    assert.strictEqual(url, "https://api.openai.com/v1/responses");
+    assert.strictEqual(body.store, false);
+    assert.deepStrictEqual(body.include, ["reasoning.encrypted_content"]);
+    assert.deepStrictEqual(body.reasoning, { effort: "medium", summary: "auto" });
+    assert.strictEqual(body.parallel_tool_calls, true);
+    assert.ok("max_output_tokens" in body);
+    assert.ok(!("temperature" in body), "omitted for models that reject it");
+    for (const k of ["messages", "provider", "session_id", "max_completion_tokens", "stream_options"]) assert.ok(!(k in body), `no ${k}`);
+    const input = body.input as Array<Record<string, unknown>>;
+    assert.deepStrictEqual(input.find((i) => i.type === "function_call"), { type: "function_call", call_id: "call_1", name: "read", arguments: "{}" });
+    assert.deepStrictEqual(input.find((i) => i.type === "function_call_output"), { type: "function_call_output", call_id: "call_1", output: "file" });
   });
 
   it("names the provider and its key in auth errors", async () => {
@@ -136,7 +145,7 @@ describe("effortFor", () => {
 
 describe("stripReasoningEcho", () => {
   it("keeps reasoning_content when the model declares it even if the preset doesn't", () => {
-    const out = stripReasoningEcho(history, PROVIDER_PRESETS.openai.compat, "reasoning_content");
+    const out = stripReasoningEcho(history, PROVIDER_PRESETS.ollama.compat, "reasoning_content");
     assert.strictEqual(out[1]!.reasoning_content, "thinking…");
     assert.ok(!("reasoning_details" in out[1]!));
   });

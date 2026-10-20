@@ -10,6 +10,7 @@ import { configPath, patchPersistedConfig, type KimiConfig } from "../config.js"
 import { checkOpenRouterKey, looksLikeOpenRouterKey } from "../models/openrouter.js";
 import { checkRequestyKey } from "../models/requesty.js";
 import { getPreset, PROVIDER_IDS, type ProviderId } from "./presets.js";
+import { anthropicHeaders } from "../agent/protocols/anthropic.js";
 import { resolveActiveProvider, resolveProviderKey, type ProviderSettings } from "./resolve.js";
 
 export type ProviderKeyCheck =
@@ -54,8 +55,10 @@ export async function checkProviderKey(
   if (!key && preset.keyRequired) return { ok: false, reason: "invalid", message: `A ${preset.name} API key is required.` };
   let res: Response;
   try {
+    const auth: Record<string, string> =
+      preset.protocol === "anthropic-messages" ? anthropicHeaders(key) : key ? { Authorization: `Bearer ${key}` } : {};
     res = await fetchImpl(`${base}/models`, {
-      headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+      headers: { Accept: "application/json", ...auth },
       signal: AbortSignal.timeout(10_000),
     });
   } catch (e) {

@@ -34,7 +34,7 @@ export interface ModelsDevModel {
   release_date?: string;
   attachment?: boolean;
   reasoning?: boolean;
-  reasoning_options?: Array<{ type: string; values?: string[] }>;
+  reasoning_options?: Array<{ type: string; values?: string[]; min?: number; max?: number }>;
   tool_call?: boolean;
   temperature?: boolean;
   interleaved?: { field?: string } | boolean;
@@ -63,6 +63,7 @@ export function mapModelsDevModel(m: ModelsDevModel): ModelEntry {
     ...(m.name ? { name: m.name } : {}),
     ...(Number.isFinite(created) ? { created } : {}),
     ...(efforts ? { reasoningEfforts: efforts } : {}),
+    ...(m.reasoning_options?.some((o) => o.type === "budget_tokens") ? { reasoningBudget: true } : {}),
     ...(echo ? { reasoningEchoField: echo } : {}),
     contextWindow: m.limit?.context ?? 128_000,
     maxOutputTokens: m.limit?.output ?? 16_384,

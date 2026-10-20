@@ -16,6 +16,8 @@ import {
 } from "../util/llm-dump.js";
 import { getModelOrInfer, vendorOf } from "../models/registry.js";
 import { getPreset, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
+import { anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
 import { resolveCustomEndpoint, customChatCompletionsUrl, type CustomEndpoint } from "./custom-endpoint.js";
@@ -180,6 +182,38 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     if (vendorOf(opts.model) === "anthropic") body.cache_control = { type: "ephemeral" };
   }
 
+  // The wire body: Chat Completions as built above, or converted for
+  // providers that speak another protocol (src/agent/protocols/).
+  const protocol = customEndpoint ? (preset.protocol ?? "openai-chat") : "openai-chat";
+  const wireBody: Record<string, unknown> =
+    protocol === "anthropic-messages"
+      ? toAnthropicRequest({
+          model: opts.model,
+          messages: body.messages as ChatMessage[],
+          tools: hasTools ? opts.tools : undefined,
+          maxTokens,
+          temperature: opts.temperature,
+          reasoningEffort: opts.reasoningEffort,
+          supportsReasoning,
+          supportsTemperature,
+          reasoningEfforts: entry.reasoningEfforts,
+          reasoningBudget: entry.reasoningBudget,
+        })
+      : protocol === "openai-responses"
+        ? toResponsesRequest({
+            model: opts.model,
+            messages: body.messages as ChatMessage[],
+            tools: hasTools ? opts.tools : undefined,
+            maxTokens,
+            temperature: opts.temperature,
+            reasoningEffort: opts.reasoningEffort,
+            supportsReasoning,
+            supportsTemperature,
+            reasoningEfforts: entry.reasoningEfforts,
+            parallelToolCalls: preset.compat.parallelToolCalls,
+          })
+        : body;
+
   // Observers of the finalized request body: the debug payload dump
   // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body
   // immediately before fetch — they cannot alter what is sent — and share
@@ -283,7 +317,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       res = await fetch(url, {
         method: "POST",
         headers,
-        body: stableStringify(body, jsonReplacer),
+        body: stableStringify(wireBody, jsonReplacer),
         signal: opts.signal,
       });
     } catch (fetchErr) {
@@ -360,7 +394,13 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     logger.debug("runKimi:stream_start", { requestId });
     let streamError: string | undefined;
     try {
-      for await (const ev of parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs)) {
+      const events =
+        protocol === "anthropic-messages"
+          ? parseAnthropicStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
+          : protocol === "openai-responses"
+            ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
+            : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs);
+      for await (const ev of events) {
         if (captured) accumulateDumpResponse(response, ev);
         yield ev;
       }
@@ -561,6 +601,12 @@ function buildKimiRequestTarget(
   // id passes through.
   if (customEndpoint) {
     if (!opts.model) throw new KimiApiError(`Invalid model ID: ${opts.model}`, 400);
+    const protocol = customEndpoint.providerId ? getPreset(customEndpoint.providerId).protocol : undefined;
+    const base = customEndpoint.baseUrl.replace(/\/+$/, "");
+    if (protocol === "anthropic-messages") return { url: `${base}/messages`, headers: anthropicHeaders(customEndpoint.apiKey) };
+    if (protocol === "openai-responses") {
+      return { url: `${base}/responses`, headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {} };
+    }
     return {
       url: customChatCompletionsUrl(customEndpoint.baseUrl),
       headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {},

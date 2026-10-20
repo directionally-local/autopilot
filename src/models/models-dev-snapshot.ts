@@ -4,6 +4,658 @@
 import type { ModelsDevProvider } from "./provider-catalog.js";
 
 export const MODELS_DEV_SNAPSHOT: Record<string, ModelsDevProvider> = {
+ "anthropic": {
+  "id": "anthropic",
+  "name": "Anthropic",
+  "models": {
+   "claude-opus-5-5": {
+    "id": "claude-opus-5-5",
+    "name": "Claude Opus 5.5",
+    "release_date": "2026-09-22",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "canonical_model_id": "anthropic/claude-opus-5-5",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 4,
+     "output": 20,
+     "cache_read": 0.2,
+     "cache_write": 5
+    }
+   },
+   "claude-sonnet-5": {
+    "id": "claude-sonnet-5",
+    "name": "Claude Sonnet 5",
+    "release_date": "2026-06-29",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 2,
+     "output": 10,
+     "cache_read": 0.2,
+     "cache_write": 2.5
+    }
+   },
+   "claude-opus-4-5": {
+    "id": "claude-opus-4-5",
+    "name": "Claude Opus 4.5 (latest)",
+    "release_date": "2025-11-24",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high"
+      ]
+     },
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "canonical_model_id": "anthropic/claude-opus-4-5",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 5,
+     "output": 25,
+     "cache_read": 0.5,
+     "cache_write": 6.25
+    }
+   },
+   "claude-opus-4-5-20251101": {
+    "id": "claude-opus-4-5-20251101",
+    "name": "Claude Opus 4.5",
+    "release_date": "2025-11-24",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high"
+      ]
+     },
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 5,
+     "output": 25,
+     "cache_read": 0.5,
+     "cache_write": 6.25
+    }
+   },
+   "claude-haiku-5-5": {
+    "id": "claude-haiku-5-5",
+    "name": "Claude Haiku 5.5",
+    "release_date": "2026-10-07",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "canonical_model_id": "anthropic/claude-haiku-5-5",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 0.1,
+     "output": 0.5,
+     "cache_read": 0.01,
+     "cache_write": 0.125
+    }
+   },
+   "claude-sonnet-5-5": {
+    "id": "claude-sonnet-5-5",
+    "name": "Claude Sonnet 5.5",
+    "release_date": "2026-09-28",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "canonical_model_id": "anthropic/claude-sonnet-5-5",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 2,
+     "output": 10,
+     "cache_read": 0.1,
+     "cache_write": 2.5
+    }
+   },
+   "claude-sonnet-4-5-20250929": {
+    "id": "claude-sonnet-4-5-20250929",
+    "name": "Claude Sonnet 4.5",
+    "release_date": "2025-09-29",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 3,
+     "output": 15,
+     "cache_read": 0.3,
+     "cache_write": 3.75
+    }
+   },
+   "claude-opus-5": {
+    "id": "claude-opus-5",
+    "name": "Claude Opus 5",
+    "release_date": "2026-07-24",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "canonical_model_id": "anthropic/claude-opus-5",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 5,
+     "output": 25,
+     "cache_read": 0.5,
+     "cache_write": 6.25
+    }
+   },
+   "claude-opus-4-6": {
+    "id": "claude-opus-4-6",
+    "name": "Claude Opus 4.6",
+    "release_date": "2026-02-04",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "max"
+      ]
+     },
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 5,
+     "output": 25,
+     "cache_read": 0.5,
+     "cache_write": 6.25
+    }
+   },
+   "claude-haiku-4-5": {
+    "id": "claude-haiku-4-5",
+    "name": "Claude Haiku 4.5 (latest)",
+    "release_date": "2025-10-15",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "canonical_model_id": "anthropic/claude-haiku-4-5",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 1,
+     "output": 5,
+     "cache_read": 0.1,
+     "cache_write": 1.25
+    }
+   },
+   "claude-fable-5": {
+    "id": "claude-fable-5",
+    "name": "Claude Fable 5",
+    "release_date": "2026-06-07",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 10,
+     "output": 50,
+     "cache_read": 1,
+     "cache_write": 12.5
+    }
+   },
+   "claude-opus-4-7": {
+    "id": "claude-opus-4-7",
+    "name": "Claude Opus 4.7",
+    "release_date": "2026-04-14",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 5,
+     "output": 25,
+     "cache_read": 0.5,
+     "cache_write": 6.25
+    }
+   },
+   "claude-opus-4-8": {
+    "id": "claude-opus-4-8",
+    "name": "Claude Opus 4.8",
+    "release_date": "2026-05-28",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 5,
+     "output": 25,
+     "cache_read": 0.5,
+     "cache_write": 6.25
+    }
+   },
+   "claude-sonnet-4-5": {
+    "id": "claude-sonnet-4-5",
+    "name": "Claude Sonnet 4.5 (latest)",
+    "release_date": "2025-09-29",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "canonical_model_id": "anthropic/claude-sonnet-4-5",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 3,
+     "output": 15,
+     "cache_read": 0.3,
+     "cache_write": 3.75
+    }
+   },
+   "claude-fable-5-1": {
+    "id": "claude-fable-5-1",
+    "name": "Claude Fable 5.1",
+    "release_date": "2026-09-01",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "tool_call": true,
+    "temperature": false,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "canonical_model_id": "anthropic/claude-fable-5-1",
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 10,
+     "output": 50,
+     "cache_read": 0.25,
+     "cache_write": 12.5
+    }
+   },
+   "claude-haiku-4-5-20251001": {
+    "id": "claude-haiku-4-5-20251001",
+    "name": "Claude Haiku 4.5",
+    "release_date": "2025-10-15",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 1,
+     "output": 5,
+     "cache_read": 0.1,
+     "cache_write": 1.25
+    }
+   },
+   "claude-sonnet-4-6": {
+    "id": "claude-sonnet-4-6",
+    "name": "Claude Sonnet 4.6",
+    "release_date": "2026-02-17",
+    "attachment": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "max"
+      ]
+     },
+     {
+      "type": "budget_tokens",
+      "min": 1024
+     }
+    ],
+    "tool_call": true,
+    "temperature": true,
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
+    },
+    "cost": {
+     "input": 3,
+     "output": 15,
+     "cache_read": 0.3,
+     "cache_write": 3.75
+    }
+   }
+  }
+ },
  "deepseek": {
   "id": "deepseek",
   "name": "DeepSeek",

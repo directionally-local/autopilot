@@ -39,6 +39,7 @@ type Step = "provider" | "method" | "signin" | "baseUrl" | "key" | "checking" | 
 /** Providers offered on the first screen, in order. */
 const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "openrouter", hint: "recommended — hundreds of models with one account" },
+  { id: "anthropic", hint: "Claude models with an Anthropic API key" },
   { id: "openai", hint: "GPT models with an OpenAI API key" },
   { id: "deepseek", hint: "DeepSeek API key" },
   { id: "moonshot", hint: "Kimi models with a Moonshot API key" },
