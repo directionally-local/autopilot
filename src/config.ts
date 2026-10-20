@@ -575,12 +575,29 @@ function stripUndefined<T extends object>(obj: T): T {
  * preset are not user choices: persisting them would pin one provider's ids
  * into the file and leak them into the next provider after a switch.
  */
-function withoutDerivedDefaults(cfg: KimiConfig): KimiConfig {
-  const plumbing = resolveActiveProvider(cfg).preset.plumbingModel;
-  if (!plumbing) return cfg;
+async function forSaving(cfg: KimiConfig, path: string): Promise<KimiConfig> {
+  const active = resolveActiveProvider(cfg);
   const out: KimiConfig = { ...cfg };
-  for (const k of ["plumbingModel", "memoryExtractionModel", "decompositionModel"] as const) {
-    if (out[k] === plumbing) delete out[k];
+  const plumbing = active.preset.plumbingModel;
+  if (plumbing) {
+    for (const k of ["plumbingModel", "memoryExtractionModel", "decompositionModel"] as const) {
+      if (out[k] === plumbing) delete out[k];
+    }
+  }
+  // The top-level `model` belongs to the provider the file is written for.
+  // When another provider is active only for this run (AUTOPILOT_PROVIDER),
+  // its model goes under providers.<id>.model and the file's own model stays.
+  const owner = isProviderId(cfg.provider) ? cfg.provider : resolveProviderId({ ...cfg, provider: undefined }, {});
+  if (owner !== active.id) {
+    let onDisk: Partial<KimiConfig> = {};
+    try {
+      onDisk = JSON.parse(await readFile(path, "utf8")) as Partial<KimiConfig>;
+    } catch {
+      /* no file yet */
+    }
+    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: cfg.model } };
+    if (onDisk.model) out.model = onDisk.model;
+    else delete (out as Partial<KimiConfig>).model;
   }
   return out;
 }
@@ -636,7 +653,7 @@ export function resolveWorkerBudgetUsd(cfg: KimiConfig | null): number {
 export async function saveConfig(cfg: KimiConfig): Promise<string> {
   const p = configPath();
   await mkdir(join(p, ".."), { recursive: true });
-  await writeFile(p, JSON.stringify(withoutDerivedDefaults(cfg), null, 2), "utf8");
+  await writeFile(p, JSON.stringify(await forSaving(cfg, p), null, 2), "utf8");
   await chmod(p, 0o600);
   return p;
 }

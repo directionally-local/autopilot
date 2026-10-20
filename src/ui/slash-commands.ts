@@ -19,7 +19,7 @@ import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL
 import type { ChatEvent } from "./chat.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
-import { activeOpenRouterKey, llmAuthFromConfig, usesRequesty } from "../agent/llm-auth.js";
+import { activeOpenRouterKey, llmAuthFromConfig, providerPresetOf, usesRequesty } from "../agent/llm-auth.js";
 import { askJev, presentJevAnswer, type JevQuestion } from "../agent/jev.js";
 import { buildJevContext, formatJevContextReceipt } from "../agent/jev-context.js";
 import { checkOpenRouterKey, looksLikeOpenRouterKey, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
@@ -700,16 +700,27 @@ const handleModel: Handler = (ctx, rest, arg) => {
     return true;
   }
 
-  // `/model <id>` → set directly. Old Cloudflare ids (@cf/…) are translated.
-  const id = migrateLegacyModelId(rest.join(" ").trim());
+  // `/model <id>` → set directly. Ids are checked against the active
+  // provider's format: OpenRouter's vendor/model (Cloudflare-era @cf/ ids are
+  // translated); anything without whitespace elsewhere (Ollama's
+  // "llama3.1:8b", DeepSeek's "deepseek-chat", Requesty policies).
+  const provider = providerPresetOf(llmAuthFromConfig(cfg));
+  const raw = rest.join(" ").trim();
+  const id = provider.id === "openrouter" ? migrateLegacyModelId(raw) : raw;
   try {
-    // Requesty managed policy ids ("claude-sonnet-4-5") have no vendor prefix.
-    if (!(cfg && usesRequesty(llmAuthFromConfig(cfg)))) validateModelId(id);
-    else if (!id) throw new Error("empty model id");
+    if (provider.id === "openrouter") validateModelId(id);
+    else if (!id || /\s/.test(id)) throw new Error("bad model id");
   } catch {
     setEvents((e) => [
       ...e,
-      { kind: "info", key: mkKey(), text: `invalid model id: ${id} — OpenRouter ids look like vendor/model, e.g. ${DEFAULT_MODEL}` },
+      {
+        kind: "info",
+        key: mkKey(),
+        text:
+          provider.id === "openrouter"
+            ? `invalid model id: ${id} — OpenRouter ids look like vendor/model, e.g. ${DEFAULT_MODEL}`
+            : `invalid model id: ${id || "(empty)"} — pick one from /model list`,
+      },
     ]);
     return true;
   }
@@ -731,8 +742,8 @@ const handleModel: Handler = (ctx, rest, arg) => {
           ? `model selected: ${id}. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
           : `model switched: ${cfg?.model ? `${cfg.model} → ` : ""}${id}. Your next message will use this model; conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
         : ctx.busy
-          ? `model selected: ${id} · not in OpenRouter's catalog — check the id with /model list if requests fail. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.`
-          : `model selected: ${id} · not in OpenRouter's catalog — check the id with /model list if requests fail. Your next message will use this model; conversation history is kept.`,
+          ? `model selected: ${id} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.`
+          : `model selected: ${id} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. Your next message will use this model; conversation history is kept.`,
     },
   ]);
   return true;
