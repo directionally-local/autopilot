@@ -31,15 +31,20 @@ export function imapSettingsFromEnv(env: NodeJS.ProcessEnv = process.env): ImapS
 
 /** A raw RFC 822 message as the decision handler sees it. */
 export async function toInboundMail(source: Buffer | string, fallbackId: string): Promise<InboundMail> {
-  const { simpleParser } = await import("mailparser");
-  const parsed = await simpleParser(source);
-  const auth = parsed.headers.get("authentication-results");
+  // postal-mime: MIT-0, no dependencies.
+  const { default: PostalMime } = await import("postal-mime");
+  const parsed = await PostalMime.parse(source);
+  const auth = parsed.headers
+    .filter((h) => h.key.toLowerCase() === "authentication-results")
+    .map((h) => h.value)
+    .join("; ");
+  const from = parsed.from;
   return {
     messageId: parsed.messageId ?? fallbackId,
-    from: parsed.from?.text ?? "",
+    from: from && "address" in from && from.address ? (from.name ? `"${from.name}" <${from.address}>` : from.address) : "",
     subject: parsed.subject ?? "",
     text: parsed.text ?? "",
-    ...(auth ? { authenticationResults: Array.isArray(auth) ? auth.join("; ") : String(auth) } : {}),
+    ...(auth ? { authenticationResults: auth } : {}),
   };
 }
 
