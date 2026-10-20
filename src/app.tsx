@@ -156,6 +156,7 @@ function App({
   initialLspScope,
   initialLspProjectPath,
   bridge,
+  initialResumeLatest,
 }: {
   initialCfg: Cfg | null;
   initialUpdateResult?: UpdateCheckResult;
@@ -163,6 +164,8 @@ function App({
   initialLspProjectPath: string | null;
   /** Render through another view (e.g. Camouflage) instead of Ink. */
   bridge?: AppBridge;
+  /** Reopen the most recent session in this directory on start (after a renderer crash). */
+  initialResumeLatest?: boolean;
 }) {
   const { exit } = useApp();
   const { columns } = useWindowSize();
@@ -500,6 +503,24 @@ function App({
 
   // Batched streaming delta refs to reduce React re-render frequency
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
+
+  // After a Camouflage renderer crash (#862) the Ink UI reopens the session
+  // that was just saved: the newest one in this directory.
+  const resumedLatestRef = useRef(false);
+  useEffect(() => {
+    if (!initialResumeLatest || resumedLatestRef.current || !cfg) return;
+    resumedLatestRef.current = true;
+    void (async () => {
+      const { listSessions } = await import("./sessions.js");
+      const [latest] = await listSessions(1, process.cwd());
+      if (!latest) return;
+      await doResumeSession(latest.filePath);
+      setEvents((e) => [
+        ...e,
+        { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed, so this conversation reopened here in the classic UI. Nothing was lost." },
+      ]);
+    })();
+  }, [initialResumeLatest, cfg, doResumeSession]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customCommandsRef = useRef<CustomCommand[]>([]);
   const recentFilesRef = useRef<Map<string, number>>(new Map());
@@ -2701,6 +2722,7 @@ export async function renderApp(
   updateResult?: UpdateCheckResult,
   lspScope: "project" | "global" = "global",
   lspProjectPath: string | null = null,
+  opts: { resumeLatest?: boolean } = {},
 ) {
   // The TUI is the only host that supports `!` commands (see agent/user-shell.ts).
   enableUserShellCommands();
@@ -2710,6 +2732,7 @@ export async function renderApp(
       initialUpdateResult={updateResult}
       initialLspScope={lspScope}
       initialLspProjectPath={lspProjectPath}
+      initialResumeLatest={opts.resumeLatest}
     />,
     {
       incrementalRendering: true,

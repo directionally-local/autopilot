@@ -14,8 +14,10 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { AppActions, AppBridge, AppModal, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/chat.js";
 import type { ToolEventState } from "./ui/tool-view.js";
@@ -91,6 +93,60 @@ async function loadSdk(): Promise<CamouflageSdk> {
   return sdk as CamouflageSdk;
 }
 
+/** The renderer exited unexpectedly mid-session (not the user quitting). */
+export class CamouflageCrashed extends Error {}
+
+export interface RendererInfo {
+  packageVersion: string | null;
+  /** The binary mount() runs. */
+  binary: string;
+  source: "CAMOUFLAGE_BIN" | "package" | "PATH";
+  /** `<binary> --version`, when the renderer supports it. */
+  binaryVersion: string | null;
+}
+
+/**
+ * Which renderer will run (#862). The SDK uses the binary its postinstall
+ * downloaded and falls back to `camouflage-tui` on PATH, which can be a stale
+ * build when that download failed — so log both, and say so when it happens.
+ */
+export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo {
+  let packageVersion: string | null = null;
+  let packageBin: string | null = null;
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgPath = require.resolve("camouflage-tui/package.json");
+    packageVersion = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string }).version ?? null;
+    const local = join(dirname(pkgPath), "bin", process.platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui");
+    if (existsSync(local)) packageBin = local;
+  } catch {
+    // not installed: mount() reports that
+  }
+  let binary: string;
+  let source: RendererInfo["source"];
+  if (env.CAMOUFLAGE_BIN) {
+    binary = env.CAMOUFLAGE_BIN;
+    source = "CAMOUFLAGE_BIN";
+  } else if (packageBin) {
+    binary = packageBin;
+    source = "package";
+  } else {
+    source = "PATH";
+    try {
+      binary = execFileSync(process.platform === "win32" ? "where" : "which", ["camouflage-tui"], { encoding: "utf8", timeout: 2000 }).trim().split("\n")[0] || "camouflage-tui";
+    } catch {
+      binary = "camouflage-tui";
+    }
+  }
+  let binaryVersion: string | null = null;
+  try {
+    binaryVersion = execFileSync(binary, ["--version"], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+  } catch {
+    // older renderers don't support --version
+  }
+  return { packageVersion, binary, source, binaryVersion };
+}
+
 export interface CamouflageViewOpts {
   cfg: Cfg;
   version: string;
@@ -100,6 +156,8 @@ export interface CamouflageViewOpts {
 
 export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void> {
   const sdk = await loadSdk();
+  const renderer = rendererInfo();
+  logger.info("camouflage.renderer", { ...renderer });
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
   try {
@@ -114,6 +172,15 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     throw new CamouflageUnavailable((err as Error).message);
   }
   cam.on("stderr", (chunk: string) => logger.warn("camouflage.stderr", { chunk }));
+  if (renderer.source === "PATH") {
+    // The package's own binary is missing (its install step failed): whatever
+    // is on PATH may be an old build with bugs fixed long ago.
+    logger.warn("camouflage.renderer_from_path", { ...renderer });
+    cam.send("RuntimeError", {
+      message: `camouflage-tui ${renderer.packageVersion ?? ""} has no renderer binary of its own (its install step failed), so ${renderer.binary} from PATH is used and may be outdated. Reinstall autopilot-ai to fix it.`,
+      severity: "warning",
+    });
+  }
 
   const cwd = process.cwd();
   cam.send("SessionStarted", {
@@ -170,20 +237,46 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     await cam.close().catch(() => undefined);
     restoreConsole();
   };
-  cam.on("exit", () => {
-    // The user quit the renderer (Ctrl+C twice): end the App too.
-    void finish().then(() => {
+  let crashed: { code: number | null; signal: string | null } | null = null;
+  cam.on("exit", (info?: { code: number | null; signal: NodeJS.Signals | null }) => {
+    if (closing) return;
+    const code = info?.code ?? 0;
+    const signal = info?.signal ?? null;
+    if (code === 0 && !signal) {
+      // The user quit the renderer (Ctrl+C twice): end the App too.
+      void finish().then(() => {
+        if (view.actions) view.actions.exit();
+        else process.exit(0);
+      });
+      return;
+    }
+    // The renderer crashed (#862). The session must survive it: say where the
+    // crash report is, let the turn in flight finish (it is saved after every
+    // turn), then end the App so the caller reopens it in the Ink UI.
+    crashed = { code, signal };
+    logger.error("camouflage.crashed", { code, signal, ...renderer });
+    void finish().then(async () => {
+      process.stderr.write(
+        `\nThe Camouflage renderer stopped unexpectedly (${signal ?? `exit code ${code}`}). ` +
+          `Its crash report is in ${join(homedir(), ".camouflage")} (crash-*.txt).\n` +
+          (view.busy ? "Finishing the current turn, then reopening this conversation in the classic UI…\n" : "Reopening this conversation in the classic UI…\n"),
+      );
+      await view.settle();
+      // Before the App connected there's nothing to end: stop waiting for it.
       if (view.actions) view.actions.exit();
-      else process.exit(0);
+      else crashedBeforeApp();
     });
   });
 
+  let crashedBeforeApp: () => void = () => {};
+  const beforeApp = new Promise<void>((resolve) => (crashedBeforeApp = resolve));
   try {
-    await opts.runApp(view);
+    await Promise.race([opts.runApp(view), beforeApp]);
   } finally {
     await finish();
-    if (view.hadConversation) process.stdout.write("Resume this conversation with: autopilot -c\n");
   }
+  if (crashed) throw new CamouflageCrashed(`renderer exited (${(crashed as { signal: string | null }).signal ?? `code ${(crashed as { code: number | null }).code}`})`);
+  if (view.hadConversation) process.stdout.write("Resume this conversation with: autopilot -c\n");
 }
 
 /** Translates App snapshots into renderer events, sending only what changed. */
@@ -233,7 +326,25 @@ class View implements AppBridge {
     this.actions = actions;
   }
 
+  /** A turn is running (from the latest snapshot). */
+  busy = false;
+  private idleWaiters: Array<() => void> = [];
+
+  /** Resolves once the App is idle (no turn running). */
+  settle(): Promise<void> {
+    if (!this.busy) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.push(resolve));
+  }
+
   sync(s: AppSnapshot): void {
+    this.busy = s.busy;
+    if (!s.busy) for (const resolve of this.idleWaiters.splice(0)) resolve();
+    if (this.disposed) {
+      // The renderer is gone (it crashed): nobody can answer a permission
+      // prompt, so deny it and let the turn finish.
+      if (s.permission) this.actions?.decidePermission("deny");
+      return;
+    }
     this.syncCommands(s.customCommands);
     this.syncEvents(s.events);
     this.syncStatus(s);

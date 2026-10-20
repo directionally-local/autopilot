@@ -668,7 +668,7 @@ async function main() {
   const uiEngine = (opts.ui ?? process.env.KIMIFLARE_UI ?? "camouflage").toLowerCase();
   if (uiEngine !== "ink" && cfg) {
     const model = requireModel(opts.model || cfg.model);
-    const { runCamouflageView, CamouflageUnavailable } = await import("./camouflage-view.js");
+    const { runCamouflageView, CamouflageUnavailable, CamouflageCrashed } = await import("./camouflage-view.js");
     const { renderAppWithBridge } = await import("./app.js");
     try {
       await runCamouflageView({
@@ -678,6 +678,14 @@ async function main() {
       });
       process.exit(0);
     } catch (err) {
+      if (err instanceof CamouflageCrashed) {
+        // The renderer died mid-session (#862): the session was saved, so
+        // reopen it in the Ink UI instead of ending the user's work.
+        logger.warn("camouflage.crashed_fallback", { error: err.message });
+        const { renderApp } = await import("./app.js");
+        await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath, { resumeLatest: true });
+        return;
+      }
       if (!(err instanceof CamouflageUnavailable)) throw err;
       logger.warn("camouflage.unavailable", { error: err.message });
     }
