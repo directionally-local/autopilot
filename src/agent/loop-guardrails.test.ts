@@ -6,6 +6,9 @@ import type { ChatMessage } from "./messages.js";
 import type { HooksManager } from "../hooks/manager.js";
 import type { ToolSpec } from "../tools/registry.js";
 
+// These turns pass a session id; keep their JSONL transcripts out of the real sessions dir.
+process.env.KIMIFLARE_TRANSCRIPT = "0";
+
 type Step = { tool: string; args: Record<string, unknown> } | { text: string };
 
 function sse(lines: unknown[]): Response {

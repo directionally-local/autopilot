@@ -8,6 +8,9 @@ import type { ToolContext } from "./registry.js";
 import type { ToolExecutor } from "./executor.js";
 import type { ChatMessage } from "../agent/messages.js";
 
+// These turns pass a session id; keep their JSONL transcripts out of the real sessions dir.
+process.env.KIMIFLARE_TRANSCRIPT = "0";
+
 const ctx = (sessionId: string, signal = new AbortController().signal) => ({ cwd: "/tmp", sessionId, signal }) as unknown as ToolContext;
 const content = (o: string | { content: string }) => (typeof o === "string" ? o : o.content);
 

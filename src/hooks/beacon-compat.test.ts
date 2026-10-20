@@ -23,7 +23,8 @@ describe("hook payloads speak Claude Code's field names too (#871)", () => {
     assert.strictEqual(wire.tool_name, "Bash");
     assert.deepStrictEqual(wire.tool_input, { command: "ls" });
     assert.strictEqual(wire.tool_call_id, "call_1");
-    assert.match(String(wire.transcript_path), /sessions\/s1\.json$/);
+    assert.match(String(wire.transcript_path), /sessions\/s1\.jsonl$/);
+    assert.equal(wire.transcript_format, "claude-jsonl");
     // Autopilot's own fields stay for existing hooks.
     assert.strictEqual(wire.event, "PostToolUse");
     assert.strictEqual(wire.tool, "bash");
