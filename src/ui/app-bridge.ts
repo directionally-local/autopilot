@@ -50,6 +50,10 @@ export type AppModal =
 export interface AppSnapshot {
   events: ChatEvent[];
   busy: boolean;
+  /** A turn is in flight (busy dips between a turn's steps; this doesn't). */
+  turnRunning: boolean;
+  /** The session being saved, once it has one. */
+  sessionId: string | null;
   /** Subagents currently running (see tools/worker-registry). */
   workers: RunningWorker[];
   mode: Mode;

@@ -683,7 +683,7 @@ async function main() {
         // reopen it in the Ink UI instead of ending the user's work.
         logger.warn("camouflage.crashed_fallback", { error: err.message });
         const { renderApp } = await import("./app.js");
-        await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath, { resumeLatest: true });
+        await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath, err.sessionId ? { resumeSessionId: err.sessionId } : {});
         return;
       }
       if (!(err instanceof CamouflageUnavailable)) throw err;

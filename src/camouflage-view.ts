@@ -15,9 +15,9 @@
 import { execFileSync, spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AppActions, AppBridge, AppModal, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/chat.js";
 import type { ToolEventState } from "./ui/tool-view.js";
@@ -94,7 +94,15 @@ async function loadSdk(): Promise<CamouflageSdk> {
 }
 
 /** The renderer exited unexpectedly mid-session (not the user quitting). */
-export class CamouflageCrashed extends Error {}
+export class CamouflageCrashed extends Error {
+  constructor(
+    message: string,
+    /** The session to reopen in the Ink UI, if the App had started one. */
+    readonly sessionId: string | null,
+  ) {
+    super(message);
+  }
+}
 
 export interface RendererInfo {
   packageVersion: string | null;
@@ -114,10 +122,12 @@ export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo
   let packageVersion: string | null = null;
   let packageBin: string | null = null;
   try {
-    const require = createRequire(import.meta.url);
-    const pkgPath = require.resolve("camouflage-tui/package.json");
-    packageVersion = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string }).version ?? null;
-    const local = join(dirname(pkgPath), "bin", process.platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui");
+    // The package's exports don't include package.json: resolve its entry
+    // point and walk up to the package root.
+    let dir = dirname(fileURLToPath(import.meta.resolve("camouflage-tui")));
+    while (!existsSync(join(dir, "package.json")) && dirname(dir) !== dir) dir = dirname(dir);
+    packageVersion = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { version?: string }).version ?? null;
+    const local = join(dir, "bin", process.platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui");
     if (existsSync(local)) packageBin = local;
   } catch {
     // not installed: mount() reports that
@@ -234,7 +244,8 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     closing = true;
     view.dispose();
     registerTerminalHandoff(null);
-    await cam.close().catch(() => undefined);
+    // close() can wait forever on a renderer that already died.
+    await Promise.race([cam.close().catch(() => undefined), new Promise((r) => setTimeout(r, 1000).unref())]);
     restoreConsole();
   };
   let crashed: { code: number | null; signal: string | null } | null = null;
@@ -256,6 +267,8 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     crashed = { code, signal };
     logger.error("camouflage.crashed", { code, signal, ...renderer });
     void finish().then(async () => {
+      // The renderer left the terminal in raw mode; give it back.
+      if (process.stdin.isTTY) process.stdin.setRawMode?.(false);
       process.stderr.write(
         `\nThe Camouflage renderer stopped unexpectedly (${signal ?? `exit code ${code}`}). ` +
           `Its crash report is in ${join(homedir(), ".camouflage")} (crash-*.txt).\n` +
@@ -275,7 +288,10 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
   } finally {
     await finish();
   }
-  if (crashed) throw new CamouflageCrashed(`renderer exited (${(crashed as { signal: string | null }).signal ?? `code ${(crashed as { code: number | null }).code}`})`);
+  if (crashed) {
+    const c = crashed as { code: number | null; signal: string | null };
+    throw new CamouflageCrashed(`renderer exited (${c.signal ?? `code ${c.code}`})`, view.sessionId);
+  }
   if (view.hadConversation) process.stdout.write("Resume this conversation with: autopilot -c\n");
 }
 
@@ -326,19 +342,26 @@ class View implements AppBridge {
     this.actions = actions;
   }
 
-  /** A turn is running (from the latest snapshot). */
+  /** A turn is in flight (from the latest snapshot). */
   busy = false;
+  /** The session the App is saving. */
+  sessionId: string | null = null;
   private idleWaiters: Array<() => void> = [];
 
   /** Resolves once the App is idle (no turn running). */
-  settle(): Promise<void> {
+  settle(maxWaitMs = 120_000): Promise<void> {
     if (!this.busy) return Promise.resolve();
-    return new Promise((resolve) => this.idleWaiters.push(resolve));
+    return new Promise((resolve) => {
+      this.idleWaiters.push(resolve);
+      // Never strand the user: give up waiting after a while (the session is saved per turn).
+      setTimeout(resolve, maxWaitMs).unref();
+    });
   }
 
   sync(s: AppSnapshot): void {
-    this.busy = s.busy;
-    if (!s.busy) for (const resolve of this.idleWaiters.splice(0)) resolve();
+    this.busy = s.turnRunning;
+    this.sessionId = s.sessionId;
+    if (!s.turnRunning) for (const resolve of this.idleWaiters.splice(0)) resolve();
     if (this.disposed) {
       // The renderer is gone (it crashed): nobody can answer a permission
       // prompt, so deny it and let the turn finish.
