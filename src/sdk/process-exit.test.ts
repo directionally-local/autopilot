@@ -186,6 +186,16 @@ describe("SDK process-exit handling (child process)", () => {
     assert.equal(sessionEnds(), 1);
   });
 
+  it("dispose() with nothing to wait for, then an immediate SIGTERM, still dies from the signal", async () => {
+    // No SessionEnd hook: dispose() settles at once, so the SDK unregisters
+    // while the SIGTERM is still pending. Removing the last listener then
+    // would drop the signal and leave the process running.
+    await project();
+    await writeFile(join(cwd, ".kimiflare", "settings.json"), JSON.stringify({ hooks: {} }));
+    const res = await host("", `${keepAlive} session.dispose(); process.kill(process.pid, "SIGTERM");`);
+    diedFrom(res, "SIGTERM", 143);
+  });
+
   it("removes its handlers once the session's SessionEnd settles after dispose()", async () => {
     await project();
     const events = ["SIGTERM", "SIGINT", "SIGHUP", "beforeExit", "uncaughtExceptionMonitor", "exit"];

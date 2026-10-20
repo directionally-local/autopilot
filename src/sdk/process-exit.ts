@@ -42,19 +42,30 @@ function signalExitListenerCount(): number {
 }
 
 function install(): () => void {
+  let active = true;
   let reraising = false;
   let shuttingDown = false;
+
+  /** Host listeners for `signal`: everything except ours and signal-exit's. */
+  const hostListeners = (signal: ExitSignal) =>
+    process.listenerCount(signal) - (signalListenersAttached ? 1 : 0) - signalExitListenerCount();
 
   const reraise = (signal: ExitSignal) => {
     if (reraising) return;
     reraising = true;
     uninstall();
+    removeSignalListeners();
     process.kill(process.pid, signal);
   };
 
   const onSignal = (signal: ExitSignal) => {
-    const hostListeners = process.listenerCount(signal) - 1 - signalExitListenerCount();
-    if (hostListeners > 0 || isExiting()) {
+    if (!active) {
+      // Uninstalled, but a signal that was already pending reached us before
+      // the listener came off: keep Node's default for it.
+      if (hostListeners(signal) <= 0) reraise(signal);
+      return;
+    }
+    if (hostListeners(signal) > 0 || isExiting()) {
       // The host decides whether (and when) to exit; just do the work.
       void runShutdownTasks();
       return;
@@ -66,6 +77,12 @@ function install(): () => void {
   };
 
   const signalListeners = SIGNALS.map((signal) => [signal, () => onSignal(signal)] as const);
+  let signalListenersAttached = true;
+  const removeSignalListeners = () => {
+    if (!signalListenersAttached) return;
+    signalListenersAttached = false;
+    for (const [signal, listener] of signalListeners) process.off(signal, listener);
+  };
   const onBeforeExit = () => void runShutdownTasks();
   const onCrash = () => {
     // A host that handles the exception keeps running; leave its sessions alone.
@@ -83,11 +100,19 @@ function install(): () => void {
   const uninstall = () => {
     if (uninstallHandlers !== uninstall) return;
     uninstallHandlers = null;
-    for (const [signal, listener] of signalListeners) process.off(signal, listener);
+    active = false;
     process.off("beforeExit", onBeforeExit);
     process.off("uncaughtExceptionMonitor", onCrash);
     process.off("exit", onExit);
     unregisterFlush();
+    // Removing a signal's last listener drops a signal that is already
+    // pending (e.g. dispose() then an immediate SIGTERM: Node would neither
+    // handle it nor die). libuv dispatches signals in the poll phase, and a
+    // signal sent from a poll callback is only read on the next loop
+    // iteration, so the listeners come off after two check phases: that
+    // guarantees a poll phase in between, where anything pending reaches
+    // onSignal and gets Node's default behaviour.
+    setImmediate(() => setImmediate(removeSignalListeners));
   };
   return uninstall;
 }
