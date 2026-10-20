@@ -1,3 +1,5 @@
+> **Retired (2026-10):** `/remote` and the Cloudflare remote agent were removed (#730). Kept as a design record.
+
 # `/slash remote` — Finalized Plan
 
 > Status: Decisions made. Ready to implement.

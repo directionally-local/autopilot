@@ -62,6 +62,12 @@ export async function checkProviderKey(
       return { ok: false, reason: "network", message: `Couldn't reach Cloudflare: ${e instanceof Error ? e.message : String(e)}` };
     }
   }
+  if (id === "bedrock") {
+    const { bedrockAuth } = await import("./bedrock.js");
+    return bedrockAuth()
+      ? { ok: true }
+      : { ok: false, reason: "invalid", message: "No AWS credentials: set AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key), or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials (AWS_PROFILE)." };
+  }
   if (id === "vertex") {
     // Proves Google credentials work (no request to Vertex itself is needed).
     try {

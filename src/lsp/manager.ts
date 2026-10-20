@@ -268,27 +268,4 @@ export class LspManager {
     }
     return count;
   }
-
-  /** Export a compact LSP context summary for multi-agent workers.
-   *  Returns workspace symbols from the first running server. */
-  async exportContext(_rootPath: string): Promise<string> {
-    for (const [, server] of this.servers) {
-      if (server.state !== "running") continue;
-      try {
-        const symbols = await server.client.workspaceSymbol("");
-        if (!symbols || symbols.length === 0) continue;
-        const lines = [`LSP server: ${server.id} (${server.rootUri})`];
-        for (const sym of symbols.slice(0, 50)) {
-          const loc = "location" in sym && sym.location
-            ? `${sym.location.uri}:${(sym.location.range?.start?.line ?? 0) + 1}`
-            : "";
-          lines.push(`- ${sym.name} (${sym.kind})${loc ? ` → ${loc}` : ""}`);
-        }
-        return lines.join("\n");
-      } catch {
-        // Skip servers that fail to export
-      }
-    }
-    return "";
-  }
 }

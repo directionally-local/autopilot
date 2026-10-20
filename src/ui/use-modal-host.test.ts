@@ -27,7 +27,6 @@ describe("computeModalFlags", () => {
       "showCommandList",
       "showLspWizard",
       "showThemePicker",
-      "showRemoteDashboard",
       "showInboxModal",
     ] as const) {
       const f = computeModalFlags({ ...EMPTY_MODAL_STATE, [key]: true });

@@ -21,6 +21,12 @@ import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicR
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
 import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
+import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
+
+/** "https://bedrock-runtime.us-west-2.amazonaws.com/…" → "us-west-2". */
+function bedrockRegionOf(url: string): string {
+  return /bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com/.exec(url)?.[1] ?? "us-east-1";
+}
 import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
@@ -210,6 +216,17 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
           reasoningEfforts: entry.reasoningEfforts,
           reasoningBudget: entry.reasoningBudget,
         })
+      : protocol === "bedrock-converse"
+        ? toConverseRequest({
+            model: opts.model,
+            messages: body.messages as ChatMessage[],
+            tools: hasTools ? opts.tools : undefined,
+            maxTokens,
+            temperature: opts.temperature,
+            reasoningEffort: opts.reasoningEffort,
+            supportsReasoning,
+            supportsTemperature,
+          })
       : protocol === "openai-responses"
         ? toResponsesRequest({
             model: opts.model,
@@ -233,6 +250,20 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       ...copilotRequestHeaders(customEndpoint.apiKey, wireBody, protocol),
       ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}),
     };
+  }
+
+  // Bedrock: the model is in the URL; SigV4 headers are computed per attempt (they cover the body and time).
+  const bedrock = customEndpoint?.providerId === "bedrock" ? bedrockAuth() : undefined;
+  if (customEndpoint?.providerId === "bedrock") {
+    url = converseUrl(customEndpoint.baseUrl, opts.model);
+    targetHeaders = {};
+    if (!bedrock) {
+      throw new KimiApiError(
+        "kimiflare: no AWS credentials for Bedrock — set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials.",
+        undefined,
+        401,
+      );
+    }
   }
 
   if (vertex) {
@@ -352,6 +383,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       if (opts.sessionId) headers["X-Session-ID"] = opts.sessionId;
       headers["X-Request-ID"] = requestId;
       const serialized = stableStringify(wireBody, jsonReplacer);
+      if (bedrock) Object.assign(headers, bedrockHeaders(bedrock, url, serialized, bedrockRegionOf(url)));
       res = await fetch(url, {
         method: "POST",
         headers,
@@ -382,7 +414,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // Errors come back as JSON (not SSE): OpenRouter's { error: { code,
     // message } } or an OpenAI-style error from a custom endpoint. Retry the
     // transient ones (408/429/5xx); surface everything else with a fix.
-    if (!contentType.includes("text/event-stream")) {
+    // Bedrock streams AWS's binary event stream, not SSE.
+    const streaming = protocol === "bedrock-converse" ? res.ok && contentType.includes("eventstream") : contentType.includes("text/event-stream");
+    if (!streaming) {
       if (res.bodyUsed) {
         throw new KimiApiError(
           `kimiflare: Received HTTP ${res.status} but could not read the response body. Please try again.`,
@@ -435,6 +469,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       const events =
         protocol === "anthropic-messages"
           ? parseAnthropicStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
+          : protocol === "bedrock-converse"
+            ? parseConverseStream(res.body, opts.signal)
           : protocol === "openai-responses"
             ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
             : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs, customEndpoint ? preset.compat.thinkTags === true : false);

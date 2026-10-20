@@ -6,7 +6,6 @@ import { resolveLspConfig } from "./util/lsp-config.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { getAppVersion } from "./util/version.js";
-import { createRemoteCommand } from "./remote/cli.js";
 import { renderLogo } from "./ui/logo.js";
 import { runPrintMode } from "./print-mode.js";
 import { registerEvalCommand } from "./eval/cli.js";
@@ -88,7 +87,15 @@ program
     await runCostCommand({ ...cmdOpts, config: cfg });
   });
 
-program.addCommand(createRemoteCommand());
+program
+  .command("remote")
+  .description("Retired: remote sessions on Cloudflare")
+  .allowUnknownOption()
+  .argument("[args...]")
+  .action(() => {
+    console.error("autopilot remote was retired. For unattended work use local subagents (/subagents) or a headless run: autopilot -p \"…\".");
+    process.exit(2);
+  });
 registerEvalCommand(program);
 
 const asterCommand = program.command("aster").description("Manage the Aster mobile API");
@@ -264,7 +271,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, vertex, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, vertex, bedrock, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -347,6 +354,23 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", 
 }
 
 authCommand.addCommand(
+  new Command("bedrock")
+    .description("Use Amazon Bedrock with your AWS credentials or a Bedrock API key, and make it the active provider")
+    .option("--region <region>", "AWS region (default: AWS_REGION / AWS_DEFAULT_REGION / us-east-1)")
+    .action(async (cmdOpts: { region?: string }) => {
+      const { bedrockAuth } = await import("./providers/bedrock.js");
+      const { patchProviderSettings, switchProvider } = await import("./providers/keys.js");
+      if (!bedrockAuth()) {
+        console.error("No AWS credentials found. Set AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key), or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials (AWS_PROFILE). For SSO: eval \"$(aws configure export-credentials --format env)\".");
+        process.exit(1);
+      }
+      if (cmdOpts.region) await patchProviderSettings("bedrock", { region: cmdOpts.region });
+      await switchProvider(await loadConfig().catch(() => null), "bedrock");
+      console.log(`✓ Amazon Bedrock${cmdOpts.region ? ` (${cmdOpts.region})` : ""} is now the active provider.`);
+    }),
+);
+
+authCommand.addCommand(
   new Command("vertex")
     .description("Use Google Vertex AI with your Google credentials (ADC) and make it the active provider")
     .option("--project <id>", "Google Cloud project (default: GOOGLE_VERTEX_PROJECT / GOOGLE_CLOUD_PROJECT / gcloud config)")
@@ -425,7 +449,7 @@ authCommand.addCommand(
     new Command("github")
       .description("Authenticate with GitHub via OAuth device flow")
       .action(async () => {
-        const { authGitHubForTui } = await import("./remote/tui-auth.js");
+        const { authGitHubForTui } = await import("./util/github-auth.js");
         for await (const step of authGitHubForTui()) {
           console.log(step.message);
           if (step.url && step.code) {

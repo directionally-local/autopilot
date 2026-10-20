@@ -11,7 +11,6 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "subagents", argHint: "[list|cancel <n>|all|stats|off|suggest|auto]", description: "List or stop running subagents; set the delegation policy", source: "builtin" },
   { name: "now", description: "Run your latest queued message now instead of after the current turn", source: "builtin" },
   { name: "mode", argHint: "[edit|plan|auto]", description: "Switch agent mode", source: "builtin" },
-  { name: "multi-agent", argHint: "[status]", description: "Legacy remote worker setup is disabled; use local Hotcell subagents", source: "builtin" },
   { name: "theme", argHint: "[<name>]", description: "Switch color theme", source: "builtin" },
   // Ink is the only UI engine; handler remains for manual use.
   { name: "memory", argHint: "[on|off|clear|search ...]", description: "Manage memory", source: "builtin" },
@@ -33,7 +32,6 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "clear", description: "Clear current conversation", source: "builtin" },
   { name: "fresh", description: "Start a fresh session with a summarized plan or continuation context", source: "builtin" },
   { name: "init", description: "Scan repo and write AGENTS.md", source: "builtin" },
-  { name: "remote", argHint: "[<prompt>]", description: "Run a remote session on Cloudflare", source: "builtin" },
   { name: "update", description: "Check for updates", source: "builtin" },
   { name: "hello", description: "Send a voice note to the creator", source: "builtin" },
   { name: "shell", argHint: "[auto|bash|cmd|powershell|<path>]", description: "Show or set shell for bash tool", source: "builtin" },
