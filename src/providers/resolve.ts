@@ -89,6 +89,18 @@ export function resolveActiveProvider(
   return { id, preset, ...(baseUrl ? { baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
 }
 
+let lastLoaded: ProviderId | null = null;
+
+/** Record the provider loadConfig() resolved, for text that names it (system prompt, banner). */
+export function noteActiveProvider(id: ProviderId): void {
+  lastLoaded = id;
+}
+
+/** Display name of the provider the last loaded config uses, or null before any config was loaded. */
+export function lastActiveProviderName(): string | null {
+  return lastLoaded ? getPreset(lastLoaded).name : null;
+}
+
 /** True when the provider can take requests: it has a key, or needs none (local runtimes, a custom gateway). */
 export function isProviderUsable(p: ActiveProvider): boolean {
   if (p.id === "custom") return !!p.baseUrl;

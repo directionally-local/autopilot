@@ -4,7 +4,7 @@
 
 ## Project
 
-**Autopilot** (autopilot-ai, formerly KimiFlare) is a TypeScript terminal coding agent. OpenRouter with the user's own key is the default provider, and the model picker uses OpenRouter's live catalog; custom OpenAI-compatible endpoints and a Requesty fallback are also supported. Do not assume the old Cloudflare AI Gateway / Workers AI architecture still applies.
+**Autopilot** (autopilot-ai, formerly KimiFlare) is a TypeScript terminal coding agent. OpenRouter with the user's own key is the default provider; users can also choose OpenAI, DeepSeek, Moonshot, Kimi Code, Z.ai, Ollama, LM Studio, Requesty or any OpenAI-compatible endpoint (src/providers/). Do not assume the old Cloudflare AI Gateway / Workers AI architecture still applies.
 
 - Node.js 20 or newer; TypeScript 5.7; ESM.
 - Interactive terminal UI plus one-shot print and JSON-RPC/SDK modes.
@@ -29,7 +29,8 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - src/index.tsx — Commander CLI entry point and mode/command routing.
 - src/app.tsx, src/ui/ — interactive app state and terminal UI components.
 - src/agent/ — OpenRouter client, streaming/tool-call turn loop, prompts, session and supervisor logic.
-- src/models/ — OpenRouter model catalog, capabilities, and pricing; live catalog is authoritative, with seed data as offline fallback.
+- src/providers/ — provider presets (base URL, key env vars, default/plumbing/embedding models, request quirks, OpenRouter-only capabilities) and resolution of the active provider. Every LLM call, catalog, cost and feature gate follows it; providers/openrouter-guard.test.ts keeps OpenRouter access inside the provider layer.
+- src/models/ — model catalogs (OpenRouter live catalog, Requesty, models.dev for other hosted providers with a bundled snapshot, Ollama/LM Studio discovery), capabilities, and pricing.
 - src/tools/ — tool schemas, implementations, permissions, output reduction, and dispatch (executor.ts).
 - src/init/ — /init project discovery and AGENTS.md prompt generation.
 - src/skills/ — skill discovery/routing; supports .agents/skills/, AGENTS.md, .github/skills/, and .kimiflare/skills/.

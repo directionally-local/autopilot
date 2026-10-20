@@ -28,6 +28,7 @@ import type {
 } from "#kimiflare/tools/executor.js";
 import { McpManager } from "#kimiflare/mcp/manager.js";
 import { runAgentTurn, BudgetExhaustedError } from "#kimiflare/agent/loop.js";
+import { llmAuthFromConfig } from "#kimiflare/agent/llm-auth.js";
 import type { AgentCallbacks } from "#kimiflare/agent/loop.js";
 import { buildSystemPrompt } from "#kimiflare/agent/system-prompt.js";
 import type { ChatMessage, Usage } from "#kimiflare/agent/messages.js";
@@ -38,7 +39,7 @@ import {
 } from "#kimiflare/sessions.js";
 import type { Mode } from "#kimiflare/mode.js";
 import { isBlockedInPlanMode, isReadOnlyBash } from "#kimiflare/mode.js";
-import type { Task } from "#kimiflare/tasks-state.js";
+import type { Task } from "#kimiflare/tools/registry.js";
 
 import {
   getSession,
@@ -137,7 +138,7 @@ export class KimiflareAcpAgent implements Agent {
     if (!config) {
       throw RequestError.authRequired(
         undefined,
-        "Cloudflare credentials not configured. Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or create ~/.config/kimiflare/config.json.",
+        "No LLM provider credentials configured. Run `autopilot auth <provider>` (see `autopilot auth status`), or set a provider key such as OPENROUTER_API_KEY, OPENAI_API_KEY or DEEPSEEK_API_KEY.",
       );
     }
 
@@ -423,8 +424,8 @@ export class KimiflareAcpAgent implements Agent {
 
     try {
       await runAgentTurn({
-        accountId: session.config.accountId,
-        apiToken: session.config.apiToken,
+        // Credentials and routing follow the active provider, like every other host.
+        ...llmAuthFromConfig(session.config),
         model: session.config.model || DEFAULT_MODEL,
         messages: session.messages,
         tools: session.executor.list(),
@@ -435,15 +436,6 @@ export class KimiflareAcpAgent implements Agent {
         reasoningEffort: session.config.reasoningEffort,
         coauthor,
         sessionId: session.id,
-        gateway: session.config.aiGatewayId
-          ? {
-              id: session.config.aiGatewayId,
-              cacheTtl: session.config.aiGatewayCacheTtl,
-              skipCache: session.config.aiGatewaySkipCache,
-              collectLogPayload: session.config.aiGatewayCollectLogPayload,
-              metadata: session.config.aiGatewayMetadata,
-            }
-          : undefined,
         keepLastImageTurns: session.config.imageHistoryTurns,
         memoryManager: session.memoryManager,
         codeMode: session.config.codeMode,

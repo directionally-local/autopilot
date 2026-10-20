@@ -11,17 +11,19 @@
   <a href="https://github.com/sinameraji/autopilot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sinameraji/autopilot?style=flat-square&color=2ea44f" alt="license"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js >= 20">
   <img src="https://img.shields.io/badge/typescript-5.7-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
-  <a href="https://openrouter.ai"><img src="https://img.shields.io/badge/runs%20on-OpenRouter-6566f1?style=flat-square" alt="Runs on OpenRouter"></a>
+  <img src="https://img.shields.io/badge/runs%20on-OpenRouter%20·%20OpenAI%20·%20DeepSeek%20·%20Ollama%20·%20…-6566f1?style=flat-square" alt="Runs on OpenRouter, OpenAI, DeepSeek, Ollama and more">
 </p>
 
 <p align="center">
-  <strong>A terminal coding agent that runs any model on <a href="https://openrouter.ai">OpenRouter</a> with your own key.</strong><br>
-  One key, 400+ models, per-turn billed cost.
+  <strong>A terminal coding agent that runs on your own provider key.</strong><br>
+  OpenRouter (400+ models, per-turn billed cost), OpenAI, DeepSeek, Kimi, Z.ai, local Ollama / LM Studio, or any OpenAI-compatible endpoint.
 </p>
 
 ## How it works
 
-autopilot sends every model call to **[OpenRouter](https://openrouter.ai)** using **your own OpenRouter API key** — bring-your-own-key, nothing proxied, nothing marked up. On first run you paste the key once (it's checked against OpenRouter before it's saved) and pick a model. That's the whole setup.
+autopilot sends every model call to **the provider you choose** using **your own key** — bring-your-own-key, nothing proxied, nothing marked up. On first run you pick a provider, connect it once (the key is checked before it's saved) and pick a model. That's the whole setup. [OpenRouter](https://openrouter.ai) is the recommended default; see [Providers](#providers) for the rest.
+
+On OpenRouter you also get:
 
 - **Any model, one key.** The model picker is OpenRouter's live catalog — Claude, GPT, Gemini, Grok, Qwen, GLM, Kimi, DeepSeek, free models and more — opening on the best & latest by benchmark score, with fuzzy search over everything. Switch any time with `/model`.
 - **Real cost, per turn.** OpenRouter reports what each generation actually cost; the status bar shows it (a local estimate marked `≈$` only until the billed number arrives). `/cost` totals it by session, day, month and all time.
@@ -81,6 +83,40 @@ npx autopilot-ai
 
 Requires Node.js ≥ 20.
 
+### Providers
+
+| Provider | id | Key | Notes |
+|---|---|---|---|
+| [OpenRouter](https://openrouter.ai) (default) | `openrouter` | `OPENROUTER_API_KEY` or browser sign-in | 400+ models, billed cost per turn, sticky routing, subagents, Jev checks |
+| OpenAI | `openai` | `OPENAI_API_KEY` | Chat Completions |
+| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | |
+| Moonshot AI (Kimi) | `moonshot` | `MOONSHOT_API_KEY` | |
+| Kimi Code (subscription) | `kimi-code` | `KIMI_API_KEY` | |
+| Z.ai (GLM) | `zai` | `ZHIPU_API_KEY` | |
+| Z.ai GLM Coding Plan | `zai-coding` | `ZHIPU_API_KEY` | |
+| Ollama (local) | `ollama` | none | installed models are discovered; `providers.ollama.baseUrl` for another host |
+| LM Studio (local) | `lmstudio` | none | |
+| Requesty | `requesty` | `REQUESTY_API_KEY` | |
+| Any OpenAI-compatible endpoint | `custom` | `KIMIFLARE_API_KEY` (optional) | `KIMIFLARE_BASE_URL` — LiteLLM, vLLM, llama.cpp, a company gateway |
+
+- **First run** asks which provider to use; providers with a key already in your environment are offered first and used without saving the key.
+- **Switch any time** with `/provider <id> [key]` (`/provider` lists them and where each key comes from), or from the CLI: `autopilot auth <id>` (saves a key and makes it active), `autopilot auth use <id>`, `autopilot auth status`. For one run, set `AUTOPILOT_PROVIDER=<id>`.
+- **Everything follows the provider**: chat, compaction and memory side-calls, memory/skill embeddings, the model picker (each provider's own catalog — models.dev for hosted providers, live discovery for Ollama and LM Studio), pricing, error messages and the status page link. Nothing is sent to OpenRouter while another provider is active.
+- **OpenRouter-only features** switch off on other providers: billed-cost confirmation (elsewhere `/cost` shows estimates from the provider's published prices), Hotcell subagents, and the Jev completion/triage checks.
+- **Embeddings**: providers without an embeddings API (DeepSeek, Moonshot, Kimi Code, the Coding Plan, LM Studio) keep memory working through text and topic-key recall. To keep vector recall, set `"embeddingProvider": "openai"` (or `AUTOPILOT_EMBEDDING_PROVIDER`) with that provider's key, or `memoryEmbeddingModel`.
+
+Config file shape (keys can live here instead of the environment):
+
+```json
+{
+  "provider": "deepseek",
+  "providers": {
+    "deepseek": { "apiKey": "sk-…", "model": "deepseek-v4-pro" },
+    "ollama": { "baseUrl": "http://gpu-box:11434/v1" }
+  }
+}
+```
+
 ### Your OpenRouter key
 
 Three ways to provide it — the first one found wins:
@@ -99,7 +135,7 @@ Earlier kimiflare versions ran on Cloudflare Workers AI / AI Gateway. On the fir
 
 - Your settings (theme, MCP/LSP servers, hooks, memory, sessions, cost history) carry over.
 - Model ids are migrated (`@cf/moonshotai/kimi-k2.6` → `moonshotai/kimi-k2.6`, and so on), and the retired Cloudflare fields (OAuth login, gateway, Unified Billing, provider keys) are removed from `config.json`.
-- Memory keeps working unchanged: embeddings use the same `bge-base-en-v1.5` model, now via OpenRouter.
+- Memory keeps working unchanged: on OpenRouter, embeddings use the same `bge-base-en-v1.5` model Workers AI served.
 - `/gateway`, `autopilot auth cloudflare`, `--cloud` and the Cloud-only commands are gone. `/multi-agent` (Commute) is retired; subagents now run locally through Hotcell.
 
 ### Subagents
@@ -224,9 +260,11 @@ session.dispose();
 
 #### SDK Authentication
 
-The SDK needs an OpenRouter API key — or a [custom gateway endpoint](#custom-gateway-endpoint)
-(`baseUrl` / `apiKey` in `config`, or `KIMIFLARE_BASE_URL` / `KIMIFLARE_API_KEY`), in which case no
-OpenRouter key is required. Resolved in this priority order:
+The SDK uses the active [provider](#providers) — `provider` in `config` (or `AUTOPILOT_PROVIDER`),
+else OpenRouter — and needs its key: `providers.<id>.apiKey` in `config` or the provider's env var
+(`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, …). A [custom gateway endpoint](#custom-gateway-endpoint)
+(`baseUrl` / `apiKey` in `config`, or `KIMIFLARE_BASE_URL` / `KIMIFLARE_API_KEY`) needs no other key.
+For OpenRouter, the key is resolved in this priority order:
 
 1. **Explicit `config` object** (`openrouterApiKey`) — recommended for apps
 2. **Environment variables**: `OPENROUTER_API_KEY` / `KIMIFLARE_OPENROUTER_KEY`
@@ -314,12 +352,13 @@ autopilot
 | `/memory` | Show memory stats and search |
 | `/mcp list` / `/mcp reload` | Manage MCP servers |
 | `/reasoning` | Toggle chain-of-thought display |
-| `/model` | Pick a model from OpenRouter's catalog (or `/model <id>`, `/model list [filter]`) |
+| `/model` | Pick a model from the active provider's catalog (or `/model <id>`, `/model list [filter]`) |
+| `/provider` | List providers, or switch with `/provider <id> [key]` (see [Providers](#providers)) |
 | `/jev` | Ask Jev for a typed, scoped one-shot decision |
 | `/subagents` | List running subagents; `/subagents cancel <n>\|all` stops them; `/subagents off\|suggest\|auto` sets the delegation policy (default: `auto`) |
 | `/now` | Run your latest queued message now instead of after the current turn (also `Ctrl+G` in Ink) |
-| `/key` | Show your OpenRouter key's spend and credit (`/key set <key>`, `/key clear`) |
-| `/cost` | Show OpenRouter-confirmed cost by session, day, month and all time |
+| `/key` | Show the active provider's key — on OpenRouter with spend and credit (`/key set <key>`, `/key clear`) |
+| `/cost` | Show cost by session, day, month and all time (OpenRouter-confirmed, or estimated from the provider's prices) |
 | `/update` | Check for updates |
 | `/help` | List all commands |
 
