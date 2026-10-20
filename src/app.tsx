@@ -211,6 +211,24 @@ function App({
 
   // Refresh sessionUsage when usage-tracker emits an out-of-band update
   // (e.g. after OpenRouter confirms a turn's cost and patches a turn's real cost).
+  // A background subagent finished: say so; its findings reach the agent at
+  // the next tool boundary or with your next message.
+  useEffect(
+    () =>
+      workerRegistry.onFinished((w) => {
+        if (!w.background || (sessionIdRef.current && w.sessionId !== sessionIdRef.current)) return;
+        setEvents((e) => [
+          ...e,
+          {
+            kind: "info",
+            key: mkKey(),
+            text: `Background subagent #${w.index} ${w.status}${w.costUsd ? ` ($${w.costUsd.toFixed(4)})` : ""}: ${w.task.slice(0, 80)}. Its findings go to the agent ${supervisorRef.current.isRunning ? "at the next tool step" : "with your next message"}.`,
+          },
+        ]);
+      }),
+    [],
+  );
+
   useEffect(() => {
     const handler = (sid: string) => {
       if (sessionIdRef.current && sid === sessionIdRef.current) {

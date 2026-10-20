@@ -1,8 +1,11 @@
 import type { ToolOutput, ToolSpec } from "./registry.js";
 import { JobManager } from "../jobs/manager.js";
 import { RunStore } from "../runs/store.js";
+import { workerRegistry } from "./worker-registry.js";
+import { finishedReport } from "./workers.js";
 
 interface WaitArgs {
+  worker_id?: string;
   job_id?: string;
   duration_ms?: number;
   until?: string;
@@ -15,13 +18,14 @@ const DEFAULT_JOB_POLL_MS = 10_000;
 export const waitForTool: ToolSpec<WaitArgs> = {
   name: "wait_for",
   description: [
-    "Yield an unattended run without polling the model. Wait for a managed job to finish, a duration to elapse, or an absolute ISO-8601 time.",
+    "Wait without polling the model: for a background subagent (worker_id; returns its findings), or — inside an unattended run — for a managed job to finish, a duration to elapse, or an absolute ISO-8601 time.",
     "The current turn ends immediately; a durable timer is saved for the supervisor to wake the run later. Requires an active runId.",
     "For job waits, the supervisor should re-check the job at each wake and reschedule while it remains active.",
   ].join(" "),
   parameters: {
     type: "object",
     properties: {
+      worker_id: { type: "string", description: "Background subagent to wait for (worker id or #number); returns its findings. Works in any session." },
       job_id: { type: "string", description: "Managed job ID to wait for." },
       duration_ms: { type: "integer", minimum: 1000, maximum: MAX_WAIT_MS, description: "Wait this long, up to seven days." },
       until: { type: "string", format: "date-time", description: "Absolute ISO-8601 time to resume." },
@@ -30,8 +34,13 @@ export const waitForTool: ToolSpec<WaitArgs> = {
     additionalProperties: false,
   },
   needsPermission: false,
-  render: (args) => ({ title: args.job_id ? `wait_for job ${args.job_id}` : "wait_for timer" }),
+  render: (args) => ({ title: args.worker_id ? `wait_for subagent ${args.worker_id}` : args.job_id ? `wait_for job ${args.job_id}` : "wait_for timer" }),
   async run(args, ctx): Promise<string | ToolOutput> {
+    // Background subagents live in this process: wait for one directly (no durable timer needed).
+    if (args.worker_id) {
+      if (!workerRegistry.find(args.worker_id)) return `No background subagent ${args.worker_id}; worker_status lists them.`;
+      return finishedReport(await workerRegistry.waitFor(args.worker_id, ctx.signal));
+    }
     if (!ctx.runId) {
       return "wait_for is available only inside a durable unattended run; no wait was scheduled.";
     }
