@@ -208,10 +208,16 @@ export function HooksDashboard(props: HooksDashboardProps): React.ReactElement {
       // recommended → append + enable in project scope
       const rec = RECOMMENDED_HOOKS.find((r) => r.id === meta.id);
       if (!rec) return;
-      const path = appendHook("project", props.cwd, rec.event, {
-        ...rec.hook,
-        enabled: true,
-      });
+      let path: string;
+      try {
+        path = appendHook("project", props.cwd, rec.event, {
+          ...rec.hook,
+          enabled: true,
+        });
+      } catch (e) {
+        setMessage(`could not enable ${rec.id}: ${(e as Error).message}`);
+        return;
+      }
       props.onMutate();
       setMessage(`enabled ${rec.id} (${rec.event}) → ${path}`);
       setVersion((n) => n + 1);

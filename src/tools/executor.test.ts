@@ -350,6 +350,8 @@ interface CapturedFire {
 class CapturingHooks {
   fired: CapturedFire[] = [];
   vetoNext = false;
+  /** Returned for every PreToolUse when set (JSON-decision tests). */
+  preDecision: { permissionDecision: "allow" | "deny" | "ask"; permissionDecisionReason?: string } | null = null;
 
   hasEnabledHooks(_event: HookEvent): boolean {
     return true;
@@ -367,6 +369,9 @@ class CapturingHooks {
         vetoed: true,
         vetoReason: "test veto",
       };
+    }
+    if (this.preDecision && event === "PreToolUse") {
+      return { outcomes: [], vetoed: false, vetoReason: "", ...this.preDecision };
     }
     return { outcomes: [], vetoed: false, vetoReason: "" };
   }
@@ -457,6 +462,62 @@ describe("ToolExecutor — M6.1 executor-level hooks", () => {
     // action never ran.
     assert.strictEqual(hooks.fired.length, 1);
     assert.strictEqual(hooks.fired[0]!.event, "PreToolUse");
+  });
+
+  it("a hook `ask` forces the permission prompt even for a tool that skips it", async () => {
+    const hooks = new CapturingHooks();
+    hooks.preDecision = { permissionDecision: "ask", permissionDecisionReason: "double-check this" };
+    const exec = new ToolExecutor([makeTool()]);
+    exec.setHooks(hooks as never);
+    const asked: Array<string | undefined> = [];
+    const res = await exec.run(
+      { id: "ask1", name: "echo", arguments: "{}" },
+      async (req) => {
+        asked.push(req.hookAskReason);
+        return "deny";
+      },
+      { cwd: "/tmp" },
+    );
+    assert.deepStrictEqual(asked, ["double-check this"]);
+    assert.strictEqual(res.errorCode, "permission_denied");
+  });
+
+  it("a hook `ask` re-asks even when the call was allowed for the session", async () => {
+    const hooks = new CapturingHooks();
+    const tool: ToolSpec = { ...makeTool(), needsPermission: true };
+    const exec = new ToolExecutor([tool]);
+    exec.setHooks(hooks as never);
+    let asks = 0;
+    const asker: PermissionAsker = async () => {
+      asks += 1;
+      return "allow_session";
+    };
+    await exec.run({ id: "s1", name: "echo", arguments: "{}" }, asker, { cwd: "/tmp" });
+    await exec.run({ id: "s2", name: "echo", arguments: "{}" }, asker, { cwd: "/tmp" });
+    assert.strictEqual(asks, 1, "session allow is cached without a hook decision");
+    hooks.preDecision = { permissionDecision: "ask" };
+    const res = await exec.run({ id: "s3", name: "echo", arguments: "{}" }, asker, { cwd: "/tmp" });
+    assert.strictEqual(asks, 2);
+    assert.strictEqual(res.ok, true);
+  });
+
+  it("a hook `allow` does not bypass the normal permission prompt", async () => {
+    const hooks = new CapturingHooks();
+    hooks.preDecision = { permissionDecision: "allow" };
+    const tool: ToolSpec = { ...makeTool(), needsPermission: true };
+    const exec = new ToolExecutor([tool]);
+    exec.setHooks(hooks as never);
+    let asks = 0;
+    const res = await exec.run(
+      { id: "al1", name: "echo", arguments: "{}" },
+      async () => {
+        asks += 1;
+        return "deny";
+      },
+      { cwd: "/tmp" },
+    );
+    assert.strictEqual(asks, 1);
+    assert.strictEqual(res.errorCode, "permission_denied");
   });
 
   it("propagates intentTier into PreToolUse + PostToolUse payloads", async () => {

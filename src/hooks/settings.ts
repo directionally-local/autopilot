@@ -2,6 +2,8 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
+import { logger } from "../util/logger.js";
+import { LEGACY_RECOMMENDED_COMMANDS } from "./recommended.js";
 import {
   HOOK_EVENTS,
   type HookConfig,
@@ -26,10 +28,48 @@ function readSettingsFile(path: string): KimiflareSettings | null {
   try {
     const raw = readFileSync(path, "utf8");
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as KimiflareSettings) : null;
-  } catch {
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as KimiflareSettings;
+    logger.warn("hooks:settings_not_object", { path });
+    return null;
+  } catch (e) {
+    logger.warn("hooks:settings_invalid_json", { path, error: e instanceof Error ? e.message : String(e) });
     return null;
   }
+}
+
+/** Thrown when a settings file exists but can't be safely rewritten. */
+export class SettingsFileError extends Error {
+  constructor(
+    readonly path: string,
+    detail: string,
+  ) {
+    super(`Refusing to modify ${path}: ${detail}. Fix or move the file, then try again.`);
+    this.name = "SettingsFileError";
+  }
+}
+
+/**
+ * Read a settings file we are about to rewrite. Missing → `{}`. Present but
+ * not a JSON object → throw instead of returning `{}`, so a hand-edited file
+ * with a typo (or one holding other tools' settings) is never silently
+ * replaced by a hooks-only file.
+ */
+function readSettingsFileForWrite(path: string): KimiflareSettings {
+  if (!existsSync(path)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new SettingsFileError(path, `it is not valid JSON (${e instanceof Error ? e.message : String(e)})`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SettingsFileError(path, "it does not contain a JSON object");
+  }
+  const settings = parsed as KimiflareSettings;
+  if (settings.hooks !== undefined && (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks))) {
+    throw new SettingsFileError(path, `its "hooks" key is not an object`);
+  }
+  return settings;
 }
 
 /** Stable id derived from `event + command` for hooks that didn't set
@@ -58,7 +98,10 @@ function normalizeHook(
   const timeoutMs = typeof r.timeoutMs === "number" && r.timeoutMs > 0 ? r.timeoutMs : undefined;
   const description = typeof r.description === "string" ? r.description : undefined;
   const id = typeof r.id === "string" && r.id.length > 0 ? r.id : deriveHookId(event, r.command);
-  return { id, matcher, command: r.command, timeoutMs, enabled, description, source };
+  // Recommended guards written by older releases blocked with `exit 1`,
+  // which now fails open; run the current `exit 2` version instead.
+  const command = LEGACY_RECOMMENDED_COMMANDS.get(r.command) ?? r.command;
+  return { id, matcher, command, timeoutMs, enabled, description, source };
 }
 
 /** Merge two `hooks` blocks into one. Project entries come after
@@ -119,7 +162,8 @@ export function loadHooksSettings(cwd: string): KimiflareSettings {
  * event list at write time (one-shot cleanup for users who hit
  * the pre-fix double-Enter bug).
  *
- * Returns the path that was written.
+ * Returns the path that was written. Throws `SettingsFileError` (and
+ * writes nothing) if the file exists but isn't a valid JSON object.
  */
 export function appendHook(
   scope: "global" | "project",
@@ -128,9 +172,13 @@ export function appendHook(
   hook: HookConfig,
 ): string {
   const path = scope === "global" ? globalSettingsPath() : projectSettingsPath(cwd);
-  const existing = readSettingsFile(path) ?? {};
+  const existing = readSettingsFileForWrite(path);
   const hooks = existing.hooks ?? {};
-  const list = hooks[event] ?? [];
+  const rawList: unknown = hooks[event];
+  if (rawList !== undefined && !Array.isArray(rawList)) {
+    throw new SettingsFileError(path, `"hooks.${event}" is not an array`);
+  }
+  const list = (rawList ?? []) as HookConfig[];
   // Drop id/source before writing — source is internal-only. We keep
   // the (possibly auto-derived) id because that's what setHookEnabled
   // matches against later.

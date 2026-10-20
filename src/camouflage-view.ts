@@ -1027,7 +1027,13 @@ class View implements AppBridge {
       } else {
         const rec = RECOMMENDED_HOOKS.find((x) => x.id === id);
         if (!rec) continue;
-        const path = appendHook("project", cwd, rec.event, { ...rec.hook, enabled: true });
+        let path: string;
+        try {
+          path = appendHook("project", cwd, rec.event, { ...rec.hook, enabled: true });
+        } catch (e) {
+          this.cam.send("RuntimeError", { message: `could not enable ${rec.id}: ${(e as Error).message}`, severity: "error" });
+          continue;
+        }
         refresh();
         cursor = `cfg:${id}`;
         say(`enabled ${rec.id} (${rec.event}) → ${path}`);
