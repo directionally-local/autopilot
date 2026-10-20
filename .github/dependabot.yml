@@ -1,0 +1,23 @@
+# Keep Autopilot on the latest releases of our own packages without manual
+# bumps. Merged automatically once CI passes (see
+# .github/workflows/deps-automerge.yml); the `fix(deps)` commit then makes
+# release-please cut a release, which re-bundles @hotcell/sdk.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: camouflage-tui
+      - dependency-name: "@hotcell/sdk"
+    # Raise the range too, so the lockfile and the bundled @hotcell/sdk move
+    # with it, and 0.x minor releases of @hotcell/sdk are picked up.
+    versioning-strategy: increase
+    groups:
+      own-packages:
+        patterns: ["camouflage-tui", "@hotcell/sdk"]
+    commit-message:
+      prefix: fix(deps)
+    labels: [dependencies]
+    open-pull-requests-limit: 2
