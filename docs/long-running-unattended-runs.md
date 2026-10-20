@@ -56,6 +56,25 @@ curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
 
 The resume request must update at least one budget. Omitted fields keep their current values. The saved session gets a continuation note and the agent resumes from that checkpoint.
 
+### When the current turn outgrows the model's context
+
+An unattended run can work for hours on one task without a new user message, so its single turn keeps growing. Older turns are compacted, but the active turn is kept word for word. If it alone no longer fits the model's context window, the run moves to `needs_input` (it does not fail) with a stop reason like:
+
+```text
+context_budget_exceeded: the current turn needs ~215,000 tokens but moonshotai/kimi-k2.6 has 120,000 available (context window 128,000); older turns are already compacted. Resume with a larger-context model ({"model": "<id>"}) or cancel the run.
+```
+
+Connected clients also receive a `run.needs_input` event. Continue on a model with a larger window, or cancel:
+
+```sh
+curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "google/gemini-3.8-flash"}' \
+  -X POST http://127.0.0.1:4096/runs/<run-id>/resume
+```
+
+A resume may change the model, the budgets, or both.
+
 ## Restart and machine-lifetime guarantees
 
 Waiting runs and their timers are stored in SQLite, and the training process is detached from the Autopilot server process. If the server restarts while an agent turn is active, Autopilot resumes automatically only when the latest saved session checkpoint has no tool call with an unknown outcome. If any tool intent occurred after the last saved checkpoint—whether its result is missing or the result was journaled but not yet saved into the session—the run becomes `interrupted_unknown`; Autopilot will not risk replaying an action such as starting a second training job.

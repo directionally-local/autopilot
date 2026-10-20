@@ -22,6 +22,7 @@
  */
 
 import { runAgentTurn, type AgentTurnOpts } from "./loop.js";
+import { ContextBudgetError } from "./context-budget.js";
 import { llmAuthFromConfig, activeOpenRouterKey } from "./llm-auth.js";
 import { completionCheckFromConfig } from "./completion-check.js";
 import { classifyIntent, type IntentResult } from "../intent/classify.js";
@@ -153,4 +154,36 @@ export async function runCoreTurn(opts: AgentTurnOpts, persist?: () => Promise<v
   } finally {
     if (persist) await persist();
   }
+}
+
+/** What a durable run becomes after its turn throws. */
+export interface RunStop {
+  status: "needs_input" | "failed";
+  /** Stored as the run's stop reason and shown to whoever resumes it. */
+  reason: string;
+}
+
+/**
+ * Map a failed turn to the run's next state, the same way for every host
+ * (#840). Hitting a budget is a decision for the user, not a failure:
+ *  - the runtime budget ran out → needs_input (raise the budget to continue)
+ *  - the active turn alone no longer fits the model's context → needs_input
+ *    with the estimate, the budget and the choices (a larger-context model,
+ *    or stop). An unattended run grows one turn without bound, so this would
+ *    otherwise end a long run hours in, with nobody watching.
+ * Anything else fails the run.
+ */
+export function runStopForError(error: unknown, opts: { runtimeBudgetExceeded?: boolean; model?: string } = {}): RunStop {
+  if (opts.runtimeBudgetExceeded) return { status: "needs_input", reason: "max_runtime_exceeded" };
+  if (error instanceof ContextBudgetError) {
+    const n = (v: number) => v.toLocaleString("en-US");
+    return {
+      status: "needs_input",
+      reason:
+        `context_budget_exceeded: the current turn needs ~${n(error.estimatedTokens)} tokens but ${opts.model ? `${opts.model} has` : "the model has"} ` +
+        `${n(error.budgetTokens)} available (context window ${n(error.contextWindow)}); older turns are already compacted. ` +
+        `Resume with a larger-context model ({"model": "<id>"}) or cancel the run.`,
+    };
+  }
+  return { status: "failed", reason: error instanceof Error ? error.message : String(error) };
 }

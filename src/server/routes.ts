@@ -2,6 +2,7 @@
  * HTTP route handlers for the KimiFlare headless server.
  */
 
+import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
@@ -502,14 +503,20 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
               return;
             }
             const resumeBody = parsedBody as Record<string, unknown>;
-            const allowedBudgetKeys = new Set(["maxToolIterations", "maxRuntimeMs", "maxTotalTokens", "maxCostUsd"]);
-            const unsupportedKey = Object.keys(resumeBody).find((key) => !allowedBudgetKeys.has(key));
+            const allowedResumeKeys = new Set(["maxToolIterations", "maxRuntimeMs", "maxTotalTokens", "maxCostUsd", "model"]);
+            const unsupportedKey = Object.keys(resumeBody).find((key) => !allowedResumeKeys.has(key));
             if (unsupportedKey) { badRequest(res, "Unsupported resume field: " + unsupportedKey); return; }
+            const { model: requestedModel, ...budgetBody } = resumeBody;
+            if (requestedModel !== undefined && (typeof requestedModel !== "string" || !requestedModel.trim())) {
+              badRequest(res, "model must be a non-empty model id");
+              return;
+            }
             let budgets: RunBudgetUpdate;
-            try { budgets = parseRunBudgetUpdate(resumeBody); }
+            try { budgets = parseRunBudgetUpdate(budgetBody); }
             catch (error) { badRequest(res, error instanceof Error ? error.message : String(error)); return; }
-            if (Object.values(budgets).every((value) => value === undefined)) {
-              badRequest(res, "Provide at least one revised budget; use null to remove a limit");
+            // A context overflow is resolved by a larger-context model; budget pauses by a revised budget.
+            if (requestedModel === undefined && Object.values(budgets).every((value) => value === undefined)) {
+              badRequest(res, "Provide a revised budget (use null to remove a limit) or a model to continue with");
               return;
             }
             const active = await getOrRestoreActiveRun(run);
@@ -517,10 +524,12 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
               json(res, 409, { error: "The previous turn is still stopping; retry resume shortly", run });
               return;
             }
-            active.messages.push({ role: "user", content: "The run was paused because " + (run.stopReason ?? "it needs input") + ". Its budget was updated. Continue the task from the last saved checkpoint." });
+            if (typeof requestedModel === "string") active.sessionFile.model = requestedModel.trim();
+            const change = typeof requestedModel === "string" ? `It now runs on ${requestedModel.trim()}.` : "Its budget was updated.";
+            active.messages.push({ role: "user", content: "The run was paused because " + (run.stopReason ?? "it needs input") + ". " + change + " Continue the task from the last saved checkpoint." });
             active.sessionFile.messages = active.messages;
             await saveSession(active.sessionFile);
-            const resumed = store.resumeWithBudgets(runId, budgets);
+            const resumed = store.resumeWithBudgets(runId, budgets, typeof requestedModel === "string" ? { change: `model:${requestedModel.trim()}` } : {});
             store.recordCheckpoint(runId);
             launchAgentTurnForSession(active, config, false);
             json(res, 202, { run: resumed });
@@ -990,8 +999,12 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
       const current = runStore.getRun(active.runId);
       if (current?.status === "running" && !active.shuttingDown) {
         const runtimeBudgetExceeded = controller.signal.aborted && run?.maxRuntimeMs !== null && run?.maxRuntimeMs !== undefined && run.startedAt !== null && Date.now() - run.startedAt >= run.maxRuntimeMs;
-        const reason = runtimeBudgetExceeded ? "max_runtime_exceeded" : message;
-        runStore.transition(active.runId, runtimeBudgetExceeded ? "needs_input" : "failed", reason);
+        // SessionCore decides: budget limits pause the run for a decision; anything else fails it.
+        const stop = runStopForError(err, { runtimeBudgetExceeded, model: sessionFile.model });
+        runStore.transition(active.runId, stop.status, stop.status === "failed" ? message : stop.reason);
+        if (stop.status === "needs_input") {
+          for (const client of active.sseClients) client.send("run.needs_input", { runId: active.runId, reason: stop.reason });
+        }
       }
     }
     if (active.finishAsterTurn) {

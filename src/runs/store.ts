@@ -304,9 +304,13 @@ export class RunStore {
     return update.immediate();
   }
 
-  /** Resume a budget-paused run and atomically apply any revised limits. */
-  resumeWithBudgets(id: string, budgets: RunBudgetUpdate): RunRecord {
-    if (Object.values(budgets).every((value) => value === undefined)) {
+  /**
+   * Resume a paused run and atomically apply any revised limits. A budget
+   * pause needs a revised budget; `opts.change` names another fix (e.g. a
+   * larger-context model) when the limits stay as they are.
+   */
+  resumeWithBudgets(id: string, budgets: RunBudgetUpdate, opts: { change?: string } = {}): RunRecord {
+    if (!opts.change && Object.values(budgets).every((value) => value === undefined)) {
       throw new Error("At least one run budget must be updated to resume");
     }
     if (budgets.maxToolIterations !== undefined) validateOptionalPositiveInteger("maxToolIterations", budgets.maxToolIterations);
@@ -328,7 +332,7 @@ export class RunStore {
       this.db.prepare(`UPDATE runs SET status = 'running', stop_reason = NULL, updated_at = ?, finished_at = NULL,
         max_tool_iterations = ?, max_runtime_ms = ?, max_total_tokens = ?, max_cost_usd = ? WHERE id = ?`)
         .run(now, maxToolIterations ?? -1, maxRuntimeMs ?? -1, maxTotalTokens ?? -1, maxCostUsd, id);
-      this.appendEvent(id, "state", null, null, { status: "running", reason: "resumed", budgets: { maxToolIterations, maxRuntimeMs, maxTotalTokens, maxCostUsd } }, now);
+      this.appendEvent(id, "state", null, null, { status: "running", reason: "resumed", budgets: { maxToolIterations, maxRuntimeMs, maxTotalTokens, maxCostUsd }, ...(opts.change ? { change: opts.change } : {}) }, now);
       return this.getRun(id)!;
     });
     return resume.immediate();
