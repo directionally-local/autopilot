@@ -62,6 +62,10 @@ export async function checkProviderKey(
       return { ok: false, reason: "network", message: `Couldn't reach Cloudflare: ${e instanceof Error ? e.message : String(e)}` };
     }
   }
+  if (id === "chatgpt") {
+    // Tokens come from the browser sign-in; there is nothing cheap to check them against.
+    return key ? { ok: true } : { ok: false, reason: "invalid", message: "Sign in with `autopilot auth chatgpt`." };
+  }
   if (id === "copilot") {
     if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth copilot` (GitHub device login)." };
     try {

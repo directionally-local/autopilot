@@ -41,6 +41,7 @@ const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "openrouter", hint: "recommended — hundreds of models with one account" },
   { id: "anthropic", hint: "Claude models with an Anthropic API key" },
   { id: "openai", hint: "GPT models with an OpenAI API key" },
+  { id: "chatgpt", hint: "your ChatGPT plan — sign in with ChatGPT" },
   { id: "gemini", hint: "Gemini models with a Google AI Studio key" },
   { id: "minimax", hint: "MiniMax models with a MiniMax API key" },
   { id: "copilot", hint: "your GitHub Copilot plan — sign in with GitHub" },
@@ -108,6 +109,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
     const p = getPreset(id);
     if (id === "openrouter") return setStep("method");
     if (id === "copilot") return void copilotLogin();
+    if (id === "chatgpt") return void chatgptLogin();
     if (id === "custom") return setStep("baseUrl");
     if (id === "azure" && !resolveActiveProvider({ provider: "azure" }).baseUrl) return setStep("baseUrl");
     const envKey = resolveProviderKey(id, persisted);
@@ -130,6 +132,24 @@ export function Onboarding({ onDone, onCancel }: Props) {
       setBaseUrl(access.apiBase);
       setKeySource("signin");
       await accept("copilot", token, "signin", access.apiBase);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep("provider");
+    }
+  };
+
+  /** "Sign in with ChatGPT": browser sign-in with token sharing; tokens (and refresh token) are saved right away. */
+  const chatgptLogin = async () => {
+    setDevice(null);
+    setStep("device");
+    try {
+      const { hostId, startChatGPTSignIn, saveChatGPTSettings } = await import("../providers/chatgpt.js");
+      const signIn = await startChatGPTSignIn({ savedClientId: persisted?.providers?.chatgpt?.clientId, hostId: await hostId() });
+      setDevice({ uri: signIn.url, code: "" });
+      openBrowser(signIn.url);
+      const settings = await signIn.done;
+      await saveChatGPTSettings(settings);
+      await accept("chatgpt", settings.apiKey, "signin");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStep("provider");
@@ -311,8 +331,14 @@ export function Onboarding({ onDone, onCancel }: Props) {
 
       {step === "device" && (
         <Box marginTop={1} flexDirection="column">
-          <Text>Sign in to GitHub Copilot</Text>
-          {device ? (
+          <Text>{provider === "chatgpt" ? "Sign in with ChatGPT" : "Sign in to GitHub Copilot"}</Text>
+          {device && provider === "chatgpt" ? (
+            <>
+              <Text>Approve Autopilot in your browser and allow token sharing.</Text>
+              <Text {...muted}>If the browser didn't open: {device.uri}</Text>
+              <Text {...muted}>Usage counts against your ChatGPT plan.</Text>
+            </>
+          ) : device ? (
             <>
               <Text>
                 Open <Text color={theme.accent}>{device.uri}</Text> and enter the code{" "}

@@ -264,7 +264,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, gemini, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -345,6 +345,29 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", 
       }),
   );
 }
+
+authCommand.addCommand(
+  new Command("chatgpt")
+    .description("Sign in with ChatGPT (token sharing) to use your ChatGPT plan's models, and make it the active provider")
+    .action(async () => {
+      const { hostId, startChatGPTSignIn, saveChatGPTSettings } = await import("./providers/chatgpt.js");
+      const { switchProvider } = await import("./providers/keys.js");
+      const { openBrowser } = await import("./ui/app-helpers.js");
+      try {
+        const cfg = await loadConfig().catch(() => null);
+        const signIn = await startChatGPTSignIn({ savedClientId: cfg?.providers?.chatgpt?.clientId, hostId: await hostId() });
+        console.log("Opening your browser to sign in with ChatGPT — allow token sharing for Autopilot.");
+        console.log(`If it doesn't open: ${signIn.url}`);
+        openBrowser(signIn.url);
+        await saveChatGPTSettings(await signIn.done);
+        await switchProvider(await loadConfig().catch(() => null), "chatgpt");
+        console.log("✓ Signed in with ChatGPT — now the active provider. Usage counts against your ChatGPT plan.");
+      } catch (e) {
+        console.error(e instanceof Error ? e.message : String(e));
+        process.exit(1);
+      }
+    }),
+);
 
 authCommand.addCommand(
   new Command("copilot")
