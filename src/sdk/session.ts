@@ -1,5 +1,6 @@
 import { encodeImageFile, imageNote, normalizeImageData } from "../util/image.js";
 import { endSession } from "../hooks/session-lifecycle.js";
+import { registerSessionForExit } from "./process-exit.js";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -159,6 +160,7 @@ export async function createAgentSession(
     hooks,
     provider: opts.provider,
     trace,
+    handleProcessExit: opts.handleProcessExit !== false,
   });
 
   // Persist new sessions immediately so hosts can rely on the file existing
@@ -189,6 +191,8 @@ interface InternalSessionOpts {
    *  PreToolUse / PostToolUse fire via the executor regardless. */
   hooks?: import("../hooks/manager.js").HooksManager;
   trace: TraceRecorder;
+  /** Run SessionEnd and the OTel flush if the process exits without dispose() (#893). */
+  handleProcessExit: boolean;
 }
 
 class InternalSession implements KimiFlareSession {
@@ -231,6 +235,8 @@ class InternalSession implements KimiFlareSession {
   };
   private disposed = false;
   private readonly createdAt: string;
+  /** Removes this session from the SDK's process-exit handling (#893). */
+  private unregisterExit: () => void = () => {};
 
   /** Persisted compaction state (session state + archived artifacts). */
   private readonly compactionState: Pick<SessionFile, "sessionState" | "artifactStore">;
@@ -280,6 +286,7 @@ class InternalSession implements KimiFlareSession {
           message: formatHookFailureNotice(n),
         });
       }) ?? (() => {});
+    if (opts.handleProcessExit) this.unregisterExit = registerSessionForExit();
 
     this.permissionHandler =
       opts.permissionHandler ??
@@ -491,9 +498,13 @@ class InternalSession implements KimiFlareSession {
   }
 
   dispose(options?: { traceEndReason?: import("../trace/types.js").SessionEndReason }): void {
-    if (this.sessionId) void endSession(this.sessionId, "exit");
+    // SessionEnd fires at most once: here, or from the process-exit handler.
+    const ended = this.sessionId ? endSession(this.sessionId, "exit") : Promise.resolve();
     if (this.disposed) return;
     this.disposed = true;
+    // Keep the exit handling until SessionEnd settles, so a signal that
+    // arrives meanwhile still waits for it (bounded) before the process dies.
+    void ended.finally(() => this.unregisterExit());
     // Background subagents belong to this session: stop the running ones, forget the results.
     this.unsubscribeWorkers();
     this.unsubscribeHookFailures();
