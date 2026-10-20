@@ -137,6 +137,55 @@ const MAX_RETRY_MS = 60_000;
  * durable wake timers. Constructing a store only opens/migrates the schema;
  * call reconcileInterruptedRuns explicitly once at supervisor startup.
  */
+/** Run states the operator is told about. */
+export const NOTIFIABLE_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "needs_input", "cancelled", "interrupted_unknown"]);
+
+/**
+ * pending → sending → sent. A rejected send is `retry` (transient) or
+ * `failed`; a send whose outcome is unknown (timeout after submission) is
+ * `uncertain` and retried only with the same idempotency key. `skipped`:
+ * notifications aren't configured.
+ */
+export type NotificationStatus = "pending" | "sending" | "sent" | "retry" | "uncertain" | "failed" | "skipped";
+
+export interface RunNotification {
+  id: string;
+  runId: string;
+  kind: RunStatus;
+  reason: string | null;
+  status: NotificationStatus;
+  attempts: number;
+  providerMessageId: string | null;
+  lastError: string | null;
+  createdAt: number;
+}
+
+interface RunNotificationRow {
+  id: string;
+  run_id: string;
+  kind: string;
+  reason: string | null;
+  status: string;
+  attempts: number;
+  provider_message_id: string | null;
+  last_error: string | null;
+  created_at: number;
+}
+
+function toNotification(r: RunNotificationRow): RunNotification {
+  return {
+    id: r.id,
+    runId: r.run_id,
+    kind: r.kind as RunStatus,
+    reason: r.reason,
+    status: r.status as NotificationStatus,
+    attempts: r.attempts,
+    providerMessageId: r.provider_message_id,
+    lastError: r.last_error,
+    createdAt: r.created_at,
+  };
+}
+
 export class RunStore {
   private readonly db: Database.Database;
 
@@ -201,6 +250,19 @@ export class RunStore {
       );
       CREATE INDEX IF NOT EXISTS idx_run_timers_due ON run_timers(status, wake_at);
       CREATE INDEX IF NOT EXISTS idx_run_timers_run ON run_timers(run_id, status);
+      CREATE TABLE IF NOT EXISTS run_notifications (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        provider_message_id TEXT,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_run_notifications_status ON run_notifications(status, created_at);
     `);
     const timerColumns = this.db.prepare("PRAGMA table_info(run_timers)").all() as Array<{ name: string }>;
     if (!timerColumns.some((column) => column.name === "interval_ms")) {
@@ -624,10 +686,40 @@ export class RunStore {
   }
 
   private appendEvent(runId: string, type: RunEventType, toolCallId: string | null, toolName: string | null, metadata: Record<string, unknown>, createdAt = Date.now()): void {
-    this.db.prepare(`INSERT OR IGNORE INTO run_events
+    const inserted = this.db.prepare(`INSERT OR IGNORE INTO run_events
       (run_id, event_type, tool_call_id, tool_name, metadata_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?)`)
       .run(runId, type, toolCallId, toolName, JSON.stringify(metadata), createdAt);
+    // Notification intent is persisted with the state change itself (same
+    // transaction), before anything is sent: a provider outage can't block
+    // the run, and a restart can't lose or duplicate the notification.
+    const status = type === "state" ? metadata.status : undefined;
+    if (inserted.changes > 0 && typeof status === "string" && NOTIFIABLE_STATUSES.has(status as RunStatus)) {
+      this.db.prepare(`INSERT INTO run_notifications (id, run_id, kind, reason, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?)`)
+        .run(`ntf_${randomUUID()}`, runId, status, typeof metadata.reason === "string" ? metadata.reason : null, createdAt, createdAt);
+    }
+  }
+
+  /** Notifications waiting to be sent (pending, or retryable after a failed attempt), oldest first. */
+  pendingNotifications(limit = 20): RunNotification[] {
+    return (this.db.prepare(`SELECT * FROM run_notifications WHERE status IN ('pending', 'retry', 'uncertain') ORDER BY created_at LIMIT ?`).all(limit) as RunNotificationRow[]).map(toNotification);
+  }
+
+  listNotifications(runId: string): RunNotification[] {
+    return (this.db.prepare(`SELECT * FROM run_notifications WHERE run_id = ? ORDER BY created_at`).all(runId) as RunNotificationRow[]).map(toNotification);
+  }
+
+  /** Record a delivery attempt's outcome. */
+  updateNotification(id: string, update: { status: NotificationStatus; providerMessageId?: string; error?: string; countAttempt?: boolean }): void {
+    this.db.prepare(`UPDATE run_notifications SET status = ?, provider_message_id = COALESCE(?, provider_message_id),
+      last_error = ?, attempts = attempts + ?, updated_at = ? WHERE id = ?`)
+      .run(update.status, update.providerMessageId ?? null, update.error ?? null, update.countAttempt ? 1 : 0, Date.now(), id);
+  }
+
+  /** After a crash, a send that was in flight may or may not have been delivered. */
+  recoverInFlightNotifications(): number {
+    return this.db.prepare(`UPDATE run_notifications SET status = 'uncertain', last_error = 'in flight when the server stopped', updated_at = ? WHERE status = 'sending'`).run(Date.now()).changes;
   }
 
   private assertRunExists(runId: string): void {

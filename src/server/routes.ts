@@ -5,6 +5,8 @@
 import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
+import { notificationSettingsFromConfig, startNotificationDispatcher } from "../runs/notifications.js";
 import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
@@ -248,6 +250,13 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       process.stderr.write(`aster: GitHub proxy failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
     });
   }
+
+  // Email the operator when a run finishes, fails or needs input (#671). Off
+  // unless configured (RESEND_API_KEY + a recipient).
+  const notificationSettings = notificationSettingsFromConfig(config);
+  const stopNotifications = notificationSettings
+    ? startNotificationDispatcher(() => new RunStore(), notificationSettings, { host: hostname() })
+    : () => {};
 
   const wakeScheduler = new RunWakeScheduler({
     onWake: async (event: RunWakeEvent) => {
@@ -728,6 +737,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
 
   function cleanup(): void {
     wakeScheduler.dispose();
+    stopNotifications();
     for (const [, active] of activeSessions) {
       active.shuttingDown = true;
       if (active.trace?.enabled) active.trace.emit("session_end", { reason: "exit" }, null);
