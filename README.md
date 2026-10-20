@@ -19,6 +19,10 @@
   OpenRouter (400+ models, per-turn billed cost), OpenAI, DeepSeek, Kimi, Z.ai, local Ollama / LM Studio, or any OpenAI-compatible endpoint.
 </p>
 
+<p align="center">
+  Part of <a href="https://directionallylocal.com">Directionally Local</a>, an open-source stack for running coding agents on your own hardware, alongside <a href="https://directionallylocal.com/hotcell/">Hotcell</a> and <a href="https://directionallylocal.com/serverless-objects/">Serverless Objects</a>. Product page: <a href="https://directionallylocal.com/autopilot/">directionallylocal.com/autopilot</a>.
+</p>
+
 ## How it works
 
 autopilot sends every model call to **the provider you choose** using **your own key** — bring-your-own-key, nothing proxied, nothing marked up. On first run you pick a provider, connect it once (the key is checked before it's saved) and pick a model. That's the whole setup. [OpenRouter](https://openrouter.ai) is the recommended default; see [Providers](#providers) for the rest.
