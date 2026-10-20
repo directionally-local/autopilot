@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig } from "./aster-workspaces.js";
+import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, localAsterConfigPath, resolveAsterServerConfigPath } from "./aster-workspaces.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -51,6 +51,24 @@ describe("Aster workspace registry", () => {
     const configPath = join(root, "aster.json");
     await writeFile(configPath, JSON.stringify({ models: ["provider/model-a"], workspaces: [{ id: "gone", displayName: "Gone", rootPath: join(root, "gone") }] }));
     await assert.rejects(loadAsterServerConfig(configPath), AsterConfigError);
+  });
+});
+
+describe("Aster config path resolution", () => {
+  it("prefers an explicit path, then a user-local config, then the system config", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-config-path-")));
+    roots.push(root);
+    const configHome = join(root, "config-home");
+    const env = { XDG_CONFIG_HOME: configHome };
+    const localPath = localAsterConfigPath(env);
+
+    assert.equal(localPath, join(configHome, "autopilot", "aster.json"));
+    assert.equal(resolveAsterServerConfigPath(env), "/etc/autopilot/aster.json");
+
+    await mkdir(join(configHome, "autopilot"), { recursive: true });
+    await writeFile(localPath, "{}");
+    assert.equal(resolveAsterServerConfigPath(env), localPath);
+    assert.equal(resolveAsterServerConfigPath({ ...env, AUTOPILOT_ASTER_CONFIG: join(root, "override.json") }), join(root, "override.json"));
   });
 });
 

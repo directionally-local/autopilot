@@ -70,6 +70,35 @@ describe("AsterStore", () => {
     }
   });
 
+  it("resolves only hashed GitHub grants bound to their code conversation", async () => {
+    const root = await fixture();
+    const store = new AsterStore(join(root, "state", "aster.db"));
+    try {
+      store.createConversation({
+        id: "conv-code-grant",
+        workspaceId: "default",
+        model: "test/model",
+        sessionId: "session-code-grant",
+        worktreePath: join(root, "workspace"),
+        cwd: join(root, "workspace"),
+        branch: "aster/12345678",
+        kind: "code",
+        repository: "me/app",
+        baseBranch: "main",
+      });
+      const token = "grant-token-" + "x".repeat(40);
+      store.createGitHubGrant("conv-code-grant", token);
+      assert.deepEqual(store.resolveGitHubGrant(token), {
+        conversationId: "conv-code-grant",
+        repository: "me/app",
+        branch: "aster/12345678",
+      });
+      assert.equal(store.resolveGitHubGrant("not-the-grant"), undefined);
+    } finally {
+      store.close();
+    }
+  });
+
   it("migrates an existing database additively and persists accepted turn replay across reopen", async () => {
     const root = await fixture();
     const dbPath = join(root, "state", "aster.db");

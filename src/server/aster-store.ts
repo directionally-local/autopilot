@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve";
-export type AsterConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed";
+export type AsterConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "merged";
 export type AsterApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
 
 export interface AsterPrincipal {
@@ -24,6 +24,11 @@ export interface AsterConversation {
   worktreePath: string;
   cwd: string;
   branch: string;
+  kind: "chat" | "code";
+  repository: string | null;
+  baseBranch: string | null;
+  pullRequestNumber: number | null;
+  pullRequestURL: string | null;
   status: AsterConversationStatus;
   activeRunId: string | null;
   lastEventSequence: number;
@@ -127,6 +132,11 @@ interface ConversationRow extends Record<string, unknown> {
   worktree_path: string;
   cwd: string;
   branch: string;
+  kind: "chat" | "code";
+  repository: string | null;
+  base_branch: string | null;
+  pull_request_number: number | null;
+  pull_request_url: string | null;
   status: AsterConversationStatus;
   active_run_id: string | null;
   last_event_sequence: number;
@@ -194,6 +204,11 @@ export class AsterStore {
         worktree_path TEXT NOT NULL,
         cwd TEXT NOT NULL,
         branch TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'chat',
+        repository TEXT,
+        base_branch TEXT,
+        pull_request_number INTEGER,
+        pull_request_url TEXT,
         status TEXT NOT NULL,
         active_run_id TEXT,
         last_event_sequence INTEGER NOT NULL DEFAULT 0,
@@ -257,7 +272,9 @@ export class AsterStore {
       CREATE TABLE IF NOT EXISTS aster_github_grants (
         conversation_id TEXT PRIMARY KEY,
         token TEXT NOT NULL UNIQUE,
+        token_hash TEXT,
         repository TEXT NOT NULL,
+        branch TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL,
         revoked_at INTEGER
       );
@@ -269,6 +286,26 @@ export class AsterStore {
         created_at INTEGER NOT NULL
       );
     `);
+    const conversationColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(aster_conversations)").all() as Array<{ name: string }>).map(({ name }) => name),
+    );
+    if (!conversationColumns.has("kind")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'");
+    if (!conversationColumns.has("repository")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN repository TEXT");
+    if (!conversationColumns.has("base_branch")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN base_branch TEXT");
+    if (!conversationColumns.has("pull_request_number")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN pull_request_number INTEGER");
+    if (!conversationColumns.has("pull_request_url")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN pull_request_url TEXT");
+    const grantColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(aster_github_grants)").all() as Array<{ name: string }>).map(({ name }) => name),
+    );
+    if (!grantColumns.has("branch")) this.db.exec("ALTER TABLE aster_github_grants ADD COLUMN branch TEXT NOT NULL DEFAULT ''");
+    if (!grantColumns.has("token_hash")) this.db.exec("ALTER TABLE aster_github_grants ADD COLUMN token_hash TEXT");
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_aster_github_grants_token_hash ON aster_github_grants(token_hash) WHERE token_hash IS NOT NULL");
+    const legacyGrants = this.db.prepare("SELECT conversation_id, token, branch FROM aster_github_grants WHERE token_hash IS NULL").all() as Array<{ conversation_id: string; token: string; branch: string }>;
+    for (const grant of legacyGrants) {
+      const project = this.getConversationProject(grant.conversation_id);
+      this.db.prepare("UPDATE aster_github_grants SET token_hash = ?, branch = ? WHERE conversation_id = ? AND token_hash IS NULL")
+        .run(hashToken(grant.token), grant.branch || project?.branch || "", grant.conversation_id);
+    }
     try { chmodSync(dbPath, 0o600); } catch { /* existing/read-only database permissions are managed by the caller */ }
   }
 
@@ -284,17 +321,21 @@ export class AsterStore {
     sessionId: string;
     cellName: string;
     idempotencyKey: string;
+    kind?: "chat" | "code";
+    repository?: string;
   }): AsterCellReservation {
     const keyHash = createHash("sha256").update(input.idempotencyKey).digest("hex");
-    const fingerprint = createHash("sha256").update(JSON.stringify([input.workspaceId, input.model])).digest("hex");
+    const fingerprintInput = [input.workspaceId, input.model, input.kind ?? "chat", input.repository?.toLowerCase() ?? null];
+    const fingerprint = createHash("sha256").update(JSON.stringify(fingerprintInput)).digest("hex");
+    const legacyChatFingerprint = createHash("sha256").update(JSON.stringify([input.workspaceId, input.model])).digest("hex");
     const reserve = this.db.transaction((): AsterCellReservation => {
       const existing = this.db.prepare("SELECT * FROM aster_cell_mappings WHERE credential_id = ? AND create_key_hash = ?")
         .get(input.credentialId, keyHash) as Record<string, unknown> | undefined;
       if (existing) {
         const mapping = cellMappingFromRow(existing);
-        return mapping.workspaceId === input.workspaceId && mapping.model === input.model
-          ? { kind: "replay", mapping }
-          : { kind: "conflict" };
+        const sameRequest = existing.create_fingerprint === fingerprint
+          || (input.kind === undefined && input.repository === undefined && existing.create_fingerprint === legacyChatFingerprint);
+        return sameRequest ? { kind: "replay", mapping } : { kind: "conflict" };
       }
       const now = Date.now();
       this.db.prepare(`INSERT INTO aster_cell_mappings
@@ -393,13 +434,26 @@ export class AsterStore {
     worktreePath: string;
     cwd: string;
     branch: string;
+    kind?: "chat" | "code";
+    repository?: string | null;
+    baseBranch?: string | null;
   }): AsterConversation {
+    const kind = input.kind ?? "chat";
+    const repository = input.repository ?? null;
+    const baseBranch = input.baseBranch ?? null;
+    if (kind === "code" && (!repository || !baseBranch)) throw new Error("code conversation requires repository and base branch");
+    if (kind === "chat" && (repository !== null || baseBranch !== null)) throw new Error("chat conversation cannot bind a repository");
     const now = Date.now();
     const create = this.db.transaction(() => {
       this.db.prepare(`INSERT INTO aster_conversations
-        (id, workspace_id, model, session_id, worktree_path, cwd, branch, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`)
-        .run(input.id, input.workspaceId, input.model, input.sessionId, input.worktreePath, input.cwd, input.branch, now, now);
+        (id, workspace_id, model, session_id, worktree_path, cwd, branch, kind, repository, base_branch, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`)
+        .run(input.id, input.workspaceId, input.model, input.sessionId, input.worktreePath, input.cwd, input.branch, kind, repository, baseBranch, now, now);
+      if (kind === "code") {
+        this.db.prepare(`INSERT OR IGNORE INTO aster_conversation_projects (conversation_id, kind, repository, branch, created_at)
+          VALUES (?, 'code', ?, ?, ?)`)
+          .run(input.id, repository, input.branch, now);
+      }
       this.insertEvent(input.id, null, "status", { status: "ready" }, now);
     });
     create.immediate();
@@ -473,7 +527,7 @@ export class AsterStore {
   }
 
   updateConversationStatus(conversationId: string, runId: string, status: AsterConversationStatus, data: Record<string, unknown> = {}): boolean {
-    const terminal = status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted";
+    const terminal = status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted" || status === "merged";
     const update = this.db.transaction(() => {
       const now = Date.now();
       const result = this.db.prepare(`UPDATE aster_conversations SET status = ?, active_run_id = ?, updated_at = ?
@@ -511,26 +565,59 @@ export class AsterStore {
     return { kind: row.kind === "code" ? "code" : "chat", repository: row.repository, branch: row.branch };
   }
 
-  /**
-   * The repository-scoped GitHub token for a code conversation, created once. It is stored
-   * as-is (like the server's own GitHub token, it never leaves the server except into that
-   * conversation's cell) so provisioning retries hand the cell the same value.
-   */
-  getOrCreateGitHubGrant(conversationId: string, repository: string): string {
-    const existing = this.db.prepare("SELECT token FROM aster_github_grants WHERE conversation_id = ? AND revoked_at IS NULL")
-      .get(conversationId) as { token: string } | undefined;
-    if (existing) return existing.token;
-    const token = "aghp_" + randomBytes(32).toString("base64url");
-    this.db.prepare(`INSERT INTO aster_github_grants (conversation_id, token, repository, created_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(conversation_id) DO UPDATE SET token = excluded.token, repository = excluded.repository, created_at = excluded.created_at, revoked_at = NULL`)
-      .run(conversationId, token, repository, Date.now());
-    return token;
+  createGitHubGrant(conversationId: string, grantToken: string): void {
+    if (grantToken.length < 32 || grantToken.length > 256) throw new Error("invalid GitHub grant token");
+    const project = this.getConversationProject(conversationId);
+    if (project?.kind !== "code" || !project.repository || !project.branch) throw new Error("GitHub grants require a branch-bound code conversation");
+    const tokenHash = hashToken(grantToken);
+    // Preserve the legacy NOT NULL column with a non-secret placeholder; the capability itself is hash-only.
+    const placeholder = `hashed:${tokenHash}`;
+    this.db.prepare(`INSERT INTO aster_github_grants (conversation_id, token, token_hash, repository, branch, created_at, revoked_at)
+      VALUES (?, ?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(conversation_id) DO UPDATE SET token = excluded.token, token_hash = excluded.token_hash,
+        repository = excluded.repository, branch = excluded.branch, created_at = excluded.created_at, revoked_at = NULL`)
+      .run(conversationId, placeholder, tokenHash, project.repository, project.branch, Date.now());
   }
 
-  resolveGitHubGrant(token: string): { conversationId: string; repository: string } | undefined {
-    const row = this.db.prepare("SELECT conversation_id, repository FROM aster_github_grants WHERE token = ? AND revoked_at IS NULL")
-      .get(token) as { conversation_id: string; repository: string } | undefined;
-    return row ? { conversationId: row.conversation_id, repository: row.repository } : undefined;
+  resolveGitHubGrant(token: string): { conversationId: string; repository: string; branch: string } | undefined {
+    if (!token || token.length > 256) return undefined;
+    const row = this.db.prepare("SELECT conversation_id, repository, branch FROM aster_github_grants WHERE token_hash = ? AND revoked_at IS NULL")
+      .get(hashToken(token)) as { conversation_id: string; repository: string; branch: string } | undefined;
+    return row ? { conversationId: row.conversation_id, repository: row.repository, branch: row.branch } : undefined;
+  }
+
+  setPullRequest(conversationId: string, pullRequest: { number: number; url: string; title: string; summary?: string }): boolean {
+    const parsed = URL.canParse(pullRequest.url) ? new URL(pullRequest.url) : undefined;
+    if (!Number.isSafeInteger(pullRequest.number) || pullRequest.number < 1 || parsed?.protocol !== "https:" || parsed.hostname !== "github.com") {
+      throw new Error("invalid pull request metadata");
+    }
+    const update = this.db.transaction(() => {
+      const project = this.getConversationProject(conversationId);
+      if (project?.kind !== "code" || !project.repository) return false;
+      const result = this.db.prepare("UPDATE aster_conversations SET pull_request_number = ?, pull_request_url = ?, updated_at = ? WHERE id = ?")
+        .run(pullRequest.number, pullRequest.url, Date.now(), conversationId);
+      if (result.changes !== 1) return false;
+      this.insertEvent(conversationId, null, "outcome", {
+        pullRequestNumber: pullRequest.number,
+        pullRequestURL: pullRequest.url,
+        title: pullRequest.title,
+        ...(pullRequest.summary ? { summary: pullRequest.summary } : {}),
+      }, Date.now());
+      return true;
+    });
+    return update.immediate();
+  }
+
+  markMerged(conversationId: string, sha?: string): boolean {
+    const update = this.db.transaction(() => {
+      const result = this.db.prepare("UPDATE aster_conversations SET status = 'merged', active_run_id = NULL, updated_at = ? WHERE id = ? AND pull_request_number IS NOT NULL AND active_run_id IS NULL")
+        .run(Date.now(), conversationId);
+      if (result.changes !== 1) return false;
+      const row = this.db.prepare("SELECT pull_request_number FROM aster_conversations WHERE id = ?").get(conversationId) as { pull_request_number: number };
+      this.insertEvent(conversationId, null, "pull_request.merged", { pullRequestNumber: row.pull_request_number, ...(sha ? { sha } : {}) }, Date.now());
+      return true;
+    });
+    return update.immediate();
   }
 
   revokeGitHubGrant(conversationId: string): void {
@@ -700,6 +787,11 @@ function rowToConversation(row: ConversationRow): AsterConversation {
     worktreePath: row.worktree_path,
     cwd: row.cwd,
     branch: row.branch,
+    kind: row.kind,
+    repository: row.repository,
+    baseBranch: row.base_branch,
+    pullRequestNumber: row.pull_request_number,
+    pullRequestURL: row.pull_request_url,
     status: row.status,
     activeRunId: row.active_run_id,
     lastEventSequence: row.last_event_sequence,

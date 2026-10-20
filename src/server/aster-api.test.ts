@@ -388,6 +388,52 @@ describe("Aster control-plane API", () => {
     }
   });
 
+  it("creates a PR for a completed code cell, exposes checks, and merges idempotently", async () => {
+    const harness = await createHarness("complete");
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", {
+        workspaceId: "default", model: "test/model", kind: "code", repository: "me/app",
+      }, "code-pr-lifecycle");
+      assert.equal(created.status, 201);
+      const conversation = await created.json() as { conversationId: string; kind: string; repository: string; branch: string };
+      assert.equal(conversation.kind, "code");
+      assert.equal(conversation.repository, "me/app");
+      assert.match(conversation.branch, /^aster\/[0-9a-f]{8}$/);
+
+      const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, {
+        clientTurnId: "code-turn-1", text: "Implement the feature",
+      });
+      assert.equal(turn.status, 202);
+      await waitForStatus(harness, conversation.conversationId, "completed");
+      assert.equal(harness.pullRequestCreates.length, 1);
+      assert.deepEqual(harness.pullRequestCreates[0], {
+        repository: "me/app",
+        title: "Implement the feature",
+        body: "reply-1",
+        head: conversation.branch,
+        base: "main",
+      });
+
+      const state = await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}`);
+      const stateBody = await state.json() as { pullRequestNumber: number; pullRequestURL: string };
+      assert.equal(stateBody.pullRequestNumber, 42);
+      assert.equal(stateBody.pullRequestURL, "https://github.com/me/app/pull/42");
+
+      const checks = await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}/pull-request/checks`);
+      assert.equal(checks.status, 200);
+      assert.equal(harness.pullRequestChecks[0], conversation.branch);
+
+      const merged = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/pull-request/merge`);
+      assert.equal(merged.status, 200);
+      assert.equal((await merged.json() as { status: string }).status, "merged");
+      const repeated = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/pull-request/merge`);
+      assert.equal(repeated.status, 200);
+      assert.deepEqual(harness.pullRequestMerges, [42]);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("makes turn submissions idempotent across concurrent retries and busy responses", async () => {
     const harness = await createHarness("hang");
     try {
@@ -743,6 +789,9 @@ interface Harness {
   restores: Array<{ cellId: string; checkpointId: string }>;
   provisionedProjects: Array<unknown>;
   createdRepositories: string[];
+  pullRequestCreates: Array<{ repository: string; title: string; body: string; head: string; base: string }>;
+  pullRequestChecks: string[];
+  pullRequestMerges: number[];
   pushes: AsterPushMessage[];
   close(): Promise<void>;
 }
@@ -811,6 +860,9 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const restores: Array<{ cellId: string; checkpointId: string }> = [];
   const provisionedProjects: Array<unknown> = [];
   const createdRepositories: string[] = [];
+  const pullRequestCreates: Array<{ repository: string; title: string; body: string; head: string; base: string }> = [];
+  const pullRequestChecks: string[] = [];
+  const pullRequestMerges: number[] = [];
   const pushes: AsterPushMessage[] = [];
   const fakePush = {
     configured: options.pushConfigured ?? false,
@@ -833,6 +885,18 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     createRepository: async (input: { name: string }) => {
       createdRepositories.push(`me/${input.name}`);
       return repo(`me/${input.name}`);
+    },
+    createPullRequest: async (repository: string, input: { title: string; body: string; head: string; base: string }) => {
+      pullRequestCreates.push({ repository, ...input });
+      return { number: 42, url: `https://github.com/${repository}/pull/42`, title: input.title, state: "open", headBranch: input.head, baseBranch: input.base, merged: false };
+    },
+    listChecks: async (_repository: string, ref: string) => {
+      pullRequestChecks.push(ref);
+      return [{ id: 7, name: "CI", status: "completed", conclusion: "success", url: null }];
+    },
+    mergePullRequest: async (_repository: string, number: number) => {
+      pullRequestMerges.push(number);
+      return { merged: true, message: "Pull request merged", sha: "abc123" };
     },
   } as unknown as AsterGitHub;
   const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as KimiConfig, {
@@ -890,6 +954,9 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     restores,
     provisionedProjects,
     createdRepositories,
+    pullRequestCreates,
+    pullRequestChecks,
+    pullRequestMerges,
     pushes,
     close,
   };
@@ -945,6 +1012,7 @@ async function completeTurn(turn: AsterTurnStart, text: string): Promise<void> {
     runs.close();
   }
   turn.publishEvent("assistant.delta", { delta: text });
+  await turn.beforeFinish?.();
   turn.finish("completed");
 }
 

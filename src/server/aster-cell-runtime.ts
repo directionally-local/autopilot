@@ -75,7 +75,7 @@ export interface AsterCellProject {
   /** Working branch created for this conversation. */
   branch?: string;
   /** Aster's repository-scoped GitHub proxy (preferred over Hotcell's GitHub gateway). */
-  github?: { token: string; gitUrl: string; apiUrl: string };
+  github?: { token: string; gitUrl: string };
 }
 
 export interface AsterArtifact {
@@ -107,6 +107,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   private readonly pollIntervalMs: number;
   private readonly healthTimeoutMs: number;
   private readonly activeRuns = new Map<string, { cellId: string; stop: () => void }>();
+  private readonly cellCursors = new Map<string, number>();
 
   constructor(
     private readonly provider: HotcellProvider,
@@ -172,7 +173,6 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
           env: {
             ASTER_GITHUB_TOKEN: input.project.github.token,
             ASTER_GITHUB_GIT_URL: input.project.github.gitUrl,
-            ASTER_GITHUB_API_URL: input.project.github.apiUrl,
           },
         } : {}),
       });
@@ -270,7 +270,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   startTurn(turn: AsterTurnStart): void {
-    void this.runTurn(turn).catch(() => {
+    void this.prepareAndRunTurn(turn).catch(() => {
       turn.finish("failed", "cell_runtime_error");
     });
   }
@@ -280,9 +280,53 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
    * and journaled its events, so this only resumes reading them from the saved cursor.
    */
   resumeTurn(turn: AsterTurnStart): void {
-    void this.runTurn(turn, { resume: true }).catch(() => {
+    void this.prepareAndRunTurn(turn, { resume: true }).catch(() => {
       turn.finish("failed", "cell_runtime_error");
     });
+  }
+
+  private async prepareAndRunTurn(
+    turn: AsterTurnStart,
+    options: { resume?: boolean } = {},
+  ): Promise<void> {
+    const conversationId = turn.conversation.id;
+    if (turn.conversation.kind === "code" && !turn.githubProxy) throw new Error("aster_github_proxy_not_configured");
+    let cellId = turn.cellId;
+    if (!cellId) {
+      const provisioned = await this.provisionConversation({
+        conversationId,
+        sessionId: turn.conversation.sessionId,
+        cellName: `aster-${conversationId.slice(0, 8)}`,
+        workspaceId: turn.conversation.workspaceId,
+        workspaceRoot: turn.conversation.worktreePath,
+        model: turn.conversation.model,
+        allowCreate: true,
+        onCellCreated: () => {},
+        ...(turn.conversation.kind === "code" && turn.conversation.repository ? {
+          project: {
+            kind: "code" as const,
+            repository: turn.conversation.repository,
+            baseBranch: turn.conversation.baseBranch ?? "main",
+            branch: turn.conversation.branch,
+            ...(turn.githubProxy ? { github: turn.githubProxy } : {}),
+          },
+        } : {}),
+      });
+      cellId = provisioned.cellId;
+    }
+
+    const cellStatus = turn.cellEventCursor === undefined && this.cellCursors.get(conversationId) === undefined
+      ? await this.controlById(cellId, "GET", "/status").catch(() => undefined) as { cursor?: number } | undefined
+      : undefined;
+    const cursor = turn.cellEventCursor
+      ?? this.cellCursors.get(conversationId)
+      ?? (typeof cellStatus?.cursor === "number" ? cellStatus.cursor : 0);
+    const onCellCursor = (next: number) => {
+      this.cellCursors.set(conversationId, next);
+      turn.onCellCursor?.(next);
+    };
+
+    await this.runTurn({ ...turn, cellId, cellEventCursor: cursor, onCellCursor }, options);
   }
 
   cancelRun(runId: string): void {
@@ -292,7 +336,10 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     void this.controlById(active.cellId, "POST", "/rpc", { id: randomUUID(), type: "abort" }).catch(() => {});
   }
 
-  private async runTurn(turn: AsterTurnStart, options: { resume?: boolean } = {}): Promise<void> {
+  private async runTurn(
+    turn: AsterTurnStart & { cellId: string; cellEventCursor: number },
+    options: { resume?: boolean } = {},
+  ): Promise<void> {
     const { cellId, runId } = turn;
     let cursor = turn.cellEventCursor;
     let stopped = false;
@@ -463,12 +510,32 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
         }
       }
     } catch { /* artifacts are best-effort; the turn's result stands */ }
-    // Checkpoint whatever the turn left behind (even partial work from a cancel or
-    // failure) before reporting the terminal state, so the client can roll back.
-    await this.checkpoint(cellId, turn.userText)
-      .then((checkpoint) => { if (checkpoint) turn.publishEvent("checkpoint.created", { ...checkpoint }); })
-      .catch(() => {});
-    if (outcome?.status === "completed" && turn.beforeFinish) {
+    const checkpoint = await this.checkpoint(cellId, turn.userText)
+      .catch(() => undefined);
+    if (checkpoint) turn.publishEvent("checkpoint.created", { ...checkpoint });
+
+    if (outcome?.status === "completed" && turn.conversation.kind === "code" && turn.conversation.repository) {
+      const hasChanges = checkpoint !== undefined
+        || turn.conversation.pullRequestNumber !== null
+        || await this.hasCommitsAhead(cellId, turn.conversation.baseBranch ?? "main");
+      if (hasChanges) {
+        const cell = await this.provider.getCell(cellId);
+        const push = await cell.exec(`${GIT} push -u origin ${shellQuote(turn.conversation.branch)}`);
+        if (push.exitCode !== 0) {
+          outcome = { status: "failed", reason: "git_push_failed" };
+          turn.publishEvent("outcome.failed", { reason: "git_push_failed" });
+        } else if (turn.beforeFinish) {
+          try {
+            await turn.beforeFinish();
+          } catch {
+            outcome = { status: "failed", reason: "pull_request_failed" };
+            turn.publishEvent("outcome.failed", { reason: "pull_request_failed" });
+          }
+        }
+      } else {
+        turn.publishEvent("outcome", { summary: "No repository changes were made; no pull request was opened." });
+      }
+    } else if (outcome?.status === "completed" && turn.beforeFinish) {
       await Promise.race([turn.beforeFinish().catch(() => {}), sleep(MEMORY_EXTRACTION_TIMEOUT_MS)]);
     }
     finish(outcome?.status ?? "cancelled", outcome?.reason ?? "cell_turn_stopped");
@@ -502,6 +569,16 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     return result.exitCode === 0;
   }
 
+  private async hasCommitsAhead(cellId: string, baseBranch: string): Promise<boolean> {
+    if (!BRANCH_RE.test(baseBranch)) return false;
+    const cell = await this.provider.getCell(cellId);
+    const base = `origin/${shellQuote(baseBranch)}`;
+    const result = await cell.exec(
+      `if ${GIT} rev-parse --verify ${base} >/dev/null 2>&1; then ${GIT} rev-list --count ${base}..HEAD; else printf '0\\n'; fi`,
+    );
+    return result.exitCode === 0 && Number(result.stdout.trim()) > 0;
+  }
+
   /** Commit all workspace changes; returns the new checkpoint, or undefined when nothing changed. */
   private async checkpoint(cellId: string, userText: string): Promise<AsterCheckpoint | undefined> {
     const cell = await this.provider.getCell(cellId);
@@ -523,9 +600,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
    * while an image with the runtime baked in skips the install entirely.
    */
   /**
-   * Clone a GitHub repository into /workspace on a new working branch, through Hotcell's
-   * credential gateway: the remote points at the gateway and git authenticates with the
-   * cell's own egress token, so the real GitHub token never enters the cell. Idempotent.
+   * Clone a GitHub repository into /workspace on a new working branch through Aster's
+   * repository-scoped proxy. The cell receives only its per-conversation grant token.
    */
   private async cloneRepository(cell: Sandbox, project: AsterCellProject): Promise<void> {
     const seeded = await cell.exec(`test -f ${CELL_STATE_DIR}/.seeded`);
@@ -751,10 +827,8 @@ function projectNote(project: AsterCellProject): string {
   const { repository, branch, baseBranch } = project;
   return (
     `[Aster code chat. GitHub repository ${repository} is cloned at /workspace on branch ${branch} (from ${baseBranch}). ` +
-    "Commit your work and push with `git push -u origin HEAD`; credentials are preconfigured, so never print or write tokens. " +
-    "Only this repository is reachable from here. " +
-    `To open a pull request: curl -s -X POST "\${ASTER_GITHUB_API_URL:-$GITHUB_BASE_URL}/repos/${repository}/pulls" -H "Authorization: Bearer \${ASTER_GITHUB_TOKEN:-$GITHUB_API_KEY}" ` +
-    `-H "Accept: application/vnd.github+json" -d '{"title":"…","head":"${branch}","base":"${baseBranch}","body":"…"}'. ` +
+    "Work autonomously, commit the changes, and do not open or merge a pull request yourself; Aster publishes the branch and opens the PR after the turn succeeds. " +
+    "Credentials are preconfigured for this repository; never print or write tokens. " +
     `${artifacts} The artifacts folder is not committed to the repository.]`
   );
 }

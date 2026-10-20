@@ -17,7 +17,7 @@ import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import type { AsterArtifact, AsterCellProject } from "./aster-cell-runtime.js";
 import { AsterGitHub, AsterGitHubError, REPOSITORY_FULL_NAME_RE } from "./aster-github.js";
 import { AsterMemory } from "./aster-memory.js";
-import { AsterGitHubProxy } from "./aster-github-proxy.js";
+import { AsterGitHubProxy, createAsterGitHubGrantToken } from "./aster-github-proxy.js";
 import { AsterPush } from "./aster-push.js";
 import { containsLikelyProviderSecret, createAsterTools, redactLikelySecrets, assertAsterCellPath } from "./aster-tools.js";
 
@@ -43,6 +43,8 @@ export interface AsterTurnStart {
   allowedTools: Set<string>;
   maxToolIterations: number | null;
   maxRuntimeMs: number | null;
+  /** Branch-scoped capability used only by the code cell's Git transport. */
+  githubProxy?: { token: string; gitUrl: string };
   askPermission: (request: PermissionRequest) => Promise<PermissionDecision>;
   publishEvent: (type: string, data: Record<string, unknown>) => void;
   onCellCursor?: (cursor: number) => void;
@@ -198,7 +200,7 @@ export class AsterApi {
           service: "autopilot",
           apiVersion: "v1",
           serviceVersion: getAppVersion(),
-          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
+          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
         });
       }
 
@@ -343,6 +345,31 @@ export class AsterApi {
         const conversation = await this.authorizedConversation(store, principal, cancelMatch[1]!);
         if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
         return this.cancelConversation(res, store, conversation);
+      }
+
+      const pullRequestMergeMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/pull-request\/merge$/);
+      if (pullRequestMergeMatch && method === "POST") {
+        if (!this.hasScope(principal, "conversations:write")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/write scope");
+        const conversation = await this.authorizedConversation(store, principal, pullRequestMergeMatch[1]!);
+        if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
+        const project = store.getConversationProject(conversation.id);
+        if (conversation.status === "merged") return json(res, 200, publicConversation(conversation, project));
+        if (conversation.status !== "completed" || project?.kind !== "code" || !project.repository || !conversation.pullRequestNumber) {
+          return sendError(res, 409, "pull_request_not_ready", "This conversation has no completed pull request to merge");
+        }
+        const merge = await this.github.mergePullRequest(project.repository, conversation.pullRequestNumber);
+        if (!store.markMerged(conversation.id, merge.sha)) return sendError(res, 409, "merge_state_conflict", "The conversation changed before merge could be recorded");
+        return json(res, 200, publicConversation(store.getConversation(conversation.id)!, project));
+      }
+
+      const pullRequestChecksMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/pull-request\/checks$/);
+      if (pullRequestChecksMatch && method === "GET") {
+        if (!this.hasScope(principal, "conversations:read")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/read scope");
+        const conversation = await this.authorizedConversation(store, principal, pullRequestChecksMatch[1]!);
+        if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
+        const project = store.getConversationProject(conversation.id);
+        if (!project?.repository || !project.branch || !conversation.pullRequestNumber) return sendError(res, 404, "pull_request_not_found", "This conversation has no pull request");
+        return json(res, 200, { checks: await this.github.listChecks(project.repository, project.branch) });
       }
 
       const lifecycleMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/(pause|resume)$/);
@@ -600,6 +627,8 @@ export class AsterApi {
       sessionId: candidateSessionId,
       cellName: `aster-${candidateId}`,
       idempotencyKey,
+      kind,
+      ...(repository ? { repository } : {}),
     });
     if (reservation.kind === "conflict") return sendError(res, 409, "idempotency_conflict", "Idempotency-Key was already used for different conversation parameters");
 
@@ -645,10 +674,11 @@ export class AsterApi {
           : { kind: "chat" };
       }
       if (project.kind === "code" && project.repository && this.githubProxyUrl) {
+        const grantToken = createAsterGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", mapping.conversationId, project.repository, project.branch!);
+        store.createGitHubGrant(mapping.conversationId, grantToken);
         project.github = {
-          token: store.getOrCreateGitHubGrant(mapping.conversationId, project.repository),
+          token: grantToken,
           gitUrl: `${this.githubProxyUrl}/git`,
-          apiUrl: `${this.githubProxyUrl}/api`,
         };
       }
     }
@@ -675,7 +705,10 @@ export class AsterApi {
         sessionId: mapping.sessionId,
         worktreePath: "/workspace",
         cwd: "/workspace",
-        branch: "cell",
+        branch: project?.kind === "code" ? project.branch! : "cell",
+        kind: project?.kind ?? "chat",
+        repository: project?.kind === "code" ? project.repository! : null,
+        baseBranch: project?.kind === "code" ? project.baseBranch ?? "main" : null,
       });
       const sessionFile: SessionFile = {
         id: mapping.sessionId,
@@ -818,6 +851,13 @@ export class AsterApi {
         store.appendEvent(conversation.id, runId, type, data);
       };
       const turnStartSequence = store.getConversation(conversation.id)?.lastEventSequence ?? 0;
+      const conversationProject = store.getConversationProject(conversation.id);
+      const githubProxy = conversationProject?.kind === "code" && conversationProject.repository && conversationProject.branch && this.githubProxyUrl
+        ? {
+            token: createAsterGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", conversation.id, conversationProject.repository, conversationProject.branch),
+            gitUrl: `${this.githubProxyUrl}/git`,
+          }
+        : undefined;
       const active: AsterTurnStart = {
         runId,
         conversation,
@@ -830,6 +870,7 @@ export class AsterApi {
         allowedTools,
         maxToolIterations: run.maxToolIterations,
         maxRuntimeMs: run.maxRuntimeMs,
+        ...(githubProxy ? { githubProxy } : {}),
         askPermission: (request) => this.askForApproval(store, conversation, runId, request, publishEvent),
         publishEvent,
         onCellCursor: (cursor) => store.advanceCellEventCursor(conversation.id, cursor),
@@ -848,6 +889,30 @@ export class AsterApi {
           const project = store.getConversationProject(conversation.id);
           const changes = await memory.remember({ conversationId: conversation.id, project, userText: text, assistantText: reply });
           if (changes.length) publishEvent("memory.updated", { items: changes });
+        };
+      }
+      const codeProject = store.getConversationProject(conversation.id);
+      if (codeProject?.kind === "code" && codeProject.repository && codeProject.branch) {
+        const existingBeforeFinish = active.beforeFinish;
+        active.beforeFinish = async () => {
+          await existingBeforeFinish?.();
+          const current = store.getConversation(conversation.id);
+          if (current?.pullRequestNumber && current.pullRequestURL) return;
+          const repository = await this.github.getRepository(codeProject.repository!);
+          const summary = collectAssistantText(store, conversation.id, runId, turnStartSequence).trim().slice(0, 10_000) || text;
+          const title = text.replace(/\s+/g, " ").trim().slice(0, 80) || `Changes for ${codeProject.repository}`;
+          const pullRequest = await this.github.createPullRequest(codeProject.repository!, {
+            title,
+            body: summary,
+            head: codeProject.branch!,
+            base: repository.defaultBranch,
+          });
+          if (!store.setPullRequest(conversation.id, {
+            number: pullRequest.number,
+            url: pullRequest.url,
+            title: pullRequest.title,
+            summary,
+          })) throw new Error("pull_request_state_conflict");
         };
       }
       this.runtime.startTurn(active);
@@ -1232,7 +1297,10 @@ function collectAssistantText(store: AsterStore, conversationId: string, runId: 
     const events = store.eventsAfter(conversationId, cursor, 500);
     if (events.length === 0) break;
     for (const event of events) {
-      if (event.runId === runId && event.type === "assistant.delta" && typeof event.data.text === "string") text += event.data.text;
+      if (event.runId === runId && event.type === "assistant.delta") {
+        const delta = typeof event.data.text === "string" ? event.data.text : typeof event.data.delta === "string" ? event.data.delta : "";
+        text += delta;
+      }
     }
     cursor = events.at(-1)!.sequence;
     if (text.length > 20_000) break;
@@ -1243,6 +1311,8 @@ function collectAssistantText(store: AsterStore, conversationId: string, runId: 
 function publicConversation(conversation: AsterConversation, project?: AsterConversationProject): Record<string, unknown> {
   return {
     ...(project ? { kind: project.kind, repository: project.repository, branch: project.branch } : {}),
+    ...(conversation.pullRequestNumber ? { pullRequestNumber: conversation.pullRequestNumber } : {}),
+    ...(conversation.pullRequestURL ? { pullRequestURL: conversation.pullRequestURL } : {}),
     conversationId: conversation.id,
     workspaceId: conversation.workspaceId,
     model: conversation.model,

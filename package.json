@@ -98,20 +98,5 @@
   },
   "overrides": {
     "esbuild": "^0.28.2"
-  },
-  "bundleDependencies": [
-    "@hotcell/sdk",
-    "@modelcontextprotocol/sdk",
-    "better-sqlite3",
-    "commander",
-    "imapflow",
-    "ink",
-    "ink-select-input",
-    "jpeg-js",
-    "pngjs",
-    "postal-mime",
-    "react",
-    "turndown",
-    "uqr"
-  ]
+  }
 }
