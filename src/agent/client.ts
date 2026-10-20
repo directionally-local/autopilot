@@ -20,6 +20,7 @@ import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from 
 import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
+import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
 import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
@@ -191,9 +192,11 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   // The wire body: Chat Completions as built above, or converted for
   // providers that speak another protocol (src/agent/protocols/).
   // A model's catalog entry can pick the protocol (Copilot serves Claude over
-  // Messages and GPT-5 over Responses from one account).
-  const protocol = customEndpoint ? (entry.protocol ?? preset.protocol ?? "openai-chat") : "openai-chat";
-  const wireBody: Record<string, unknown> =
+  // Messages and GPT-5 over Responses from one account); Vertex routes Claude
+  // to Anthropic's Messages API by model name.
+  const vertex = customEndpoint?.providerId === "vertex" ? vertexTarget(customEndpoint.baseUrl.replace(/\/+$/, ""), opts.model) : null;
+  const protocol = vertex?.protocol ?? (customEndpoint ? (entry.protocol ?? preset.protocol ?? "openai-chat") : "openai-chat");
+  let wireBody: Record<string, unknown> =
     protocol === "anthropic-messages"
       ? toAnthropicRequest({
           model: opts.model,
@@ -229,6 +232,16 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     targetHeaders = {
       ...copilotRequestHeaders(customEndpoint.apiKey, wireBody, protocol),
       ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}),
+    };
+  }
+
+  if (vertex) {
+    url = vertex.url;
+    if (protocol === "anthropic-messages") wireBody = toVertexAnthropicBody(wireBody);
+    else if (vertex.bodyModel) wireBody = { ...wireBody, model: vertex.bodyModel };
+    targetHeaders = {
+      Authorization: `Bearer ${await vertexAccessToken()}`,
+      ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION } : {}),
     };
   }
 

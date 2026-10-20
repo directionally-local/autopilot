@@ -25,7 +25,7 @@ import { checkOpenRouterKey, OPENROUTER_KEYS_URL, type OpenRouterKeyInfo } from 
 import type { ModelEntry } from "../models/registry.js";
 import { getPreset, type ProviderId } from "../providers/presets.js";
 import { detectEnvProviders, resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
-import { checkProviderKey, saveProviderKey, switchProvider } from "../providers/keys.js";
+import { checkProviderKey, patchProviderSettings, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 
@@ -43,6 +43,7 @@ const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "openai", hint: "GPT models with an OpenAI API key" },
   { id: "chatgpt", hint: "your ChatGPT plan — sign in with ChatGPT" },
   { id: "gemini", hint: "Gemini models with a Google AI Studio key" },
+  { id: "vertex", hint: "Gemini and Claude on Google Cloud (gcloud credentials)" },
   { id: "minimax", hint: "MiniMax models with a MiniMax API key" },
   { id: "copilot", hint: "your GitHub Copilot plan — sign in with GitHub" },
   { id: "xai", hint: "Grok models with an xAI API key" },
@@ -112,6 +113,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
     if (id === "chatgpt") return void chatgptLogin();
     if (id === "custom") return setStep("baseUrl");
     if (id === "azure" && !resolveActiveProvider({ provider: "azure" }).baseUrl) return setStep("baseUrl");
+    if (id === "vertex" && !resolveActiveProvider({ provider: "vertex" }).baseUrl) return setStep("baseUrl");
     const envKey = resolveProviderKey(id, persisted);
     if (envKey) return void accept(id, envKey, "env");
     if (!p.keyRequired) return void accept(id, undefined, "none");
@@ -183,7 +185,8 @@ export function Onboarding({ onDone, onCancel }: Props) {
       ...(id === "custom" ? { baseUrl: effectiveUrl, apiKey: candidate } : {}),
       providers: { [id]: { ...(candidate ? { apiKey: candidate } : {}), ...(url ? { baseUrl: url } : {}) } },
     }, id);
-    await ensureCatalogForProvider(auth);
+    // Vertex's project lives in the saved settings (or gcloud config), not in a key.
+    await ensureCatalogForProvider(id === "vertex" ? llmAuthFromConfig({ ...(await readPersistedConfig()), provider: "vertex" }, "vertex") : auth);
     setStep("model");
   };
 
@@ -354,7 +357,13 @@ export function Onboarding({ onDone, onCancel }: Props) {
 
       {step === "baseUrl" && (
         <Box marginTop={1} flexDirection="column">
-          <Text>{provider === "azure" ? "Your Azure OpenAI resource name (or its endpoint URL)" : "Base URL of your OpenAI-compatible endpoint"}</Text>
+          <Text>
+            {provider === "azure"
+              ? "Your Azure OpenAI resource name (or its endpoint URL)"
+              : provider === "vertex"
+                ? "Your Google Cloud project id"
+                : "Base URL of your OpenAI-compatible endpoint"}
+          </Text>
           <Text {...muted}>
             {provider === "azure"
               ? "The <name> in https://<name>.openai.azure.com. Esc to go back."
@@ -367,6 +376,14 @@ export function Onboarding({ onDone, onCancel }: Props) {
               onChange={setBaseUrl}
               onSubmit={(v) => {
                 let url = v.trim();
+                if (provider === "vertex") {
+                  // A project id: keep it in settings, credentials come from gcloud.
+                  if (!/^[a-z][a-z0-9-]{4,}$/.test(url)) return setError("Enter a Google Cloud project id");
+                  setBaseUrl("");
+                  setError(null);
+                  void patchProviderSettings("vertex", { project: url }).then(() => accept("vertex", undefined, "none"));
+                  return;
+                }
                 // Azure: a bare resource name is enough.
                 if (provider === "azure" && /^[a-z0-9-]+$/i.test(url)) url = `https://${url}.openai.azure.com/openai/v1`;
                 if (!/^https?:\/\//.test(url)) return setError("Enter a URL starting with http:// or https://");
