@@ -78,7 +78,7 @@
   },
   "optionalDependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "camouflage-tui": "^2.6.1",
+    "camouflage-tui": "^2.8.0",
     "isolated-vm": "^6.1.2"
   },
   "devDependencies": {
