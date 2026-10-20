@@ -36,6 +36,8 @@ export type ChatEvent =
       httpStatus?: number;
       code?: number;
       message: string;
+      /** The active provider's status page, when it has one. */
+      statusUrl?: string;
     }
   | {
       kind: "qrcode";
@@ -294,6 +296,7 @@ const EventView = React.memo(function EventView({
         httpStatus={evt.httpStatus}
         code={evt.code}
         message={evt.message}
+        statusUrl={evt.statusUrl}
       />
     );
   }

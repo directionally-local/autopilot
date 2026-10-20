@@ -4,7 +4,7 @@ Autopilot's headless server can coordinate work that lasts much longer than one 
 
 ## Start a run
 
-Set a server password and run the headless server under a service manager (for example, systemd or launchd):
+Set a server password and run the headless server under a service manager. For a Linux server (systemd unit, limits, kill switch, upgrades, encrypted backups) see [Running Autopilot on a Linux server](deploy-linux-server.md).
 
 ```sh
 KIMIFLARE_SERVER_PASSWORD='use-a-secret' autopilot serve
@@ -55,6 +55,80 @@ curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
 ```
 
 The resume request must update at least one budget. Omitted fields keep their current values. The saved session gets a continuation note and the agent resumes from that checkpoint.
+
+### When the current turn outgrows the model's context
+
+An unattended run can work for hours on one task without a new user message, so its single turn keeps growing. Older turns are compacted, but the active turn is kept word for word. If it alone no longer fits the model's context window, the run moves to `needs_input` (it does not fail) with a stop reason like:
+
+```text
+context_budget_exceeded: the current turn needs ~215,000 tokens but moonshotai/kimi-k2.6 has 120,000 available (context window 128,000); older turns are already compacted. Resume with a larger-context model ({"model": "<id>"}) or cancel the run.
+```
+
+Connected clients also receive a `run.needs_input` event. Continue on a model with a larger window, or cancel:
+
+```sh
+curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "google/gemini-3.8-flash"}' \
+  -X POST http://127.0.0.1:4096/runs/<run-id>/resume
+```
+
+A resume may change the model, the budgets, or both.
+
+## Email notifications
+
+Autopilot can email you when an unattended run **completes, fails, needs input, is cancelled, or is interrupted**. It sends through [Resend](https://resend.com). Set a key and a recipient where `autopilot serve` runs:
+
+```sh
+export RESEND_API_KEY=re_...
+export AUTOPILOT_NOTIFY_EMAIL_TO=you@example.com            # comma-separated for several
+export AUTOPILOT_NOTIFY_EMAIL_FROM="Autopilot <bot@your-verified-domain.com>"   # optional
+```
+
+Or in the config file:
+
+```json
+{ "runNotifications": { "email": { "to": ["you@example.com"], "from": "Autopilot <bot@your-domain.com>", "events": ["needs_input", "failed", "completed"] } } }
+```
+
+The email gives the run id, the task (with credential-looking strings redacted), the status and stop reason, the branch, tokens and cost, and the command to inspect or resume it over SSH. It never includes transcript content.
+
+Delivery is separate from run state:
+- **Queued with the state change.** A notification is recorded in the same database transaction as the state change, before anything is sent. A provider outage never blocks a run.
+- **Rejections:** a rejected send is retried if the provider says it's temporary (429/5xx), and marked failed otherwise.
+- **Unknown outcomes:** a network error, a timeout, or a server crash mid-send marks the notification uncertain. It's retried with the **same idempotency key**, so Resend delivers it at most once.
+- **Stale notifications** older than 24 hours (Resend's idempotency window) are not sent, so turning email on later doesn't flood you with old runs.
+
+Each run's notifications (status, attempts, provider message id) are in the `run_notifications` table of the runs database.
+
+## Deciding by email
+
+With notifications on, you can also **answer a "needs input" email by replying**. Autopilot polls a mailbox over IMAP, so the server needs no public endpoint. Use a mailbox dedicated to Autopilot:
+
+```sh
+export AUTOPILOT_DECISIONS_REPLY_TO=autopilot-decisions@your-domain.com   # Reply-To on "needs input" emails
+export AUTOPILOT_DECISIONS_IMAP_HOST=imap.your-provider.com
+export AUTOPILOT_DECISIONS_IMAP_USER=autopilot-decisions@your-domain.com
+export AUTOPILOT_DECISIONS_IMAP_PASSWORD=...        # an app password
+# AUTOPILOT_DECISIONS_IMAP_PORT=993  AUTOPILOT_DECISIONS_IMAP_MAILBOX=INBOX
+```
+
+Reply with one line:
+
+| Reply | Effect |
+| --- | --- |
+| `resume` | Continue. If a budget ran out, that one budget is doubled, once. |
+| `resume model <id>` | Continue on another catalog model (e.g. a larger context window). |
+| `cancel` | Stop the run. |
+| `answer: <text>` | Pass the text (up to 2,000 characters) to the agent, then continue. |
+
+A reply is acted on only if every check passes. It must:
+- come from one of the notification recipients;
+- be authenticated by your mail server (DKIM or DMARC pass in `Authentication-Results`);
+- carry the email's `[ref:…]` token, which works **once** and expires after **72 hours**;
+- arrive while the run is still waiting for input.
+
+A reply can't change tools, permissions or other runs. Every reply, accepted or rejected, is recorded as a `decision` event on the run, and accepted ones get a confirmation email. Over SSH, the HTTP API is still the admin path.
 
 ## Restart and machine-lifetime guarantees
 

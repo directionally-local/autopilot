@@ -53,7 +53,7 @@ describe("subagent tool", () => {
     const parameters = subagentTool.parameters as { properties: Record<string, unknown>; required: string[] };
     assert.equal(subagentTool.name, "subagent");
     assert.deepEqual(parameters.required, ["mission"]);
-    assert.deepEqual(Object.keys(parameters.properties).sort(), ["context", "maxCostUsd", "mission"]);
+    assert.deepEqual(Object.keys(parameters.properties).sort(), ["background", "context", "maxCostUsd", "mission"]);
     assert.equal(subagentTool.concurrent, true);
     assert.equal(subagentTool.codeModeDirect, true);
     assert.match(subagentTool.description, /IN THE SAME RESPONSE/);
@@ -79,7 +79,7 @@ describe("subagent tool", () => {
 
     await assert.rejects(
       () => subagentTool.run({ mission: "research" }, { cwd: process.cwd(), model: "openai/gpt-4o-mini" }),
-      /Subagents need an OpenRouter-backed session/,
+      /need OpenRouter as the active provider \(current: Requesty\)/,
     );
     assert.equal(fetchCalls, 0);
   });
@@ -92,7 +92,7 @@ describe("subagent tool", () => {
 
     await assert.rejects(
       () => subagentTool.run({ mission: "research" }, { cwd: process.cwd(), model: "openai/gpt-4o-mini" }),
-      /Subagents do not support custom model endpoints/,
+      /need OpenRouter as the active provider \(current: custom endpoint\)/,
     );
   });
 });
@@ -187,6 +187,29 @@ describe("cancelling a running subagent", () => {
     assert.match(content, /Do not relaunch/);
     assert.equal(turn.signal.aborted, false);
     assert.equal(workerRegistry.list().length, 0, "worker removed after it stops");
+  });
+
+  it("runs in the background: returns at once, outlives the turn, and its result is kept for delivery", { skip: process.platform === "win32" }, async () => {
+    const { ctx } = await setup();
+    const turn = new AbortController();
+    const out = await subagentTool.run({ mission: "survey the billing code", background: true }, { ...ctx(turn.signal), sessionId: "s-bg" } as ToolContext);
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /Started background subagent #(\d+) \((worker-\d+)\)/);
+    const id = /\((worker-\d+)\)/.exec(content)![1]!;
+    await waitForWorker();
+    turn.abort(); // ending the turn does not stop a background subagent
+    await new Promise((r) => setTimeout(r, 100));
+    const [running] = workerRegistry.list();
+    assert.equal(running?.id, id);
+    assert.equal(running?.background, true);
+    const finished = workerRegistry.waitFor(id);
+    workerRegistry.cancel(id);
+    const done = await finished;
+    assert.equal(done.status, "cancelled");
+    assert.match(done.output, /was cancelled by the user/);
+    assert.deepEqual(workerRegistry.takeUndelivered("s-bg").map((w) => w.id), [id]);
+    assert.deepEqual(workerRegistry.takeUndelivered("s-bg"), [], "delivered once");
+    workerRegistry.clearFinished("s-bg");
   });
 
   it("still reports a turn abort as a failure, not a user decision", { skip: process.platform === "win32" }, async () => {

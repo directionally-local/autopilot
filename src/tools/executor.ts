@@ -26,6 +26,7 @@ import { reduceToolOutput, DEFAULT_REDUCER_CONFIG } from "./reducer.js";
 import { makeExpandArtifactTool } from "./expand-artifact.js";
 import { jobStartTool, jobStatusTool, jobLogsTool, jobCancelTool } from "./jobs.js";
 import { waitForTool } from "./wait-for.js";
+import { workerResultTool, workerStatusTool } from "./workers.js";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
@@ -59,6 +60,8 @@ export const ALL_TOOLS: ToolSpec[] = [
   jobLogsTool,
   jobCancelTool,
   waitForTool,
+  workerStatusTool,
+  workerResultTool,
 ];
 
 export const RESEARCH_WORKER_TOOL_NAMES = new Set([
@@ -390,6 +393,7 @@ export class ToolExecutor {
           session_id: ctx.sessionId ?? null,
           cwd: ctx.cwd,
           tool: call.name,
+          tool_call_id: call.id,
           args,
           tier: ctx.intentTier,
         },
@@ -569,6 +573,7 @@ export class ToolExecutor {
           session_id: ctx.sessionId ?? null,
           cwd: ctx.cwd,
           tool: call.name,
+          tool_call_id: call.id,
           args,
           tier: ctx.intentTier,
           result: {

@@ -1,7 +1,8 @@
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
+import { activeOpenRouterKey, llmAuthFromConfig, providerPresetOf } from "../agent/llm-auth.js";
 import { loadConfig, resolveWorkerBudgetUsd } from "../config.js";
 import { runHotcellWorker } from "./hotcell-worker.js";
-import { workerRegistry } from "./worker-registry.js";
+import { workerRegistry, type WorkerHandle } from "./worker-registry.js";
 import { failureReason, recordSubagentEvent } from "./subagent-stats.js";
 import type { WorkerResultMessage } from "../agent/messages.js";
 
@@ -9,6 +10,8 @@ export interface SubagentArgs {
   mission: string;
   context?: string;
   maxCostUsd?: number;
+  /** Return at once and keep working; the findings arrive in the session inbox. */
+  background?: boolean;
 }
 
 /** Arguments accepted from sessions recorded before the rename. */
@@ -53,6 +56,11 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
         description: "Relevant facts from this conversation the subagent needs (goals, constraints, file paths already known).",
       },
       maxCostUsd: { type: "number", description: "Spend cap for this subagent in USD. Defaults to the configured subagent budget." },
+      background: {
+        type: "boolean",
+        description:
+          "Run in the background: this call returns a worker id immediately and you keep working (or answer the user). The findings are delivered to you automatically when the subagent finishes; worker_status lists background subagents and worker_result (or wait_for with worker_id) fetches one. Use for long investigations you don't need right away.",
+      },
     },
     required: ["mission"],
     additionalProperties: false,
@@ -84,11 +92,11 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
       : fromLegacySpawnWorkerArgs(rawArgs as unknown as LegacySpawnWorkerArgs);
     if (!args.mission.trim()) throw new Error("subagent needs a mission describing what to investigate.");
     const cfg = await loadConfig().catch(() => null);
-    if (!cfg?.openrouterApiKey) {
-      throw new Error("Subagents need an OpenRouter-backed session (they run through Hotcell's OpenRouter gateway). Configure OpenRouter, then retry.");
-    }
-    if (cfg.baseUrl) {
-      throw new Error("Subagents do not support custom model endpoints yet.");
+    const provider = providerPresetOf(llmAuthFromConfig(cfg));
+    if (!cfg || !provider.capabilities.hotcellGateway || !activeOpenRouterKey(cfg)) {
+      throw new Error(
+        `Subagents run through Hotcell's OpenRouter gateway, so they need OpenRouter as the active provider (current: ${provider.name}). Switch with /provider openrouter, then retry.`,
+      );
     }
 
     // Subagents always use the session's own model (no silent fallback).
@@ -107,7 +115,50 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
 
     // Each subagent gets its own cancel handle (see /subagents cancel), linked
     // to the turn: cancelling one never interrupts the turn or other subagents.
-    const handle = workerRegistry.start(args.mission, model, ctx.signal);
+    // A background subagent is detached from the turn (it outlives it) and is
+    // stopped only by /subagents cancel, or when the session goes away.
+    const background = args.background === true;
+    const handle = workerRegistry.start(args.mission, model, background ? undefined : ctx.signal, {
+      background,
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+    });
+    if (background) {
+      void runWorker(args, ctx, handle, { cfg, model, budgetUsd, timeoutMs })
+        .then((outcome) => handle.complete(outcome))
+        .catch((error: unknown) =>
+          handle.complete({ status: "failed", output: `Subagent #${handle.index} failed: ${error instanceof Error ? error.message : String(error)}` }),
+        )
+        .finally(() => handle.finish());
+      return textOutput(
+        [
+          `Started background subagent #${handle.index} (${handle.id}).`,
+          `Mission: ${args.mission.slice(0, 200)}`,
+          "Keep working; its findings will be delivered to you when it finishes. worker_status lists background subagents; worker_result or wait_for (worker_id) fetches this one.",
+        ].join("\n"),
+      );
+    }
+    try {
+      const outcome = await runWorker(args, ctx, handle, { cfg, model, budgetUsd, timeoutMs });
+      handle.complete(outcome);
+      return textOutput(outcome.output);
+    } finally {
+      handle.finish();
+    }
+  },
+};
+
+/**
+ * Run one Hotcell worker to completion. Resolves with the coordinator-facing
+ * report (or a cancellation note); throws when the worker can't start or
+ * fails without usable findings.
+ */
+async function runWorker(
+  args: SubagentArgs,
+  ctx: ToolContext,
+  handle: WorkerHandle,
+  run: { cfg: NonNullable<Awaited<ReturnType<typeof loadConfig>>>; model: string; budgetUsd: number; timeoutMs: number },
+): Promise<{ status: string; output: string; costUsd?: number }> {
+    const { cfg, model, budgetUsd, timeoutMs } = run;
     const startedAt = Date.now();
     const record = (status: string, extra: { costUsd?: number; error?: string; localChanges?: number } = {}) => {
       void recordSubagentEvent({
@@ -148,29 +199,27 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
     } catch (error) {
       if (handle.cancelledByUser) {
         record("cancelled", { error: "cancelled by user" });
-        return textOutput(userCancelledMessage(handle.index, args.mission));
+        return { status: "cancelled", output: userCancelledMessage(handle.index, args.mission) };
       }
       record("failed", { error: error instanceof Error ? error.message : String(error) });
       throw new Error("Subagent could not start: " + (error instanceof Error ? error.message : String(error)), { cause: error });
-    } finally {
-      handle.finish();
     }
     record(handle.cancelledByUser ? "cancelled" : result.status, {
       costUsd: result.costUsd,
       error: handle.cancelledByUser ? "cancelled by user" : result.error,
       localChanges: Number(/applied your (\d+)/.exec(result.snapshotNote ?? "")?.[1] ?? 0),
     });
-    if (handle.cancelledByUser && !ctx.signal?.aborted) {
-      return textOutput(userCancelledMessage(handle.index, args.mission));
+    // A background worker is detached from the turn, so the turn ending says nothing about it.
+    if (handle.cancelledByUser && (args.background === true || !ctx.signal?.aborted)) {
+      return { status: "cancelled", output: userCancelledMessage(handle.index, args.mission), costUsd: result.costUsd };
     }
     if (result.status !== "completed" && result.status !== "budget_exhausted" &&
       !(result.status === "spend_exhausted" && result.partialResult && result.findings.length > 0)) {
       throw new Error("Subagent " + result.status + ": " + (result.error ?? "unknown error"));
     }
 
-    return textOutput(formatWorkerResult(result, model));
-  },
-};
+    return { status: result.status, output: formatWorkerResult(result, model), costUsd: result.costUsd };
+}
 
 /** Render a worker result for the coordinator: status, cost, cited findings,
  *  open questions, and a clear marker when the report was unstructured. */

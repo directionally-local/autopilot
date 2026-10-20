@@ -1,5 +1,65 @@
 # Changelog
 
+## [1.28.0](https://github.com/sinameraji/autopilot/compare/v1.27.1...v1.28.0) (2026-10-20)
+
+
+### Features
+
+* **hooks:** Agent Beacon support — Claude-Code-compatible hooks, session lifecycle, OTel GenAI events ([#875](https://github.com/sinameraji/autopilot/issues/875)) ([6f4706e](https://github.com/sinameraji/autopilot/commit/6f4706e663fe4e159346737d3ed1d14e88a7784a))
+
+
+### Bug Fixes
+
+* **edit:** accept edits[] when the model also sends empty old_string/new_string ([#873](https://github.com/sinameraji/autopilot/issues/873)) ([7d96b12](https://github.com/sinameraji/autopilot/commit/7d96b12b96216fbcebe4b1aaa0704d191855efbf))
+* **subagents:** stop announcing the default auto policy every turn ([#872](https://github.com/sinameraji/autopilot/issues/872)) ([b1126ff](https://github.com/sinameraji/autopilot/commit/b1126ff1ab0285b27b7dde31c9203f69c894a49f))
+
+## [1.27.1](https://github.com/sinameraji/autopilot/compare/v1.27.0...v1.27.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **camouflage:** the verified [#862](https://github.com/sinameraji/autopilot/issues/862) fixes that [#867](https://github.com/sinameraji/autopilot/issues/867) lost ([#870](https://github.com/sinameraji/autopilot/issues/870)) ([1854db8](https://github.com/sinameraji/autopilot/commit/1854db8700186125e52e4aa035c8e9e6423bd1ae))
+* **deps:** require camouflage-tui 2.8.1 ([#868](https://github.com/sinameraji/autopilot/issues/868)) ([7cbeb5e](https://github.com/sinameraji/autopilot/commit/7cbeb5e426c9eea69322a18723721c2d75200243))
+
+## [1.27.0](https://github.com/sinameraji/autopilot/compare/v1.26.0...v1.27.0) (2026-10-20)
+
+
+### Features
+
+* **client:** log request body size and split upload time from model latency ([#858](https://github.com/sinameraji/autopilot/issues/858)) ([bf30ed9](https://github.com/sinameraji/autopilot/commit/bf30ed97930d49c4faad06c20820cd51bf653671))
+* **edit:** several replacements per edit call, applied atomically ([#859](https://github.com/sinameraji/autopilot/issues/859)) ([f530da7](https://github.com/sinameraji/autopilot/commit/f530da7112a671311b8c524c3bf3e0f93536e807))
+* **images:** downscale and re-encode images when they're attached ([#855](https://github.com/sinameraji/autopilot/issues/855)) ([2f37a18](https://github.com/sinameraji/autopilot/commit/2f37a18c460e238a1b3a27b7491c6abc57f1e843))
+* **providers:** /provider is a step-by-step picker, like /model and onboarding ([#857](https://github.com/sinameraji/autopilot/issues/857)) ([4fd188d](https://github.com/sinameraji/autopilot/commit/4fd188d4b2f6646b58034cfb2c5e937f23450fcc))
+* **runs:** an unattended run whose turn outgrows the context pauses for a decision ([#860](https://github.com/sinameraji/autopilot/issues/860)) ([8f158c0](https://github.com/sinameraji/autopilot/commit/8f158c0dffce11cbfe50e95c290274c73ca3c433))
+* **runs:** concurrency limit, operator kill switch, systemd unit and server guide ([#864](https://github.com/sinameraji/autopilot/issues/864)) ([6d1b623](https://github.com/sinameraji/autopilot/commit/6d1b623b1f582a057f540f8f470eef53246e568d))
+* **runs:** decide a paused run by replying to its email ([#866](https://github.com/sinameraji/autopilot/issues/866)) ([7e65ce2](https://github.com/sinameraji/autopilot/commit/7e65ce2d628b5a88754af315d2581ce01e671c7d))
+* **runs:** email the operator when an unattended run finishes, fails or needs input ([#863](https://github.com/sinameraji/autopilot/issues/863)) ([5766e6a](https://github.com/sinameraji/autopilot/commit/5766e6ac061594b38ea1b00f2fc7c640947d4d0c))
+
+
+### Bug Fixes
+
+* **deps:** camouflage-tui 2.8.0; drop the node_modules symlink committed in [#858](https://github.com/sinameraji/autopilot/issues/858) ([#861](https://github.com/sinameraji/autopilot/issues/861)) ([a085a28](https://github.com/sinameraji/autopilot/commit/a085a287b2d799dcde0684d75d08b243e66386d7))
+
+## [1.26.0](https://github.com/sinameraji/autopilot/compare/v1.25.1...v1.26.0) (2026-10-20)
+
+
+### Features
+
+* **client:** per-provider request quirks and provider-aware errors ([#830](https://github.com/sinameraji/autopilot/issues/830)) ([da08d05](https://github.com/sinameraji/autopilot/commit/da08d05cb412ab0d6fda502d2fe1a00c37bddcc0))
+* **cost:** final cost estimates for providers without cost confirmation ([#832](https://github.com/sinameraji/autopilot/issues/832)) ([07ceda9](https://github.com/sinameraji/autopilot/commit/07ceda948c4721f6563b655a010fa8e7fef5b600))
+* land the stacked work from [#836](https://github.com/sinameraji/autopilot/issues/836)–[#851](https://github.com/sinameraji/autopilot/issues/851) onto main ([#854](https://github.com/sinameraji/autopilot/issues/854)) ([a4a4c37](https://github.com/sinameraji/autopilot/commit/a4a4c37c4901050e8e6bf5580e5ad52577afea11))
+* **memory:** embeddings follow the active provider ([#828](https://github.com/sinameraji/autopilot/issues/828)) ([89c7154](https://github.com/sinameraji/autopilot/commit/89c7154c1f782874effb5419452d0c7cb4fe0486))
+* **models:** catalogs for non-OpenRouter providers via models.dev ([#829](https://github.com/sinameraji/autopilot/issues/829)) ([ad9fa06](https://github.com/sinameraji/autopilot/commit/ad9fa062b26ae190e5f1b73e54f020a280a5294a))
+* **onboarding:** choose a provider at first run; add /provider and per-provider keys ([#831](https://github.com/sinameraji/autopilot/issues/831)) ([3a98cd3](https://github.com/sinameraji/autopilot/commit/3a98cd3fda2e9e0a7a54ba2742dfb1cc7f7a468c))
+* **providers:** add a provider registry that every LLM call follows ([#827](https://github.com/sinameraji/autopilot/issues/827)) ([e8c62f5](https://github.com/sinameraji/autopilot/commit/e8c62f514e8ea907d1908a1f479474ddd899e9fe))
+* **providers:** name the active provider everywhere; update docs and ACP ([#833](https://github.com/sinameraji/autopilot/issues/833)) ([7f07946](https://github.com/sinameraji/autopilot/commit/7f07946df75c9a2e8f06caf2afbd7a233684ddde))
+* **providers:** native Anthropic Messages adapter ([#835](https://github.com/sinameraji/autopilot/issues/835)) ([76a1507](https://github.com/sinameraji/autopilot/commit/76a1507d4f8dd1ed6516dd7a800f73d227f42645))
+
+
+### Bug Fixes
+
+* **server:** restore Aster API code accidentally reverted in [#777](https://github.com/sinameraji/autopilot/issues/777) ([#820](https://github.com/sinameraji/autopilot/issues/820)) ([c0fd310](https://github.com/sinameraji/autopilot/commit/c0fd31004a33df0353a8a1176d87f22cf3c7b1dc))
+
 ## [1.25.1](https://github.com/sinameraji/autopilot/compare/v1.25.0...v1.25.1) (2026-10-19)
 
 

@@ -1,7 +1,8 @@
 import { getUserAgent } from "../util/version.js";
 import { openRouterHeaders, openRouterUrl } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl } from "../models/requesty.js";
-import { usesRequesty, type LlmAuth } from "../agent/llm-auth.js";
+import { providerPresetOf, usesRequesty, type LlmAuth } from "../agent/llm-auth.js";
+import { keyHeaders } from "../providers/presets.js";
 import { resolveCustomEndpoint } from "../agent/custom-endpoint.js";
 
 export interface EmbedOpts extends LlmAuth {
@@ -9,11 +10,31 @@ export interface EmbedOpts extends LlmAuth {
   texts: string[];
 }
 
-/** Same bge-base-en-v1.5 model Workers AI served, so vectors in existing
- *  memory databases stay comparable after the move to OpenRouter. */
+/** OpenRouter's embedding model (the one Workers AI served, so vectors in
+ *  existing memory databases stay comparable). Other providers' models are
+ *  in src/providers/presets.ts. */
 export const DEFAULT_EMBEDDING_MODEL = "baai/bge-base-en-v1.5";
 /** Requesty does not serve bge-base-en-v1.5; its default is an OpenAI embedding model. */
 export const REQUESTY_EMBEDDING_MODEL = "openai/text-embedding-3-small";
+
+/** The provider has no embeddings API and no embedding model was configured. */
+export class EmbeddingsUnavailableError extends Error {
+  constructor(providerName: string) {
+    super(
+      `${providerName} has no embeddings API — vector recall is off. Set memoryEmbeddingModel, or embeddingProvider to a provider that has one.`,
+    );
+    this.name = "EmbeddingsUnavailableError";
+  }
+}
+
+/**
+ * The embedding model for `auth`'s provider: an explicit override, else the
+ * provider preset's model. Null when the provider has none — callers then
+ * store and search without vectors instead of failing.
+ */
+export function embeddingModelFor(auth: LlmAuth, override?: string): string | null {
+  return override?.trim() || providerPresetOf(auth).embedding?.model || null;
+}
 const MAX_EMBED_CHARS = 2000; // ≈ the 512-token context of bge-base-en-v1.5
 
 function truncateForEmbedding(text: string): string {
@@ -91,7 +112,8 @@ function parseOpenAiEmbeddingResponse(json: unknown): Float32Array[] {
 export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> {
   const custom = opts.customEndpoint ?? resolveCustomEndpoint();
   const requesty = !custom && usesRequesty(opts);
-  const model = opts.model ?? (requesty ? REQUESTY_EMBEDDING_MODEL : DEFAULT_EMBEDDING_MODEL);
+  const model = embeddingModelFor(opts, opts.model);
+  if (!model) throw new EmbeddingsUnavailableError(providerPresetOf(opts).name);
   const texts = opts.texts.map(truncateForEmbedding);
 
   if (texts.length === 0) {
@@ -104,7 +126,7 @@ export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> 
   let headers: Record<string, string>;
   if (custom) {
     url = `${custom.baseUrl.replace(/\/+$/, "").replace(/\/chat\/completions$/, "")}/embeddings`;
-    headers = { "User-Agent": getUserAgent(), ...(custom.apiKey ? { Authorization: `Bearer ${custom.apiKey}` } : {}) };
+    headers = { "User-Agent": getUserAgent(), ...keyHeaders(custom.providerId, custom.apiKey) };
   } else if (requesty && opts.requestyApiKey) {
     url = requestyUrl("embeddings");
     headers = requestyHeaders(opts.requestyApiKey);
@@ -124,6 +146,17 @@ export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> 
   return parseOpenAiEmbeddingResponse(json);
 }
 
+/**
+ * Decode a vector stored as a SQLite BLOB. `new Float32Array(buffer)` would
+ * treat every *byte* as an element (a 768-dim vector comes back with 3072
+ * entries, which then never matches a query vector's length); reinterpret
+ * the bytes instead. Copies first, since a Buffer's offset may not be
+ * 4-byte aligned.
+ */
+export function vectorFromBlob(blob: Uint8Array): Float32Array {
+  const bytes = Uint8Array.from(blob);
+  return new Float32Array(bytes.buffer, 0, Math.floor(bytes.byteLength / 4));
+}
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) {

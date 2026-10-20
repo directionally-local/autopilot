@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { join, dirname } from "node:path";
 import { mkdirSync, statSync } from "node:fs";
 import type { Memory, MemoryInput, MemoryStats, MemoryCategory } from "./schema.js";
+import { vectorFromBlob } from "./embeddings.js";
 
 let dbInstance: Database.Database | null = null;
 let dbPathInstance: string | null = null;
@@ -23,7 +24,8 @@ function initSchema(db: Database.Database): void {
       superseded_by TEXT,
       forgotten INTEGER NOT NULL DEFAULT 0,
       vectorized INTEGER NOT NULL DEFAULT 0,
-      agent_role TEXT
+      agent_role TEXT,
+      embedding_model TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_memories_repo ON memories(repo_path);
@@ -78,6 +80,20 @@ function migrateV1(db: Database.Database): void {
   if (!names.has("agent_role")) {
     db.exec("ALTER TABLE memories ADD COLUMN agent_role TEXT");
   }
+  if (!names.has("embedding_model")) {
+    db.exec("ALTER TABLE memories ADD COLUMN embedding_model TEXT");
+    // Rows written before models were recorded: OpenRouter/Workers AI used
+    // bge-base-en-v1.5 (768 floats = 3072 bytes); Requesty used
+    // text-embedding-3-small (1536 floats). Anything else stays unknown and
+    // is re-embedded by the backfill.
+    db.exec(`
+      UPDATE memories SET embedding_model = CASE length(embedding)
+        WHEN 3072 THEN 'baai/bge-base-en-v1.5'
+        WHEN 6144 THEN 'openai/text-embedding-3-small'
+        ELSE NULL END
+      WHERE vectorized = 1 AND category != 'task'
+    `);
+  }
   // Create new indexes if missing
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_memories_topic_key ON memories(topic_key);
@@ -116,7 +132,7 @@ export function getMemoryDb(): Database.Database | null {
 }
 
 function rowToMemory(row: Database.RunResult & Record<string, unknown>): Memory {
-  const embedding = new Float32Array(row.embedding as Buffer);
+  const embedding = vectorFromBlob(row.embedding as Buffer);
   return {
     id: row.id as string,
     content: row.content as string,
@@ -132,11 +148,23 @@ function rowToMemory(row: Database.RunResult & Record<string, unknown>): Memory 
     supersededBy: (row.superseded_by as string | null) ?? null,
     forgotten: (row.forgotten as number) === 1,
     vectorized: (row.vectorized as number) === 1,
+    embeddingModel: (row.embedding_model as string | null) ?? null,
     agentRole: (row.agent_role as string | null) ?? null,
   };
 }
 
-export function insertMemory(db: Database.Database, mem: MemoryInput, embedding: Float32Array): Memory {
+/**
+ * How a row's vector came about:
+ * - `{ model }`: a real embedding from that model
+ * - `{ pending: true }`: embedding failed or was unavailable; backfill retries
+ * - omitted: no vector by design (plans and other topic-key-only rows)
+ */
+export interface VectorInfo {
+  model?: string;
+  pending?: boolean;
+}
+
+export function insertMemory(db: Database.Database, mem: MemoryInput, embedding: Float32Array, vector: VectorInfo = {}): Memory {
   const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const now = Date.now();
   const memory: Memory = {
@@ -153,13 +181,14 @@ export function insertMemory(db: Database.Database, mem: MemoryInput, embedding:
     topicKey: mem.topicKey ?? null,
     supersededBy: null,
     forgotten: false,
-    vectorized: true,
+    vectorized: !vector.pending,
+    embeddingModel: vector.model ?? null,
     agentRole: mem.agentRole ?? null,
   };
 
   db.prepare(
-    `INSERT INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role, embedding_model)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     memory.id,
     memory.content,
@@ -175,21 +204,22 @@ export function insertMemory(db: Database.Database, mem: MemoryInput, embedding:
     memory.supersededBy,
     memory.forgotten ? 1 : 0,
     memory.vectorized ? 1 : 0,
-    memory.agentRole
+    memory.agentRole,
+    memory.embeddingModel
   );
 
   return memory;
 }
 
-export function insertMemories(db: Database.Database, items: { input: MemoryInput; embedding: Float32Array }[]): Memory[] {
+export function insertMemories(db: Database.Database, items: { input: MemoryInput; embedding: Float32Array; vector?: VectorInfo }[]): Memory[] {
   const insert = db.prepare(
-    `INSERT INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role, embedding_model)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const inserted: Memory[] = [];
   const insertMany = db.transaction((batch: typeof items) => {
-    for (const { input, embedding } of batch) {
+    for (const { input, embedding, vector = {} } of batch) {
       const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const now = Date.now();
       const memory: Memory = {
@@ -206,7 +236,8 @@ export function insertMemories(db: Database.Database, items: { input: MemoryInpu
         topicKey: input.topicKey ?? null,
         supersededBy: null,
         forgotten: false,
-        vectorized: true,
+        vectorized: !vector.pending,
+        embeddingModel: vector.model ?? null,
         agentRole: input.agentRole ?? null,
       };
       insert.run(
@@ -224,7 +255,8 @@ export function insertMemories(db: Database.Database, items: { input: MemoryInpu
         memory.supersededBy,
         memory.forgotten ? 1 : 0,
         memory.vectorized ? 1 : 0,
-        memory.agentRole
+        memory.agentRole,
+        memory.embeddingModel
       );
       inserted.push(memory);
     }
@@ -296,10 +328,16 @@ export function listMemoriesForVectorSearch(
   repoPath: string,
   since: number,
   limit = 2000,
-  agentRole?: string
+  agentRole?: string,
+  /** Only rows embedded by this model: vectors from different models are not comparable. */
+  embeddingModel?: string
 ): Memory[] {
   const conditions = ["repo_path = ?", "created_at >= ?", "forgotten = 0", "superseded_by IS NULL", "category != 'task'"];
   const params: (string | number)[] = [repoPath, since];
+  if (embeddingModel) {
+    conditions.push("embedding_model = ?");
+    params.push(embeddingModel);
+  }
 
   if (agentRole) {
     conditions.push("agent_role = ?");
@@ -441,10 +479,42 @@ export function listUnvectorizedMemories(db: Database.Database, repoPath: string
   return rows.map(rowToMemory);
 }
 
-export function updateMemoryEmbedding(db: Database.Database, id: string, embedding: Float32Array): void {
+export function updateMemoryEmbedding(db: Database.Database, id: string, embedding: Float32Array, embeddingModel: string | null = null): void {
   db.prepare(
-    `UPDATE memories SET embedding = ?, vectorized = 1 WHERE id = ?`
-  ).run(Buffer.from(embedding.buffer), id);
+    `UPDATE memories SET embedding = ?, vectorized = 1, embedding_model = ? WHERE id = ?`
+  ).run(Buffer.from(embedding.buffer), embeddingModel, id);
+}
+
+/**
+ * Rows that need (re-)embedding with `embeddingModel`: never embedded, or
+ * embedded by a different model (the provider or embedding model changed).
+ * Topic-key-only rows (tasks/plans) are left alone.
+ */
+export function listMemoriesNeedingEmbedding(db: Database.Database, repoPath: string, embeddingModel: string, limit = 100): Memory[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM memories
+       WHERE repo_path = ? AND forgotten = 0 AND superseded_by IS NULL AND category != 'task'
+         AND (vectorized = 0 OR embedding_model IS NULL OR embedding_model != ?)
+       ORDER BY accessed_at DESC
+       LIMIT ?`
+    )
+    .all(repoPath, embeddingModel, limit) as Array<Database.RunResult & Record<string, unknown>>;
+  return rows.map(rowToMemory);
+}
+
+/** How many live rows are searchable with `embeddingModel` vs. waiting for (re-)embedding. */
+export function countMemoriesByEmbeddingModel(db: Database.Database, repoPath: string, embeddingModel: string | null): { current: number; stale: number } {
+  const row = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN vectorized = 1 AND embedding_model IS NOT NULL AND embedding_model = ? THEN 1 ELSE 0 END) AS current,
+         SUM(CASE WHEN vectorized = 0 OR embedding_model IS NULL OR embedding_model != ? THEN 1 ELSE 0 END) AS stale
+       FROM memories
+       WHERE repo_path = ? AND forgotten = 0 AND superseded_by IS NULL AND category != 'task'`
+    )
+    .get(embeddingModel, embeddingModel, repoPath) as { current: number | null; stale: number | null };
+  return { current: row.current ?? 0, stale: row.stale ?? 0 };
 }
 
 export function getMemoryById(db: Database.Database, id: string): Memory | null {

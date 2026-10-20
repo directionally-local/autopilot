@@ -19,12 +19,13 @@ import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile }
 import { sessionFileCompactionTarget } from "./agent/context-budget.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
 import { completionCheckFromConfig } from "./agent/completion-check.js";
-import { encodeImageFile, isImagePath } from "./util/image.js";
+import { isImagePath } from "./util/image.js";
+import { endSessions } from "./hooks/session-lifecycle.js";
+import { buildAttachmentMessage } from "./util/attachments.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
 import { evaluatePermissionRules } from "./permissions-evaluator.js";
-import { classifyIntent } from "./intent/classify.js";
-import { allowsSubagentDispatch, resolveSubagentGuidance } from "./intent/subagent-policy.js";
+import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import type { KimiConfig, PermissionRules, ReasoningEffort } from "./config.js";
 import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
@@ -32,7 +33,7 @@ import { toOpenAIToolDefs } from "./tools/registry.js";
 export type PrintFormat = "text" | "json" | "stream-json";
 
 export interface PrintModeOpts
-  extends Pick<KimiConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck"> {
+  extends Pick<KimiConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck" | "imageMaxEdge" | "imageQuality"> {
   model: string;
   reasoningEffort?: ReasoningEffort;
   prompt: string;
@@ -154,45 +155,6 @@ async function resolveFiles(filePatterns: string[], cwd: string): Promise<string
   return [...resolved];
 }
 
-async function buildUserMessage(prompt: string, files: string[], cwd: string): Promise<{ content: string | ContentPart[]; display: string }> {
-  let text = prompt;
-  const imageParts: ContentPart[] = [];
-  const fileContents: string[] = [];
-
-  for (const filePath of files) {
-    if (isImagePath(filePath)) {
-      try {
-        const img = await encodeImageFile(filePath);
-        imageParts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to attach image ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
-    } else {
-      try {
-        const content = await readFile(filePath, "utf8");
-        const relPath = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath;
-        fileContents.push(`\n--- ${relPath} ---\n${content}\n--- end ${relPath} ---\n`);
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to read ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
-    }
-  }
-
-  if (fileContents.length > 0) {
-    text += "\n\n" + fileContents.join("\n");
-  }
-
-  const display = prompt; // Original prompt without file contents for display
-
-  if (imageParts.length > 0) {
-    const parts: ContentPart[] = [{ type: "text", text }];
-    parts.push(...imageParts);
-    return { content: parts, display };
-  }
-
-  return { content: text, display };
-}
-
 export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   const startMs = Date.now();
 
@@ -216,17 +178,17 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     sessionFile.title = opts.title;
   }
 
-  const intent = classifyIntent(opts.prompt);
-  const delegationGuidance = await resolveSubagentGuidance({
+  // SessionCore: classification, subagent guidance (Jev only on OpenRouter)
+  // and the completion check, decided the same way as in every host.
+  const policy = await resolveTurnPolicy({
+    cfg: opts,
     prompt: opts.prompt,
-    tier: intent.tier,
-    policy: opts.subagentPolicy ?? "auto",
-    apiKey: opts.openrouterApiKey,
-    customEndpoint: Boolean(opts.baseUrl),
+    tools: baseWorkerTools,
+    subagentPolicy: opts.subagentPolicy ?? "auto",
+    ...(opts.workerProfile === "research" ? { workerProfile: "research" as const } : {}),
   });
-  const workerTools = baseWorkerTools.filter(
-    (tool) => tool.name !== "subagent" || allowsSubagentDispatch(delegationGuidance.kind),
-  );
+  const delegationGuidance = policy.guidance;
+  const workerTools = policy.tools;
   const executor = new ToolExecutor(workerTools, { hooks });
   // The research worker profile never delegates; only coordinator runs count.
   if (opts.workerProfile !== "research") {
@@ -275,7 +237,11 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   // Build user message with file attachments
   const files = opts.files ? await resolveFiles(opts.files, cwd) : [];
-  const { content: userContent } = await buildUserMessage(opts.prompt, files, cwd);
+  const { content: userContent, notices: imageNotices } = await buildAttachmentMessage(opts.prompt, files, cwd, {
+    maxEdge: opts.imageMaxEdge,
+    quality: opts.imageQuality,
+  });
+  for (const notice of imageNotices) process.stderr.write(`${notice}\n`);
   messages.push({ role: "user", content: userContent });
   const turnId = makeTurnId();
   if (trace.enabled) {
@@ -438,16 +404,12 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   };
 
   try {
-    await runAgentTurn({
+    await runAgentTurn(assembleTurn({ cfg: opts, policy, host: {
       ...auth,
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
-      delegationDirective: delegationGuidance.refinedDirective ?? delegationGuidance.directive,
-      // Research subagents answer one mission; only coordinators are checked.
-      completionCheck: opts.workerProfile === "research" ? undefined : completionCheckFromConfig(opts),
       sessionId: sessionFile.id,
       messages,
-      tools: workerTools,
       executor,
       hooks,
       cwd,
@@ -468,7 +430,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       callbacks,
       trace,
       turnId,
-    });
+    } }));
   } catch (err) {
     if (err instanceof BudgetExhaustedError) {
       const msg = "[Budget exhausted — exiting with code 42]";
@@ -494,6 +456,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     traceEndReason = "crash";
     throw err;
   } finally {
+    await endSessions("exit");
     await Promise.all(usageWrites);
     trace.emit("session_end", { reason: traceEndReason, total_cost_usd: traceCostUsd || undefined }, null);
     await trace.flush();

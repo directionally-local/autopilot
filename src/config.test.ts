@@ -9,8 +9,11 @@ import {
   loadConfig,
   hasLegacyCloudflareConfig,
   DEFAULT_MODEL,
+  DEFAULT_PLUMBING_MODEL,
   REQUESTY_DEFAULT_MODEL,
   REQUESTY_PLUMBING_MODEL,
+  plumbingModelOf,
+  saveConfig,
 } from "./config.js";
 
 describe("validateModelId", () => {
@@ -64,6 +67,10 @@ describe("loadConfig", () => {
     "KIMIFLARE_TRACE",
     "KIMIFLARE_TRACE_DIR",
     "XDG_CONFIG_HOME",
+    "AUTOPILOT_PROVIDER",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "KIMIFLARE_PLUMBING_MODEL",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -349,7 +356,84 @@ describe("loadConfig", () => {
       const cfg = await loadConfig();
       assert.strictEqual(cfg?.openrouterApiKey, "sk-or-env");
       assert.strictEqual(cfg?.model, DEFAULT_MODEL);
+      assert.strictEqual(cfg?.plumbingModel, DEFAULT_PLUMBING_MODEL);
+    });
+  });
+
+  describe("provider-aware defaults", () => {
+    it("side calls on a custom endpoint use the session model, never an OpenRouter id", async () => {
+      process.env.KIMIFLARE_BASE_URL = "http://127.0.0.1:11434/v1";
+      process.env.KIMI_MODEL = "llama3.1:8b";
+      const cfg = await loadConfig();
       assert.strictEqual(cfg?.plumbingModel, undefined);
+      assert.strictEqual(cfg?.memoryExtractionModel, undefined);
+      assert.strictEqual(plumbingModelOf(cfg), "llama3.1:8b");
+    });
+
+    it("uses the active preset's chat and side-call models", async () => {
+      await writeConfigFile({ provider: "deepseek", providers: { deepseek: { apiKey: "sk-ds" } } });
+      const cfg = await loadConfig();
+      assert.strictEqual(cfg?.model, "deepseek-v4-pro");
+      assert.strictEqual(cfg?.plumbingModel, "deepseek-flash");
+      assert.strictEqual(plumbingModelOf(cfg), "deepseek-flash");
+    });
+
+    it("returns null when the chosen provider has no key", async () => {
+      await writeConfigFile({ provider: "deepseek", openrouterApiKey: "sk-or-file" });
+      assert.strictEqual(await loadConfig(), null);
+    });
+
+    it("ignores an OpenRouter-era model and plumbing model once another provider is active", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", model: "moonshotai/kimi-k3", plumbingModel: "moonshotai/kimi-k2.5" });
+      process.env.AUTOPILOT_PROVIDER = "openai";
+      process.env.OPENAI_API_KEY = "sk-openai";
+      const cfg = await loadConfig();
+      assert.strictEqual(cfg?.model, "gpt-6.1-sol");
+      assert.strictEqual(cfg?.plumbingModel, "gpt-6-luna");
+      // …and they still apply to OpenRouter.
+      delete process.env.AUTOPILOT_PROVIDER;
+      const back = await loadConfig();
+      assert.strictEqual(back?.model, "moonshotai/kimi-k3");
+      assert.strictEqual(back?.plumbingModel, "moonshotai/kimi-k2.5");
+    });
+
+    it("restores a provider's last model from providers.<id>.model", async () => {
+      await writeConfigFile({ provider: "openai", providers: { openai: { apiKey: "k", model: "gpt-5.6" } }, model: "moonshotai/kimi-k3" });
+      assert.strictEqual((await loadConfig())?.model, "gpt-5.6");
+    });
+
+    it("saves a model chosen under a one-off provider override for that provider only", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", model: "moonshotai/kimi-k3" });
+      process.env.AUTOPILOT_PROVIDER = "openai";
+      process.env.OPENAI_API_KEY = "sk-openai";
+      const cfg = await loadConfig();
+      await saveConfig({ ...cfg!, model: "gpt-5.6" });
+      const onDisk = await readConfigFile();
+      assert.strictEqual(onDisk.model, "moonshotai/kimi-k3", "OpenRouter's model is untouched");
+      assert.deepStrictEqual((onDisk.providers as Record<string, { model?: string }>).openai?.model, "gpt-5.6");
+      assert.strictEqual((await loadConfig())?.model, "gpt-5.6");
+      delete process.env.AUTOPILOT_PROVIDER;
+      assert.strictEqual((await loadConfig())?.model, "moonshotai/kimi-k3");
+    });
+
+    it("still loads a config with retired multi-agent settings, and drops them on rewrite", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", decompositionStrategy: "llm", workerPreReadFiles: ["a.ts"], synthesisModel: "x/y", theme: "nord" });
+      const cfg = await loadConfig();
+      assert.strictEqual(cfg?.openrouterApiKey, "sk-or-file");
+      const onDisk = await readConfigFile();
+      assert.strictEqual(onDisk.decompositionStrategy, undefined);
+      assert.strictEqual(onDisk.workerPreReadFiles, undefined);
+      assert.strictEqual(onDisk.theme, "nord");
+    });
+
+    it("does not persist preset-derived side-call models", async () => {
+      await writeConfigFile({ provider: "deepseek", providers: { deepseek: { apiKey: "sk-ds" } } });
+      const cfg = await loadConfig();
+      await saveConfig({ ...cfg!, theme: "nord" });
+      const onDisk = await readConfigFile();
+      assert.strictEqual(onDisk.plumbingModel, undefined);
+      assert.strictEqual(onDisk.memoryExtractionModel, undefined);
+      assert.strictEqual(onDisk.theme, "nord");
     });
   });
 

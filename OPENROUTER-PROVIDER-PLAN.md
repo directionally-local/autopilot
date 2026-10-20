@@ -1,5 +1,11 @@
 # Plan: replace Cloudflare with OpenRouter as the model provider
 
+> **Superseded (2026-10-20):** the "provider is not user-choosable" decision below was reversed in
+> #801. OpenRouter stays the default and the only provider with billed-cost confirmation, subagents
+> and Jev, but users can now choose another provider (OpenAI, DeepSeek, Moonshot, Z.ai, Ollama, …);
+> see `src/providers/` and the README's *Providers* section. This document is kept as the record of
+> the Cloudflare → OpenRouter migration.
+
 Written by the ops agent, 2026-09-19, after reading the codebase and commit history.
 
 **Status (2026-09-25): implemented on `feat/openrouter-provider`** — steps 2–5 landed together

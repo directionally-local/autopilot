@@ -8,7 +8,7 @@ import { resolveTheme } from "./theme.js";
 
 const testTheme = resolveTheme();
 
-function render(props: { message: string; httpStatus?: number; code?: number }): string {
+function render(props: { message: string; httpStatus?: number; code?: number; statusUrl?: string }): string {
   return renderToString(
     <ThemeProvider theme={testTheme}>
       <ApiErrorMessage {...props} />
@@ -28,9 +28,16 @@ describe("ApiErrorMessage", () => {
     assert.ok(out.includes("code: 3040"));
   });
 
-  it("points at provider status and /model", () => {
+  it("points at the active provider's status page and /model", () => {
+    const out = render({ message: "Something went wrong", statusUrl: "https://status.deepseek.com" });
+    assert.ok(out.includes("status.deepseek.com"));
+    assert.ok(!out.includes("openrouter"));
+    assert.ok(out.includes("/model"));
+  });
+
+  it("omits the status link for providers without one", () => {
     const out = render({ message: "Something went wrong" });
-    assert.ok(out.includes("status.openrouter.ai"));
+    assert.ok(!out.includes("Provider status"));
     assert.ok(out.includes("/model"));
   });
 });

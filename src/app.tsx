@@ -1,14 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Box, Text, useApp, useInput, useWindowSize, render } from "ink";
-import Spinner from "./ui/spinner.js";
 
-import { runAgentTurn, AgentLoopError, type GuardrailEvent } from "./agent/loop.js";
 import type { ResponseMeta } from "./agent/client.js";
-import { llmAuthFromConfig } from "./agent/llm-auth.js";
+import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerPresetOf } from "./agent/llm-auth.js";
 import { buildSystemPrompt, buildSessionPrefix } from "./agent/system-prompt.js";
 import { summarizeMessagesViaLlm } from "./agent/llm-summarize.js";
 import {
-  compactMessagesViaArtifacts,
   shouldCompact,
   recallArtifacts,
   estimatePromptTokens,
@@ -18,18 +15,15 @@ import {
   emptySessionState,
   ArtifactStore,
   formatRecalledArtifacts,
-  serializeArtifactStore,
   type SessionState,
 } from "./agent/session-state.js";
 import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
 import type { ToolSpec } from "./tools/registry.js";
-import { getShellCommand } from "./tools/bash.js";
 import { McpManager } from "./mcp/manager.js";
 import { LspManager } from "./lsp/manager.js";
 import { HooksManager } from "./hooks/manager.js";
 import { sanitizeString, appendStoppedToolResults } from "./agent/messages.js";
-import type { ChatMessage, ContentPart, Usage } from "./agent/messages.js";
-import { KimiApiError, humanizeApiError } from "./util/errors.js";
+import type { ChatMessage, Usage } from "./agent/messages.js";
 import { AbortScope } from "./util/abort-scope.js";
 import { logger } from "./util/logger.js";
 import { ChatView, type ChatEvent } from "./ui/chat.js";
@@ -41,60 +35,46 @@ import { CheckpointPicker } from "./ui/checkpoint-picker.js";
 import { PlanOptionsPicker } from "./ui/plan-options-picker.js";
 import { QueuePlanPicker } from "./ui/queue-plan-picker.js";
 import { createQueueBatch, canDrainQueue, type QueuedPrompt } from "./agent/queue-batch.js";
-import { isImmediateSubagentCommand, isRunNowCommand, SubagentPanel, useSubagentList } from "./ui/subagent-panel.js";
-import { planTriageAction, steerMessage, triageIncoming, type TriageResult } from "./agent/inbox-triage.js";
+import { SubagentPanel, useSubagentList } from "./ui/subagent-panel.js";
+import { triageIncoming } from "./agent/inbox-triage.js";
+import { createTriageCoordinator, decideSubmit, describeActivity, pushHistory, type PromptEditTarget } from "./ui/input-coordinator.js";
 import { answerAside } from "./agent/aside.js";
 import { workerRegistry } from "./tools/worker-registry.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
-import { completionCheckFromConfig } from "./agent/completion-check.js";
 import { TaskList } from "./ui/task-list.js";
 import type { Task, PlanOption } from "./tools/registry.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import QRCode from "qrcode";
-import type { ToolRender } from "./tools/registry.js";
 import { CustomTextInput } from "./ui/text-input.js";
 import { setTerminalTitle } from "./ui/terminal-title.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { Onboarding } from "./ui/onboarding.js";
 import { Welcome } from "./ui/welcome.js";
-import { configPath, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, DEFAULT_PLUMBING_MODEL } from "./config.js";
-import { startRemoteSession, streamRemoteProgress } from "./remote/worker-client.js";
-import { saveRemoteSession, type RemoteSession } from "./remote/session-store.js";
-import { deployForTui } from "./remote/deploy.js";
-import { authGitHubForTui } from "./remote/tui-auth.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
-import { allowsSubagentDispatch, resolveSubagentGuidance } from "./intent/subagent-policy.js";
-import type { SemanticSkillRoutingResult } from "./skills/index.js";
+import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
 import { getMemoryDb } from "./memory/db.js";
-import { listAllSkills, createSkill, deleteSkill, setSkillEnabled, findSkillFile } from "./skills/manager.js";
 import {
-  loadSession,
   addCheckpoint,
   generateSessionTitle,
-  type Checkpoint,
 } from "./sessions.js";
-import { unlink } from "node:fs/promises";
-import { encodeImageFile, type EncodedImage } from "./util/image.js";
+import { encodeImageFile } from "./util/image.js";
 import { recordUsage, getCostReport, usageEvents } from "./usage-tracker.js";
 import type { DailyUsage } from "./usage-tracker.js";
 import { MemoryManager } from "./memory/manager.js";
-import { injectRecalledMemoryOnce } from "./memory/recall-inject.js";
 import { loadCustomCommands } from "./commands/loader.js";
 import { renderCommand } from "./commands/renderer.js";
 import type { CustomCommand, SlashItem } from "./commands/types.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { SaveCustomCommandOptions } from "./commands/save.js";
-import { buildInitPrompt } from "./init/context-generator.js";
 import { ThemeProvider } from "./ui/theme-context.js";
-import { resolveTheme, themeList, themeNames, DEFAULT_THEME_NAME } from "./ui/theme.js";
+import { resolveTheme, themeList, DEFAULT_THEME_NAME } from "./ui/theme.js";
 import { loadAndMergeThemes } from "./ui/theme-loader.js";
 import type { Theme } from "./ui/theme.js";
 import { getModelOrInfer, type ModelEntry } from "./models/registry.js";
-import type { ResolvedLspConfig } from "./util/lsp-config.js";
 import { maybeLspNudge } from "./util/lsp-nudge.js";
 import { glob } from "./util/glob.js";
 import { FilePicker, type FilePickerItem } from "./ui/file-picker.js";
@@ -117,14 +97,21 @@ import {
 import { dispatchSlashCommand, type SlashContext, executeFreshStart } from "./ui/slash-commands.js";
 import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
+import { switchedMessage } from "./providers/connect.js";
+import { endSessions } from "./hooks/session-lifecycle.js";
+import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
-import { classifyNextMessage, makeTurnId, traceCompiledCompaction, traceLlmCompaction } from "./trace/index.js";
+import { compactAfterTurn, compactMidTurn, type AutoCompactionDeps } from "./agent/auto-compaction.js";
+import { prepareAutoFresh } from "./agent/auto-fresh.js";
+import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents } from "./ui/turn-callbacks.js";
+import { buildPromptContent, expandCustomCommand, turnReasoningEffort } from "./ui/prepare-prompt.js";
+import { freshSuggestion, INIT_TIP, turnNudges } from "./ui/turn-nudges.js";
+import { classifyNextMessage, makeTurnId } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 import { distillSessionPlan } from "./agent/distill.js";
 import { resolvePlanForFresh } from "./agent/plan-resolver.js";
-import { writeToClipboard } from "./util/clipboard.js";
 import { enableUserShellCommands } from "./agent/user-shell.js";
 import {
   formatBangContext,
@@ -137,38 +124,25 @@ import {
   handleCommandDelete as handleCommandDeleteImpl,
   handleCommandSave as handleCommandSaveImpl,
   handleLspSave as handleLspSaveImpl,
-  handleRemoteCancel as handleRemoteCancelImpl,
 } from "./ui/command-handlers.js";
 import {
   AUTO_COMPACT_THRESHOLD,
   buildFilePickerIgnoreList,
   capEvents,
-  compactEventsVisual,
   CONTEXT_LIMIT,
   DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
   detectGitBranch,
-  detectGitHubRepo,
-  findImagePaths,
   costLookupFromConfig,
   makePrefixMessages,
-  MAX_IMAGES_PER_MESSAGE,
   mkAssistantId,
   mkKey,
   openBrowser,
-  rebuildSystemPromptForMode,
   trackRecentFile,
-  replaceQueuedPrompt,
   replaceUserPromptEvent,
 } from "./ui/app-helpers.js";
 
 /** The TUI's config is exactly the loaded config. */
 export type Cfg = KimiConfig;
-
-interface PromptEditTarget {
-  key: string;
-  historyText: string;
-  messagesBefore: ChatMessage[] | null;
-}
 
 interface PendingPromptEdit {
   key: string;
@@ -183,6 +157,7 @@ function App({
   initialLspScope,
   initialLspProjectPath,
   bridge,
+  initialResumeSessionId,
 }: {
   initialCfg: Cfg | null;
   initialUpdateResult?: UpdateCheckResult;
@@ -190,6 +165,8 @@ function App({
   initialLspProjectPath: string | null;
   /** Render through another view (e.g. Camouflage) instead of Ink. */
   bridge?: AppBridge;
+  /** Reopen this session on start (after a renderer crash). */
+  initialResumeSessionId?: string;
 }) {
   const { exit } = useApp();
   const { columns } = useWindowSize();
@@ -216,6 +193,24 @@ function App({
 
   // Refresh sessionUsage when usage-tracker emits an out-of-band update
   // (e.g. after OpenRouter confirms a turn's cost and patches a turn's real cost).
+  // A background subagent finished: say so; its findings reach the agent at
+  // the next tool boundary or with your next message.
+  useEffect(
+    () =>
+      workerRegistry.onFinished((w) => {
+        if (!w.background || (sessionIdRef.current && w.sessionId !== sessionIdRef.current)) return;
+        setEvents((e) => [
+          ...e,
+          {
+            kind: "info",
+            key: mkKey(),
+            text: `Background subagent #${w.index} ${w.status}${w.costUsd ? ` ($${w.costUsd.toFixed(4)})` : ""}: ${w.task.slice(0, 80)}. Its findings go to the agent ${supervisorRef.current.isRunning ? "at the next tool step" : "with your next message"}.`,
+          },
+        ]);
+      }),
+    [],
+  );
+
   useEffect(() => {
     const handler = (sid: string) => {
       if (sessionIdRef.current && sid === sessionIdRef.current) {
@@ -276,8 +271,8 @@ function App({
     showThemePicker, setShowThemePicker,
     showUiPicker, setShowUiPicker,
     setShowModelPicker,
+    setProviderSetup,
     showModePicker, setShowModePicker,
-    showRemoteDashboard, setShowRemoteDashboard,
     showInboxModal, setShowInboxModal,
     showHelpMenu, setShowHelpMenu,
     showMemoryPicker, setShowMemoryPicker,
@@ -294,11 +289,10 @@ function App({
   const [queueDrainRevision, setQueueDrainRevision] = useState(0);
   /** Running subagents, for the Camouflage activity panel (bridge snapshot). */
   const runningSubagents = useSubagentList();
-  const announcedSubagentsRef = useRef<Set<string>>(new Set());
   /** Latest queue for async triage callbacks (state closures go stale). */
   const queueRef = useRef<QueuedPrompt[]>([]);
   queueRef.current = queue;
-  const triageQueuedRef = useRef<((item: QueuedPrompt) => Promise<void>) | null>(null);
+  const triageRef = useRef<ReturnType<typeof createTriageCoordinator> | null>(null);
   const promoteQueuedRef = useRef<(() => boolean) | null>(null);
   const [queuePlanDraft, setQueuePlanDraft] = useState<QueuedPrompt[] | null>(null);
   const [history, setHistory] = useState<string[]>([]);
@@ -320,7 +314,6 @@ function App({
   const [effort, setEffort] = useState<ReasoningEffort>(
     initialCfg?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
   );
-  const [selectedRemoteSession, setSelectedRemoteSession] = useState<RemoteSession | null>(null);
   const [verbose, setVerbose] = useState(false);
   const [hasUpdate, setHasUpdate] = useState(initialUpdateResult?.hasUpdate ?? false);
   const [latestVersion, setLatestVersion] = useState<string | null>(initialUpdateResult?.latestVersion ?? null);
@@ -511,6 +504,26 @@ function App({
 
   // Batched streaming delta refs to reduce React re-render frequency
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
+
+  // After a Camouflage renderer crash (#862) the Ink UI reopens the session
+  // the crashed view was saving.
+  const resumedAfterCrashRef = useRef(false);
+  useEffect(() => {
+    if (!initialResumeSessionId || resumedAfterCrashRef.current || !cfg) return;
+    resumedAfterCrashRef.current = true;
+    void (async () => {
+      const { sessionsDir } = await import("./sessions.js");
+      try {
+        await doResumeSession(join(sessionsDir(), `${initialResumeSessionId}.json`));
+        setEvents((e) => [
+          ...e,
+          { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed, so this conversation reopened here in the classic UI. Nothing was lost." },
+        ]);
+      } catch (err) {
+        setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `Couldn't reopen the conversation after the renderer crash: ${(err as Error).message}. Use /resume.` }]);
+      }
+    })();
+  }, [initialResumeSessionId, cfg, doResumeSession]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customCommandsRef = useRef<CustomCommand[]>([]);
   const recentFilesRef = useRef<Map<string, number>>(new Map());
@@ -534,7 +547,7 @@ function App({
   }, [customCommandsVersion, modesEnabled]);
 
   // Preserves the pre-refactor asymmetry: the picker close-on-modal check
-  // includes showInboxModal but EXCLUDES showRemoteDashboard and
+  // includes showInboxModal but EXCLUDES
   // showThemePicker. Likely an oversight from when those modals were
   // added later — kept as-is for this pure refactor; revisit when we
   // audit modal/keybinding semantics.
@@ -820,6 +833,65 @@ function App({
     }
   }, [cfg, initMcp, initLsp]);
 
+  /** What automatic compaction needs from the session (refs read at call time). */
+  const autoCompactionDeps = (turnId: string | null): AutoCompactionDeps => ({
+    compiledContext: compiledContextRef.current,
+    getState: () => sessionStateRef.current,
+    setState: (state) => {
+      sessionStateRef.current = state;
+    },
+    store: artifactStoreRef.current,
+    summarize: (messages, opts) => summarizeMessagesViaLlm({ ...llmAuthFromConfig(cfg!), model: cfg!.model, messages, ...opts }),
+    memory: memoryManagerRef.current,
+    cwd: process.cwd(),
+    trace: traceRef.current,
+    turnId,
+    notify: (kind, text) => setEvents((e) => [...e, { kind, key: mkKey(), text }]),
+    save: saveSessionSafe,
+    // M6.1: PreCompact is best-effort and never blocks compaction.
+    firePreCompact: (signal) => {
+      if (!hooksManagerRef.current.hasEnabledHooks("PreCompact")) return;
+      void hooksManagerRef.current
+        .fire("PreCompact", { event: "PreCompact", session_id: sessionIdRef.current, cwd: process.cwd() }, null, signal)
+        .catch(() => {});
+    },
+  });
+
+  /** Checkpoint the session, then build the continuation summary a fresh session starts from. */
+  const prepareAutoFreshNow = (): Promise<string | null> =>
+    prepareAutoFresh({
+      messages: messagesRef.current,
+      compiledContext: compiledContextRef.current,
+      sessionState: sessionStateRef.current,
+      artifactStore: artifactStoreRef.current,
+      saveCheckpoint: async (checkpoint) => {
+        ensureSessionId();
+        const { sessionsDir } = await import("./sessions.js");
+        await addCheckpoint(join(sessionsDir(), `${sessionIdRef.current}.json`), checkpoint);
+      },
+      summarize: () =>
+        generateContinuationSummary({
+          messages: messagesRef.current,
+          mode: modeRef.current,
+          ...llmAuthFromConfig(cfg!),
+          model: plumbingModelOf(cfg!),
+          memoryManager: memoryManagerRef.current,
+          memoryEnabled: cfg!.memoryEnabled,
+        }),
+    });
+
+  /** Start a fresh session from a continuation summary (after a silent checkpoint), with a notice. */
+  const runAutoFresh = async (notice: string): Promise<void> => {
+    try {
+      const summary = await prepareAutoFreshNow();
+      if (!summary) return;
+      executeFreshStart(buildSlashContext(), summary);
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
+    } catch (e) {
+      setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` }]);
+    }
+  };
+
   /** Mid-turn compaction hook: called between tool-iteration cycles in runAgentTurn.
    *  Prevents context overflow during long exploration sessions. */
   const onIterationEnd = useCallback(
@@ -829,99 +901,7 @@ function App({
       // limit; large ones still compact at the cost-driven 80k cap.
       if (!shouldCompact({ messages, tokenThreshold: cfg ? proactiveCompactionThreshold(cfg.model) : undefined })) return messages;
 
-      // M6.1: fire PreCompact before either compaction path runs.
-      // Best-effort + fire-and-forget — never block compaction on a
-      // user hook. Same shape as the user-triggered /compact path.
-      if (hooksManagerRef.current.hasEnabledHooks("PreCompact")) {
-        void hooksManagerRef.current
-          .fire(
-            "PreCompact",
-            {
-              event: "PreCompact",
-              session_id: sessionIdRef.current,
-              cwd: process.cwd(),
-            },
-            null,
-            signal,
-          )
-          .catch(() => {});
-      }
-
-      if (compiledContextRef.current) {
-        const store = artifactStoreRef.current;
-        const result = compactMessagesViaArtifacts({
-          messages,
-          state: sessionStateRef.current,
-          store,
-        });
-        if (result.metrics.rawTurnsRemoved > 0) {
-          traceCompiledCompaction(traceRef.current, result, currentTurnIdRef.current);
-          sessionStateRef.current = result.newState;
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "info",
-              key: mkKey(),
-              text: `auto-compacted: ${result.metrics.estimatedTokensBefore} → ${result.metrics.estimatedTokensAfter} tokens (${result.metrics.archivedArtifacts} artifacts)`,
-            },
-          ]);
-          await saveSessionSafe();
-        }
-        // After compaction, recall memories so the model retains durable anchors
-        const manager = memoryManagerRef.current;
-        if (manager && !signal.aborted) {
-          try {
-            const cwd = process.cwd();
-            const queryText = sessionStateRef.current.task || cwd;
-            const results = await manager.recall({ text: queryText, repoPath: cwd, limit: 5 });
-            if (results.length > 0 && !signal.aborted) {
-              const text = await manager.synthesizeRecalled(results);
-              if (injectRecalledMemoryOnce(result.newMessages, text)) {
-                setEvents((e) => [
-                  ...e,
-                  {
-                    kind: "memory",
-                    key: mkKey(),
-                    text: `recalled ${results.length} memory${results.length === 1 ? "" : "ies"} after compaction`,
-                  },
-                ]);
-                await saveSessionSafe();
-              }
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
-        return result.newMessages;
-      }
-
-      // Non-compiled context: fall back to LLM summarizer
-      if (cfg && !signal.aborted) {
-        try {
-          const result = await summarizeMessagesViaLlm({
-            ...llmAuthFromConfig(cfg),
-            model: cfg.model,
-            messages,
-            signal,
-          });
-          if (result.replacedCount > 0) {
-            traceLlmCompaction(traceRef.current, messages, result, currentTurnIdRef.current);
-            setEvents((e) => [
-              ...e,
-              {
-                kind: "info",
-                key: mkKey(),
-                text: `auto-compacted: ${result.replacedCount} messages summarized`,
-              },
-            ]);
-            await saveSessionSafe();
-          }
-          return result.newMessages;
-        } catch {
-          // Non-fatal: if compaction fails, continue with original messages
-        }
-      }
-      return messages;
+      return compactMidTurn(messages, autoCompactionDeps(currentTurnIdRef.current), signal);
     },
     [cfg],
   );
@@ -950,7 +930,7 @@ function App({
     if (key.escape) {
       const now = Date.now();
       // Preserves the pre-refactor asymmetry: this Esc-handler check
-      // EXCLUDES commandPicker, showInboxModal, and showRemoteDashboard
+      // EXCLUDES commandPicker and showInboxModal
       // (so Esc still fires the abort-turn path when those are open).
       // Kept as-is for this pure refactor.
       const modalOpen =
@@ -1227,6 +1207,20 @@ function App({
     [busy, cfg?.model, mkKey, setShowModelPicker],
   );
 
+  /** `/provider` finished: the new config is saved and its catalog loaded. */
+  const handleProviderSwitched = useCallback(
+    async (next: KimiConfig | null, to: ProviderId) => {
+      const loaded = next ?? (await loadConfig());
+      if (!loaded) {
+        setEvents((e) => [...e, { kind: "error", key: mkKey(), text: "couldn't load the config after switching provider" }]);
+        return;
+      }
+      setCfg(loaded);
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: switchedMessage(loaded, to) }]);
+    },
+    [mkKey],
+  );
+
   const buildSlashContext = useCallback((): SlashContext => ({
     exit,
     busy,
@@ -1244,12 +1238,12 @@ function App({
     setLatestVersion,
     setShowThemePicker,
     setShowModelPicker,
+    setProviderSetup,
     setShowModePicker,
     setShowInboxModal,
     setShowHooksDashboard: modals.setShowHooksDashboard,
     setShowHelpMenu,
     setShowLspWizard,
-    setShowRemoteDashboard,
     setShowCommandList,
     setCommandWizard,
     setCommandPicker,
@@ -1303,11 +1297,11 @@ function App({
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage, setResponseMeta,
-    setHasUpdate, setLatestVersion, setShowThemePicker, setShowModelPicker, setShowModePicker,
+    setHasUpdate, setLatestVersion, setShowThemePicker, setShowModelPicker, setProviderSetup, setShowModePicker,
     setShowInboxModal, setShowHelpMenu,
     setShowMemoryPicker, setShowSkillsPicker, setShowShellPicker,
     setShowChangelogImagePicker, setChangelogImageRepo,
-    setShowLspWizard, setShowRemoteDashboard, setShowCommandList,
+    setShowLspWizard, setShowCommandList,
     setCommandWizard, setCommandPicker,
     turn.setShowReasoning, turn.setTasks, turn.setTasksStartedAt,
     resetSession, clearTaskTracking, openResumePicker, runCompact, runInit,
@@ -1410,15 +1404,6 @@ function App({
     [cfg, setCfg, setEvents, setShowLspWizard],
   );
 
-  const handleRemoteCancel = useCallback(
-    (session: RemoteSession) =>
-      handleRemoteCancelImpl(
-        { setEvents, mkKey, setSelectedRemoteSession, setShowRemoteDashboard },
-        session,
-      ),
-    [setEvents, setShowRemoteDashboard],
-  );
-
   // `! <command>`: run it in the user's terminal, show the output, and share
   // it with the model as context for the next turn.
   const runUserShellCommand = useCallback(
@@ -1505,35 +1490,19 @@ function App({
           }
           return;
         }
-        const cmdName = head.slice(1);
-        const custom = customCommandsRef.current.find((c) => c.name === cmdName);
-        if (custom) {
-          const info = (text: string) =>
-            setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
-          const { prompt: rendered, warnings } = await renderCommand(custom, trimmed, {
-            cwd: process.cwd(),
-          });
-          for (const w of warnings) info(`/${custom.name}: ${w}`);
-          if (custom.shell) {
-            info(`/${custom.name}: executing shell code from template`);
-          }
-          if (!rendered.trim()) {
+        const expanded = await expandCustomCommand(trimmed, customCommandsRef.current, (cmd, input) =>
+          renderCommand(cmd, input, { cwd: process.cwd() }),
+        );
+        if (expanded) {
+          for (const text of expanded.notices) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
+          if (!expanded.prompt.trim()) {
             endTurn();
             return;
           }
-          const parts: string[] = [];
-          if (custom.model) {
-            overrideModel = custom.model;
-            parts.push(`model=${custom.model}`);
-          }
-          if (custom.effort) {
-            overrideEffort = custom.effort;
-            parts.push(`effort=${custom.effort}`);
-          }
-          if (parts.length > 0) info(`command '${custom.name}' → ${parts.join(", ")} (this turn)`);
-          if (custom.mode) info(`note: mode override (${custom.mode}) is not yet wired; current mode applies`);
+          overrideModel = expanded.model;
+          overrideEffort = expanded.effort;
           display = trimmed;
-          trimmed = rendered;
+          trimmed = expanded.prompt;
         }
       }
 
@@ -1544,35 +1513,11 @@ function App({
         if (path) trackRecentFile(recentFilesRef, path, MAX_RECENT_FILES);
       }
 
-      const imagePaths = findImagePaths(trimmed).slice(0, MAX_IMAGES_PER_MESSAGE);
-      let images: string[] = [];
-      let content: string | ContentPart[] = sanitizeString(trimmed);
-
-      if (imagePaths.length > 0) {
-        const encoded = await Promise.all(
-          imagePaths.map(async (path) => {
-            try {
-              const img = await encodeImageFile(path);
-              return { path, img };
-            } catch (e) {
-              setEvents((es) => [
-                ...es,
-                { kind: "error", key: mkKey(), text: `failed to encode image ${path}: ${(e as Error).message}` },
-              ]);
-              return null;
-            }
-          }),
-        );
-        const valid = encoded.filter((x): x is { path: string; img: EncodedImage } => x !== null);
-        if (valid.length > 0) {
-          images = valid.map((v) => v.img.filename);
-          const parts: ContentPart[] = [
-            { type: "text", text: sanitizeString(trimmed) },
-            ...valid.map((v) => ({ type: "image_url" as const, image_url: { url: v.img.dataUrl } })),
-          ];
-          content = parts;
-        }
-      }
+      const { content, images, errors: imageErrors, notices: imageNotices } = await buildPromptContent(trimmed, (path) =>
+        encodeImageFile(path, { maxEdge: cfg.imageMaxEdge, quality: cfg.imageQuality }),
+      );
+      for (const text of imageErrors) setEvents((es) => [...es, { kind: "error", key: mkKey(), text }]);
+      for (const text of imageNotices) setEvents((es) => [...es, { kind: "info", key: mkKey(), text }]);
 
       if (opts?.queuedKeys && opts.queuedKeys.length > 0) {
         const queuedKeys = new Set(opts.queuedKeys);
@@ -1646,79 +1591,22 @@ function App({
         }
       }
 
-      // Occasional gentle nudge about /init (educational, not a warning)
+      // Occasional /init tip; for long auto/edit sessions, suggest /fresh or start fresh.
       turnCounterRef.current += 1;
-      if (
-        turnCounterRef.current % 15 === 0 &&
-        ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))) &&
-        !kimiMdStale
-      ) {
-        setEvents((e) => [
-          ...e,
-          { kind: "info", key: mkKey(), text: "Tip: Rerunning /init occasionally helps autopilot (formerly kimiflare) stay accurate as your project evolves." },
-        ]);
-      }
-
-      // Auto-fresh suggestion for long auto/edit sessions
-      const autoFreshThreshold = cfg?.autoFreshSuggestionTurns ?? DEFAULT_AUTO_FRESH_SUGGESTION_TURNS;
-      if (
-        autoFreshThreshold > 0 &&
-        turnCounterRef.current >= autoFreshThreshold &&
-        (modeRef.current === "auto" || modeRef.current === "edit") &&
-        !freshSuggestedRef.current
-      ) {
+      const nudges = turnNudges({
+        turn: turnCounterRef.current,
+        hasContextFile: ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))),
+        contextStale: kimiMdStale,
+        mode: modeRef.current,
+        freshAfterTurns: cfg?.autoFreshSuggestionTurns ?? DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
+        freshSuggested: freshSuggestedRef.current,
+        autoFreshEnabled: cfg?.autoFreshEnabled === true,
+      });
+      if (nudges.initTip) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: INIT_TIP }]);
+      if (nudges.fresh) {
         freshSuggestedRef.current = true;
-        if (cfg?.autoFreshEnabled) {
-          // Auto-execute /fresh after a silent checkpoint
-          void (async () => {
-            try {
-              const turnIndex = messagesRef.current.length;
-              if (turnIndex > 0) {
-                const cp: Checkpoint = {
-                  id: `cp_prefresh_${Date.now()}`,
-                  label: "pre-fresh auto-save",
-                  turnIndex,
-                  timestamp: new Date().toISOString(),
-                  sessionState: compiledContextRef.current ? sessionStateRef.current : undefined,
-                  artifactStore: serializeArtifactStore(artifactStoreRef.current),
-                };
-                ensureSessionId();
-                const { sessionsDir } = await import("./sessions.js");
-                const filePath = join(sessionsDir(), `${sessionIdRef.current}.json`);
-                await addCheckpoint(filePath, cp);
-              }
-              const summary = await generateContinuationSummary({
-                messages: messagesRef.current,
-                mode: modeRef.current,
-                ...llmAuthFromConfig(cfg),
-                model: cfg.plumbingModel ?? DEFAULT_PLUMBING_MODEL,
-                memoryManager: memoryManagerRef.current,
-                memoryEnabled: cfg.memoryEnabled,
-              });
-              if (summary) {
-                executeFreshStart(buildSlashContext(), summary);
-                setEvents((e) => [
-                  ...e,
-                  { kind: "info", key: mkKey(), text: "Auto-fresh triggered: starting new session with continuation context…" },
-                ]);
-              }
-            } catch (e) {
-              setEvents((es) => [
-                ...es,
-                { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` },
-              ]);
-            }
-          })();
-        } else {
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "info",
-              key: mkKey(),
-              text: `Session has run for ${turnCounterRef.current} turns. The model may slow down with accumulated context. Run /fresh to continue with a summarized state, or /compact to compress history.`,
-            },
-          ]);
-        }
+        if (nudges.fresh === "auto") void runAutoFresh("Auto-fresh triggered: starting new session with continuation context…");
+        else setEvents((e) => [...e, { kind: "info", key: mkKey(), text: freshSuggestion(turnCounterRef.current) }]);
       }
 
       responseMetaRef.current = null;
@@ -1734,12 +1622,7 @@ function App({
         setTerminalTitle(sessionTitleRef.current);
       }
 
-      const effortForTier: Record<string, ReasoningEffort> = {
-        light: "low",
-        medium: "medium",
-        heavy: "high",
-      };
-      const turnReasoningEffort = overrideEffort ?? effortForTier[classification.tier] ?? effortRef.current;
+      const reasoningEffort = turnReasoningEffort(classification.tier, overrideEffort, effortRef.current);
       const effectiveCodeMode = classification.tier === "heavy";
       setCodeMode(effectiveCodeMode);
 
@@ -1750,158 +1633,46 @@ function App({
       // performed inside runAgentTurn so it is covered by the supervisor
       // lifecycle and the turn's abort signal.
 
-      const sharedCallbacks = {
-        onCompacted: (info: { tokensBefore: number; tokensAfter: number; turnsRemoved: number; artifactsArchived: number }) => {
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "info",
-              key: mkKey(),
-              text: `context budget: compacted ${info.turnsRemoved} older turn${info.turnsRemoved === 1 ? "" : "s"} (${info.tokensBefore} → ${info.tokensAfter} tokens, ${info.artifactsArchived} artifacts archived)`,
-            },
-          ]);
-        },
-        onAssistantStart: () => {
-          const id = mkAssistantId();
-          activeAsstIdRef.current = id;
-          beginTurn();
-          setTurnPhase("generating");
-          setLastActivityAt(Date.now());
-          setEvents((e) => [
-            ...e,
-            { kind: "assistant", key: `asst_${id}`, id, text: "", reasoning: "", streaming: true },
-          ]);
-        },
-        onReasoningDelta: (d: string) => {
-          const id = activeAsstIdRef.current;
-          if (id !== null) updateAssistant(id, (e) => ({ reasoning: e.reasoning + d }));
-          setLastActivityAt(Date.now());
-        },
-        onTextDelta: (d: string) => {
-          const id = activeAsstIdRef.current;
-          if (id !== null) updateAssistant(id, (e) => ({ text: e.text + d }));
-          setLastActivityAt(Date.now());
-        },
-        onInfo: (text: string) => {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
-        },
-        onAssistantFinal: () => {
-          const id = activeAsstIdRef.current;
-          if (id !== null) updateAssistant(id, () => ({ streaming: false }));
-          setTurnPhase("waiting");
-
-          // If no tool calls were finalized, the turn is effectively done.
-          // Reset busy immediately so the UI returns to idle without waiting
-          // for the supervisor's onDone hook.
-          if (pendingToolCallsRef.current.size === 0) {
-            endTurn();
-          }
-        },
-        onToolCallFinalized: (call: import("./agent/messages.js").ToolCall) => {
-          pendingToolCallsRef.current.set(call.id, call.function.name);
-          setTurnPhase("executing");
-          setCurrentToolName(call.function.name);
-          setLastActivityAt(Date.now());
-          const spec = executorRef.current.list().find((t) => t.name === call.function.name);
-          let renderMeta: ToolRender | undefined;
-          try {
-            const args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-            renderMeta = spec?.render?.(args);
-          } catch {
-            /* ignore render failure */
-          }
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "tool",
-              key: `tool_${call.id}`,
-              id: call.id,
-              name: call.function.name,
-              args: call.function.arguments,
-              status: "queued",
-              render: renderMeta,
-              expanded: false,
-            },
-          ]);
-        },
-        onToolWillExecute: (id: string, name: string) => {
-          setTurnPhase("executing");
-          setCurrentToolName(name);
-          setLastActivityAt(Date.now());
-          updateTool(id, { status: "running", startedAt: Date.now() });
-        },
-        onToolResult: (r: import("./tools/executor.js").ToolResult) => {
-          pendingToolCallsRef.current.delete(r.tool_call_id);
-          setLastActivityAt(Date.now());
-          if (pendingToolCallsRef.current.size === 0) {
-            setTurnPhase("waiting");
-            setCurrentToolName(null);
-            // Unblock the UI before onIterationEnd (compaction / memory recall)
-            // so the user isn't stuck watching a spinner while housekeeping runs
-            // between iterations.
-            endTurn();
-          }
-          updateTool(r.tool_call_id, {
-            status: r.guardrail ? "blocked" : !r.ok && typeof r.content === "string" && r.content.startsWith("Permission denied") ? "rejected" : r.ok ? "done" : "error",
-            result: r.guardrail ? undefined : r.content,
-          });
-        },
-        onUsage: (u: Usage) => {
+      const sharedCallbacks = createTurnCallbacks({
+        mkKey,
+        mkAssistantId,
+        setEvents,
+        updateAssistant,
+        updateTool,
+        beginTurn,
+        endTurn,
+        setTurnPhase,
+        setCurrentToolName,
+        setLastActivityAt,
+        activeAsstIdRef,
+        pendingToolCallsRef,
+        findTool: (name) => executorRef.current.list().find((t) => t.name === name),
+        onUsage: (u) => {
           usageRef.current = u;
           setUsage(u);
         },
-        onUsageFinal: (u: Usage, meta?: ResponseMeta) => {
+        onUsageFinal: (u, meta) => {
           const sid = ensureSessionId();
           void recordUsage(sid, u, costLookupFromConfig(cfg, meta ?? responseMetaRef.current), cfg?.model);
           void getCostReport(sid).then((report) => setSessionUsage(report.session));
         },
         onResponseMeta: updateResponseMeta,
         onTasks: updateTaskTracking,
-        onPlanOptions: (options: PlanOption[]) => {
+        onPlanOptions: (options) => {
           planOptionsRef.current = options;
         },
         askPermission: askForPermission,
-        // Sandbox/memory warnings (e.g. Code Mode falling back to the plain
-        // node:vm sandbox) were previously dropped on the floor in the TUI.
-        onWarning: (msg: string) => {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: msg }]);
-        },
-        onGuardrail: (ev: GuardrailEvent) => {
-          if (ev.kind === "loop_recovery" || ev.kind === "loop_stopped") return;
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: ev.message }]);
-        },
         onKimiMdStale: () => {
-          if (!kimiMdStaleNudgedRef.current) {
-            kimiMdStaleNudgedRef.current = true;
-            setKimiMdStale(true);
-            setEvents((e) => [
-              ...e,
-              { kind: "info", key: mkKey(), text: "Project context may be stale. Run /init to refresh AGENTS.md based on recent changes." },
-            ]);
-          }
-        },
-        onMemoryRecalled: (count: number) => {
+          if (kimiMdStaleNudgedRef.current) return;
+          kimiMdStaleNudgedRef.current = true;
+          setKimiMdStale(true);
           setEvents((e) => [
             ...e,
-            { kind: "memory", key: mkKey(), text: `recalled ${count} memory${count === 1 ? "" : "ies"} about this repo` },
+            { kind: "info", key: mkKey(), text: "Project context may be stale. Run /init to refresh AGENTS.md based on recent changes." },
           ]);
         },
-        onSkillsSelected: (result: SemanticSkillRoutingResult) => {
-          setSkillsActive(result.sectionCount);
-        },
-        onMetaBanner: (info: { intentTier: string; skillsActive: number; memoryRecalled: boolean }) => {
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "meta",
-              key: mkKey(),
-              intentTier: info.intentTier as "light" | "medium" | "heavy",
-              skillsActive: info.skillsActive,
-              memoryRecalled: info.memoryRecalled,
-            },
-          ]);
-        },
-      };
+        setSkillsActive,
+      });
 
       const cleanupTurn = () => {
         logger.info("cleanupTurn");
@@ -1918,22 +1689,7 @@ function App({
         // Clear task list so it doesn't linger into the next turn
         clearTaskTracking();
 
-        // Settle everything the turn left in motion. Unsettled events keep
-        // themselves and everything after them in Ink's live tree, and their
-        // spinners animate forever, so a turn must never end with any.
-        setEvents((evts) =>
-          evts.some((e) => (e.kind === "assistant" && e.streaming) || (e.kind === "tool" && (e.status === "running" || e.status === "queued")))
-            ? evts.map((e) =>
-                e.kind === "tool" && e.status === "running"
-                  ? { ...e, status: "error" as const, result: "(stopped)" }
-                  : e.kind === "tool" && e.status === "queued"
-                    ? { ...e, status: "cancelled" as const }
-                    : e.kind === "assistant" && e.streaming
-                      ? { ...e, streaming: false }
-                      : e,
-              )
-            : evts,
-        );
+        setEvents(settleTurnEvents);
       };
 
       // Clear the one-shot session-start recall so it is not reused.
@@ -1947,31 +1703,21 @@ function App({
         return;
       }
 
-      const delegationGuidance = await resolveSubagentGuidance({
-        prompt: display,
-        tier: classification.tier,
-        policy: cfg.subagentPolicy ?? "auto",
-        apiKey: cfg.openrouterApiKey,
-        customEndpoint: Boolean(cfg.baseUrl),
-        signal: turnScope.signal,
-      });
-      if (delegationGuidance.kind !== "none") {
-        const probability = delegationGuidance.probability === undefined
-          ? ""
-          : ` (Jev estimate: ${Math.round(delegationGuidance.probability * 100)}%)`;
-        const text = delegationGuidance.kind === "explicit-delegate"
-          ? "Subagent policy: respecting your explicit request to delegate. Worker calls still require permission."
-          : delegationGuidance.kind === "explicit-sequential"
-            ? "Subagent policy: respecting your instruction to work without delegation."
-            : delegationGuidance.kind === "auto-delegate"
-              ? "Subagent policy: auto will assess this substantial task for independent work; worker calls remain permission-gated."
-              : `Subagent suggestion: independent work may help${probability}. No worker will launch without your confirmation.`;
-        setEvents((events) => [...events, { kind: "info", key: mkKey(), text }]);
-      }
-
-      const turnTools = [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current].filter(
-        (tool) => tool.name !== "subagent" || allowsSubagentDispatch(delegationGuidance.kind),
-      );
+      // SessionCore: subagent guidance, the tool set and the completion check,
+      // decided the same way as in every other host.
+      const policy = {
+        ...(await resolveTurnPolicy({
+          cfg,
+          prompt: display,
+          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          signal: turnScope.signal,
+        })),
+        classification,
+      };
+      const delegationGuidance = policy.guidance;
+      const guidanceText = describeSubagentGuidance(delegationGuidance);
+      if (guidanceText) setEvents((events) => [...events, { kind: "info", key: mkKey(), text: guidanceText }]);
+      const turnTools = policy.tools;
       void recordSubagentEvent({
         kind: "turn",
         ts: Date.now(),
@@ -2016,19 +1762,14 @@ function App({
       }
 
       supervisorRef.current.startTurn(
-        {
+        assembleTurn({ cfg, policy, host: {
           ...llmAuthFromConfig(cfg),
           model: overrideModel ?? cfg.model,
           messages: messagesRef.current,
-          tools: turnTools,
           executor: executorRef.current,
           cwd: process.cwd(),
           signal: turnScope.signal,
-          reasoningEffort: turnReasoningEffort,
-          coauthor:
-            cfg.coauthor !== false
-              ? { name: cfg.coauthorName || "autopilot", email: cfg.coauthorEmail || "kimiflare@proton.me" }
-              : undefined,
+          reasoningEffort,
           sessionId: ensureSessionId(),
           memoryManager: memoryManagerRef.current,
           hooks: hooksManagerRef.current,
@@ -2053,13 +1794,11 @@ function App({
             },
             getStore: () => artifactStoreRef.current,
           },
-          intentClassification: classification,
-          delegationDirective: delegationGuidance.refinedDirective ?? delegationGuidance.directive,
-          completionCheck: completionCheckFromConfig(cfg),
           sessionStartRecall: sessionStartRecallRef.current ?? undefined,
           skillsDb: getMemoryDb() ?? undefined,
           skillRoutingConfig: {
             embeddingModel: cfg.memoryEmbeddingModel,
+            embeddingAuth: embeddingAuthFromConfig(cfg),
             maxSkillTokens: modelContextLimit - 10_000,
           },
           mode: modeRef.current,
@@ -2078,7 +1817,7 @@ function App({
             }
           },
           callbacks: sharedCallbacks,
-        },
+        } }),
         {
           onDone: () => {
             noteTurnEnded(turnId);
@@ -2094,232 +1833,26 @@ function App({
                 return;
               }
 
-              // Auto-compact after turn when thresholds are met. With compiled
-              // context on, use the heuristic compactor; otherwise fall back to the
-              // LLM summarizer so users have a safety net regardless of the flag.
-              let didCompact = false;
-              if (shouldCompact({ messages: messagesRef.current, tokenThreshold: proactiveCompactionThreshold(overrideModel ?? cfg.model) })) {
-                // M6.1: same PreCompact fire as the mid-turn site above.
-                if (hooksManagerRef.current.hasEnabledHooks("PreCompact")) {
-                  void hooksManagerRef.current
-                    .fire(
-                      "PreCompact",
-                      {
-                        event: "PreCompact",
-                        session_id: sessionIdRef.current,
-                        cwd: process.cwd(),
-                      },
-                      null,
-                    )
-                    .catch(() => {});
-                }
-                if (compiledContextRef.current) {
-                  const store = artifactStoreRef.current;
-                  const result = compactMessagesViaArtifacts({
-                    messages: messagesRef.current,
-                    state: sessionStateRef.current,
-                    store,
-                  });
-                  if (result.metrics.rawTurnsRemoved > 0) {
-                    traceCompiledCompaction(traceRef.current, result, turnId);
-                    messagesRef.current = result.newMessages;
-                    sessionStateRef.current = result.newState;
-                    setEvents((e) => [
-                      ...e,
-                      {
-                        kind: "info",
-                        key: mkKey(),
-                        text: `auto-compacted: ${result.metrics.estimatedTokensBefore} → ${result.metrics.estimatedTokensAfter} tokens (${result.metrics.archivedArtifacts} artifacts)`,
-                      },
-                    ]);
-                    await saveSessionSafe();
-                    didCompact = true;
-                  }
-                } else {
-                  try {
-                    const before = messagesRef.current;
-                    const result = await summarizeMessagesViaLlm({
-                      ...llmAuthFromConfig(cfg),
-                      model: cfg.model,
-                      messages: messagesRef.current,
-                      signal: turnScope.signal,
-                    });
-                    if (result.replacedCount > 0) {
-                      traceLlmCompaction(traceRef.current, before, result, turnId);
-                      messagesRef.current = result.newMessages;
-                      setEvents((e) => [
-                        ...e,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `auto-compacted: ${result.replacedCount} messages summarized`,
-                        },
-                      ]);
-                      await saveSessionSafe();
-                      didCompact = true;
-                    }
-                  } catch (compactErr) {
-                    if ((compactErr as Error).name !== "AbortError") {
-                      setEvents((es) => [
-                        ...es,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `auto-compact failed: ${(compactErr as Error).message ?? String(compactErr)}`,
-                        },
-                      ]);
-                    }
-                  }
-                }
-
-                // After compaction, recall memories so the model retains durable anchors.
-                // Only surface the recall event when compaction actually happened —
-                // otherwise the message is noise on turns that merely crossed the
-                // threshold without removing anything.
-                if (didCompact) {
-                  const manager = memoryManagerRef.current;
-                  if (manager) {
-                    try {
-                      const cwd = process.cwd();
-                      const queryText = sessionStateRef.current.task || cwd;
-                      const results = await manager.recall({ text: queryText, repoPath: cwd, limit: 5 });
-                      if (results.length > 0) {
-                        const text = await manager.synthesizeRecalled(results);
-                        if (injectRecalledMemoryOnce(messagesRef.current, text)) {
-                          setEvents((e) => [
-                            ...e,
-                            {
-                              kind: "memory",
-                              key: mkKey(),
-                              text: `recalled ${results.length} memory${results.length === 1 ? "" : "ies"} after compaction`,
-                            },
-                          ]);
-                          await saveSessionSafe();
-                        }
-                      }
-                    } catch {
-                      // Non-fatal
-                    }
-                  }
-                }
-              }
-
-              // Token-based hybrid compaction + fresh start (Option C).
-              // When the in-memory message array grows very large (e.g. massive
-              // file reads or long sessions), the standard 80k/12-turn
-              // compaction may not be enough. We run an aggressive compaction
-              // at a higher token threshold, and if that still leaves us above
-              // the fresh-start threshold we nuke the session with /fresh.
-              const autoCompactTokenThreshold = cfg?.autoCompactTokenThreshold ?? 500_000;
-              const autoFreshTokenThreshold = cfg?.autoFreshTokenThreshold ?? 2_000_000;
-              const estimatedTokens = estimatePromptTokens(messagesRef.current);
-              if (estimatedTokens > autoCompactTokenThreshold) {
-                let didAggressiveCompact = false;
-                if (compiledContextRef.current) {
-                  const store = artifactStoreRef.current;
-                  const result = compactMessagesViaArtifacts({
-                    messages: messagesRef.current,
-                    state: sessionStateRef.current,
-                    store,
-                    keepLastTurns: 1,
-                  });
-                  if (result.metrics.rawTurnsRemoved > 0) {
-                    traceCompiledCompaction(traceRef.current, result, turnId);
-                    messagesRef.current = result.newMessages;
-                    sessionStateRef.current = result.newState;
-                    setEvents((e) => [
-                      ...e,
-                      {
-                        kind: "info",
-                        key: mkKey(),
-                        text: `auto-compacted (aggressive): ${result.metrics.estimatedTokensBefore.toLocaleString()} → ${result.metrics.estimatedTokensAfter.toLocaleString()} tokens (${result.metrics.archivedArtifacts} artifacts)`,
-                      },
-                    ]);
-                    await saveSessionSafe();
-                    didAggressiveCompact = true;
-                  }
-                } else {
-                  try {
-                    const before = messagesRef.current;
-                    const result = await summarizeMessagesViaLlm({
-                      ...llmAuthFromConfig(cfg),
-                      model: cfg.model,
-                      messages: messagesRef.current,
-                      keepLastTurns: 1,
-                      signal: turnScope.signal,
-                    });
-                    if (result.replacedCount > 0) {
-                      traceLlmCompaction(traceRef.current, before, result, turnId);
-                      messagesRef.current = result.newMessages;
-                      setEvents((e) => [
-                        ...e,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `auto-compacted (aggressive): ${result.replacedCount} messages summarized`,
-                        },
-                      ]);
-                      await saveSessionSafe();
-                      didAggressiveCompact = true;
-                    }
-                  } catch (compactErr) {
-                    if ((compactErr as Error).name !== "AbortError") {
-                      setEvents((es) => [
-                        ...es,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `aggressive auto-compact failed: ${(compactErr as Error).message ?? String(compactErr)}`,
-                        },
-                      ]);
-                    }
-                  }
-                }
-
-                const tokensAfterCompact = estimatePromptTokens(messagesRef.current);
-                if (tokensAfterCompact > autoFreshTokenThreshold) {
-                  try {
-                    const turnIndex = messagesRef.current.length;
-                    if (turnIndex > 0) {
-                      const cp: Checkpoint = {
-                        id: `cp_prefresh_${Date.now()}`,
-                        label: "pre-fresh auto-save",
-                        turnIndex,
-                        timestamp: new Date().toISOString(),
-                        sessionState: compiledContextRef.current ? sessionStateRef.current : undefined,
-                        artifactStore: serializeArtifactStore(artifactStoreRef.current),
-                      };
-                      ensureSessionId();
-                      const { sessionsDir } = await import("./sessions.js");
-                      const filePath = join(sessionsDir(), `${sessionIdRef.current}.json`);
-                      await addCheckpoint(filePath, cp);
-                    }
-                    const summary = await generateContinuationSummary({
-                      messages: messagesRef.current,
-                      mode: modeRef.current,
-                      ...llmAuthFromConfig(cfg),
-                      model: cfg.plumbingModel ?? DEFAULT_PLUMBING_MODEL,
-                      memoryManager: memoryManagerRef.current,
-                      memoryEnabled: cfg.memoryEnabled,
-                    });
-                    if (summary) {
-                      executeFreshStart(buildSlashContext(), summary);
-                      setEvents((e) => [
-                        ...e,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `Auto-fresh triggered at ~${tokensAfterCompact.toLocaleString()} tokens: starting new session with continuation context…`,
-                        },
-                      ]);
-                    }
-                  } catch (e) {
-                    setEvents((es) => [
-                      ...es,
-                      { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` },
-                    ]);
-                  }
-                }
+              // Proactive compaction past the model's budget threshold, then an
+              // aggressive pass when the history is still huge; if even that
+              // leaves it above the fresh-start threshold, start fresh.
+              const tokensAfterAggressive = await compactAfterTurn(
+                {
+                  getMessages: () => messagesRef.current,
+                  setMessages: (messages) => {
+                    messagesRef.current = messages;
+                  },
+                  overThreshold: shouldCompact({ messages: messagesRef.current, tokenThreshold: proactiveCompactionThreshold(overrideModel ?? cfg.model) }),
+                  estimateTokens: estimatePromptTokens,
+                  aggressiveTokenThreshold: cfg?.autoCompactTokenThreshold ?? 500_000,
+                  signal: turnScope.signal,
+                },
+                autoCompactionDeps(turnId),
+              );
+              if (tokensAfterAggressive !== null && tokensAfterAggressive > (cfg?.autoFreshTokenThreshold ?? 2_000_000)) {
+                await runAutoFresh(
+                  `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
+                );
               }
             })();
 
@@ -2353,7 +1886,8 @@ function App({
           },
           onError: async (e) => {
             noteTurnEnded(turnId);
-            if (e.name === "AbortError") {
+            const failure = classifyTurnFailure(e);
+            if (failure.kind === "aborted") {
               // Inject synthetic tool results for any pending tool calls so message
               // history remains valid (assistant msg with tool_calls needs 1:1 results).
               // Idempotent: the interrupt handler may already have done this.
@@ -2361,25 +1895,13 @@ function App({
               setEvents((evts) =>
                 evts.map((e) => (e.kind === "tool" && e.status === "running" ? { ...e, status: "error" as const, result: "(stopped)" } : e)),
               );
-            } else if (
-              e instanceof KimiApiError &&
-              (e.httpStatus === 429 || (e.httpStatus !== undefined && e.httpStatus >= 500))
-            ) {
-              const err = { httpStatus: e.httpStatus, code: e.code, message: humanizeApiError(e) };
+            } else if (failure.kind === "api_error") {
+              const { kind: _kind, ...err } = failure;
               lastApiErrorRef.current = err;
-              setEvents((es) => [
-                ...es,
-                { kind: "api_error", key: mkKey(), ...err },
-              ]);
+              const statusUrl = providerPresetOf(llmAuthFromConfig(cfg)).statusUrl;
+              setEvents((es) => [...es, { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) }]);
             } else {
-              const displayText =
-                e instanceof KimiApiError
-                  ? humanizeApiError(e)
-                  : e.message ?? String(e);
-              setEvents((es) => [
-                ...es,
-                { kind: "error", key: mkKey(), text: displayText },
-              ]);
+              setEvents((es) => [...es, { kind: "error", key: mkKey(), text: failure.text }]);
             }
             cleanupTurn();
           },
@@ -2444,253 +1966,147 @@ function App({
     [queuePlanDraft],
   );
 
+  // --- Mid-turn triage (#725) -------------------------------------------
+  // Messages sent while the agent works are queued first; triage may then
+  // pull them out to steer the current turn, interrupt it, or answer as an
+  // aside. Unsure → stays queued, and Ctrl+G promotes it.
+  /** Update the queue ref and the rendered queue together. */
+  const setQueueBoth = (update: (queue: QueuedPrompt[]) => QueuedPrompt[]) => {
+    queueRef.current = update(queueRef.current);
+    setQueue(update);
+  };
+  const currentActivity = () =>
+    describeActivity({
+      messages: messagesRef.current,
+      tasks: tasksRef.current,
+      pendingTools: [...pendingToolCallsRef.current.values()],
+      workers: workerRegistry.list(),
+    });
+  const triage = createTriageCoordinator({
+    isBusy: () => busyRef.current || supervisorRef.current.isRunning,
+    subagentsRunning: () => workerRegistry.list().length > 0,
+    getQueue: () => queueRef.current,
+    setQueue: setQueueBoth,
+    markDelivered: (key, note) =>
+      setEvents((evts) => [
+        ...evts.map((e) => (e.kind === "user" && e.key === key ? { ...e, queued: false } : e)),
+        { kind: "info", key: mkKey(), text: note },
+      ]),
+    notice: (text) => setEvents((evts) => [...evts, { kind: "info", key: mkKey(), text }]),
+    transcriptQueueNotes: Boolean(bridge),
+    activity: currentActivity,
+    triage: (text, activity) => triageIncoming(text, activity, { apiKey: activeOpenRouterKey(cfg) }),
+    answerAside: cfg
+      ? (text, activity) => answerAside(text, activity, { ...llmAuthFromConfig(cfg), model: cfg.plumbingModel ?? cfg.model })
+      : null,
+    steer: (item, content) => pendingSteersRef.current.push({ key: item.key, full: item.full, display: item.display, content }),
+    interrupt: () => runInterruptTurn(interruptDepsRef.current!),
+  });
+  triageRef.current = triage;
+  promoteQueuedRef.current = triage.promoteLatest;
+
   const submit = useCallback(
     (full: string, display?: string) => {
       const trimmedFull = full.trim();
-      if (!trimmedFull) return;
       const trimmedDisplay = (display ?? full).trim() || trimmedFull;
-
-      if (/^\/queue\s+plan$/i.test(trimmedFull)) {
-        const historyEntry = trimmedDisplay;
-        setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
+      const busyNow = busyRef.current || supervisorRef.current.isRunning;
+      const editTarget = latestPromptRef.current;
+      const decision = decideSubmit(trimmedFull, trimmedDisplay, {
+        busy: busyNow,
+        queue,
+        history,
+        historyIndex,
+        editTarget,
+        editTargetVisible: editTarget !== null && events.some((event) => event.kind === "user" && event.key === editTarget.key),
+      });
+      const clearInput = () => {
         setInput("");
         setHistoryIndex(-1);
-        if (queue.length < 2) {
-          setEvents((events) => [...events, { kind: "info", key: mkKey(), text: "Queue planning needs at least two queued chat prompts." }]);
-        } else if (!createQueueBatch(queue)) {
-          setEvents((events) => [...events, { kind: "info", key: mkKey(), text: "Queue planning only groups chat prompts; slash commands and ! shell commands stay in the FIFO queue." }]);
-        } else {
-          setQueuePlanDraft([...queue]);
-        }
-        return;
-      }
+      };
+      const info = (text: string) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
 
-      const historyEntry = trimmedDisplay;
-      const editTarget = latestPromptRef.current;
-      const selectedHistoryEntry = history[historyIndex];
-      const isEditedLatestPrompt =
-        historyIndex === history.length - 1 &&
-        editTarget !== null &&
-        events.some((event) => event.kind === "user" && event.key === editTarget.key) &&
-        selectedHistoryEntry === editTarget.historyText;
-
-      if (isEditedLatestPrompt && editTarget) {
-        if (trimmedDisplay === selectedHistoryEntry) {
-          setInput("");
-          setHistoryIndex(-1);
+      switch (decision.do) {
+        case "ignore":
           return;
-        }
-        const updatedQueue = replaceQueuedPrompt(queue, editTarget.key, trimmedFull, trimmedDisplay);
-        if (updatedQueue || editTarget.messagesBefore) {
+        case "queue-plan":
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          if (decision.notice) info(decision.notice);
+          else setQueuePlanDraft([...queue]);
+          return;
+        case "edit-unchanged":
+          clearInput();
+          return;
+        case "edit-queued":
+        case "edit-rerun": {
+          const target = decision.target;
           setHistory((items) =>
-            items.length > 0 && items[items.length - 1] === editTarget.historyText
-              ? [...items.slice(0, -1), trimmedDisplay]
-              : items,
+            items.length > 0 && items[items.length - 1] === target.historyText ? [...items.slice(0, -1), trimmedDisplay] : items,
           );
-          setInput("");
-          setHistoryIndex(-1);
-          latestPromptRef.current = { ...editTarget, historyText: trimmedDisplay };
-          setEvents((events) => replaceUserPromptEvent(events, editTarget.key, trimmedDisplay));
-
-          if (updatedQueue) {
-            setQueue(updatedQueue);
+          clearInput();
+          latestPromptRef.current = { ...target, historyText: trimmedDisplay };
+          setEvents((events) => replaceUserPromptEvent(events, target.key, trimmedDisplay));
+          if (decision.do === "edit-queued") {
+            setQueue(decision.queue);
             return;
           }
-
-          const edit: PendingPromptEdit = {
-            key: editTarget.key,
-            full: trimmedFull,
-            display: trimmedDisplay,
-            messagesBefore: editTarget.messagesBefore!,
-          };
-          if (busyRef.current || supervisorRef.current.isRunning) {
+          const edit: PendingPromptEdit = { key: target.key, full: trimmedFull, display: trimmedDisplay, messagesBefore: decision.target.messagesBefore };
+          if (busyNow) {
             pendingPromptEditRef.current = edit;
             runInterruptTurn(interruptDepsRef.current!);
           } else {
             messagesRef.current = [...edit.messagesBefore];
             setEvents((events) => replaceUserPromptEvent(events, edit.key, edit.display, true));
-            processMessage(edit.full, edit.display, {
-              queuedKeys: [edit.key],
-              historyText: edit.display,
-            });
+            processMessage(edit.full, edit.display, { queuedKeys: [edit.key], historyText: edit.display });
           }
           return;
         }
-      }
-
-      if (isRunNowCommand(trimmedFull)) {
-        setInput("");
-        setHistoryIndex(-1);
-        const promoted = promoteQueuedRef.current?.() ?? false;
-        if (!promoted) {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: busyRef.current || supervisorRef.current.isRunning ? "nothing queued to run now" : "nothing is running — queued messages run next anyway" }]);
+        case "run-now":
+          clearInput();
+          if (!triageRef.current!.promoteLatest()) {
+            info(busyNow ? "nothing queued to run now" : "nothing is running — queued messages run next anyway");
+          }
+          return;
+        case "subagent-command":
+          // Subagent management must work mid-turn: queueing it would make it useless.
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          void handleSlash(trimmedFull);
+          return;
+        case "enqueue": {
+          // Queue first so order is preserved and "unsure" already means queued;
+          // triage then decides whether to pull it out to steer, interrupt, or
+          // answer as an aside (#725).
+          const key = mkKey();
+          setEvents((e) => [...e, { kind: "user", key, text: trimmedDisplay, queued: true }]);
+          const queued: QueuedPrompt = {
+            full: trimmedFull,
+            display: trimmedDisplay,
+            key,
+            ...(decision.isChatPrompt ? { triage: { source: "pending" as const, reason: "deciding…" } } : {}),
+          };
+          setQueueBoth((q) => [...q, queued]);
+          if (decision.isChatPrompt) {
+            latestPromptRef.current = { key, historyText: trimmedDisplay, messagesBefore: null };
+            void triageRef.current!.triageQueued(queued);
+          }
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          return;
         }
-        return;
+        case "run":
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          processMessage(trimmedFull, trimmedDisplay !== trimmedFull ? trimmedDisplay : undefined, {
+            eventKey: mkKey(),
+            historyText: trimmedDisplay,
+          });
+          return;
       }
-
-      // Subagent management must work mid-turn: workers only run while a turn
-      // is busy, so queueing these commands would make them useless.
-      if ((busyRef.current || supervisorRef.current.isRunning) && isImmediateSubagentCommand(trimmedFull)) {
-        setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
-        setInput("");
-        setHistoryIndex(-1);
-        void handleSlash(trimmedFull);
-        return;
-      }
-
-      if (busyRef.current || supervisorRef.current.isRunning) {
-        const key = mkKey();
-        const isChatPrompt = !trimmedFull.startsWith("/") && parseBangCommand(trimmedFull) === null;
-        setEvents((e) => [...e, { kind: "user", key, text: trimmedDisplay, queued: true }]);
-        // Queue first so order is preserved and "unsure" already means queued;
-        // triage then decides whether to pull it out to steer, interrupt, or
-        // answer as an aside (#725).
-        const queued: QueuedPrompt = {
-          full: trimmedFull,
-          display: trimmedDisplay,
-          key,
-          ...(isChatPrompt ? { triage: { source: "pending" as const, reason: "deciding…" } } : {}),
-        };
-        queueRef.current = [...queueRef.current, queued];
-        setQueue((q) => [...q, queued]);
-        if (isChatPrompt) {
-          latestPromptRef.current = { key, historyText: historyEntry, messagesBefore: null };
-          void triageQueuedRef.current?.(queued);
-        }
-        setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
-        setInput("");
-        setHistoryIndex(-1);
-        return;
-      }
-
-      setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
-      setInput("");
-      setHistoryIndex(-1);
-      const key = mkKey();
-      processMessage(trimmedFull, trimmedDisplay !== trimmedFull ? trimmedDisplay : undefined, {
-        eventKey: key,
-        historyText: historyEntry,
-      });
     },
     [processMessage, handleSlash, queue, history, historyIndex, events],
   );
   submitRef.current = submit;
-
-  // Subagents are shown in the compact live region trail; no need for inline notices.
-  // useEffect(() => {
-  //   if (!bridge) return;
-  //   const seen = announcedSubagentsRef.current;
-  //   const fresh = runningSubagents.filter((w) => !seen.has(w.id));
-  //   if (fresh.length === 0) return;
-  //   for (const w of fresh) seen.add(w.id);
-  //   setEvents((evts) => [
-  //     ...evts,
-  //     ...fresh.map((w) => ({
-  //       kind: "info" as const,
-  //       key: mkKey(),
-  //       text: `subagent #${w.index} started: ${w.task.replace(/\s+/g, " ").slice(0, 100)} · /agents to view or stop`,
-  //     })),
-  //   ]);
-  // }, [bridge, runningSubagents]);
-
-  // --- Mid-turn triage (#725) -------------------------------------------
-  // Messages sent while the agent works are queued first; triage may then
-  // pull them out to steer the current turn, interrupt it, or answer as an
-  // aside. Unsure → stays queued, and Ctrl+G promotes it.
-  const textOf = (m: ChatMessage | undefined): string =>
-    !m ? "" : typeof m.content === "string" ? m.content : Array.isArray(m.content)
-      ? m.content.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join(" ")
-      : "";
-  const describeActivity = (): { currentTask: string; activity?: string; progress?: string; recentAssistantText?: string } => {
-    const msgs = messagesRef.current;
-    const currentTask = textOf([...msgs].reverse().find((m) => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[Message from the user") && !m.content.startsWith("[The user asked to handle")));
-    const recentAssistantText = textOf([...msgs].reverse().find((m) => m.role === "assistant" && textOf(m).length > 0));
-    const inProgress = tasksRef.current.find((t) => t.status === "in_progress");
-    const done = tasksRef.current.filter((t) => t.status === "completed").length;
-    const progress = tasksRef.current.length > 0
-      ? `${done}/${tasksRef.current.length} tasks done${inProgress ? `; working on: ${inProgress.title}` : ""}`
-      : undefined;
-    const tools = [...pendingToolCallsRef.current.values()];
-    const workers = workerRegistry.list();
-    const activity = [
-      tools.length ? `tools: ${tools.join(", ")}` : "",
-      workers.length ? `${workers.length} subagent(s): ${workers.map((w) => w.task.slice(0, 60)).join("; ")}` : "",
-    ].filter(Boolean).join(" · ") || undefined;
-    return { currentTask, activity, progress, recentAssistantText };
-  };
-  const removeQueued = (key: string): QueuedPrompt | null => {
-    const item = queueRef.current.find((q) => q.key === key) ?? null;
-    if (!item) return null;
-    queueRef.current = queueRef.current.filter((q) => q.key !== key);
-    setQueue((q) => q.filter((i) => i.key !== key));
-    return item;
-  };
-  const markDelivered = (key: string, note: string) => {
-    setEvents((evts) => [
-      ...evts.map((e) => (e.kind === "user" && e.key === key ? { ...e, queued: false } : e)),
-      { kind: "info", key: mkKey(), text: note },
-    ]);
-  };
-  const applyTriage = (item: QueuedPrompt, result: TriageResult, promoted = false): void => {
-    const action = planTriageAction(result, {
-      busy: busyRef.current || supervisorRef.current.isRunning,
-      subagentsRunning: workerRegistry.list().length > 0,
-      promoted,
-    });
-    switch (action.do) {
-      case "keep-queued":
-        if (action.note) {
-          setQueue((q) => q.map((i) => (i.key === item.key ? { ...i, triage: { source: result.source, reason: result.reason } } : i)));
-          // Camouflage has no inline queue line; say it in the transcript.
-          if (bridge) {
-            setEvents((evts) => [...evts, { kind: "info", key: mkKey(), text: `${action.note} — runs after the current turn · /now to run it first` }]);
-          }
-        }
-        return;
-      case "aside": {
-        if (!cfg) return;
-        void answerAside(item.full, describeActivity(), { ...llmAuthFromConfig(cfg), model: cfg.plumbingModel ?? cfg.model })
-          .then((answer) => {
-            if (!removeQueued(item.key)) return; // already ran as a normal turn
-            markDelivered(item.key, `aside (the agent keeps working): ${answer}`);
-          })
-          .catch(() => {
-            setQueue((q) => q.map((i) => (i.key === item.key ? { ...i, triage: { source: "default", reason: "couldn't answer as an aside" } } : i)));
-          });
-        return;
-      }
-      case "interrupt": {
-        if (!removeQueued(item.key)) return;
-        // Run it next, ahead of anything else queued; completed tool results are kept.
-        const front: QueuedPrompt = { ...item, triage: undefined };
-        queueRef.current = [front, ...queueRef.current];
-        setQueue((q) => [front, ...q]);
-        setEvents((evts) => [...evts, { kind: "info", key: mkKey(), text: action.note }]);
-        runInterruptTurn(interruptDepsRef.current!);
-        return;
-      }
-      case "steer":
-        if (!removeQueued(item.key)) return;
-        pendingSteersRef.current.push({ key: item.key, full: item.full, display: item.display, content: steerMessage(item.full, action.urgent) });
-        markDelivered(item.key, action.note);
-        return;
-    }
-  };
-  triageQueuedRef.current = async (item: QueuedPrompt) => {
-    const result = await triageIncoming(item.full, describeActivity(), {
-      apiKey: cfg?.openrouterApiKey,
-      customEndpoint: Boolean(cfg?.baseUrl),
-    });
-    if (!queueRef.current.some((q) => q.key === item.key)) return; // promoted or already ran
-    applyTriage(item, result);
-  };
-  promoteQueuedRef.current = () => {
-    if (!(busyRef.current || supervisorRef.current.isRunning)) return false;
-    const latest = [...queueRef.current].reverse().find((q) => q.triage !== undefined);
-    if (!latest) return false;
-    applyTriage(latest, { kind: "steer", source: "rule", reason: "you asked to run it now" }, true);
-    return true;
-  };
 
   useEffect(() => {
     if (usage && usage.prompt_tokens / modelContextLimit < AUTO_COMPACT_THRESHOLD * 0.7) {
@@ -2833,6 +2249,7 @@ function App({
     if (!bridge) return;
     const open: AppModal[] = [];
     if (modals.showModelPicker) open.push("model");
+    if (modals.providerSetup) open.push("provider");
     if (modals.showModePicker) open.push("mode");
     if (modals.showThemePicker) open.push("theme");
     if (modals.showUiPicker) open.push("ui");
@@ -2845,7 +2262,6 @@ function App({
     if (modals.commandWizard) open.push("commandWizard");
     if (modals.commandPicker) open.push("commandPicker");
     if (modals.showLspWizard) open.push("lspWizard");
-    if (modals.showRemoteDashboard) open.push("remoteDashboard");
     if (modals.showInboxModal) open.push("inbox");
     if (modals.showHooksDashboard) open.push("hooksDashboard");
     if (modals.showChangelogImagePicker) open.push("changelogImage");
@@ -2859,6 +2275,10 @@ function App({
       },
       decidePermission,
       pickModel: handleModelPick,
+      providerSwitched: (to) => {
+        modals.setProviderSetup(null);
+        void handleProviderSwitched(null, to);
+      },
       pickMode: (m) => {
         setShowModePicker(false);
         if (m) {
@@ -2873,6 +2293,7 @@ function App({
       closeModal: (m) => {
         const close: Record<AppModal, () => void> = {
           model: () => setShowModelPicker(false),
+          provider: () => modals.setProviderSetup(null),
           mode: () => setShowModePicker(false),
           theme: () => modals.setShowThemePicker(false),
           ui: () => modals.setShowUiPicker(false),
@@ -2885,7 +2306,6 @@ function App({
           commandWizard: () => modals.setCommandWizard(null),
           commandPicker: () => modals.setCommandPicker(null),
           lspWizard: () => modals.setShowLspWizard(false),
-          remoteDashboard: () => modals.setShowRemoteDashboard(false),
           inbox: () => modals.setShowInboxModal(false),
           hooksDashboard: () => modals.setShowHooksDashboard(false),
           changelogImage: () => modals.setShowChangelogImagePicker(false),
@@ -2929,6 +2349,9 @@ function App({
     bridge.sync({
       events,
       busy,
+      turnRunning: busy || supervisorRef.current.isRunning,
+      sessionId: sessionIdRef.current,
+      providerSetup: modals.providerSetup,
       workers: runningSubagents,
       mode,
       model: cfg?.model ?? "",
@@ -3043,6 +2466,8 @@ function App({
         currentModel={cfg?.model ?? ""}
         modelSwitchBusy={busy}
         onPickModel={handleModelPick}
+        providerConfig={cfg}
+        onProviderSwitched={(next, connection) => void handleProviderSwitched(next, connection.id)}
         currentMode={mode}
         onPickMode={(m) => {
           if (m) {
@@ -3051,9 +2476,6 @@ function App({
           }
           setShowModePicker(false);
         }}
-        selectedRemoteSession={selectedRemoteSession}
-        onSelectRemoteSession={setSelectedRemoteSession}
-        onCancelRemoteSession={handleRemoteCancel}
         onInboxOpen={openBrowser}
         getConfiguredHooks={configuredHooks}
         cwd={process.cwd()}
@@ -3298,6 +2720,7 @@ export async function renderAppWithBridge(
     },
   );
   await instance.waitUntilExit();
+  await endSessions("exit");
 }
 
 export async function renderApp(
@@ -3305,6 +2728,7 @@ export async function renderApp(
   updateResult?: UpdateCheckResult,
   lspScope: "project" | "global" = "global",
   lspProjectPath: string | null = null,
+  opts: { resumeSessionId?: string } = {},
 ) {
   // The TUI is the only host that supports `!` commands (see agent/user-shell.ts).
   enableUserShellCommands();
@@ -3314,6 +2738,7 @@ export async function renderApp(
       initialUpdateResult={updateResult}
       initialLspScope={lspScope}
       initialLspProjectPath={lspProjectPath}
+      initialResumeSessionId={opts.resumeSessionId}
     />,
     {
       incrementalRendering: true,
@@ -3330,5 +2755,6 @@ export async function renderApp(
   );
   registerInkInstance(instance);
   await instance.waitUntilExit();
+  await endSessions("exit");
   registerInkInstance(null);
 }

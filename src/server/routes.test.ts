@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { execFileSync } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -7,7 +8,8 @@ import { join } from "node:path";
 import type { KimiConfig } from "../config.js";
 import { setupRoutes } from "./routes.js";
 import { RunStore } from "../runs/store.js";
-import { saveSession } from "../sessions.js";
+import { registerOpenRouterModels } from "../models/registry.js";
+import { loadSession, saveSession, sessionsDir } from "../sessions.js";
 
 describe("unattended run HTTP routes", () => {
   it("requires server auth configuration and validates run options", async () => {
@@ -130,12 +132,165 @@ describe("unattended run HTTP routes", () => {
       const resumeBody = await resumed.json() as { run: { status: string; maxTotalTokens: number | null } };
       assert.equal(resumeBody.run.status, "running");
       assert.equal(resumeBody.run.maxTotalTokens, null);
+
+      // A context-overflow pause resumes on a larger-context model, without a budget change.
+      const overflowStore = new RunStore();
+      let overflowRunId: string;
+      const overflowSession = "context-overflow-session";
+      await saveSession({ id: overflowSession, cwd: dir, model: "moonshotai/kimi-k2.6", createdAt: timestamp, updatedAt: timestamp, messages: [
+        { role: "system", content: "You are a test agent." },
+        { role: "user", content: "Keep going." },
+      ] });
+      try {
+        const run = overflowStore.createRun({ task: "Long task", cwd: dir, sessionId: overflowSession });
+        overflowStore.transition(run.id, "running");
+        overflowStore.transition(run.id, "needs_input", "context_budget_exceeded: the current turn needs ~215,000 tokens");
+        overflowRunId = run.id;
+      } finally { overflowStore.close(); }
+      const badModel = await fetch(`${baseUrl}/runs/${overflowRunId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "" }),
+      });
+      assert.equal(badModel.status, 400);
+      const switched = await fetch(`${baseUrl}/runs/${overflowRunId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "google/gemini-3.8-flash" }),
+      });
+      assert.equal(switched.status, 202, await switched.clone().text());
+      const saved = await loadSession(join(sessionsDir(), `${overflowSession}.json`));
+      assert.equal(saved?.model, "google/gemini-3.8-flash");
+      assert.match(String(saved?.messages.at(-1)?.content), /context_budget_exceeded.*It now runs on google\/gemini-3\.8-flash\./);
     } finally {
       routes.cleanup();
       await close(server);
       restoreEnv("AUTOPILOT_RUNS_DB", oldRunsDb);
       restoreEnv("XDG_DATA_HOME", oldDataHome);
       restoreEnv("KIMIFLARE_SERVER_PASSWORD", oldPassword);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("unattended run whose active turn outgrows the context", () => {
+  it("lands in needs_input with the diagnostic instead of failing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "autopilot-run-overflow-"));
+    const saved = { runs: process.env.AUTOPILOT_RUNS_DB, data: process.env.XDG_DATA_HOME, pw: process.env.KIMIFLARE_SERVER_PASSWORD };
+    process.env.AUTOPILOT_RUNS_DB = join(dir, "runs.db");
+    process.env.XDG_DATA_HOME = join(dir, "data");
+    process.env.KIMIFLARE_SERVER_PASSWORD = "test-only-password";
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    execFileSync("git", ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: dir });
+    // The overflow is detected before any request: no network call may happen.
+    const realFetch = globalThis.fetch;
+    let serverFetch: typeof fetch | null = realFetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("http://127.0.0.1")) return serverFetch!(input, init);
+      throw new Error(`unexpected network call: ${String(input)}`);
+    }) as typeof fetch;
+    // A small-window model makes a task under the 20,000-character limit overflow.
+    registerOpenRouterModels([
+      { id: "test/tiny-window", contextWindow: 4_000, maxOutputTokens: 1_000, pricing: { inputPerMtok: 1, outputPerMtok: 1 }, supports: { tools: true, reasoning: false, streaming: true } },
+    ]);
+    const routes = setupRoutes({ openrouterApiKey: "sk-or-test", model: "test/tiny-window", subagentPolicy: "off", memoryEnabled: false } as KimiConfig);
+    const server = createServer((req, res) => { void routes.handleRequest(req, res); });
+    try {
+      const { port } = await listen(server);
+      const huge = "Analyse every line of this log:\n" + "2026-10-20 INFO request ok path=/api/items status=200\n".repeat(340);
+      const created = await serverFetch(`http://127.0.0.1:${port}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: huge, cwd: dir, worktree: false, allowedTools: ["read"] }),
+      });
+      assert.equal(created.status, 202, await created.clone().text());
+      const { runId } = (await created.json()) as { runId: string };
+      let status = "";
+      let reason: string | null = null;
+      for (let i = 0; i < 100 && status !== "needs_input" && status !== "failed"; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        const store = new RunStore();
+        try {
+          const r = store.getRun(runId)!;
+          status = r.status;
+          reason = r.stopReason;
+        } finally { store.close(); }
+      }
+      assert.equal(status, "needs_input", String(reason));
+      assert.match(String(reason), /^context_budget_exceeded: the current turn needs ~[\d,]+ tokens but test\/tiny-window has [\d,]+ available/);
+    } finally {
+      globalThis.fetch = realFetch;
+      serverFetch = null;
+      routes.cleanup();
+      await close(server);
+      restoreEnv("AUTOPILOT_RUNS_DB", saved.runs);
+      restoreEnv("XDG_DATA_HOME", saved.data);
+      restoreEnv("KIMIFLARE_SERVER_PASSWORD", saved.pw);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("run admission: concurrency limit and operator kill switch", () => {
+  it("refuses runs past the limit, and stop-all cancels everything until lifted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "autopilot-run-admission-"));
+    const saved = { runs: process.env.AUTOPILOT_RUNS_DB, data: process.env.XDG_DATA_HOME, pw: process.env.KIMIFLARE_SERVER_PASSWORD, max: process.env.AUTOPILOT_MAX_CONCURRENT_RUNS };
+    process.env.AUTOPILOT_RUNS_DB = join(dir, "runs.db");
+    process.env.XDG_DATA_HOME = join(dir, "data");
+    process.env.KIMIFLARE_SERVER_PASSWORD = "test-only-password";
+    process.env.AUTOPILOT_MAX_CONCURRENT_RUNS = "2";
+    const routes = setupRoutes({} as KimiConfig);
+    const server = createServer((req, res) => { void routes.handleRequest(req, res); });
+    try {
+      const { port } = await listen(server);
+      const base = `http://127.0.0.1:${port}`;
+      const post = (path: string, body: unknown = {}) =>
+        fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const store = new RunStore();
+      const ids: string[] = [];
+      try {
+        for (const task of ["one", "two"]) {
+          const run = store.createRun({ task, cwd: dir });
+          store.transition(run.id, "running");
+          ids.push(run.id);
+        }
+        const waiting = store.createRun({ task: "three", cwd: dir });
+        store.transition(waiting.id, "running");
+        store.transition(waiting.id, "needs_input", "budget");
+        ids.push(waiting.id);
+      } finally { store.close(); }
+
+      const full = await post("/runs", { task: "four", cwd: dir });
+      assert.equal(full.status, 429);
+      assert.match(((await full.json()) as { error: string }).error, /2 runs are already active \(limit 2/);
+
+      const stopped = await post("/runs/stop-all", { reason: "deploying" });
+      assert.equal(stopped.status, 200);
+      const stopBody = (await stopped.json()) as { halted: boolean; cancelledRuns: string[] };
+      assert.equal(stopBody.halted, true);
+      assert.deepEqual([...stopBody.cancelledRuns].sort(), [...ids].sort());
+
+      const check = new RunStore();
+      try {
+        for (const id of ids) assert.equal(check.getRun(id)!.status, "cancelled");
+      } finally { check.close(); }
+
+      const refused = await post("/runs", { task: "five", cwd: dir });
+      assert.equal(refused.status, 503);
+      assert.match(((await refused.json()) as { error: string }).error, /halted by the operator \(deploying\)/);
+
+      const lifted = await fetch(`${base}/runs/stop-all`, { method: "DELETE" });
+      assert.equal(lifted.status, 200);
+      // Admission passes again (this one then fails validation: not a git repository).
+      const after = await post("/runs", { task: "six", cwd: dir });
+      assert.equal(after.status, 400);
+    } finally {
+      routes.cleanup();
+      await close(server);
+      restoreEnv("AUTOPILOT_RUNS_DB", saved.runs);
+      restoreEnv("XDG_DATA_HOME", saved.data);
+      restoreEnv("KIMIFLARE_SERVER_PASSWORD", saved.pw);
+      restoreEnv("AUTOPILOT_MAX_CONCURRENT_RUNS", saved.max);
       await rm(dir, { recursive: true, force: true });
     }
   });

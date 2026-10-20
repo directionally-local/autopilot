@@ -24,7 +24,11 @@ export type HookEvent =
   | "Stop"
   /** Auto-compaction is about to run. Informational; common use is
    *  snapshotting the conversation before it shrinks. */
-  | "PreCompact";
+  | "PreCompact"
+  /** A session's first turn in this process (new, or resumed). Informational. */
+  | "SessionStart"
+  /** The host is shutting down (or the session was cleared). Informational. */
+  | "SessionEnd";
 
 /** All hook events, useful for iteration. */
 export const HOOK_EVENTS: readonly HookEvent[] = [
@@ -33,6 +37,8 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "UserPromptSubmit",
   "Stop",
   "PreCompact",
+  "SessionStart",
+  "SessionEnd",
 ] as const;
 
 export interface HookConfig {
@@ -91,6 +97,8 @@ export type IntentTier = "light" | "medium" | "heavy";
 export interface PreToolUsePayload extends BaseHookPayload {
   event: "PreToolUse";
   tool: string;
+  /** The model's id for this call (also on PostToolUse), to pair the two. */
+  tool_call_id?: string;
   args: Record<string, unknown>;
   tier?: IntentTier;
 }
@@ -98,6 +106,7 @@ export interface PreToolUsePayload extends BaseHookPayload {
 export interface PostToolUsePayload extends BaseHookPayload {
   event: "PostToolUse";
   tool: string;
+  tool_call_id?: string;
   args: Record<string, unknown>;
   tier?: IntentTier;
   result: {
@@ -121,12 +130,27 @@ export interface PreCompactPayload extends BaseHookPayload {
   event: "PreCompact";
 }
 
+export interface SessionStartPayload extends BaseHookPayload {
+  event: "SessionStart";
+  /** "startup" for a new session, "resume" when it already has history. */
+  source: "startup" | "resume";
+  model?: string;
+  provider?: string;
+}
+
+export interface SessionEndPayload extends BaseHookPayload {
+  event: "SessionEnd";
+  reason: "exit" | "clear";
+}
+
 export type HookPayload =
   | PreToolUsePayload
   | PostToolUsePayload
   | UserPromptSubmitPayload
   | StopPayload
-  | PreCompactPayload;
+  | PreCompactPayload
+  | SessionStartPayload
+  | SessionEndPayload;
 
 /** Outcome of running one hook. */
 export interface HookOutcome {

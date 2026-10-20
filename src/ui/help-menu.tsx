@@ -147,8 +147,10 @@ export const CATEGORIES: Category[] = [
     commands: [
       { command: "/init", description: "scan this repo and write an AGENTS.md" },
       { command: "/settings", description: "show feature settings" },
-      { command: "/key", description: "show your OpenRouter key status and credit" },
-      { command: "/key set <key>", description: "replace your OpenRouter key", selectable: false },
+      { command: "/provider", description: "list LLM providers and which has a key" },
+      { command: "/provider <id> [key]", description: "switch provider (openrouter, openai, deepseek, ollama, …)", selectable: false },
+      { command: "/key", description: "show the active provider's key status (and credit, on OpenRouter)" },
+      { command: "/key set <key>", description: "replace the active provider's key", selectable: false },
       { command: "/logout", description: "clear credentials" },
       { command: "/shell", description: "show current shell" },
       { command: "/shell auto", description: "auto-detect shell (default)" },

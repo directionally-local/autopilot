@@ -1,6 +1,8 @@
 import { readFile, mkdir, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isProviderId, PROVIDER_PRESETS, type ProviderId } from "./providers/presets.js";
+import { isProviderUsable, noteActiveProvider, resolveActiveProvider, resolveProviderId, type ProviderSettings } from "./providers/resolve.js";
 import { migrateLegacyModelId } from "./models/registry.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
@@ -42,6 +44,14 @@ export interface TraceConfig {
 }
 
 export interface KimiConfig {
+  /**
+   * The active LLM provider (env: AUTOPILOT_PROVIDER). Unset on configs
+   * written before multi-provider support: the provider is then inferred
+   * from which credential is present (see src/providers/resolve.ts).
+   */
+  provider?: ProviderId;
+  /** Per-provider keys, base URL overrides and last-used models, keyed by provider id. */
+  providers?: Partial<Record<ProviderId, ProviderSettings>>;
   /**
    * The user's own OpenRouter API key (`sk-or-…`; env: OPENROUTER_API_KEY or
    * KIMIFLARE_OPENROUTER_KEY, which win over the file). Every model call —
@@ -109,6 +119,16 @@ export interface KimiConfig {
   compiledContext?: boolean;
   /** Number of recent user turns to retain image content; older images are dropped. */
   imageHistoryTurns?: number;
+  /** Attached images are downscaled to this long edge (px) and re-encoded
+   *  before upload. 0 sends images unchanged. Default 1568. */
+  imageMaxEdge?: number;
+  /** Email the operator about unattended runs (needs RESEND_API_KEY). Env:
+   *  AUTOPILOT_NOTIFY_EMAIL_TO / AUTOPILOT_NOTIFY_EMAIL_FROM override. */
+  runNotifications?: { email?: { to?: string | string[]; from?: string; events?: string[] } };
+  /** Cap on unattended runs doing work at once (`autopilot serve`). Default 4; env AUTOPILOT_MAX_CONCURRENT_RUNS. */
+  maxConcurrentRuns?: number;
+  /** JPEG quality (1–100) for re-encoded images. Default 75. */
+  imageQuality?: number;
   /** Hard safety ceiling on tool iterations per turn, across automatic
    *  200-call counter resets. Defaults to 1000. */
   maxTotalToolIterations?: number;
@@ -120,8 +140,15 @@ export interface KimiConfig {
   memoryMaxAgeDays?: number;
   /** Max memories per repo. Default: 1000. */
   memoryMaxEntries?: number;
-  /** Embedding model for memory vectors (OpenRouter id). Default: baai/bge-base-en-v1.5. */
+  /** Embedding model for memory and skill vectors. Default: the embedding provider's preset model. */
   memoryEmbeddingModel?: string;
+  /**
+   * Provider for memory/skill embeddings when it should differ from the chat
+   * provider (env: AUTOPILOT_EMBEDDING_PROVIDER) — e.g. keep an OpenAI key
+   * for embeddings while chatting with Anthropic or DeepSeek, which have no
+   * embeddings API. Unset: the active provider.
+   */
+  embeddingProvider?: ProviderId;
   /** Model for internal plumbing tasks (memory verification, hypothetical queries). Default: DEFAULT_PLUMBING_MODEL. */
   plumbingModel?: string;
   /** Model for auto-extracting high-signal edit events. Default: DEFAULT_PLUMBING_MODEL. */
@@ -179,31 +206,6 @@ export interface KimiConfig {
   autoCompactTokenThreshold?: number;
   /** Estimated in-memory token threshold to trigger auto-fresh when compaction cannot reduce below this. Default: 2_000_000. */
   autoFreshTokenThreshold?: number;
-  /** Model used for LLM-based task decomposition in multi-agent mode.
-   *  Default: DEFAULT_PLUMBING_MODEL (fast and cheap). */
-  decompositionModel?: string;
-  /** Strategy for decomposing heavy prompts into parallel research tasks.
-   *  - "llm": use a lightweight LLM call (default)
-   *  - "regex": pure regex heuristic (no LLM, fastest)
-   *  - "hybrid": regex for explicit lists, LLM for prose */
-  decompositionStrategy?: "llm" | "regex" | "hybrid";
-  /** Model for synthesizing multi-agent findings.
-   *  Default: DEFAULT_PLUMBING_MODEL (fast and cheap). */
-  synthesisModel?: string;
-  /** Strategy for synthesizing worker findings.
-   *  - "llm": use a lightweight LLM call (default)
-   *  - "heuristic": pure heuristic (no LLM, fastest)
-   *  - "hybrid": try LLM, fall back to heuristic on failure */
-  synthesisStrategy?: "llm" | "heuristic" | "hybrid";
-  /** Explicit opt-out for LLM-based synthesis. When true, always uses heuristic. */
-  disableLlmSynthesis?: boolean;
-  /** Files to pre-read on the coordinator and inject into every worker's
-   *  context. Saves redundant `read` tool calls across workers. Paths are
-   *  relative to the repo root. */
-  workerPreReadFiles?: string[];
-  /** Max characters of pre-read content to inject per worker batch.
-   *  Default: 50_000. */
-  workerPreReadMaxChars?: number;
   /** Permission rules for headless/CI mode. Keys are tool names (e.g. "bash", "write").
    *  Values are glob-pattern → rule mappings. Patterns are matched against the
    *  target path (for file tools) or command string (for bash). */
@@ -224,13 +226,22 @@ export interface KimiConfig {
   trace?: TraceConfig;
 }
 
-export const DEFAULT_MODEL = "moonshotai/kimi-k2.6";
-/** Cheap, fast model for internal side-calls (summaries, memory extraction,
- *  task decomposition, …) when no per-task model is configured. */
-export const DEFAULT_PLUMBING_MODEL = "moonshotai/kimi-k2.5";
+/** OpenRouter's default chat model (each provider's defaults live in src/providers/presets.ts). */
+export const DEFAULT_MODEL = PROVIDER_PRESETS.openrouter.defaultModel!;
+/** OpenRouter's cheap model for side calls; other providers use their preset's. */
+export const DEFAULT_PLUMBING_MODEL = PROVIDER_PRESETS.openrouter.plumbingModel!;
 /** Defaults when Requesty is the gateway (Requesty managed policy ids). */
-export const REQUESTY_DEFAULT_MODEL = "kimi-k2.6";
-export const REQUESTY_PLUMBING_MODEL = "deepseek-v4-flash";
+export const REQUESTY_DEFAULT_MODEL = PROVIDER_PRESETS.requesty.defaultModel!;
+export const REQUESTY_PLUMBING_MODEL = PROVIDER_PRESETS.requesty.plumbingModel!;
+
+/**
+ * Model for internal side calls (summaries, compaction, memory, decomposition):
+ * the configured plumbing model — which loadConfig() defaults from the active
+ * provider — else the session's chat model. Never another provider's id.
+ */
+export function plumbingModelOf(cfg: Pick<KimiConfig, "plumbingModel" | "model"> | null | undefined, sessionModel?: string): string {
+  return cfg?.plumbingModel || sessionModel || cfg?.model || "";
+}
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
 
 export function configPath(): string {
@@ -299,9 +310,9 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     /* no config file yet — env-only is still valid */
   }
 
-  // The one required credential: the user's own OpenRouter key. Env wins so a
-  // headless instance can be configured without ever touching the file.
-  // Configs written by the pre-release OpenRouter branch kept the key under
+  // OpenRouter and Requesty keys keep their own top-level fields (and env
+  // vars); every other provider's key lives under providers.<id>. Configs
+  // written by the pre-release OpenRouter branch kept the key under
   // providerKeys.openrouter — honoured as a fallback.
   const openrouterApiKey =
     process.env.OPENROUTER_API_KEY ||
@@ -314,12 +325,23 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   // complete setup on its own, no OpenRouter key needed.
   const baseUrl = process.env.KIMIFLARE_BASE_URL ?? persisted.baseUrl;
   const apiKey = process.env.KIMIFLARE_API_KEY ?? persisted.apiKey;
-
-  // Requesty is opt-in: only used when neither of the above is configured.
   const requestyApiKey = process.env.REQUESTY_API_KEY || persisted.requestyApiKey || undefined;
-  const requesty = !!requestyApiKey && !openrouterApiKey && !baseUrl;
+  const providerFields = {
+    provider: isProviderId(persisted.provider) ? persisted.provider : undefined,
+    providers: persisted.providers,
+    openrouterApiKey,
+    requestyApiKey,
+    baseUrl,
+    apiKey,
+    accountId: persisted.accountId,
+    apiToken: persisted.apiToken,
+  };
 
-  if (!openrouterApiKey && !baseUrl && !requestyApiKey) return null;
+  // Every LLM default below follows the active provider.
+  const active = resolveActiveProvider(providerFields);
+  if (!isProviderUsable(active)) return null;
+  noteActiveProvider(active.id);
+  const preset = active.preset;
 
   // KIMI_MODEL is an override, not a default: leave it undefined when unset so
   // the persisted `model` (set via /model) is honoured on the next launch.
@@ -335,23 +357,37 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   const envImageTurns = process.env.KIMIFLARE_IMAGE_HISTORY_TURNS;
   const imageHistoryTurns = envImageTurns ? parseInt(envImageTurns, 10) : undefined;
 
-  const envWorkerPreReadFiles = process.env.KIMIFLARE_WORKER_PRE_READ_FILES
-    ? process.env.KIMIFLARE_WORKER_PRE_READ_FILES.split(",").map((s) => s.trim()).filter(Boolean)
-    : undefined;
 
-  const m = migrateLegacyModelId;
-  // The OpenRouter plumbing default is not a Requesty id.
-  const requestyPlumbing = requesty ? REQUESTY_PLUMBING_MODEL : undefined;
+  // Cloudflare-era ids only exist on OpenRouter; other providers' ids pass through.
+  const m = active.id === "openrouter" ? migrateLegacyModelId : (id: string | undefined) => id;
+  // Top-level model fields belong to the provider the file was written for
+  // (its `provider`, or the one its credentials imply). When another
+  // provider is active — AUTOPILOT_PROVIDER, or a switch — they are ignored,
+  // so an OpenRouter id is never sent to OpenAI and vice versa.
+  const savedFor = isProviderId(persisted.provider)
+    ? persisted.provider
+    : resolveProviderId({ ...providerFields, provider: undefined, baseUrl: persisted.baseUrl }, {});
+  const own = <T,>(v: T | undefined): T | undefined => (savedFor === active.id ? v : undefined);
+  const model =
+    m(envModel ?? persisted.providers?.[active.id]?.model ?? own(persisted.model)) ?? preset.defaultModel;
+  // Side calls use the provider's cheap model; with none (custom gateways,
+  // local runtimes) they fall back to the chat model, never to another
+  // provider's id.
+  const plumbingDefault = preset.plumbingModel;
   const cfg: KimiConfig = {
+    provider: providerFields.provider,
+    providers: persisted.providers,
     openrouterApiKey,
     requestyApiKey,
     baseUrl,
     apiKey,
-    // Cloudflare credentials survive only for /multi-agent Commute, which
-    // deploys a Worker into the user's own Cloudflare account.
+    // Cloudflare account id and token: the Workers AI provider uses them
+    // (and Cloudflare-era configs still carry them).
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CF_ACCOUNT_ID ?? persisted.accountId,
     apiToken: process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN ?? persisted.apiToken,
-    model: m(envModel ?? persisted.model) ?? (requesty ? REQUESTY_DEFAULT_MODEL : DEFAULT_MODEL),
+    // Empty only for providers without a default (custom gateways, local
+    // runtimes) until the user picks one; onboarding/`/model` handle that.
+    model: model ?? "",
     openrouterProvider: persisted.openrouterProvider,
     reasoningEffort: envEffort ?? persisted.reasoningEffort,
     subagentPolicy: envSubagentPolicy ?? (
@@ -366,22 +402,27 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     coauthorName: envCoauthor?.name ?? persisted.coauthorName,
     coauthorEmail: envCoauthor?.email ?? persisted.coauthorEmail,
     mcpServers: persisted.mcpServers,
+    runNotifications: persisted.runNotifications,
+    maxConcurrentRuns: persisted.maxConcurrentRuns,
     cacheStablePrompts: persisted.cacheStablePrompts ?? cacheStablePrompts,
     compiledContext: persisted.compiledContext ?? compiledContext,
     imageHistoryTurns:
       imageHistoryTurns === undefined || Number.isNaN(imageHistoryTurns)
         ? persisted.imageHistoryTurns
         : imageHistoryTurns,
+    imageMaxEdge: readNumberEnv("KIMIFLARE_IMAGE_MAX_EDGE") ?? persisted.imageMaxEdge,
+    imageQuality: readNumberEnv("KIMIFLARE_IMAGE_QUALITY") ?? persisted.imageQuality,
     maxTotalToolIterations:
       readNumberEnv("KIMIFLARE_MAX_TOTAL_TOOL_ITERATIONS") ?? persisted.maxTotalToolIterations,
     memoryEnabled: readBooleanEnv("KIMIFLARE_MEMORY_ENABLED") ?? persisted.memoryEnabled ?? false,
     memoryDbPath: process.env.KIMIFLARE_MEMORY_DB_PATH ?? persisted.memoryDbPath,
     memoryMaxAgeDays: readNumberEnv("KIMIFLARE_MEMORY_MAX_AGE_DAYS") ?? persisted.memoryMaxAgeDays,
     memoryMaxEntries: readNumberEnv("KIMIFLARE_MEMORY_MAX_ENTRIES") ?? persisted.memoryMaxEntries,
-    memoryEmbeddingModel: m(process.env.KIMIFLARE_MEMORY_EMBEDDING_MODEL ?? persisted.memoryEmbeddingModel),
-    plumbingModel: m(process.env.KIMIFLARE_PLUMBING_MODEL ?? persisted.plumbingModel) ?? requestyPlumbing,
+    memoryEmbeddingModel: m(process.env.KIMIFLARE_MEMORY_EMBEDDING_MODEL ?? own(persisted.memoryEmbeddingModel)),
+    embeddingProvider: isProviderId(persisted.embeddingProvider) ? persisted.embeddingProvider : undefined,
+    plumbingModel: m(process.env.KIMIFLARE_PLUMBING_MODEL ?? own(persisted.plumbingModel)) ?? plumbingDefault,
     memoryExtractionModel:
-      m(process.env.KIMIFLARE_MEMORY_EXTRACTION_MODEL ?? persisted.memoryExtractionModel) ?? requestyPlumbing,
+      m(process.env.KIMIFLARE_MEMORY_EXTRACTION_MODEL ?? own(persisted.memoryExtractionModel)) ?? plumbingDefault,
     codeMode: readBooleanEnv("KIMIFLARE_CODE_MODE") ?? persisted.codeMode ?? true,
     completionCheck: readBooleanEnv("KIMIFLARE_COMPLETION_CHECK") ?? persisted.completionCheck ?? true,
     lspEnabled: persisted.lspEnabled,
@@ -407,13 +448,6 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     autoFreshEnabled: persisted.autoFreshEnabled,
     autoCompactTokenThreshold: persisted.autoCompactTokenThreshold,
     autoFreshTokenThreshold: persisted.autoFreshTokenThreshold,
-    decompositionModel: m(persisted.decompositionModel) ?? requestyPlumbing,
-    decompositionStrategy: persisted.decompositionStrategy,
-    synthesisModel: m(persisted.synthesisModel),
-    synthesisStrategy: persisted.synthesisStrategy,
-    disableLlmSynthesis: persisted.disableLlmSynthesis,
-    workerPreReadFiles: envWorkerPreReadFiles ?? persisted.workerPreReadFiles,
-    workerPreReadMaxChars: readNumberEnv("KIMIFLARE_WORKER_PRE_READ_MAX_CHARS") ?? persisted.workerPreReadMaxChars,
     permissions: persisted.permissions,
     preferPullRequests: readBooleanEnv("KIMIFLARE_PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,
     allowDirectPush: readBooleanEnv("KIMIFLARE_ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
@@ -429,6 +463,15 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   }
 
   return stripUndefined(cfg);
+}
+
+/** The config file as stored (no env, no defaults), or null when there is none. */
+export async function readPersistedConfig(): Promise<Partial<KimiConfig> | null> {
+  try {
+    return JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig>;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -459,6 +502,14 @@ interface LegacyConfigFields {
   secretsStoreId?: string;
   unifiedBilling?: boolean;
   cloudMode?: boolean;
+  /** Remote-era multi-agent decomposition/synthesis settings (no longer used). */
+  decompositionModel?: string;
+  decompositionStrategy?: string;
+  synthesisModel?: string;
+  synthesisStrategy?: string;
+  disableLlmSynthesis?: boolean;
+  workerPreReadFiles?: string[];
+  workerPreReadMaxChars?: number;
 }
 
 const LEGACY_KEYS: readonly (keyof LegacyConfigFields)[] = [
@@ -473,6 +524,13 @@ const LEGACY_KEYS: readonly (keyof LegacyConfigFields)[] = [
   "secretsStoreId",
   "unifiedBilling",
   "cloudMode",
+  "decompositionModel",
+  "decompositionStrategy",
+  "synthesisModel",
+  "synthesisStrategy",
+  "disableLlmSynthesis",
+  "workerPreReadFiles",
+  "workerPreReadMaxChars",
 ];
 
 const MODEL_ID_KEYS = [
@@ -480,8 +538,6 @@ const MODEL_ID_KEYS = [
   "plumbingModel",
   "memoryExtractionModel",
   "memoryEmbeddingModel",
-  "decompositionModel",
-  "synthesisModel",
 ] as const;
 
 function hasLegacyFields(persisted: Partial<KimiConfig> & LegacyConfigFields): boolean {
@@ -516,6 +572,38 @@ function stripUndefined<T extends object>(obj: T): T {
     if (obj[k] === undefined) delete obj[k];
   }
   return obj;
+}
+
+/**
+ * Side-call models that loadConfig() filled in from the active provider's
+ * preset are not user choices: persisting them would pin one provider's ids
+ * into the file and leak them into the next provider after a switch.
+ */
+async function forSaving(cfg: KimiConfig, path: string): Promise<KimiConfig> {
+  const active = resolveActiveProvider(cfg);
+  const out: KimiConfig = { ...cfg };
+  const plumbing = active.preset.plumbingModel;
+  if (plumbing) {
+    for (const k of ["plumbingModel", "memoryExtractionModel"] as const) {
+      if (out[k] === plumbing) delete out[k];
+    }
+  }
+  // The top-level `model` belongs to the provider the file is written for.
+  // When another provider is active only for this run (AUTOPILOT_PROVIDER),
+  // its model goes under providers.<id>.model and the file's own model stays.
+  const owner = isProviderId(cfg.provider) ? cfg.provider : resolveProviderId({ ...cfg, provider: undefined }, {});
+  if (owner !== active.id) {
+    let onDisk: Partial<KimiConfig> = {};
+    try {
+      onDisk = JSON.parse(await readFile(path, "utf8")) as Partial<KimiConfig>;
+    } catch {
+      /* no file yet */
+    }
+    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: cfg.model } };
+    if (onDisk.model) out.model = onDisk.model;
+    else delete (out as Partial<KimiConfig>).model;
+  }
+  return out;
 }
 
 /**
@@ -569,7 +657,7 @@ export function resolveWorkerBudgetUsd(cfg: KimiConfig | null): number {
 export async function saveConfig(cfg: KimiConfig): Promise<string> {
   const p = configPath();
   await mkdir(join(p, ".."), { recursive: true });
-  await writeFile(p, JSON.stringify(cfg, null, 2), "utf8");
+  await writeFile(p, JSON.stringify(await forSaving(cfg, p), null, 2), "utf8");
   await chmod(p, 0o600);
   return p;
 }

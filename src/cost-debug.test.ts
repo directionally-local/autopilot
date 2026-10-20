@@ -50,7 +50,7 @@ describe("comparePromptPrefixes", () => {
       { role: "user", content: "dynamic" },
     ];
     const diag = comparePromptPrefixes(undefined, msgs);
-    assert.strictEqual(diag.staticPrefixChars, 10);
+    assert.strictEqual(diag.staticPrefixChars, 11); // "static text"
     assert.strictEqual(diag.sessionPrefixChars, 12);
     assert.strictEqual(diag.dynamicSuffixChars, 7);
   });

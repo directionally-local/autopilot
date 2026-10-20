@@ -4,7 +4,7 @@
 
 ## Project
 
-**Autopilot** (autopilot-ai, formerly KimiFlare) is a TypeScript terminal coding agent. OpenRouter with the user's own key is the default provider, and the model picker uses OpenRouter's live catalog; custom OpenAI-compatible endpoints and a Requesty fallback are also supported. Do not assume the old Cloudflare AI Gateway / Workers AI architecture still applies.
+**Autopilot** (autopilot-ai, formerly KimiFlare) is a TypeScript terminal coding agent. OpenRouter with the user's own key is the default provider; users can also choose OpenAI, DeepSeek, Moonshot, Kimi Code, Z.ai, Ollama, LM Studio, Requesty or any OpenAI-compatible endpoint (src/providers/). Do not assume the old Cloudflare AI Gateway / Workers AI architecture still applies.
 
 - Node.js 20 or newer; TypeScript 5.7; ESM.
 - Interactive terminal UI plus one-shot print and JSON-RPC/SDK modes.
@@ -20,7 +20,6 @@
 | npm run typecheck | Type-check with tsc --noEmit |
 | npm test | Run co-located tests with Node's test runner through tsx |
 | npm start | Run the built CLI |
-| npm run build:remote | Build the separate remote/agent project |
 
 Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:test and node:assert; there is no Jest/Vitest setup.
 
@@ -29,7 +28,8 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - src/index.tsx — Commander CLI entry point and mode/command routing.
 - src/app.tsx, src/ui/ — interactive app state and terminal UI components.
 - src/agent/ — OpenRouter client, streaming/tool-call turn loop, prompts, session and supervisor logic.
-- src/models/ — OpenRouter model catalog, capabilities, and pricing; live catalog is authoritative, with seed data as offline fallback.
+- src/providers/ — provider presets (base URL, key env vars, default/plumbing/embedding models, request quirks, OpenRouter-only capabilities) and resolution of the active provider. Every LLM call, catalog, cost and feature gate follows it; providers/openrouter-guard.test.ts keeps OpenRouter access inside the provider layer.
+- src/models/ — model catalogs (OpenRouter live catalog, Requesty, models.dev for other hosted providers with a bundled snapshot, Ollama/LM Studio discovery), capabilities, and pricing.
 - src/tools/ — tool schemas, implementations, permissions, output reduction, and dispatch (executor.ts).
 - src/init/ — /init project discovery and AGENTS.md prompt generation.
 - src/skills/ — skill discovery/routing; supports .agents/skills/, AGENTS.md, .github/skills/, and .kimiflare/skills/.
@@ -41,7 +41,6 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - src/eval/, evals/ — headless eval runner (`autopilot eval run` / `autopilot eval compare`): runs the agent on a task set under a harness config and compares arms with a paired McNemar test; evals/tasks/autopilot-bench holds 20 tasks mined from this repo's merged PRs (recipe in evals/README.md).
 - src/code-mode/ — generated TypeScript tool execution and sandboxing.
 - src/hooks/, src/intent/, src/cost-attribution/, src/util/ — lifecycle hooks, intent routing, cost reporting, and shared utilities.
-- src/remote/ — remote command implementation; remote/agent/ is a separate package.
 - acp/ — standalone Zed Agent Client Protocol package.
 - feedback-worker/ — separate feedback service; docs/ and functions/ support the GitHub Pages site.
 - bin/ — published CLI shims; dist/ is generated output.

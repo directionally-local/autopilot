@@ -5,11 +5,11 @@
 
 import type { TaskCategory, TaskCategorization } from "./types.js";
 import { ALL_CATEGORIES } from "./types.js";
-import { DEFAULT_PLUMBING_MODEL } from "../config.js";
 
 interface LlmClassifierDeps {
   runLlm: (prompt: string, model: string) => Promise<string>;
-  model?: string;
+  /** Side-call model for the active provider (see plumbingModelOf). */
+  model: string;
 }
 
 function redactSecrets(text: string): string {
@@ -31,7 +31,7 @@ export async function classifyWithLlm(
   input: ClassifyWithLlmInput,
   deps: LlmClassifierDeps,
 ): Promise<TaskCategorization> {
-  const model = deps.model ?? DEFAULT_PLUMBING_MODEL;
+  const model = deps.model;
 
   const toolSummary = Object.entries(input.toolCounts)
     .map(([k, v]) => `${k}=${v}`)

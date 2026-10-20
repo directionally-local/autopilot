@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
-import { fetchEmbeddings, cosineSimilarity, DEFAULT_EMBEDDING_MODEL } from "./embeddings.js";
+import { fetchEmbeddings, cosineSimilarity, embeddingModelFor, EmbeddingsUnavailableError, vectorFromBlob, DEFAULT_EMBEDDING_MODEL } from "./embeddings.js";
 
 function assertClose(actual: Float32Array, expected: number[], epsilon = 1e-6): void {
   assert.strictEqual(actual.length, expected.length);
@@ -58,13 +58,41 @@ describe("fetchEmbeddings", () => {
     assertClose(vectors[1]!, [0.4, 0.5, 0.6]);
   });
 
-  it("uses a custom endpoint's /embeddings when one is configured", async () => {
+  it("uses a custom endpoint's /embeddings with the configured model", async () => {
     await fetchEmbeddings({
       customEndpoint: { baseUrl: "https://broker.example/v1/", apiKey: "host-key" },
+      model: "bge-small",
       texts: ["x"],
     });
     assert.strictEqual(lastRequest!.url, "https://broker.example/v1/embeddings");
     assert.strictEqual(lastRequest!.headers.get("Authorization"), "Bearer host-key");
+    assert.strictEqual((await lastRequest!.clone().json()).model, "bge-small");
+  });
+
+  it("never sends OpenRouter's bge model to a custom endpoint: without a model, embeddings are unavailable", async () => {
+    await assert.rejects(
+      fetchEmbeddings({ customEndpoint: { baseUrl: "https://broker.example/v1" }, texts: ["x"] }),
+      EmbeddingsUnavailableError,
+    );
+    assert.strictEqual(lastRequest, null);
+  });
+
+  it("uses the active preset's embedding model", async () => {
+    await fetchEmbeddings({
+      providerId: "openai",
+      customEndpoint: { baseUrl: "https://api.openai.com/v1", apiKey: "sk-oa", providerId: "openai" },
+      texts: ["x"],
+    });
+    assert.strictEqual(lastRequest!.url, "https://api.openai.com/v1/embeddings");
+    assert.strictEqual((await lastRequest!.clone().json()).model, "text-embedding-3-small");
+  });
+
+  it("reports providers without an embeddings API instead of calling them", async () => {
+    const deepseek = { providerId: "deepseek" as const, customEndpoint: { baseUrl: "https://api.deepseek.com", apiKey: "k", providerId: "deepseek" as const } };
+    assert.strictEqual(embeddingModelFor(deepseek), null);
+    assert.strictEqual(embeddingModelFor(deepseek, "my-embedder"), "my-embedder");
+    await assert.rejects(fetchEmbeddings({ ...deepseek, texts: ["x"] }), /DeepSeek has no embeddings API/);
+    assert.strictEqual(lastRequest, null);
   });
 
   it("throws without an OpenRouter key or custom endpoint", async () => {
@@ -79,6 +107,21 @@ describe("fetchEmbeddings", () => {
   it("throws when the response contains no vectors", async () => {
     responseBody = { data: [] };
     await assert.rejects(fetchEmbeddings({ openrouterApiKey: "k", texts: ["x"] }), /no vectors/);
+  });
+});
+
+describe("vectorFromBlob", () => {
+  it("round-trips a stored vector (bytes are reinterpreted, not widened)", () => {
+    const v = new Float32Array([0.5, -1.25, 3]);
+    const blob = Buffer.from(v.buffer);
+    assert.deepStrictEqual(Array.from(vectorFromBlob(blob)), [0.5, -1.25, 3]);
+    assert.strictEqual(cosineSimilarity(v, vectorFromBlob(blob)), 1);
+  });
+
+  it("handles a Buffer at an unaligned offset", () => {
+    const v = new Float32Array([1, 2]);
+    const padded = Buffer.concat([Buffer.from([9]), Buffer.from(v.buffer)]).subarray(1);
+    assert.deepStrictEqual(Array.from(vectorFromBlob(padded)), [1, 2]);
   });
 });
 

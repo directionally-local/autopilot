@@ -15,14 +15,20 @@ import { unlink } from "node:fs/promises";
 import QRCode from "qrcode";
 
 import type { Cfg } from "../app.js";
-import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
+import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
 import type { ChatEvent } from "./chat.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
-import { llmAuthFromConfig, usesRequesty } from "../agent/llm-auth.js";
+import { activeOpenRouterKey, llmAuthFromConfig, providerPresetOf, usesRequesty } from "../agent/llm-auth.js";
 import { askJev, presentJevAnswer, type JevQuestion } from "../agent/jev.js";
 import { buildJevContext, formatJevContextReceipt } from "../agent/jev-context.js";
-import { checkOpenRouterKey, looksLikeOpenRouterKey, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
+import { checkOpenRouterKey, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
+import { getPreset, isProviderId, type ProviderId } from "../providers/presets.js";
+import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
+import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
+import { switchedMessage } from "../providers/connect.js";
+import { endSession } from "../hooks/session-lifecycle.js";
+import { ensureCatalogForProvider } from "../models/catalog.js";
 import { checkRequestyKey } from "../models/requesty.js";
 import type { Mode } from "../mode.js";
 import type { SubagentPolicy } from "../intent/subagent-policy.js";
@@ -30,6 +36,7 @@ import type { DailyUsage } from "../usage-tracker.js";
 import {
   carryOverSessionBaseline,
   formatCostReport,
+  costNote,
   formatGenerationsSection,
   getCostReport,
   getSessionGenerations,
@@ -76,15 +83,10 @@ import { getAppVersion } from "../util/version.js";
 import {
   detectGitHubRepo,
   FEEDBACK_WORKER_URL,
-  formatTokens,
   mkAssistantId,
   openBrowser,
   rebuildSystemPromptForMode,
 } from "./app-helpers.js";
-import { startRemoteSession, streamRemoteProgress } from "../remote/worker-client.js";
-import { saveRemoteSession, type RemoteSession } from "../remote/session-store.js";
-import { deployForTui } from "../remote/deploy.js";
-import { authGitHubForTui } from "../remote/tui-auth.js";
 import { resolvePlanForFresh } from "../agent/plan-resolver.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
 import { writeToClipboard } from "../util/clipboard.js";
@@ -120,10 +122,11 @@ export interface SlashContext {
   // Modal setters
   setShowThemePicker: (v: boolean) => void;
   setShowModelPicker: (v: boolean) => void;
+  /** Open the step-by-step provider flow (`/provider`), optionally at one provider. */
+  setProviderSetup: (v: { initial?: ProviderId } | null) => void;
   setShowModePicker: (v: boolean) => void;
   setShowInboxModal: (v: boolean) => void;
   setShowLspWizard: (v: boolean) => void;
-  setShowRemoteDashboard: (v: boolean) => void;
   setShowCommandList: (v: boolean) => void;
   setCommandWizard: (v: { mode: "create" | "edit"; command?: CustomCommand } | null) => void;
   setCommandPicker: (v: { mode: "edit" | "delete" } | null) => void;
@@ -211,6 +214,7 @@ const handleClear: Handler = (ctx) => {
   } else {
     ctx.messagesRef.current = [ctx.messagesRef.current[0]!];
   }
+  if (ctx.sessionIdRef.current) void endSession(ctx.sessionIdRef.current, "clear");
   ctx.resetSession();
   ctx.executorRef.current.clearArtifacts();
   if (ctx.flushTimeoutRef.current) {
@@ -331,7 +335,7 @@ const handleFresh: Handler = async (ctx) => {
           messages: ctx.messagesRef.current,
           mode: ctx.mode,
           ...llmAuthFromConfig(cfg),
-          model: cfg?.plumbingModel ?? DEFAULT_PLUMBING_MODEL,
+          model: plumbingModelOf(cfg),
           memoryManager: ctx.memoryManagerRef.current,
           memoryEnabled: cfg?.memoryEnabled,
         });
@@ -390,9 +394,9 @@ const handleCost: Handler = (ctx, _rest, arg) => {
     return true;
   }
   if (arg === "verify") {
-    const key = cfg.openrouterApiKey;
+    const key = activeOpenRouterKey(cfg);
     if (!key) {
-      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "cost verify needs an OpenRouter key — run /key set <key>" }]);
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "cost verify checks against OpenRouter's generation records, so it needs OpenRouter as the active provider" }]);
       return true;
     }
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "checking this session's numbers against OpenRouter's generation records…" }]);
@@ -418,7 +422,8 @@ const handleCost: Handler = (ctx, _rest, arg) => {
   }
   void getCostReport(sessionIdRef.current ?? undefined)
     .then(async (report) => {
-      const lines = [formatCostReport(report)];
+      const provider = providerPresetOf(llmAuthFromConfig(cfg));
+      const lines = [formatCostReport(report, costNote(provider))];
       const sid = sessionIdRef.current;
       const logs = sid ? await getSessionGenerations(sid).catch(() => []) : [];
       const genSection = formatGenerationsSection(logs);
@@ -545,7 +550,7 @@ const handleSubagents: Handler = (ctx, rest, arg) => {
     return true;
   }
   if (!cfg) {
-    setEvents((events) => [...events, { kind: "error", key: mkKey(), text: "configure an OpenRouter key or custom endpoint before changing subagent policy" }]);
+    setEvents((events) => [...events, { kind: "error", key: mkKey(), text: "connect a provider (/provider) before changing subagent policy" }]);
     return true;
   }
   const next = { ...cfg, subagentPolicy: policy, subagentPolicyExplicit: true };
@@ -621,12 +626,10 @@ const handleJev: Handler = async (ctx, rest) => {
     info("Jev questions must be 4,000 characters or fewer", "error");
     return true;
   }
-  const apiKey =
-    process.env.OPENROUTER_API_KEY?.trim() ||
-    process.env.KIMIFLARE_OPENROUTER_KEY?.trim() ||
-    cfg?.openrouterApiKey?.trim();
+  // Jev is OpenRouter's Decisions API: only available while OpenRouter is the active provider.
+  const apiKey = activeOpenRouterKey(cfg);
   if (!apiKey) {
-    info(`no OpenRouter key configured — run /key set <key> or set OPENROUTER_API_KEY (create a key at ${OPENROUTER_KEYS_URL})`, "error");
+    info(`/jev uses OpenRouter's Decisions API — switch to OpenRouter (and set a key with /key set, from ${OPENROUTER_KEYS_URL}) to use it`, "error");
     return true;
   }
 
@@ -702,16 +705,27 @@ const handleModel: Handler = (ctx, rest, arg) => {
     return true;
   }
 
-  // `/model <id>` → set directly. Old Cloudflare ids (@cf/…) are translated.
-  const id = migrateLegacyModelId(rest.join(" ").trim());
+  // `/model <id>` → set directly. Ids are checked against the active
+  // provider's format: OpenRouter's vendor/model (Cloudflare-era @cf/ ids are
+  // translated); anything without whitespace elsewhere (Ollama's
+  // "llama3.1:8b", DeepSeek's "deepseek-chat", Requesty policies).
+  const provider = providerPresetOf(llmAuthFromConfig(cfg));
+  const raw = rest.join(" ").trim();
+  const id = provider.id === "openrouter" ? migrateLegacyModelId(raw) : raw;
   try {
-    // Requesty managed policy ids ("claude-sonnet-4-5") have no vendor prefix.
-    if (!(cfg && usesRequesty(llmAuthFromConfig(cfg)))) validateModelId(id);
-    else if (!id) throw new Error("empty model id");
+    if (provider.id === "openrouter") validateModelId(id);
+    else if (!id || /\s/.test(id)) throw new Error("bad model id");
   } catch {
     setEvents((e) => [
       ...e,
-      { kind: "info", key: mkKey(), text: `invalid model id: ${id} — OpenRouter ids look like vendor/model, e.g. ${DEFAULT_MODEL}` },
+      {
+        kind: "info",
+        key: mkKey(),
+        text:
+          provider.id === "openrouter"
+            ? `invalid model id: ${id} — OpenRouter ids look like vendor/model, e.g. ${DEFAULT_MODEL}`
+            : `invalid model id: ${id || "(empty)"} — pick one from /model list`,
+      },
     ]);
     return true;
   }
@@ -733,8 +747,8 @@ const handleModel: Handler = (ctx, rest, arg) => {
           ? `model selected: ${id}. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
           : `model switched: ${cfg?.model ? `${cfg.model} → ` : ""}${id}. Your next message will use this model; conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
         : ctx.busy
-          ? `model selected: ${id} · not in OpenRouter's catalog — check the id with /model list if requests fail. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.`
-          : `model selected: ${id} · not in OpenRouter's catalog — check the id with /model list if requests fail. Your next message will use this model; conversation history is kept.`,
+          ? `model selected: ${id} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.`
+          : `model selected: ${id} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. Your next message will use this model; conversation history is kept.`,
     },
   ]);
   return true;
@@ -783,81 +797,148 @@ const handleSettings: Handler = (ctx, rest) => {
   return true;
 };
 
-/** /key — show, replace or clear the OpenRouter API key. */
+/** /key — show, replace or clear the active provider's API key. */
 const handleKey: Handler = async (ctx, rest) => {
   const { cfg, setCfg, setEvents, mkKey } = ctx;
   const info = (text: string, kind: "info" | "error" = "info") =>
     setEvents((e) => [...e, { kind, key: mkKey(), text }]);
   const sub = rest[0]?.toLowerCase() ?? "";
-  const envKey = process.env.OPENROUTER_API_KEY || process.env.KIMIFLARE_OPENROUTER_KEY;
+  const active = resolveActiveProvider(cfg);
+  const { id, preset } = active;
+  const envVar = preset.apiKeyEnv.find((n) => process.env[n]?.trim());
+  const keysUrl = id === "openrouter" ? OPENROUTER_KEYS_URL : preset.keysUrl;
 
   if (sub === "set") {
     const candidate = rest.slice(1).join("").trim();
     if (!candidate) {
-      info(`usage: /key set <sk-or-…>  (create a key at ${OPENROUTER_KEYS_URL})`);
+      info(`usage: /key set <key>  (${preset.name}${keysUrl ? ` — create a key at ${keysUrl}` : ""})`);
       return true;
     }
-    if (!looksLikeOpenRouterKey(candidate)) {
-      info("that doesn't look like an OpenRouter key — they start with sk-or-", "error");
+    if (!looksLikeProviderKey(id, candidate)) {
+      info(id === "openrouter" ? "that doesn't look like an OpenRouter key — they start with sk-or-" : "that doesn't look like an API key", "error");
       return true;
     }
-    info("checking key with OpenRouter…");
-    const res = await checkOpenRouterKey(candidate);
+    info(`checking key with ${preset.name}…`);
+    const res = await checkProviderKey(id, candidate, active.baseUrl);
     if (!res.ok) {
-      info(res.reason === "invalid" ? "OpenRouter rejected that key — nothing was saved" : `couldn't verify the key: ${res.message}`, "error");
+      info(res.reason === "invalid" ? `${preset.name} rejected that key — nothing was saved` : `couldn't verify the key: ${res.message}`, "error");
       return true;
     }
-    await patchPersistedConfig({ openrouterApiKey: candidate });
-    setCfg((prev) => (prev ? { ...prev, openrouterApiKey: candidate } : prev));
-    info(
-      `OpenRouter key saved to ${configPath()}` +
-        (envKey ? " — note: OPENROUTER_API_KEY in your environment still takes precedence" : ""),
-    );
+    await saveProviderKey(id, candidate);
+    const next = await loadConfig();
+    if (next) setCfg(next);
+    info(`${preset.name} key saved to ${configPath()}` + (envVar ? ` — note: ${envVar} in your environment still takes precedence` : ""));
     return true;
   }
 
   if (sub === "clear") {
-    await patchPersistedConfig({ openrouterApiKey: undefined });
+    await saveProviderKey(id, undefined);
     info(
-      envKey
-        ? "removed the key from the config file (the one in OPENROUTER_API_KEY is still used)"
-        : "OpenRouter key removed — autopilot (formerly kimiflare) will ask for one on next launch",
+      envVar
+        ? `removed the ${preset.name} key from the config file (the one in ${envVar} is still used)`
+        : `${preset.name} key removed — autopilot will ask for one on next launch`,
     );
     return true;
   }
 
-  if (cfg && usesRequesty(llmAuthFromConfig(cfg)) && cfg.requestyApiKey) {
-    const rq = cfg.requestyApiKey;
-    const rqSource = process.env.REQUESTY_API_KEY ? "environment" : "config file";
-    const rqRes = await checkRequestyKey(rq);
-    const rqMasked = `${rq.slice(0, 8)}…${rq.slice(-4)}`;
+  if (!active.apiKey) {
     info(
-      rqRes.ok ? `Requesty key ${rqMasked} (${rqSource}) · valid` : `Requesty key ${rqMasked} (${rqSource}): ${rqRes.message}`,
-      rqRes.ok ? "info" : "error",
+      preset.keyRequired
+        ? `no ${preset.name} key configured — run /key set <key>${keysUrl ? ` (create one at ${keysUrl})` : ""}`
+        : `${preset.name} needs no key${active.baseUrl ? ` (${active.baseUrl})` : ""}`,
     );
     return true;
   }
-  const key = cfg?.openrouterApiKey;
-  if (!key) {
-    info(`no OpenRouter key configured — run /key set <key> (create one at ${OPENROUTER_KEYS_URL})`);
-    return true;
-  }
+  const key = active.apiKey;
   const masked = `${key.slice(0, 8)}…${key.slice(-4)}`;
-  const source = envKey ? "environment" : "config file";
-  const res = await checkOpenRouterKey(key);
-  if (!res.ok) {
-    info(`key ${masked} (${source}): ${res.message}`, "error");
+  const source = envVar ? "environment" : "config file";
+  if (id === "openrouter") {
+    // OpenRouter reports label, spend and remaining credit for a key.
+    const res = await checkOpenRouterKey(key);
+    if (!res.ok) {
+      info(`OpenRouter key ${masked} (${source}): ${res.message}`, "error");
+      return true;
+    }
+    const parts = [`OpenRouter key ${masked} (${source})`];
+    if (res.info.label) parts.push(`label: ${res.info.label}`);
+    if (typeof res.info.usage === "number") parts.push(`spent: $${res.info.usage.toFixed(2)}`);
+    if (typeof res.info.limitRemaining === "number") parts.push(`credit left: $${res.info.limitRemaining.toFixed(2)}`);
+    if (res.info.isFreeTier) parts.push("free tier (free models only)");
+    info(parts.join(" · "));
     return true;
   }
-  const parts = [`key ${masked} (${source})`];
-  if (res.info.label) parts.push(`label: ${res.info.label}`);
-  if (typeof res.info.usage === "number") parts.push(`spent: $${res.info.usage.toFixed(2)}`);
-  if (typeof res.info.limitRemaining === "number") parts.push(`credit left: $${res.info.limitRemaining.toFixed(2)}`);
-  if (res.info.isFreeTier) parts.push("free tier (free models only)");
-  info(parts.join(" · "));
+  const res = await checkProviderKey(id, key, active.baseUrl);
+  info(res.ok ? `${preset.name} key ${masked} (${source}) · valid` : `${preset.name} key ${masked} (${source}): ${res.message}`, res.ok ? "info" : "error");
   return true;
 };
 
+/** /provider — list providers, or switch: /provider <id> [key]. */
+const handleProvider: Handler = async (ctx, rest) => {
+  const { cfg, setCfg, setEvents, mkKey } = ctx;
+  const info = (text: string, kind: "info" | "error" = "info") =>
+    setEvents((e) => [...e, { kind, key: mkKey(), text }]);
+  const target = rest[0]?.toLowerCase();
+  // `/provider` and `/provider <id>`: the step-by-step flow (searchable list,
+  // sign-in or a masked key, then a model). Keys never go through the transcript.
+  if (!target) {
+    ctx.setProviderSetup({});
+    return true;
+  }
+  if (isProviderId(target) && rest.length === 1) {
+    ctx.setProviderSetup({ initial: target });
+    return true;
+  }
+  if (target === "list") {
+    const lines = ["providers (switch with /provider <id> [key]):"];
+    for (const r of providerStatus(cfg)) {
+      const key = r.key === null ? "no key" : r.key === "not needed" ? "no key needed" : `key in ${r.key}`;
+      lines.push(`  ${r.active ? "›" : " "} ${r.id.padEnd(11)} ${r.name}${r.active ? " (active)" : ""} · ${key}`);
+    }
+    info(lines.join("\n"));
+    return true;
+  }
+  if (!isProviderId(target)) {
+    info(`unknown provider "${target}" — /provider lists them`, "error");
+    return true;
+  }
+  const preset = getPreset(target);
+  const keyArg = rest.slice(1).join("").trim();
+  if (keyArg) {
+    info(`checking key with ${preset.name}…`);
+    const res = await checkProviderKey(target, keyArg, cfg?.providers?.[target]?.baseUrl);
+    if (!res.ok) {
+      info(`${preset.name}: ${res.message} — nothing was changed`, "error");
+      return true;
+    }
+    await saveProviderKey(target, keyArg);
+  } else if (target === "custom" ? !(cfg?.baseUrl || process.env.KIMIFLARE_BASE_URL) : preset.keyRequired && !resolveProviderKey(target, cfg)) {
+    info(
+      target === "custom"
+        ? "set the endpoint first: KIMIFLARE_BASE_URL, or `baseUrl` (and `apiKey`) in config"
+        : target === "copilot"
+          ? "sign in to GitHub Copilot first: run `autopilot auth copilot` in a terminal (GitHub device login), then /provider copilot"
+          : `no ${preset.name} key — run /provider ${target} <key>${preset.apiKeyEnv[0] ? ` or set ${preset.apiKeyEnv[0]}` : ""}${preset.keysUrl ? ` (create one at ${preset.keysUrl})` : ""}`,
+      "error",
+    );
+    return true;
+  } else if (!preset.keyRequired && target !== "custom") {
+    const reach = await checkProviderKey(target, resolveProviderKey(target, cfg), cfg?.providers?.[target]?.baseUrl);
+    if (!reach.ok) {
+      info(`${reach.message} — staying on ${resolveActiveProvider(cfg).preset.name}`, "error");
+      return true;
+    }
+  }
+  await switchProvider(cfg, target);
+  const next = await loadConfig();
+  if (!next) {
+    info(`couldn't load the config after switching to ${preset.name}`, "error");
+    return true;
+  }
+  await ensureCatalogForProvider(llmAuthFromConfig(next));
+  setCfg(next);
+  info(switchedMessage(next, target));
+  return true;
+};
 /** Plan/edit/auto modes are feature-flagged (cfg.modesEnabled, off by default).
  *  Returns false — after telling the user how to turn them on — when off. */
 function modesGate(ctx: SlashContext): boolean {
@@ -897,15 +978,6 @@ const handleMode: Handler = (ctx, _rest, arg) => {
     return true;
   }
   setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "usage: /mode edit|plan|auto" }]);
-  return true;
-};
-
-const handleMultiAgent: Handler = (ctx) => {
-  ctx.setEvents((events) => [...events, {
-    kind: "info",
-    key: ctx.mkKey(),
-    text: "Remote multi-agent workers and Cloudflare setup are disabled. Research delegation now runs locally through Hotcell; use /subagents auto (or /subagents off).",
-  }]);
   return true;
 };
 
@@ -1154,6 +1226,16 @@ const handleMemory: Handler = (ctx, _rest, arg) => {
       `  task: ${stats.byCategory.task}, preference: ${stats.byCategory.preference}`,
       `last cleanup: ${stats.lastCleanupAt ? new Date(stats.lastCleanupAt).toISOString() : "never"}`,
     ];
+    const vec = memoryManagerRef.current?.embeddingStatus(process.cwd());
+    if (vec) {
+      lines.push(
+        vec.model
+          ? `vector recall: ${vec.model} via ${vec.provider} — ${vec.current} indexed` +
+              (vec.stale > 0 ? `, ${vec.stale} waiting to be (re-)embedded (100 per startup)` : "")
+          : `vector recall: off — ${vec.provider} has no embeddings API; recall uses text and topic keys. ` +
+              `Set memoryEmbeddingModel, or embeddingProvider to a provider with embeddings.`,
+      );
+    }
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: lines.join("\n") }]);
   } else {
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "memory manager not initialized" }]);
@@ -1538,17 +1620,24 @@ const handleInbox: Handler = (ctx) => {
   return true;
 };
 
-const handleLogout: Handler = (ctx) => {
-  // Remove stored credentials but keep every other setting (theme, MCP
-  // servers, …). A key in OPENROUTER_API_KEY is outside our control.
-  void patchPersistedConfig({
+const handleLogout: Handler = async (ctx) => {
+  // Remove every stored provider credential but keep every other setting
+  // (theme, MCP servers, per-provider base URLs and models, …). Keys in the
+  // environment are outside our control.
+  const providers = { ...(ctx.cfg?.providers ?? {}) };
+  for (const id of Object.keys(providers) as Array<keyof typeof providers>) {
+    const { apiKey: _drop, ...rest } = providers[id] ?? {};
+    providers[id] = rest;
+  }
+  await patchPersistedConfig({
     openrouterApiKey: undefined,
     requestyApiKey: undefined,
     apiKey: undefined,
     accountId: undefined,
     apiToken: undefined,
+    providers,
   }).catch(() => undefined);
-  const envKey = process.env.OPENROUTER_API_KEY || process.env.KIMIFLARE_OPENROUTER_KEY;
+  const envKeys = providerStatus(ctx.cfg).filter((r) => r.key === "env").map((r) => r.name);
   ctx.setEvents((e) => [
     ...e,
     {
@@ -1556,7 +1645,7 @@ const handleLogout: Handler = (ctx) => {
       key: ctx.mkKey(),
       text:
         `credentials cleared from ${configPath()}` +
-        (envKey ? " (OPENROUTER_API_KEY in your environment will still be used next launch)" : ""),
+        (envKeys.length > 0 ? ` (keys in your environment for ${envKeys.join(", ")} will still be used next launch)` : ""),
     },
   ]);
   ctx.setCfg(null);
@@ -1587,175 +1676,15 @@ const handleCommand: Handler = (ctx, rest) => {
   return true;
 };
 
-const handleRemote: Handler = (ctx, rest, arg) => {
-  const { setEvents, mkKey, cfg, setCfg, activeScopeRef } = ctx;
-  if (arg === "status" || arg === "cancel") {
-    setEvents((e) => [
-      ...e,
-      { kind: "info", key: mkKey(), text: `Use \`autopilot remote ${arg}\` from your shell.` },
-    ]);
-    return true;
-  }
-
-  const prompt = rest.join(" ").trim();
-  if (!prompt) {
-    ctx.setShowRemoteDashboard(true);
-    return true;
-  }
-
-  const repo = detectGitHubRepo(cfg?.githubRepo);
-  if (!repo) {
-    setEvents((e) => [
-      ...e,
-      {
-        kind: "info",
-        key: mkKey(),
-        text: "Could not detect GitHub repo. Run from a repo with a GitHub remote, or set githubRepo in config.",
-      },
-    ]);
-    return true;
-  }
-
-  (async () => {
-    if (!cfg?.remoteWorkerUrl) {
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: "Remote infrastructure not deployed yet. Setting up now (~2 min)..." },
-      ]);
-
-      try {
-        for await (const step of deployForTui()) {
-          setEvents((e) => [
-            ...e,
-            { kind: step.error ? "error" : "info", key: mkKey(), text: step.message },
-          ]);
-          if (step.done) break;
-        }
-      } catch {
-        setEvents((e) => [
-          ...e,
-          { kind: "error", key: mkKey(), text: "Deploy failed. Fix the issue above and try /remote again." },
-        ]);
-        return;
-      }
-
-      const { loadConfig: reloadConfig } = await import("../config.js");
-      const newCfg = await reloadConfig();
-      if (newCfg) setCfg(newCfg);
-    }
-
-    const currentCfg = cfg ?? (await loadConfig());
-    if (!currentCfg?.remoteWorkerUrl) {
-      setEvents((e) => [
-        ...e,
-        { kind: "error", key: mkKey(), text: "Deploy seemed to succeed but config wasn't saved. Try again." },
-      ]);
-      return;
-    }
-
-    if (!currentCfg.githubOAuthToken) {
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: "GitHub not authenticated. Starting OAuth device flow..." },
-      ]);
-
-      try {
-        for await (const step of authGitHubForTui()) {
-          setEvents((e) => [
-            ...e,
-            { kind: step.error ? "error" : "info", key: mkKey(), text: step.message },
-          ]);
-          if (step.done) break;
-        }
-      } catch {
-        setEvents((e) => [
-          ...e,
-          { kind: "error", key: mkKey(), text: "GitHub auth failed. Try `autopilot auth github` from shell." },
-        ]);
-        return;
-      }
-
-      const { loadConfig: reloadConfig } = await import("../config.js");
-      const newCfg = await reloadConfig();
-      if (newCfg) setCfg(newCfg);
-    }
-
-    const finalCfg = (await loadConfig()) ?? currentCfg;
-
-    const ttl = finalCfg.remoteTtlMinutes ?? 30;
-    const budget = finalCfg.remoteMaxInputTokens ?? 5_000_000;
-    setEvents((e) => [
-      ...e,
-      { kind: "info", key: mkKey(), text: `Starting remote session for ${repo.owner}/${repo.name}...` },
-      { kind: "info", key: mkKey(), text: `Budget: ${formatTokens(budget)} tokens. TTL: ${ttl} min.` },
-    ]);
-
-    try {
-      const data = await startRemoteSession({
-        prompt,
-        repo,
-        cfg: finalCfg,
-        ttlMinutes: finalCfg.remoteTtlMinutes,
-        tokensBudget: finalCfg.remoteMaxInputTokens,
-      });
-      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `Session started: ${data.sessionId}` }]);
-
-      for await (const ev of streamRemoteProgress(
-        finalCfg.remoteWorkerUrl!,
-        data.sessionId,
-        activeScopeRef.current?.signal,
-      )) {
-        const event = ev as Record<string, unknown>;
-        if (event.type === "text_delta") {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: String(event.text ?? "") }]);
-        } else if (event.type === "tool_call") {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `→ ${String(event.name ?? "")}` }]);
-        } else if (event.type === "done") {
-          const prUrl = event.prUrl as string | undefined;
-          const tokensUsed = event.tokensUsed as number | undefined;
-          const tokensBudget = event.tokensBudget as number | undefined;
-          setEvents((e) => [
-            ...e,
-            { kind: "info", key: mkKey(), text: prUrl ? `Done — PR: ${prUrl}` : "Done" },
-          ]);
-          await saveRemoteSession({
-            sessionId: data.sessionId,
-            prompt,
-            repo: `${repo.owner}/${repo.name}`,
-            workerUrl: finalCfg.remoteWorkerUrl!,
-            status: "done",
-            prUrl,
-            tokensUsed,
-            tokensBudget,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-        } else if (event.type === "error") {
-          const message = String(event.message ?? "");
-          const category = event.category as RemoteSession["errorCategory"] | undefined;
-          setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `Remote error: ${message}` }]);
-          await saveRemoteSession({
-            sessionId: data.sessionId,
-            prompt,
-            repo: `${repo.owner}/${repo.name}`,
-            workerUrl: finalCfg.remoteWorkerUrl!,
-            status: "error",
-            errorCategory: category ?? "unknown",
-            errorSummary: message,
-            errorMessage: message,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      }
-    } catch (err) {
-      setEvents((e) => [
-        ...e,
-        { kind: "error", key: mkKey(), text: `Failed: ${err instanceof Error ? err.message : String(err)}` },
-      ]);
-    }
-  })();
-
+const handleRemote: Handler = (ctx) => {
+  ctx.setEvents((e) => [
+    ...e,
+    {
+      kind: "info",
+      key: ctx.mkKey(),
+      text: "Remote sessions on Cloudflare were retired. For unattended work, use local subagents (/subagents) or a headless run (autopilot -p \"…\").",
+    },
+  ]);
   return true;
 };
 
@@ -1931,9 +1860,9 @@ const handlers: Record<string, Handler> = {
   "/jev": handleJev,
   "/subagents": handleSubagents,
   "/key": handleKey,
+  "/provider": handleProvider,
   "/settings": handleSettings,
   "/mode": handleMode,
-  "/multi-agent": handleMultiAgent,
   "/theme": handleTheme,
   "/plan": handlePlan,
   "/auto": handleAuto,

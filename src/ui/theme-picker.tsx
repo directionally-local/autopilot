@@ -50,7 +50,7 @@ export function ThemePicker({ themes, onPick }: Props) {
             const t = themes.find((x) => x.name === item.value);
             onPick(t ?? null);
           }}
-          itemComponent={({ label, isSelected }) => {
+          itemComponent={({ label, isSelected }: { label: string; isSelected?: boolean }) => {
             const t = themes.find((x) => x.label === label);
             const color = t?.accent ?? current.accent;
             return (

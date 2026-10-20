@@ -1,6 +1,6 @@
 {
   "name": "autopilot-ai",
-  "version": "1.25.1",
+  "version": "1.28.0",
   "description": "autopilot (formerly kimiflare): a terminal coding agent that runs any OpenRouter model with your own key. Per-turn billed cost, web search, GitHub, headless browser, LSP, MCP, local memory.",
   "keywords": [
     "autopilot",
@@ -52,11 +52,9 @@
   },
   "scripts": {
     "build": "tsup",
-    "build:remote": "npm run build:remote-agent",
-    "build:remote-agent": "cd remote/agent && npx tsup",
     "dev": "tsx src/index.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/**/*.test.ts src/**/*.test.tsx",
+    "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "record-demos": "vhs demos/*.tape",
     "start": "node bin/autopilot.mjs",
     "prepublishOnly": "npm run build"
@@ -66,10 +64,14 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.9.0",
     "commander": "^12.1.0",
+    "imapflow": "2.2.5",
     "ink": "^7.0.1",
     "ink-select-input": "^6.2.0",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
+    "jpeg-js": "^0.4.4",
+    "mailparser": "3.9.36",
+    "pngjs": "^7.0.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "turndown": "^7.2.0",
@@ -78,12 +80,14 @@
   },
   "optionalDependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "camouflage-tui": "^2.6.1",
+    "camouflage-tui": "^2.8.1",
     "isolated-vm": "^6.1.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/mailparser": "^3.9.0",
     "@types/node": "^22.9.0",
+    "@types/pngjs": "^6.0.5",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.0",
     "@types/turndown": "^5.0.5",

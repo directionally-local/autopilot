@@ -16,9 +16,9 @@ export interface AsterGitHubGrant {
   branch: string;
 }
 
-export function createAsterGitHubGrantToken(serverToken: string, conversationId: string, repository: string): string {
+export function createAsterGitHubGrantToken(serverToken: string, conversationId: string, repository: string, branch = ""): string {
   return createHmac("sha256", serverToken)
-    .update(`aster-github:${conversationId}:${repository.toLowerCase()}`)
+    .update(`aster-github:${conversationId}:${repository.toLowerCase()}:${branch}`)
     .digest("base64url");
 }
 

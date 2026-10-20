@@ -2,11 +2,20 @@
  * HTTP route handlers for the KimiFlare headless server.
  */
 
+import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { endSessions } from "../hooks/session-lifecycle.js";
+import { listModels } from "../models/registry.js";
+import { JobManager } from "../jobs/manager.js";
+import { hostname } from "node:os";
+import { notificationSettingsFromConfig, startNotificationDispatcher } from "../runs/notifications.js";
+import { handleDecisionMail } from "../runs/decisions.js";
+import { imapSettingsFromEnv, startDecisionPoller } from "../runs/decisions-imap.js";
 import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
+import { assembleTurn, lastUserText, resolveTurnPolicy } from "../agent/session-core.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
 import { toOpenAIToolDefs } from "../tools/registry.js";
@@ -25,7 +34,10 @@ import { getOpenApiSpec } from "./openapi.js";
 import { evaluatePermissionRules } from "../permissions-evaluator.js";
 import { readFile, unlink } from "node:fs/promises";
 import { resolve, basename } from "node:path";
-import { encodeImageFile, isImagePath } from "../util/image.js";
+import { isImagePath } from "../util/image.js";
+import { buildAttachmentMessage } from "../util/attachments.js";
+
+const imageOptions = (config: KimiConfig) => ({ maxEdge: config.imageMaxEdge, quality: config.imageQuality });
 import { glob } from "../util/glob.js";
 import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager, type RunWorktree } from "../runs/worktrees.js";
@@ -181,44 +193,55 @@ async function resolveFiles(filePatterns: string[], cwd: string): Promise<string
   return [...resolved];
 }
 
-async function buildUserMessage(prompt: string, files: string[], cwd: string): Promise<string | ContentPart[]> {
-  let text = prompt;
-  const imageParts: ContentPart[] = [];
-  const fileContents: string[] = [];
+/** Default cap on runs doing work at once (AUTOPILOT_MAX_CONCURRENT_RUNS / maxConcurrentRuns). */
+export const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 
-  for (const filePath of files) {
-    if (isImagePath(filePath)) {
-      try {
-        const img = await encodeImageFile(filePath);
-        imageParts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to attach image ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
-    } else {
-      try {
-        const content = await readFile(filePath, "utf8");
-        const relPath = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath;
-        fileContents.push(`\n--- ${relPath} ---\n${content}\n--- end ${relPath} ---\n`);
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to read ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
+/** Why a run can't start or resume right now: the kill switch is on, or too many runs are active. */
+function runAdmissionRefusal(config: KimiConfig): { status: number; error: string } | null {
+  const store = new RunStore();
+  try {
+    const halted = store.haltState();
+    if (halted) {
+      return { status: 503, error: `Runs are halted by the operator (${halted.reason}). Lift it with DELETE /runs/stop-all.` };
     }
+    const envLimit = Number(process.env.AUTOPILOT_MAX_CONCURRENT_RUNS);
+    const limit = Number.isInteger(envLimit) && envLimit > 0 ? envLimit : config.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
+    const active = store.countActiveRuns();
+    if (active >= limit) {
+      return { status: 429, error: `${active} runs are already active (limit ${limit}, AUTOPILOT_MAX_CONCURRENT_RUNS). Wait for one to finish or cancel one.` };
+    }
+    return null;
+  } finally {
+    store.close();
   }
-
-  if (fileContents.length > 0) {
-    text += "\n\n" + fileContents.join("\n");
-  }
-
-  if (imageParts.length > 0) {
-    const parts: ContentPart[] = [{ type: "text", text }];
-    parts.push(...imageParts);
-    return parts;
-  }
-
-  return text;
 }
 
 export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterApiRuntime } = {}) {
+  /**
+   * Resume a run paused for input: optionally switch model, revise budgets
+   * and pass the operator's answer, then start the next turn. Shared by the
+   * HTTP resume endpoint and emailed decisions.
+   */
+  async function resumePausedRun(
+    store: RunStore,
+    run: RunRecord,
+    opts: { budgets: RunBudgetUpdate; model?: string; answer?: string; via?: string },
+  ): Promise<{ ok: true; run: RunRecord } | { ok: false; error: string }> {
+    const active = await getOrRestoreActiveRun(run);
+    if (active.running) return { ok: false, error: "The previous turn is still stopping; retry resume shortly" };
+    if (opts.model) active.sessionFile.model = opts.model;
+    const change = opts.model ? `It now runs on ${opts.model}.` : Object.values(opts.budgets).some((v) => v !== undefined) ? "Its budget was updated." : "The operator asked to continue.";
+    const answer = opts.answer ? ` The operator answered: "${opts.answer}"` : "";
+    active.messages.push({ role: "user", content: "The run was paused because " + (run.stopReason ?? "it needs input") + ". " + change + answer + " Continue the task from the last saved checkpoint." });
+    active.sessionFile.messages = active.messages;
+    await saveSession(active.sessionFile);
+    const changeTag = [opts.model ? `model:${opts.model}` : "", opts.answer ? "answer" : "", opts.via ? `via:${opts.via}` : ""].filter(Boolean).join(",");
+    const resumed = store.resumeWithBudgets(run.id, opts.budgets, changeTag ? { change: changeTag } : {});
+    store.recordCheckpoint(run.id);
+    launchAgentTurnForSession(active, config, false);
+    return { ok: true, run: resumed };
+  }
+
   async function getOrRestoreActiveRun(run: RunRecord): Promise<ActiveSession> {
     if (!run.sessionId) throw new Error("Cannot restore run without a session id: " + run.id);
     const existing = activeRuns.get(run.id) ?? activeSessions.get(run.sessionId);
@@ -275,6 +298,36 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
     cancelRun: () => {},
   });
 
+  // Email the operator when a run finishes, fails or needs input (#671). Off
+  // unless configured (RESEND_API_KEY + a recipient).
+  const notificationSettings = notificationSettingsFromConfig(config);
+  const stopNotifications = notificationSettings
+    ? startNotificationDispatcher(() => new RunStore(), notificationSettings, { host: hostname() })
+    : () => {};
+  // Email decisions (#671 1.6): replies to "needs input" emails, polled over IMAP.
+  const imapSettings = notificationSettings?.decisionsReplyTo ? imapSettingsFromEnv() : null;
+  const stopDecisions = imapSettings && notificationSettings
+    ? startDecisionPoller(imapSettings, async (mail) => {
+        const store = new RunStore();
+        try {
+          await handleDecisionMail(mail, store, {
+            resume: (run, opts) => resumePausedRun(store, run, { ...opts, via: "email" }).then((r) => (r.ok ? { ok: true as const } : r)),
+            cancel: (run) => {
+              activeRuns.get(run.id)?.controller?.abort();
+              store.transition(run.id, "cancelled", "cancelled_by_operator_email");
+              store.cancelTimersForRun(run.id);
+            },
+            modelExists: (id) => listModels().some((m) => m.id === id),
+            confirm: async (to, subject, text) => {
+              await notificationSettings.transport.send({ to: [to], from: notificationSettings.from, subject, text, idempotencyKey: `confirm_${randomUUID()}` });
+            },
+          }, { allowedSenders: notificationSettings.to, requireAuthentication: process.env.AUTOPILOT_DECISIONS_REQUIRE_AUTH !== "0" });
+        } finally {
+          store.close();
+        }
+      })
+    : () => {};
+
   const wakeScheduler = new RunWakeScheduler({
     onWake: async (event: RunWakeEvent) => {
       const store = new RunStore();
@@ -325,6 +378,53 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         return;
       }
 
+      // Operator kill switch: cancel every active run and refuse new ones until lifted.
+      if (pathname === "/runs/stop-all" && (method === "POST" || method === "DELETE")) {
+        if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
+          json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before managing unattended runs" });
+          return;
+        }
+        const store = new RunStore();
+        try {
+          if (method === "DELETE") {
+            store.unhalt();
+            json(res, 200, { halted: false });
+            return;
+          }
+          const body = ((await readBody(req)) ?? {}) as Record<string, unknown>;
+          const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 200) : "stopped_by_operator";
+          store.halt(reason);
+          const cancelled: string[] = [];
+          for (const status of ["queued", "running", "waiting", "needs_input"] as const) {
+            for (const run of store.listRuns({ status, limit: 10_000 })) {
+              activeRuns.get(run.id)?.controller?.abort(new Error(reason));
+              store.transition(run.id, "cancelled", reason);
+              store.cancelTimersForRun(run.id);
+              cancelled.push(run.id);
+            }
+          }
+          const jobsCancelled: string[] = [];
+          if (body.jobs === true) {
+            const jobs = new JobManager();
+            try {
+              for (const job of jobs.list({ limit: 10_000 })) {
+                if (job.status === "running" || job.status === "starting") {
+                  jobs.cancel(job.id);
+                  jobsCancelled.push(job.id);
+                }
+              }
+            } finally {
+              jobs.close();
+            }
+          }
+          logger.warn("server: operator stopped all runs", { reason, runs: cancelled.length, jobs: jobsCancelled.length });
+          json(res, 200, { halted: true, reason, cancelledRuns: cancelled, cancelledJobs: jobsCancelled });
+          return;
+        } finally {
+          store.close();
+        }
+      }
+
       // Durable unattended runs are deliberately disabled without server auth.
       const runPathMatch = pathname.match(/^\/runs\/([^/]+)(?:\/(events|cancel|resume))?$/);
       if (pathname === "/runs" && method === "GET") {
@@ -344,6 +444,11 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       if (pathname === "/runs" && method === "POST") {
         if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
           json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before creating unattended runs" });
+          return;
+        }
+        const refusal = runAdmissionRefusal(config);
+        if (refusal) {
+          json(res, refusal.status, { error: refusal.error });
           return;
         }
         const parsedBody = await readBody(req);
@@ -523,34 +628,42 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
               json(res, 409, { error: "Only a run paused for input can be resumed", run });
               return;
             }
+            const refusal = runAdmissionRefusal(config);
+            if (refusal) {
+              json(res, refusal.status, { error: refusal.error, run });
+              return;
+            }
             const parsedBody = await readBody(req);
             if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
               badRequest(res, "request body must be a JSON object containing at least one revised budget");
               return;
             }
             const resumeBody = parsedBody as Record<string, unknown>;
-            const allowedBudgetKeys = new Set(["maxToolIterations", "maxRuntimeMs", "maxTotalTokens", "maxCostUsd"]);
-            const unsupportedKey = Object.keys(resumeBody).find((key) => !allowedBudgetKeys.has(key));
+            const allowedResumeKeys = new Set(["maxToolIterations", "maxRuntimeMs", "maxTotalTokens", "maxCostUsd", "model"]);
+            const unsupportedKey = Object.keys(resumeBody).find((key) => !allowedResumeKeys.has(key));
             if (unsupportedKey) { badRequest(res, "Unsupported resume field: " + unsupportedKey); return; }
+            const { model: requestedModel, ...budgetBody } = resumeBody;
+            if (requestedModel !== undefined && (typeof requestedModel !== "string" || !requestedModel.trim())) {
+              badRequest(res, "model must be a non-empty model id");
+              return;
+            }
             let budgets: RunBudgetUpdate;
-            try { budgets = parseRunBudgetUpdate(resumeBody); }
+            try { budgets = parseRunBudgetUpdate(budgetBody); }
             catch (error) { badRequest(res, error instanceof Error ? error.message : String(error)); return; }
-            if (Object.values(budgets).every((value) => value === undefined)) {
-              badRequest(res, "Provide at least one revised budget; use null to remove a limit");
+            // A context overflow is resolved by a larger-context model; budget pauses by a revised budget.
+            if (requestedModel === undefined && Object.values(budgets).every((value) => value === undefined)) {
+              badRequest(res, "Provide a revised budget (use null to remove a limit) or a model to continue with");
               return;
             }
-            const active = await getOrRestoreActiveRun(run);
-            if (active.running) {
-              json(res, 409, { error: "The previous turn is still stopping; retry resume shortly", run });
+            const result = await resumePausedRun(store, run, {
+              budgets,
+              ...(typeof requestedModel === "string" ? { model: requestedModel.trim() } : {}),
+            });
+            if (!result.ok) {
+              json(res, 409, { error: result.error, run });
               return;
             }
-            active.messages.push({ role: "user", content: "The run was paused because " + (run.stopReason ?? "it needs input") + ". Its budget was updated. Continue the task from the last saved checkpoint." });
-            active.sessionFile.messages = active.messages;
-            await saveSession(active.sessionFile);
-            const resumed = store.resumeWithBudgets(runId, budgets);
-            store.recordCheckpoint(runId);
-            launchAgentTurnForSession(active, config, false);
-            json(res, 202, { run: resumed });
+            json(res, 202, { run: result.run });
             return;
           }
           if (suffix === "cancel" && method === "POST") {
@@ -670,7 +783,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         ];
 
         const resolvedFiles = await resolveFiles(files, cwd);
-        const userContent = await buildUserMessage(prompt, resolvedFiles, cwd);
+        const { content: userContent } = await buildAttachmentMessage(prompt, resolvedFiles, cwd, imageOptions(config));
         messages.push({ role: "user", content: userContent });
 
         const trace = await startSessionTrace(config, sessionFile, ALL_TOOLS, messages);
@@ -718,7 +831,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         }
 
         const resolvedFiles = await resolveFiles(files, active.sessionFile.cwd);
-        const userContent = await buildUserMessage(prompt, resolvedFiles, active.sessionFile.cwd);
+        const { content: userContent } = await buildAttachmentMessage(prompt, resolvedFiles, active.sessionFile.cwd, imageOptions(config));
         active.messages.push({ role: "user", content: userContent });
         active.nextTurnId = makeTurnId();
         if (active.trace?.enabled && active.lastTurnId) {
@@ -745,7 +858,10 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
   }
 
   function cleanup(): void {
+    void endSessions("exit");
     wakeScheduler.dispose();
+    stopNotifications();
+    stopDecisions();
     for (const [, active] of activeSessions) {
       active.shuttingDown = true;
       if (active.trace?.enabled) active.trace.emit("session_end", { reason: "exit" }, null);
@@ -934,9 +1050,14 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
   active.lastTurnId = turnId;
   try {
     if (run && runStore) {
-
-      const tools = ALL_TOOLS.filter((tool) => active.allowedTools?.has(tool.name));
-      await runAgentTurn({
+      // SessionCore: same classification, subagent policy and completion check as every host.
+      const policy = await resolveTurnPolicy({
+        cfg: config,
+        prompt: lastUserText(messages),
+        tools: ALL_TOOLS.filter((tool) => active.allowedTools?.has(tool.name)),
+        signal: controller.signal,
+      });
+      await runAgentTurn(assembleTurn({ cfg: config, policy, host: {
         ...llmAuthFromConfig(config),
         model: sessionFile.model,
         reasoningEffort: config.reasoningEffort,
@@ -944,7 +1065,6 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         runId: run.id,
         runsDbPath: process.env.AUTOPILOT_RUNS_DB,
         messages,
-        tools,
         executor,
         cwd: sessionFile.cwd,
         signal: controller.signal,
@@ -966,15 +1086,15 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
           }
           return updatedMessages;
         },
-      });
+      } }));
     } else {
-      await runAgentTurn({
+      const policy = await resolveTurnPolicy({ cfg: config, prompt: lastUserText(messages), tools: ALL_TOOLS, signal: controller.signal });
+      await runAgentTurn(assembleTurn({ cfg: config, policy, host: {
         ...llmAuthFromConfig(config),
         model: sessionFile.model,
         reasoningEffort: config.reasoningEffort,
         sessionId: sessionFile.id,
         messages,
-        tools: ALL_TOOLS,
         executor,
         cwd: sessionFile.cwd,
         signal: controller.signal,
@@ -985,7 +1105,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         callbacks,
         trace: active.trace,
         turnId,
-      });
+      } }));
     }
 
     sessionFile.messages = messages;
@@ -1013,8 +1133,12 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
       const current = runStore.getRun(active.runId);
       if (current?.status === "running" && !active.shuttingDown) {
         const runtimeBudgetExceeded = controller.signal.aborted && run?.maxRuntimeMs !== null && run?.maxRuntimeMs !== undefined && run.startedAt !== null && Date.now() - run.startedAt >= run.maxRuntimeMs;
-        const reason = runtimeBudgetExceeded ? "max_runtime_exceeded" : message;
-        runStore.transition(active.runId, runtimeBudgetExceeded ? "needs_input" : "failed", reason);
+        // SessionCore decides: budget limits pause the run for a decision; anything else fails it.
+        const stop = runStopForError(err, { runtimeBudgetExceeded, model: sessionFile.model });
+        runStore.transition(active.runId, stop.status, stop.status === "failed" ? message : stop.reason);
+        if (stop.status === "needs_input") {
+          for (const client of active.sseClients) client.send("run.needs_input", { runId: active.runId, reason: stop.reason });
+        }
       }
     }
     if (active.finishAsterTurn) {

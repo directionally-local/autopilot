@@ -42,7 +42,7 @@ export function UiPicker({ current, onPick }: Props) {
             }
             onPick(item.value as UiEngineChoice);
           }}
-          itemComponent={({ label, isSelected }) => {
+          itemComponent={({ label, isSelected }: { label: string; isSelected?: boolean }) => {
             const item = items.find((i) => i.label === label);
             const desc = item?.description ?? "";
             return (

@@ -1,0 +1,55 @@
+# Autopilot's headless server for unattended runs, as a systemd service.
+# See docs/deploy-linux-server.md. Install:
+#   sudo cp deploy/autopilot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now autopilot
+[Unit]
+Description=Autopilot headless server (unattended runs)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=autopilot
+Group=autopilot
+WorkingDirectory=/home/autopilot
+# Secrets (KIMIFLARE_SERVER_PASSWORD, provider keys, RESEND_API_KEY, …), mode 0600.
+EnvironmentFile=/etc/autopilot/autopilot.env
+Environment=NODE_ENV=production
+# Localhost only: reach it over SSH (ssh -L 4096:127.0.0.1:4096 host).
+ExecStart=/usr/bin/env autopilot serve --hostname 127.0.0.1 --port 4096
+# Graceful shutdown: the server aborts active turns and saves checkpoints;
+# runs whose last tool call has an unknown outcome become interrupted_unknown.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# Managed jobs run in their own process groups and must outlive restarts.
+KillMode=process
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the agent edits code in its worktrees and nothing else on the host.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/autopilot /srv/autopilot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectProc=invisible
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Not set on purpose: PrivateDevices (GPU training jobs need /dev/nvidia*)
+# and MemoryDenyWriteExecute (breaks Node's JIT).
+LimitNOFILE=65536
+TasksMax=4096
+
+[Install]
+WantedBy=multi-user.target

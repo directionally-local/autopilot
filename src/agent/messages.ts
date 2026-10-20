@@ -4,6 +4,12 @@ export interface ToolCall {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  /**
+   * Provider-specific data attached to the call that must be sent back with
+   * it — Gemini's `{ google: { thought_signature } }`. Kept only for the
+   * provider that produced it (see stripReasoningEcho).
+   */
+  extra_content?: Record<string, unknown>;
 }
 
 export interface TextContentPart {
@@ -87,7 +93,8 @@ export interface Usage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  prompt_tokens_details?: { cached_tokens?: number } | null;
+  /** `cache_write_tokens`: prompt tokens written to the cache (OpenRouter reports it for Anthropic; the Anthropic adapter fills it). */
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } | null;
   /** Authoritative USD cost of this generation, reported by OpenRouter's
    *  usage accounting in the final stream chunk. Absent on custom endpoints. */
   cost?: number;
