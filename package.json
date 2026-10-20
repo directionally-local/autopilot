@@ -59,10 +59,9 @@
     "dev": "tsx src/index.tsx",
     "typecheck": "tsc --noEmit",
     "typecheck:fast": "tsrs --noEmit",
-    "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\" \"scripts/**/*.test.mjs\"",
+    "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "record-demos": "vhs demos/*.tape",
     "start": "node bin/autopilot.mjs",
-    "prepack": "node scripts/prune-bundled-deps.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
