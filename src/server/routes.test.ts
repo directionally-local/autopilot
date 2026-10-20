@@ -231,6 +231,71 @@ describe("unattended run whose active turn outgrows the context", () => {
   });
 });
 
+describe("run admission: concurrency limit and operator kill switch", () => {
+  it("refuses runs past the limit, and stop-all cancels everything until lifted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "autopilot-run-admission-"));
+    const saved = { runs: process.env.AUTOPILOT_RUNS_DB, data: process.env.XDG_DATA_HOME, pw: process.env.KIMIFLARE_SERVER_PASSWORD, max: process.env.AUTOPILOT_MAX_CONCURRENT_RUNS };
+    process.env.AUTOPILOT_RUNS_DB = join(dir, "runs.db");
+    process.env.XDG_DATA_HOME = join(dir, "data");
+    process.env.KIMIFLARE_SERVER_PASSWORD = "test-only-password";
+    process.env.AUTOPILOT_MAX_CONCURRENT_RUNS = "2";
+    const routes = setupRoutes({} as KimiConfig);
+    const server = createServer((req, res) => { void routes.handleRequest(req, res); });
+    try {
+      const { port } = await listen(server);
+      const base = `http://127.0.0.1:${port}`;
+      const post = (path: string, body: unknown = {}) =>
+        fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const store = new RunStore();
+      const ids: string[] = [];
+      try {
+        for (const task of ["one", "two"]) {
+          const run = store.createRun({ task, cwd: dir });
+          store.transition(run.id, "running");
+          ids.push(run.id);
+        }
+        const waiting = store.createRun({ task: "three", cwd: dir });
+        store.transition(waiting.id, "running");
+        store.transition(waiting.id, "needs_input", "budget");
+        ids.push(waiting.id);
+      } finally { store.close(); }
+
+      const full = await post("/runs", { task: "four", cwd: dir });
+      assert.equal(full.status, 429);
+      assert.match(((await full.json()) as { error: string }).error, /2 runs are already active \(limit 2/);
+
+      const stopped = await post("/runs/stop-all", { reason: "deploying" });
+      assert.equal(stopped.status, 200);
+      const stopBody = (await stopped.json()) as { halted: boolean; cancelledRuns: string[] };
+      assert.equal(stopBody.halted, true);
+      assert.deepEqual([...stopBody.cancelledRuns].sort(), [...ids].sort());
+
+      const check = new RunStore();
+      try {
+        for (const id of ids) assert.equal(check.getRun(id)!.status, "cancelled");
+      } finally { check.close(); }
+
+      const refused = await post("/runs", { task: "five", cwd: dir });
+      assert.equal(refused.status, 503);
+      assert.match(((await refused.json()) as { error: string }).error, /halted by the operator \(deploying\)/);
+
+      const lifted = await fetch(`${base}/runs/stop-all`, { method: "DELETE" });
+      assert.equal(lifted.status, 200);
+      // Admission passes again (this one then fails validation: not a git repository).
+      const after = await post("/runs", { task: "six", cwd: dir });
+      assert.equal(after.status, 400);
+    } finally {
+      routes.cleanup();
+      await close(server);
+      restoreEnv("AUTOPILOT_RUNS_DB", saved.runs);
+      restoreEnv("XDG_DATA_HOME", saved.data);
+      restoreEnv("KIMIFLARE_SERVER_PASSWORD", saved.pw);
+      restoreEnv("AUTOPILOT_MAX_CONCURRENT_RUNS", saved.max);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 function listen(server: Server): Promise<{ port: number }> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);

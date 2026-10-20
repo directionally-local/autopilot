@@ -263,6 +263,10 @@ export class RunStore {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_run_notifications_status ON run_notifications(status, created_at);
+      CREATE TABLE IF NOT EXISTS run_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
     const timerColumns = this.db.prepare("PRAGMA table_info(run_timers)").all() as Array<{ name: string }>;
     if (!timerColumns.some((column) => column.name === "interval_ms")) {
@@ -288,6 +292,26 @@ export class RunStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /** The operator kill switch: while halted, no run is created, resumed or woken. Survives restarts. */
+  halt(reason: string): void {
+    this.db.prepare(`INSERT INTO run_settings (key, value) VALUES ('halted', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      .run(JSON.stringify({ reason, at: Date.now() }));
+  }
+
+  unhalt(): void {
+    this.db.prepare(`DELETE FROM run_settings WHERE key = 'halted'`).run();
+  }
+
+  haltState(): { reason: string; at: number } | null {
+    const row = this.db.prepare(`SELECT value FROM run_settings WHERE key = 'halted'`).get() as { value: string } | undefined;
+    return row ? (JSON.parse(row.value) as { reason: string; at: number }) : null;
+  }
+
+  /** Runs doing work right now (an agent turn may be executing). */
+  countActiveRuns(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE status IN ('queued', 'running')`).get() as { n: number }).n;
   }
 
   createRun(input: {

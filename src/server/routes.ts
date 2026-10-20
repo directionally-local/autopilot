@@ -7,6 +7,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { notificationSettingsFromConfig, startNotificationDispatcher } from "../runs/notifications.js";
+import { JobManager } from "../jobs/manager.js";
 import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
@@ -188,6 +189,29 @@ async function resolveFiles(filePatterns: string[], cwd: string): Promise<string
   return [...resolved];
 }
 
+/** Default cap on runs doing work at once (AUTOPILOT_MAX_CONCURRENT_RUNS / maxConcurrentRuns). */
+export const DEFAULT_MAX_CONCURRENT_RUNS = 4;
+
+/** Why a run can't start or resume right now: the kill switch is on, or too many runs are active. */
+function runAdmissionRefusal(config: KimiConfig): { status: number; error: string } | null {
+  const store = new RunStore();
+  try {
+    const halted = store.haltState();
+    if (halted) {
+      return { status: 503, error: `Runs are halted by the operator (${halted.reason}). Lift it with DELETE /runs/stop-all.` };
+    }
+    const envLimit = Number(process.env.AUTOPILOT_MAX_CONCURRENT_RUNS);
+    const limit = Number.isInteger(envLimit) && envLimit > 0 ? envLimit : config.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
+    const active = store.countActiveRuns();
+    if (active >= limit) {
+      return { status: 429, error: `${active} runs are already active (limit ${limit}, AUTOPILOT_MAX_CONCURRENT_RUNS). Wait for one to finish or cancel one.` };
+    }
+    return null;
+  } finally {
+    store.close();
+  }
+}
+
 export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterApiRuntime } = {}) {
   async function getOrRestoreActiveRun(run: RunRecord): Promise<ActiveSession> {
     if (!run.sessionId) throw new Error("Cannot restore run without a session id: " + run.id);
@@ -308,6 +332,53 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         return;
       }
 
+      // Operator kill switch: cancel every active run and refuse new ones until lifted.
+      if (pathname === "/runs/stop-all" && (method === "POST" || method === "DELETE")) {
+        if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
+          json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before managing unattended runs" });
+          return;
+        }
+        const store = new RunStore();
+        try {
+          if (method === "DELETE") {
+            store.unhalt();
+            json(res, 200, { halted: false });
+            return;
+          }
+          const body = ((await readBody(req)) ?? {}) as Record<string, unknown>;
+          const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 200) : "stopped_by_operator";
+          store.halt(reason);
+          const cancelled: string[] = [];
+          for (const status of ["queued", "running", "waiting", "needs_input"] as const) {
+            for (const run of store.listRuns({ status, limit: 10_000 })) {
+              activeRuns.get(run.id)?.controller?.abort(new Error(reason));
+              store.transition(run.id, "cancelled", reason);
+              store.cancelTimersForRun(run.id);
+              cancelled.push(run.id);
+            }
+          }
+          const jobsCancelled: string[] = [];
+          if (body.jobs === true) {
+            const jobs = new JobManager();
+            try {
+              for (const job of jobs.list({ limit: 10_000 })) {
+                if (job.status === "running" || job.status === "starting") {
+                  jobs.cancel(job.id);
+                  jobsCancelled.push(job.id);
+                }
+              }
+            } finally {
+              jobs.close();
+            }
+          }
+          logger.warn("server: operator stopped all runs", { reason, runs: cancelled.length, jobs: jobsCancelled.length });
+          json(res, 200, { halted: true, reason, cancelledRuns: cancelled, cancelledJobs: jobsCancelled });
+          return;
+        } finally {
+          store.close();
+        }
+      }
+
       // Durable unattended runs are deliberately disabled without server auth.
       const runPathMatch = pathname.match(/^\/runs\/([^/]+)(?:\/(events|cancel|resume))?$/);
       if (pathname === "/runs" && method === "GET") {
@@ -327,6 +398,11 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       if (pathname === "/runs" && method === "POST") {
         if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
           json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before creating unattended runs" });
+          return;
+        }
+        const refusal = runAdmissionRefusal(config);
+        if (refusal) {
+          json(res, refusal.status, { error: refusal.error });
           return;
         }
         const parsedBody = await readBody(req);
@@ -504,6 +580,11 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
           if (suffix === "resume" && method === "POST") {
             if (run.status !== "needs_input") {
               json(res, 409, { error: "Only a run paused for input can be resumed", run });
+              return;
+            }
+            const refusal = runAdmissionRefusal(config);
+            if (refusal) {
+              json(res, refusal.status, { error: refusal.error, run });
               return;
             }
             const parsedBody = await readBody(req);
