@@ -1,3 +1,4 @@
+import * as zlib from "node:zlib";
 import { readSSE } from "../util/sse.js";
 import { KimiApiError } from "../util/errors.js";
 import { getUserAgent } from "../util/version.js";
@@ -15,8 +16,17 @@ import {
   type LlmDumpResponse,
 } from "../util/llm-dump.js";
 import { getModelOrInfer, vendorOf } from "../models/registry.js";
-import { getPreset, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
-import { anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
+import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { copilotRequestHeaders } from "../providers/copilot.js";
+import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
+import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
+import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
+
+/** "https://bedrock-runtime.us-west-2.amazonaws.com/…" → "us-west-2". */
+function bedrockRegionOf(url: string): string {
+  return /bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com/.exec(url)?.[1] ?? "us-east-1";
+}
 import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
@@ -30,7 +40,7 @@ export type KimiEvent =
   | { type: "text"; delta: string }
   | { type: "tool_call_start"; index: number; id: string; name: string }
   | { type: "tool_call_args"; index: number; argsDelta: string }
-  | { type: "tool_call_complete"; index: number; id: string; name: string; arguments: string; finishReason: string | null }
+  | { type: "tool_call_complete"; index: number; id: string; name: string; arguments: string; finishReason: string | null; extra?: Record<string, unknown> }
   | { type: "usage"; usage: Usage }
   | { type: "done"; finishReason: string | null; usage: Usage | null };
 
@@ -89,6 +99,8 @@ const MAX_ATTEMPTS = 5;
 
 function isRetryable(err: KimiApiError, attempt: number, openrouter = true): boolean {
   if (attempt >= MAX_ATTEMPTS - 1) return false;
+  // ChatGPT token sharing: usage limits and eligibility don't change on retry (even as a 429).
+  if (NON_RETRYABLE_SHARING_CODES.some((c) => err.message.includes(c))) return false;
   if (err.httpStatus === 408 || err.httpStatus === 429) return true;
   // OpenRouter's 402 "in-flight budget" is transient (a concurrent request is
   // holding the key's remaining credit); a plain out-of-credits 402 is not.
@@ -104,7 +116,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   const customEndpoint = opts.customEndpoint ?? resolveCustomEndpoint();
   const requesty = !customEndpoint && !opts.openrouterApiKey && !!opts.requestyApiKey;
   const requestId = opts.requestId ?? crypto.randomUUID();
-  const { url, headers: targetHeaders } = buildKimiRequestTarget(opts, customEndpoint, requesty);
+  let { url, headers: targetHeaders } = buildKimiRequestTarget(opts, customEndpoint, requesty);
   // Per-model capability gates, from the OpenRouter catalog. OpenRouter drops
   // params a model doesn't support, but a few models reject a supported param
   // outright for non-default values (Kimi K3 only allows temperature=1).
@@ -121,7 +133,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   const body: Record<string, unknown> = {
     model: opts.model,
     messages: sanitizeMessagesForApi(
-      customEndpoint || requesty ? stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField) : opts.messages,
+      normalizeToolIds(stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField), preset.compat.toolIdFormat),
     ),
     stream: true,
   };
@@ -141,6 +153,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // OpenAI's streaming API omits `usage` unless asked; OpenRouter always
     // sends it (and documents this flag as a no-op).
     if (compat.streamUsage) body.stream_options = { include_usage: true };
+    if (compat.extraBody) Object.assign(body, compat.extraBody);
   } else {
     // Only send optional parameters the model's endpoints accept. With
     // `require_parameters` (below) a single unsupported parameter would leave
@@ -184,8 +197,12 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
 
   // The wire body: Chat Completions as built above, or converted for
   // providers that speak another protocol (src/agent/protocols/).
-  const protocol = customEndpoint ? (preset.protocol ?? "openai-chat") : "openai-chat";
-  const wireBody: Record<string, unknown> =
+  // A model's catalog entry can pick the protocol (Copilot serves Claude over
+  // Messages and GPT-5 over Responses from one account); Vertex routes Claude
+  // to Anthropic's Messages API by model name.
+  const vertex = customEndpoint?.providerId === "vertex" ? vertexTarget(customEndpoint.baseUrl.replace(/\/+$/, ""), opts.model) : null;
+  const protocol = vertex?.protocol ?? (customEndpoint ? (entry.protocol ?? preset.protocol ?? "openai-chat") : "openai-chat");
+  let wireBody: Record<string, unknown> =
     protocol === "anthropic-messages"
       ? toAnthropicRequest({
           model: opts.model,
@@ -199,6 +216,17 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
           reasoningEfforts: entry.reasoningEfforts,
           reasoningBudget: entry.reasoningBudget,
         })
+      : protocol === "bedrock-converse"
+        ? toConverseRequest({
+            model: opts.model,
+            messages: body.messages as ChatMessage[],
+            tools: hasTools ? opts.tools : undefined,
+            maxTokens,
+            temperature: opts.temperature,
+            reasoningEffort: opts.reasoningEffort,
+            supportsReasoning,
+            supportsTemperature,
+          })
       : protocol === "openai-responses"
         ? toResponsesRequest({
             model: opts.model,
@@ -213,6 +241,46 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
             parallelToolCalls: preset.compat.parallelToolCalls,
           })
         : body;
+
+  if (customEndpoint && preset.id === "copilot") {
+    // Copilot routes by endpoint and needs its own headers per request.
+    const base = customEndpoint.baseUrl.replace(/\/+$/, "");
+    url = protocol === "anthropic-messages" ? `${base}/v1/messages` : protocol === "openai-responses" ? `${base}/responses` : `${base}/chat/completions`;
+    targetHeaders = {
+      ...copilotRequestHeaders(customEndpoint.apiKey, wireBody, protocol),
+      ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}),
+    };
+  }
+
+  // Bedrock: the model is in the URL; SigV4 headers are computed per attempt (they cover the body and time).
+  const bedrock = customEndpoint?.providerId === "bedrock" ? bedrockAuth() : undefined;
+  if (customEndpoint?.providerId === "bedrock") {
+    url = converseUrl(customEndpoint.baseUrl, opts.model);
+    targetHeaders = {};
+    if (!bedrock) {
+      throw new KimiApiError(
+        "kimiflare: no AWS credentials for Bedrock — set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials.",
+        undefined,
+        401,
+      );
+    }
+  }
+
+  if (vertex) {
+    url = vertex.url;
+    if (protocol === "anthropic-messages") wireBody = toVertexAnthropicBody(wireBody);
+    else if (vertex.bodyModel) wireBody = { ...wireBody, model: vertex.bodyModel };
+    targetHeaders = {
+      Authorization: `Bearer ${await vertexAccessToken()}`,
+      ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION } : {}),
+    };
+  }
+
+  if (customEndpoint?.providerId === "chatgpt") {
+    // A fresh token (refreshed shortly before expiry) and the Codex session headers.
+    const token = (await chatgptAccessToken()) ?? customEndpoint.apiKey;
+    targetHeaders = { ...targetHeaders, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...chatgptSessionHeaders(opts.sessionId) };
+  }
 
   // Observers of the finalized request body: the debug payload dump
   // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body
@@ -314,10 +382,12 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       };
       if (opts.sessionId) headers["X-Session-ID"] = opts.sessionId;
       headers["X-Request-ID"] = requestId;
+      const serialized = stableStringify(wireBody, jsonReplacer);
+      if (bedrock) Object.assign(headers, bedrockHeaders(bedrock, url, serialized, bedrockRegionOf(url)));
       res = await fetch(url, {
         method: "POST",
         headers,
-        body: stableStringify(wireBody, jsonReplacer),
+        body: customEndpoint?.providerId === "chatgpt" ? compressLargeBody(serialized, headers) : serialized,
         signal: opts.signal,
       });
     } catch (fetchErr) {
@@ -344,7 +414,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // Errors come back as JSON (not SSE): OpenRouter's { error: { code,
     // message } } or an OpenAI-style error from a custom endpoint. Retry the
     // transient ones (408/429/5xx); surface everything else with a fix.
-    if (!contentType.includes("text/event-stream")) {
+    // Bedrock streams AWS's binary event stream, not SSE.
+    const streaming = protocol === "bedrock-converse" ? res.ok && contentType.includes("eventstream") : contentType.includes("text/event-stream");
+    if (!streaming) {
       if (res.bodyUsed) {
         throw new KimiApiError(
           `kimiflare: Received HTTP ${res.status} but could not read the response body. Please try again.`,
@@ -397,9 +469,11 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       const events =
         protocol === "anthropic-messages"
           ? parseAnthropicStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
+          : protocol === "bedrock-converse"
+            ? parseConverseStream(res.body, opts.signal)
           : protocol === "openai-responses"
             ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
-            : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs);
+            : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs, customEndpoint ? preset.compat.thinkTags === true : false);
       for await (const ev of events) {
         if (captured) accumulateDumpResponse(response, ev);
         yield ev;
@@ -418,6 +492,21 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     logger.debug("runKimi:stream_end", { requestId });
     return;
   }
+}
+
+/**
+ * ChatGPT token sharing rejects uncompressed request bodies over ~1 MiB and
+ * accepts zstd. Compress large bodies when this Node has zstd (22.15+);
+ * otherwise send them as they are.
+ */
+export function compressLargeBody(serialized: string, headers: Record<string, string>, threshold = 512 * 1024): string | Uint8Array<ArrayBuffer> {
+  const zstd = (zlib as { zstdCompressSync?: (b: Buffer) => Buffer }).zstdCompressSync;
+  if (Buffer.byteLength(serialized) < threshold || !zstd) return serialized;
+  headers["Content-Encoding"] = "zstd";
+  const compressed = zstd(Buffer.from(serialized));
+  const out = new Uint8Array(new ArrayBuffer(compressed.byteLength));
+  out.set(compressed);
+  return out;
 }
 
 function isAbortError(e: unknown): boolean {
@@ -605,11 +694,14 @@ function buildKimiRequestTarget(
     const base = customEndpoint.baseUrl.replace(/\/+$/, "");
     if (protocol === "anthropic-messages") return { url: `${base}/messages`, headers: anthropicHeaders(customEndpoint.apiKey) };
     if (protocol === "openai-responses") {
-      return { url: `${base}/responses`, headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {} };
+      return { url: `${base}/responses`, headers: keyHeaders(customEndpoint.providerId, customEndpoint.apiKey) };
     }
     return {
       url: customChatCompletionsUrl(customEndpoint.baseUrl),
-      headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {},
+      headers: {
+        ...(customEndpoint.providerId ? getPreset(customEndpoint.providerId).compat.headers : {}),
+        ...keyHeaders(customEndpoint.providerId, customEndpoint.apiKey),
+      },
     };
   }
 
@@ -645,13 +737,60 @@ function buildKimiRequestTarget(
 const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 const DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS = 30_000;
 
+/**
+ * Splits `<think>…</think>` out of streamed content into reasoning, for
+ * models that inline their reasoning. Tags may be cut across chunks, so a
+ * possible partial tag at the end of a chunk is held back until the next.
+ */
+export class ThinkTagSplitter {
+  private inThink = false;
+  private held = "";
+
+  push(chunk: string): Array<{ kind: "text" | "reasoning"; text: string }> {
+    const out: Array<{ kind: "text" | "reasoning"; text: string }> = [];
+    let s = this.held + chunk;
+    this.held = "";
+    for (;;) {
+      const tag = this.inThink ? "</think>" : "<think>";
+      const kind = this.inThink ? "reasoning" : "text";
+      const at = s.indexOf(tag);
+      if (at >= 0) {
+        if (at > 0) out.push({ kind, text: s.slice(0, at) });
+        s = s.slice(at + tag.length);
+        this.inThink = !this.inThink;
+        continue;
+      }
+      // Hold back a suffix that could be the start of the tag.
+      let keep = 0;
+      for (let n = Math.min(tag.length - 1, s.length); n > 0; n--) {
+        if (tag.startsWith(s.slice(-n))) {
+          keep = n;
+          break;
+        }
+      }
+      const emit = s.slice(0, s.length - keep);
+      if (emit) out.push({ kind, text: emit });
+      this.held = s.slice(s.length - keep);
+      return out;
+    }
+  }
+
+  flush(): Array<{ kind: "text" | "reasoning"; text: string }> {
+    const rest = this.held;
+    this.held = "";
+    return rest ? [{ kind: this.inThink ? "reasoning" : "text", text: rest }] : [];
+  }
+}
+
 async function* parseStream(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   postFirstByteIdleTimeoutMs = DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS,
+  thinkTags = false,
 ): AsyncGenerator<KimiEvent, void, void> {
-  const toolCalls = new Map<number, { id: string; name: string; args: string }>();
+  const splitter = thinkTags ? new ThinkTagSplitter() : null;
+  const toolCalls = new Map<number, { id: string; name: string; args: string; extra?: Record<string, unknown> }>();
   let lastUsage: Usage | null = null;
   let finishReason: string | null = null;
   let metaSent = false;
@@ -713,7 +852,13 @@ async function* parseStream(
           yield { type: "reasoning_details", details: d.reasoning_details };
         }
         if (typeof d.content === "string" && d.content.length) {
-          yield { type: "text", delta: d.content };
+          if (splitter) {
+            for (const part of splitter.push(d.content)) {
+              yield part.kind === "text" ? { type: "text", delta: part.text } : { type: "reasoning", delta: part.text };
+            }
+          } else {
+            yield { type: "text", delta: d.content };
+          }
         }
         if (Array.isArray(d.tool_calls)) {
           for (const tc of d.tool_calls) {
@@ -734,6 +879,8 @@ async function* parseStream(
               }
               if (buf.id.startsWith("tc_") && incomingId) buf.id = incomingId;
             }
+            // Gemini's thought signature arrives on the call as extra_content.
+            if (tc.extra_content && typeof tc.extra_content === "object") buf.extra = { ...buf.extra, ...tc.extra_content };
             const argDelta = tc.function?.arguments;
             if (typeof argDelta === "string" && argDelta.length) {
               buf.args += argDelta;
@@ -747,6 +894,10 @@ async function* parseStream(
     }
   }
 
+  for (const part of splitter?.flush() ?? []) {
+    yield part.kind === "text" ? { type: "text", delta: part.text } : { type: "reasoning", delta: part.text };
+  }
+
   for (const [idx, buf] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
     if (!buf.name) continue;
     yield {
@@ -756,6 +907,7 @@ async function* parseStream(
       name: buf.name,
       arguments: buf.args,
       finishReason,
+      ...(buf.extra ? { extra: buf.extra } : {}),
     };
   }
 
@@ -788,6 +940,7 @@ interface StreamToolCall {
   id?: string | null;
   type?: string | null;
   function?: { name?: string | null; arguments?: string | null };
+  extra_content?: Record<string, unknown>;
 }
 
 /** Effort levels from least to most, as models.dev names them. */
@@ -814,15 +967,61 @@ export function effortFor(level: "low" | "medium" | "high", allowed: string[] | 
 export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderCompat, modelEchoField?: string): ChatMessage[] {
   const keepContent = compat.reasoningEcho.content || modelEchoField === "reasoning_content";
   const keepDetails = compat.reasoningEcho.details;
-  if (keepContent && keepDetails) return messages;
+  const keepExtras = compat.toolCallExtras === true;
   return messages.map((m) => {
-    if (m.role !== "assistant" || (m.reasoning_content === undefined && m.reasoning_details === undefined)) return m;
+    if (m.role !== "assistant") return m;
+    const hasExtras = !keepExtras && (m.tool_calls ?? []).some((tc) => tc.extra_content !== undefined);
+    if (!hasExtras && (keepContent || m.reasoning_content === undefined) && (keepDetails || m.reasoning_details === undefined)) return m;
     const { reasoning_content, reasoning_details, ...rest } = m;
     return {
       ...rest,
       ...(keepContent && reasoning_content !== undefined ? { reasoning_content } : {}),
       ...(keepDetails && reasoning_details !== undefined ? { reasoning_details } : {}),
+      ...(hasExtras ? { tool_calls: m.tool_calls!.map(({ extra_content: _drop, ...tc }) => tc) } : {}),
     };
+  });
+}
+
+/**
+ * Rewrite tool-call ids into the format a provider enforces. Mistral accepts
+ * only exactly nine alphanumerics; ids from other providers ("call_…",
+ * "toolu_…") are hashed to nine characters, the same way for a call and its
+ * result, with collisions resolved. Ids already in the format are kept.
+ */
+export function normalizeToolIds(messages: ChatMessage[], format: "mistral" | undefined): ChatMessage[] {
+  if (format !== "mistral") return messages;
+  const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  const toMistral = (id: string): string => {
+    const known = map.get(id);
+    if (known) return known;
+    let out: string;
+    if (/^[A-Za-z0-9]{9}$/.test(id) && !used.has(id)) out = id;
+    else {
+      let h = 2166136261;
+      for (let salt = 0; ; salt++) {
+        for (const ch of `${id}#${salt}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+        let n = h;
+        let s = "";
+        for (let i = 0; i < 9; i++) {
+          s += ALPHA[n % 62];
+          n = Math.imul(n, 31) + 7 + i >>> 0;
+        }
+        if (!used.has(s)) {
+          out = s;
+          break;
+        }
+      }
+    }
+    map.set(id, out!);
+    used.add(out!);
+    return out!;
+  };
+  return messages.map((m) => {
+    if (m.role === "assistant" && m.tool_calls?.length) return { ...m, tool_calls: m.tool_calls.map((tc) => ({ ...tc, id: toMistral(tc.id) })) };
+    if (m.role === "tool" && m.tool_call_id) return { ...m, tool_call_id: toMistral(m.tool_call_id) };
+    return m;
   });
 }
 

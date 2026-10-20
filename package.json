@@ -52,8 +52,6 @@
   },
   "scripts": {
     "build": "tsup",
-    "build:remote": "npm run build:remote-agent",
-    "build:remote-agent": "cd remote/agent && npx tsup",
     "dev": "tsx src/index.tsx",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",

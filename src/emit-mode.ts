@@ -26,6 +26,7 @@ import * as readline from "node:readline";
 import { execSync } from "node:child_process";
 import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "./agent/loop.js";
 import { llmAuthFromConfig, providerIdOf } from "./agent/llm-auth.js";
+import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
 import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
 import type { ChatMessage } from "./agent/messages.js";
@@ -209,12 +210,13 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
     messages.push({ role: "user", content: text });
 
     try {
-      await runAgentTurn({
+      // SessionCore: same classification, subagent policy and completion check as every host.
+      const policy = await resolveTurnPolicy({ cfg: opts, prompt: text, tools: ALL_TOOLS, signal: controller.signal });
+      await runAgentTurn(assembleTurn({ cfg: opts, policy, host: {
         ...llmAuthFromConfig(opts),
         model: opts.model,
         reasoningEffort: opts.reasoningEffort,
         messages,
-        tools: ALL_TOOLS,
         executor,
         cwd,
         signal: controller.signal,
@@ -347,7 +349,7 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
             return "deny";
           },
         },
-      });
+      } }));
     } catch (err) {
       if (err instanceof BudgetExhaustedError) {
         emit("RuntimeError", {

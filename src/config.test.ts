@@ -367,7 +367,6 @@ describe("loadConfig", () => {
       const cfg = await loadConfig();
       assert.strictEqual(cfg?.plumbingModel, undefined);
       assert.strictEqual(cfg?.memoryExtractionModel, undefined);
-      assert.strictEqual(cfg?.decompositionModel, undefined);
       assert.strictEqual(plumbingModelOf(cfg), "llama3.1:8b");
     });
 
@@ -415,6 +414,16 @@ describe("loadConfig", () => {
       assert.strictEqual((await loadConfig())?.model, "gpt-5.6");
       delete process.env.AUTOPILOT_PROVIDER;
       assert.strictEqual((await loadConfig())?.model, "moonshotai/kimi-k3");
+    });
+
+    it("still loads a config with retired multi-agent settings, and drops them on rewrite", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", decompositionStrategy: "llm", workerPreReadFiles: ["a.ts"], synthesisModel: "x/y", theme: "nord" });
+      const cfg = await loadConfig();
+      assert.strictEqual(cfg?.openrouterApiKey, "sk-or-file");
+      const onDisk = await readConfigFile();
+      assert.strictEqual(onDisk.decompositionStrategy, undefined);
+      assert.strictEqual(onDisk.workerPreReadFiles, undefined);
+      assert.strictEqual(onDisk.theme, "nord");
     });
 
     it("does not persist preset-derived side-call models", async () => {

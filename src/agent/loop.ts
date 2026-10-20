@@ -1,6 +1,9 @@
 import { runKimi } from "./client.js";
 import type { ResponseMeta } from "./client.js";
 import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
+import { resetSessionToolState, sessionToolState } from "./session-tool-state.js";
+import { workerRegistry } from "../tools/worker-registry.js";
+import { finishedReport } from "../tools/workers.js";
 import { toOpenAIToolDefs, type ToolSpec } from "../tools/registry.js";
 import type { ToolExecutor, PermissionAsker, ToolResult } from "../tools/executor.js";
 import { mergeReasoningDetails, sanitizeString, stableStringify, stripOldImages } from "./messages.js";
@@ -216,49 +219,30 @@ export class AgentLoopError extends Error {
 
 const codeModeApiCache = new Map<string, string>();
 
-/** Per-session sliding window of turn indices where a high-signal memory landed.
- *  We fire `onKimiMdStale` when >=DRIFT_THRESHOLD events fall inside
- *  DRIFT_WINDOW recent turns. Replaces the older count-with-decay scheme
- *  which almost never fired on long sessions (RF-2 / OP-8). */
-const driftEvents = new Map<string, number[]>();
+/** AGENTS.md drift: fire `onKimiMdStale` when >=DRIFT_THRESHOLD high-signal
+ *  memories land within DRIFT_WINDOW recent turns (per session, see
+ *  session-tool-state.ts). RF-2 / OP-8. */
 const DRIFT_WINDOW = 10;
 const DRIFT_THRESHOLD = 3;
+/** Soft cap of total web fetches per session before we nudge for synthesis. */
+const SESSION_WEB_FETCH_CAP = 25;
 
 export function _resetDriftEventsForTests(): void {
-  driftEvents.clear();
+  resetSessionToolState("driftEvents");
 }
 
-/** Per-session count of fire-and-forget memory-extraction errors. Exposed via
- *  `getMemoryExtractionErrorCount` for a future `/memory health` surface. */
-const memoryExtractionErrorCounts = new Map<string, number>();
-
+/** Fire-and-forget memory-extraction failures this session (for a `/memory health` surface). */
 export function getMemoryExtractionErrorCount(sessionId: string | undefined): number {
-  return memoryExtractionErrorCounts.get(sessionId ?? "default") ?? 0;
+  return sessionToolState(sessionId).memoryExtractionErrors;
 }
 
 export function _resetMemoryExtractionErrorCountsForTests(): void {
-  memoryExtractionErrorCounts.clear();
-}
-
-/** Per-session web-fetch history. Lifted from per-turn so a research spiral
- *  split across multiple turns still trips the guardrail. */
-const sessionWebFetchHistory = new Map<string, string[]>();
-/** Hard soft-cap of total web fetches per session before we nudge for synthesis. */
-const SESSION_WEB_FETCH_CAP = 25;
-
-function getSessionWebFetchHistory(sessionId: string | undefined): string[] {
-  const key = sessionId ?? "default";
-  let arr = sessionWebFetchHistory.get(key);
-  if (!arr) {
-    arr = [];
-    sessionWebFetchHistory.set(key, arr);
-  }
-  return arr;
+  resetSessionToolState("memoryExtractionErrors");
 }
 
 /** Test/embed hook: clears session web-fetch state. Not exported in the public API. */
 export function _resetSessionWebFetchHistoryForTests(): void {
-  sessionWebFetchHistory.clear();
+  resetSessionToolState("webFetchHistory");
 }
 
 function isHighSignalMemory(memory: {
@@ -649,7 +633,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
 
   // Web-fetch volume limits span the session; individual hosts are not treated
   // as loops because research often needs several pages from the same site.
-  const webFetchHistory = getSessionWebFetchHistory(opts.sessionId);
+  const webFetchHistory = sessionToolState(opts.sessionId).webFetchHistory;
   let webFetchesThisTurn = 0;
   // Per-turn counter of Code Mode redirect nudges (capped by MAX_CODE_MODE_REDIRECTS).
   let codeModeRedirects = 0;
@@ -691,11 +675,21 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     originalOnTasks?.(tasks);
   };
 
+  // Background subagents that finished (during this turn or since the last
+  // one) are delivered like steering input: at the next tool boundary, or
+  // before the final answer ends the turn — no polling.
+  const drainBackgroundResults = (): ChatMessage[] =>
+    workerRegistry.takeUndelivered(opts.sessionId).map((w) => ({
+      role: "user" as const,
+      content: `[Automatic notice — not typed by the user] ${finishedReport(w)}`,
+    }));
   const appendPendingInput = (): number => {
-    const pending = opts.drainPendingInput?.() ?? [];
+    const pending = [...(opts.drainPendingInput?.() ?? []), ...drainBackgroundResults()];
     for (const msg of pending) opts.messages.push(msg);
     return pending.length;
   };
+  // Results that arrived between turns go in before this turn's first request.
+  for (const msg of drainBackgroundResults()) opts.messages.push(msg);
 
   while (true) {
     // Budget enforcement: before starting a new turn, if we've already hit the
@@ -896,6 +890,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
             id: ev.id,
             type: "function",
             function: { name: normalizeToolName(ev.name, opts.tools), arguments: callArgs },
+            ...(ev.extra ? { extra_content: ev.extra } : {}),
           };
           toolCalls.push(call);
           tr.toolsUsed.push(call.function.name);
@@ -1030,767 +1025,308 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     let blockedCount = 0;
     const availableToolNames = new Set(opts.tools.map((tool) => tool.name));
     if (codeMode) availableToolNames.add("execute_code");
-
-    // Determine if every tool in this batch can run concurrently: read-only
-    // tools, plus tools that are isolated from the workspace (`concurrent`,
-    // e.g. sandboxed subagents). Such batches have no write-order
-    // dependencies or mutation side-effects to sequence.
     const executorTools = opts.executor.list();
-    const allConcurrent =
-      toolCalls.length > 1 &&
-      toolCalls.every((tc) => {
-        const tool = executorTools.find((t) => t.name === tc.function.name);
-        return availableToolNames.has(tc.function.name) && (tool?.isReadOnly === true || tool?.concurrent === true);
-      });
 
-    // NOTE: Extending parallel execution to *mutable* tool calls is
-    // possible but requires an explicit dependency graph (e.g. a write to
-    // file X must complete before a subsequent read of file X).  Without
-    // such ordering guarantees, parallelising mutable calls risks race
-    // conditions and non-deterministic results.  If you want to add this
-    // in the future, build a DAG of tool dependencies first, then execute
-    // each topological layer in parallel while respecting the sequential
-    // order within a layer.
-    if (allConcurrent) {
-      const workerCount = toolCalls.filter((tc) => executorTools.find((t) => t.name === tc.function.name)?.concurrent === true).length;
-      opts.callbacks.onInfo?.(
-        workerCount > 0
-          ? `${toolCalls.length} tool calls running in parallel (${workerCount} isolated worker${workerCount === 1 ? "" : "s"})`
-          : `${toolCalls.length} read-only tools running in parallel`,
-      );
-      // Concurrent calls must not raise overlapping permission prompts: the
-      // gate serializes them and approves same-tool calls as one batch.
-      const batchAskPermission = createPermissionGate(
-        opts.callbacks.askPermission,
-        toolCalls.map((tc) => ({ name: tc.function.name, args: parseArgsObject(tc.function.arguments) })),
-      );
-      type ParallelItem =
-        | { kind: "blocked"; tc: ToolCall; loopSignature: string; result: ToolResult; errorCode: string; redirected?: boolean }
-        | { kind: "run"; tc: ToolCall; loopSignature: string };
+    // ── One pipeline for every tool call ──────────────────────────────
+    // guard → execute → record, run by a scheduler that splits the batch
+    // into contiguous segments: read-only or isolated (`concurrent`) tools
+    // run in parallel, everything else one at a time. Results are always
+    // recorded in the original call order.
 
-      const items: ParallelItem[] = [];
-      for (const tc of toolCalls) {
-        if (opts.signal.aborted) throw new DOMException("aborted", "AbortError");
-        const loopSignature = `${tc.function.name}:${stableStringify(tc.function.arguments)}`;
-        const loopCount = recentToolCalls.filter((s) => s === loopSignature).length;
-        if (loopCount >= LOOP_THRESHOLD) {
-          items.push({
-            kind: "blocked",
-            tc,
-            loopSignature,
-            errorCode: "loop_guardrail",
-            result: {
-              tool_call_id: tc.id,
-              name: tc.function.name,
-              content: `Loop detected: you have called ${tc.function.name} with the same arguments multiple times in a row. Consider a different approach.`,
-              ok: false,
-              guardrail: true,
-            },
-          });
-          continue;
-        }
-        if (codeMode && CODE_MODE_REDIRECT_TOOLS.has(tc.function.name) && codeModeRedirects < MAX_CODE_MODE_REDIRECTS) {
-          codeModeRedirects++;
-          noteCodeModeRedirect();
-          items.push({
-            kind: "blocked",
-            tc,
-            loopSignature,
-            errorCode: "code_mode_redirect",
-            redirected: true,
-            result: { tool_call_id: tc.id, name: tc.function.name, content: codeModeRedirectMessage(tc.function.name), ok: false },
-          });
-          continue;
-        }
-        if (tc.function.name === "web_fetch") {
-          const args = JSON.parse(tc.function.arguments || "{}") as { url?: string };
-          const url = args.url || "";
-          try {
-            new URL(url);
-            const totalSessionFetches = webFetchHistory.length;
-            if (webFetchesThisTurn >= MAX_WEB_FETCH_PER_TURN || totalSessionFetches >= SESSION_WEB_FETCH_CAP) {
-              const warning = webFetchesThisTurn >= MAX_WEB_FETCH_PER_TURN
-                ? `Research budget exceeded: you have already made ${MAX_WEB_FETCH_PER_TURN} web requests this turn. Synthesize what you have learned instead of fetching more pages.`
-                : `Session research budget exceeded: ${totalSessionFetches} web fetches across this session. Synthesize what you have learned from prior fetches instead of starting another page.`;
-              items.push({
-                kind: "blocked",
-                tc,
-                loopSignature,
-                errorCode: "web_fetch_budget",
-                result: { tool_call_id: tc.id, name: "web_fetch", content: warning, ok: false, guardrail: true },
-              });
-              continue;
-            }
-            webFetchHistory.push(url);
-            webFetchesThisTurn++;
-          } catch {
-            // Invalid URL, let it fail normally
-          }
-        }
-        items.push({ kind: "run", tc, loopSignature });
-      }
+    type Guarded =
+      | { kind: "blocked"; result: ToolResult; errorCode: string; redirected?: boolean }
+      | { kind: "code" }
+      | { kind: "run" };
 
-      const runItems = items.filter((it): it is ParallelItem & { kind: "run" } => it.kind === "run");
-      const executed = await Promise.all(
-        runItems.map(async (it) => {
-          opts.callbacks.onToolWillExecute?.(it.tc.id, it.tc.function.name);
-          logger.debug("turn:tool_start", { sessionId: opts.sessionId, tool: it.tc.function.name, toolCallId: it.tc.id });
-          const result = await opts.executor.run(
-            { id: it.tc.id, name: it.tc.function.name, arguments: it.tc.function.arguments },
-            batchAskPermission,
-            {
-              trace,
-              turnId,
-              cwd: opts.cwd,
-              signal: opts.signal,
-              onTasks: wrappedOnTasks,
-              onPlanOptions: opts.callbacks.onPlanOptions,
-              coauthor: opts.coauthor,
-              memoryManager: opts.memoryManager,
-              sessionId: opts.sessionId,
-              githubToken: opts.githubToken,
-              shell: opts.shell,
-              intentTier: opts.intentClassification?.tier,
-              llmAuth: llmAuthOf(opts),
-              model: opts.model,
-              allowDirectPush: opts.allowDirectPush,
-              runId: opts.runId,
-              onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
-              runsDbPath: opts.runsDbPath,
-            },
-            opts.onFileChange,
-          );
-          let content = result.content;
-          if (content.length > MAX_TOOL_CONTENT_CHARS) {
-            const rawBytes = content.length;
-            content = content.slice(0, MAX_TOOL_CONTENT_CHARS) + `\n\n[truncated: ${rawBytes - MAX_TOOL_CONTENT_CHARS} chars omitted]`;
-            opts.callbacks.onTruncation?.({
-              tool: it.tc.function.name,
-              toolCallId: it.tc.id,
-              rawBytes,
-              reducedBytes: content.length,
-              artifactId: result.artifactId,
-            });
-          }
-          return { ...result, content } as ToolResult;
-        }),
-      );
-
-      const resultMap = new Map<string, ToolResult>();
-      for (let i = 0; i < runItems.length; i++) {
-        resultMap.set(runItems[i]!.tc.id, executed[i]!);
-      }
-
-      for (const it of items) {
-        if (it.kind === "blocked") {
-          traceBlocked(it.tc, it.result, it.errorCode, it.redirected === true);
-          toolResults.push(it.result);
-          opts.messages.push({
-            role: "tool",
-            tool_call_id: it.tc.id,
-            content: sanitizeString(it.result.content),
-            name: it.tc.function.name,
-          });
-          opts.callbacks.onToolResult?.(it.result);
-          recentToolCalls.push(it.loopSignature);
-          if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
-          blockedCount++;
-          continue;
-        }
-
-        const result = resultMap.get(it.tc.id)!;
-        if (!result.ok && result.errorCode === "policy_rejection") {
-          logger.warn("hook:vetoed_tool_call", {
-            sessionId: opts.sessionId,
-            tool: it.tc.function.name,
-            toolCallId: it.tc.id,
-          });
-        }
-        logger.debug("turn:tool_end", { sessionId: opts.sessionId, tool: it.tc.function.name, toolCallId: it.tc.id, ok: result.ok });
-        if (!result.ok && result.errorCode) {
-          logger.warn("tool:error_classified", {
-            sessionId: opts.sessionId,
-            tool: it.tc.function.name,
-            toolCallId: it.tc.id,
-            code: result.errorCode,
-            recoverable: result.recoverable,
-          });
-        }
-        toolResults.push(result);
-        opts.messages.push({
-          role: "tool",
-          tool_call_id: result.tool_call_id,
-          content: sanitizeString(result.content),
-          name: result.name,
-        });
-        opts.callbacks.onToolResult?.(result);
-
-        if (opts.memoryManager) {
-          let filePath: string | undefined;
-          let toolArgs: Record<string, unknown> = {};
-          try {
-            toolArgs = JSON.parse(it.tc.function.arguments || "{}") as Record<string, unknown>;
-            filePath = toolArgs.path as string | undefined;
-          } catch {
-            // ignore parse errors
-          }
-          const lastAssistant = [...opts.messages].reverse().find(
-            (m) => m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0
-          );
-          const assistantMessage = lastAssistant?.content ?? "";
-          const llmOpts = opts.memoryManager.getExtractionLlmOpts();
-          const turnAtMemoryCommit = turn;
-          for (const extractor of EXTRACTORS) {
-            if (extractor.match(it.tc.function.name, filePath)) {
-              void (async () => {
-                try {
-                  const memory = await extractor.extract(result.content, filePath, {
-                    toolArgs: { ...toolArgs, _toolName: it.tc.function.name },
-                    assistantMessage: typeof assistantMessage === "string" ? assistantMessage : "",
-                    llmOpts: { ...llmOpts, signal: opts.signal },
-                  });
-                  if (memory) {
-                    await opts.memoryManager!.remember(
-                      memory.content,
-                      memory.category,
-                      memory.importance,
-                      opts.cwd,
-                      opts.sessionId ?? "unknown",
-                      opts.signal,
-                      undefined,
-                      memory.topicKey,
-                    );
-                    if (isHighSignalMemory(memory)) {
-                      const sid = opts.sessionId ?? "default";
-                      const events = driftEvents.get(sid) ?? [];
-                      events.push(turnAtMemoryCommit);
-                      const cutoff = turnAtMemoryCommit - DRIFT_WINDOW + 1;
-                      const recent = events.filter((t) => t >= cutoff);
-                      driftEvents.set(sid, recent);
-                      if (recent.length >= DRIFT_THRESHOLD) {
-                        try {
-                          opts.callbacks.onKimiMdStale?.();
-                        } catch (cbErr) {
-                          logger.debug("memory:onKimiMdStale_threw", {
-                            sessionId: opts.sessionId,
-                            error: cbErr instanceof Error ? cbErr.message : String(cbErr),
-                          });
-                        }
-                        driftEvents.set(sid, []);
-                      }
-                    }
-                  }
-                } catch (err) {
-                  const sid = opts.sessionId ?? "default";
-                  const next = (memoryExtractionErrorCounts.get(sid) ?? 0) + 1;
-                  memoryExtractionErrorCounts.set(sid, next);
-                  const msg = err instanceof Error ? err.message : String(err);
-                  logger.debug("memory:extract_error", {
-                    sessionId: opts.sessionId,
-                    tool: it.tc.function.name,
-                    count: next,
-                    error: msg,
-                  });
-                  if (next === 1) {
-                    try {
-                      opts.callbacks.onWarning?.(
-                        `[memory] auto-extraction failed (${msg}). Subsequent failures will be counted silently; check /memory health.`,
-                      );
-                    } catch (cbErr) {
-                      logger.debug("memory:onWarning_threw", {
-                        sessionId: opts.sessionId,
-                        error: cbErr instanceof Error ? cbErr.message : String(cbErr),
-                      });
-                    }
-                  }
-                }
-              })();
-            }
-          }
-        }
-
-        recentToolCalls.push(it.loopSignature);
-        if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
-      }
-    } else {
-      for (const [i, tc] of toolCalls.entries()) {
-      if (opts.signal.aborted) throw new DOMException("aborted", "AbortError");
-
-      const loopSignature = `${tc.function.name}:${stableStringify(tc.function.arguments)}`;
+    /** Guardrails, in order: unavailable tool, repeated call, Code Mode redirect, web-fetch budget. */
+    const guard = (tc: ToolCall, loopSignature: string): Guarded => {
       if (!availableToolNames.has(tc.function.name)) {
-        const unavailableResult: ToolResult = {
-          tool_call_id: tc.id,
-          name: tc.function.name,
-          content: `Tool ${tc.function.name} is not available under this turn's policy. Continue without it or ask the user to enable it.`,
-          ok: false,
+        return {
+          kind: "blocked",
+          errorCode: "unavailable",
+          result: {
+            tool_call_id: tc.id,
+            name: tc.function.name,
+            content: `Tool ${tc.function.name} is not available under this turn's policy. Continue without it or ask the user to enable it.`,
+            ok: false,
+          },
         };
-        traceBlocked(tc, unavailableResult, "unavailable");
-        toolResults.push(unavailableResult);
-        opts.messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: sanitizeString(unavailableResult.content),
-          name: tc.function.name,
-        });
-        opts.callbacks.onToolResult?.(unavailableResult);
-        recentToolCalls.push(loopSignature);
-        if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
-        blockedCount++;
-        continue;
       }
-
-      // Anti-loop guardrail
-      const loopCount = recentToolCalls.filter((s) => s === loopSignature).length;
-      if (loopCount >= LOOP_THRESHOLD) {
-        const warning = `Loop detected: you have called ${tc.function.name} with the same arguments multiple times in a row. Consider a different approach.`;
-        const loopResult: ToolResult = {
-          tool_call_id: tc.id,
-          name: tc.function.name,
-          content: warning,
-          ok: false,
-          guardrail: true,
+      if (recentToolCalls.filter((s) => s === loopSignature).length >= LOOP_THRESHOLD) {
+        return {
+          kind: "blocked",
+          errorCode: "loop_guardrail",
+          result: {
+            tool_call_id: tc.id,
+            name: tc.function.name,
+            content: `Loop detected: you have called ${tc.function.name} with the same arguments multiple times in a row. Consider a different approach.`,
+            ok: false,
+            guardrail: true,
+          },
         };
-        traceBlocked(tc, loopResult, "loop_guardrail");
-        toolResults.push(loopResult);
-        opts.messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: sanitizeString(warning),
-          name: tc.function.name,
-        });
-        opts.callbacks.onToolResult?.(loopResult);
-        recentToolCalls.push(loopSignature);
-        if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
-        blockedCount++;
-        continue;
       }
-
-      // Web-fetch spiral guardrail
+      if (codeMode && tc.function.name === "execute_code") return { kind: "code" };
+      if (codeMode && CODE_MODE_REDIRECT_TOOLS.has(tc.function.name) && codeModeRedirects < MAX_CODE_MODE_REDIRECTS) {
+        codeModeRedirects++;
+        noteCodeModeRedirect();
+        return {
+          kind: "blocked",
+          errorCode: "code_mode_redirect",
+          redirected: true,
+          result: { tool_call_id: tc.id, name: tc.function.name, content: codeModeRedirectMessage(tc.function.name), ok: false },
+        };
+      }
+      // Web-fetch spiral guardrail.
       if (tc.function.name === "web_fetch") {
-        const args = JSON.parse(tc.function.arguments || "{}") as { url?: string };
-        const url = args.url || "";
+        const url = (parseArgsObject(tc.function.arguments).url as string | undefined) ?? "";
         try {
           new URL(url);
           const totalSessionFetches = webFetchHistory.length;
-
-          if (webFetchesThisTurn >= MAX_WEB_FETCH_PER_TURN) {
-            const warning = `Research budget exceeded: you have already made ${MAX_WEB_FETCH_PER_TURN} web requests this turn. Synthesize what you have learned instead of fetching more pages.`;
-            const budgetResult: ToolResult = {
-              tool_call_id: tc.id,
-              name: "web_fetch",
-              content: warning,
-              ok: false,
-              guardrail: true,
-            };
-            traceBlocked(tc, budgetResult, "web_fetch_budget");
-            toolResults.push(budgetResult);
-            opts.messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: sanitizeString(warning),
-              name: "web_fetch",
-            });
-            opts.callbacks.onToolResult?.(budgetResult);
-            recentToolCalls.push(loopSignature);
-            if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
-            blockedCount++;
-            continue;
+          if (webFetchesThisTurn >= MAX_WEB_FETCH_PER_TURN || totalSessionFetches >= SESSION_WEB_FETCH_CAP) {
+            const content = webFetchesThisTurn >= MAX_WEB_FETCH_PER_TURN
+              ? `Research budget exceeded: you have already made ${MAX_WEB_FETCH_PER_TURN} web requests this turn. Synthesize what you have learned instead of fetching more pages.`
+              : `Session research budget exceeded: ${totalSessionFetches} web fetches across this session. Synthesize what you have learned from prior fetches instead of starting another page.`;
+            return { kind: "blocked", errorCode: "web_fetch_budget", result: { tool_call_id: tc.id, name: "web_fetch", content, ok: false, guardrail: true } };
           }
-
-          if (totalSessionFetches >= SESSION_WEB_FETCH_CAP) {
-            const warning = `Session research budget exceeded: ${totalSessionFetches} web fetches across this session. Synthesize what you have learned from prior fetches instead of starting another page.`;
-            const sessionCapResult: ToolResult = {
-              tool_call_id: tc.id,
-              name: "web_fetch",
-              content: warning,
-              ok: false,
-              guardrail: true,
-            };
-            traceBlocked(tc, sessionCapResult, "web_fetch_budget");
-            toolResults.push(sessionCapResult);
-            opts.messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: sanitizeString(warning),
-              name: "web_fetch",
-            });
-            opts.callbacks.onToolResult?.(sessionCapResult);
-            recentToolCalls.push(loopSignature);
-            if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
-            blockedCount++;
-            continue;
-          }
-
-
           webFetchHistory.push(url);
           webFetchesThisTurn++;
         } catch {
           // Invalid URL, let it fail normally
         }
       }
+      return { kind: "run" };
+    };
 
-      if (codeMode && tc.function.name === "execute_code") {
-        const args = JSON.parse(tc.function.arguments || "{}") as { code?: string; reasoning?: string };
-        const code = args.code || "";
-        const sandboxStartedAt = performance.now();
-        if (trace.enabled) {
-          trace.emit(
-            "tool_call",
-            {
-              tool_call_id: tc.id,
-              name: "execute_code",
-              args_blob: trace.blob(tc.function.arguments) ?? "",
-              ...(tc.function.arguments.length <= 2048 ? { args_inline: parseArgsObject(tc.function.arguments) } : {}),
-              needs_permission: false,
-              code_mode_redirected: false,
-            },
-            turnId,
-          );
-        }
+    const truncate = (tc: ToolCall, content: string, artifactId?: string): string => {
+      if (content.length <= MAX_TOOL_CONTENT_CHARS) return content;
+      const rawBytes = content.length;
+      const reduced = content.slice(0, MAX_TOOL_CONTENT_CHARS) + `\n\n[truncated: ${rawBytes - MAX_TOOL_CONTENT_CHARS} chars omitted]`;
+      opts.callbacks.onTruncation?.({ tool: tc.function.name, toolCallId: tc.id, rawBytes, reducedBytes: reduced.length, ...(artifactId ? { artifactId } : {}) });
+      return reduced;
+    };
 
-        logger.debug("turn:code_mode_start", { sessionId: opts.sessionId, toolCallId: tc.id, codeChars: code.length });
-        const sandboxResult = await runInSandbox({
-          code,
-          tools: sandboxTools,
-          executor: opts.executor,
-          askPermission: opts.callbacks.askPermission,
-          ctx: {
-            cwd: opts.cwd,
-            signal: opts.signal,
-            onTasks: wrappedOnTasks,
-            onPlanOptions: opts.callbacks.onPlanOptions,
-            coauthor: opts.coauthor,
-            memoryManager: opts.memoryManager,
-            sessionId: opts.sessionId,
-            githubToken: opts.githubToken,
-            trace,
-            turnId,
-            codeModeParentToolCallId: tc.id,
-          },
-          timeoutMs: 30000,
-          memoryLimitMB: 128,
-        });
-
-        logger.debug("turn:code_mode_end", {
+    /** Run one tool through the executor (permission, PreToolUse/PostToolUse hooks), then truncate. */
+    const execute = async (tc: ToolCall, ask: typeof opts.callbacks.askPermission): Promise<ToolResult> => {
+      opts.callbacks.onToolWillExecute?.(tc.id, tc.function.name);
+      logger.debug("turn:tool_start", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id });
+      // M6.1: PreToolUse / PostToolUse fire inside `executor.run` (see
+      // src/tools/executor.ts), so every caller gets them. A vetoed
+      // PreToolUse returns a synthetic policy_rejection ToolResult.
+      const result = await opts.executor.run(
+        { id: tc.id, name: tc.function.name, arguments: tc.function.arguments },
+        ask,
+        {
+          trace,
+          turnId,
+          cwd: opts.cwd,
+          signal: opts.signal,
+          onTasks: wrappedOnTasks,
+          onPlanOptions: opts.callbacks.onPlanOptions,
+          coauthor: opts.coauthor,
+          memoryManager: opts.memoryManager,
           sessionId: opts.sessionId,
+          githubToken: opts.githubToken,
+          shell: opts.shell,
+          intentTier: opts.intentClassification?.tier,
+          llmAuth: llmAuthOf(opts),
+          model: opts.model,
+          allowDirectPush: opts.allowDirectPush,
+          runId: opts.runId,
+          onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
+          runsDbPath: opts.runsDbPath,
+        },
+        opts.onFileChange,
+      );
+      if (!result.ok && result.errorCode === "policy_rejection") {
+        logger.warn("hook:vetoed_tool_call", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id });
+      }
+      logger.debug("turn:tool_end", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id, ok: result.ok });
+      if (!result.ok && result.errorCode) {
+        // M2.1: the classified failure mode, for "which tools fail most, and how?".
+        logger.warn("tool:error_classified", {
+          sessionId: opts.sessionId,
+          tool: tc.function.name,
           toolCallId: tc.id,
-          durationMs: Math.round(performance.now() - sandboxStartedAt),
-          error: sandboxResult.error ?? null,
-          calls: sandboxResult.toolCalls.map((c) => ({
-            name: c.name,
-            ok: c.ok,
-            path: typeof (c.args as { path?: unknown })?.path === "string" ? (c.args as { path: string }).path : undefined,
-          })),
+          code: result.errorCode,
+          recoverable: result.recoverable,
         });
+      }
+      return { ...result, content: truncate(tc, result.content, result.artifactId) };
+    };
 
-        // Emit individual tool results from inside the script
-        for (const stc of sandboxResult.toolCalls) {
-          const toolResult: ToolResult = {
-            tool_call_id: tc.id,
-            name: stc.name,
-            content: stc.result,
-            ok: stc.ok,
-          };
-          toolResults.push(toolResult);
-          opts.callbacks.onToolResult?.(toolResult);
-        }
-
-        // Surface sandbox warnings (e.g. isolated-vm fallback) as a separate UI notice
-        if (sandboxResult.warnings && sandboxResult.warnings.length > 0) {
-          for (const w of sandboxResult.warnings) {
-            opts.callbacks.onWarning?.(w);
-          }
-        }
-
-        let resultContent = sandboxResult.error
-          ? `Error: ${sandboxResult.error}\n\nOutput:\n${sandboxResult.output}`
-          : sandboxResult.output;
-        const sandboxRawContent = resultContent;
-        if (resultContent.length > MAX_TOOL_CONTENT_CHARS) {
-          const rawBytes = resultContent.length;
-          resultContent =
-            resultContent.slice(0, MAX_TOOL_CONTENT_CHARS) +
-            `\n\n[truncated: ${rawBytes - MAX_TOOL_CONTENT_CHARS} chars omitted]`;
-          opts.callbacks.onTruncation?.({
-            tool: "execute_code",
-            toolCallId: tc.id,
-            rawBytes,
-            reducedBytes: resultContent.length,
-          });
-        }
-
-        const result: ToolResult = {
-          tool_call_id: tc.id,
-          name: "execute_code",
-          content: resultContent,
-          ok: !sandboxResult.error,
-        };
-        if (trace.enabled) {
-          const rawBlob = trace.blob(sandboxRawContent) ?? "";
-          trace.emit(
-            "tool_result",
-            {
-              tool_call_id: tc.id,
-              name: "execute_code",
-              ok: result.ok,
-              ...(sandboxResult.error ? { error_code: "sandbox_error" } : {}),
-              raw_blob: rawBlob,
-              raw_bytes: Buffer.byteLength(sandboxRawContent, "utf8"),
-              reduced_blob: sandboxRawContent === resultContent ? rawBlob : trace.blob(resultContent) ?? "",
-              reduced_bytes: Buffer.byteLength(resultContent, "utf8"),
-              duration_ms: Math.round(performance.now() - sandboxStartedAt),
-            },
-            turnId,
-          );
-        }
-        toolResults.push(result);
-        opts.messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: sanitizeString(resultContent),
-          name: "execute_code",
-        });
-        opts.callbacks.onToolResult?.(result);
-        recentToolCalls.push(loopSignature);
-        if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
-      } else if (codeMode && CODE_MODE_REDIRECT_TOOLS.has(tc.function.name) && codeModeRedirects < MAX_CODE_MODE_REDIRECTS) {
-        // Redirect a direct context-heavy IO call back into execute_code.
-        codeModeRedirects++;
-        noteCodeModeRedirect();
-        const msg = codeModeRedirectMessage(tc.function.name);
-        const redirectResult: ToolResult = { tool_call_id: tc.id, name: tc.function.name, content: msg, ok: false };
-        traceBlocked(tc, redirectResult, "code_mode_redirect", true);
-        toolResults.push(redirectResult);
-        opts.messages.push({ role: "tool", tool_call_id: tc.id, content: msg, name: tc.function.name });
-        opts.callbacks.onToolResult?.(redirectResult);
-      } else {
-        opts.callbacks.onToolWillExecute?.(tc.id, tc.function.name);
-        logger.debug("turn:tool_start", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id });
-
-        // M6.1: PreToolUse / PostToolUse fire inside `executor.run`
-        // (see src/tools/executor.ts). The executor owns them so every
-        // caller — standard loop, code-mode sandbox, init turn, SDK,
-        // CLI print mode — gets the same behavior automatically.
-        // A vetoed PreToolUse returns a synthetic policy_rejection
-        // ToolResult; the loop treats it the same as any other failed
-        // call (pushes the rejection text as a tool message so the
-        // model sees the reason).
-        const result = await opts.executor.run(
-          { id: tc.id, name: tc.function.name, arguments: tc.function.arguments },
-          opts.callbacks.askPermission,
+    /** Code Mode: run the script in the sandbox; its inner tool calls are reported, the script output is the result. */
+    const executeCode = async (tc: ToolCall): Promise<ToolResult> => {
+      const args = parseArgsObject(tc.function.arguments) as { code?: string };
+      const code = args.code || "";
+      const sandboxStartedAt = performance.now();
+      if (trace.enabled) {
+        trace.emit(
+          "tool_call",
           {
-            trace,
-            turnId,
-            cwd: opts.cwd,
-            signal: opts.signal,
-            onTasks: wrappedOnTasks,
-            onPlanOptions: opts.callbacks.onPlanOptions,
-            coauthor: opts.coauthor,
-            memoryManager: opts.memoryManager,
-            sessionId: opts.sessionId,
-            githubToken: opts.githubToken,
-            shell: opts.shell,
-            intentTier: opts.intentClassification?.tier,
-            llmAuth: llmAuthOf(opts),
-            model: opts.model,
-            allowDirectPush: opts.allowDirectPush,
-            runId: opts.runId,
-            onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
-            runsDbPath: opts.runsDbPath,
+            tool_call_id: tc.id,
+            name: "execute_code",
+            args_blob: trace.blob(tc.function.arguments) ?? "",
+            ...(tc.function.arguments.length <= 2048 ? { args_inline: parseArgsObject(tc.function.arguments) } : {}),
+            needs_permission: false,
+            code_mode_redirected: false,
           },
-          opts.onFileChange,
+          turnId,
         );
-        if (!result.ok && result.errorCode === "policy_rejection") {
-          logger.warn("hook:vetoed_tool_call", {
-            sessionId: opts.sessionId,
-            tool: tc.function.name,
-            toolCallId: tc.id,
-          });
-        }
-        let content = result.content;
-        if (content.length > MAX_TOOL_CONTENT_CHARS) {
-          const rawBytes = content.length;
-          content =
-            content.slice(0, MAX_TOOL_CONTENT_CHARS) +
-            `\n\n[truncated: ${rawBytes - MAX_TOOL_CONTENT_CHARS} chars omitted]`;
-          opts.callbacks.onTruncation?.({
-            tool: tc.function.name,
-            toolCallId: tc.id,
-            rawBytes,
-            reducedBytes: content.length,
-            artifactId: result.artifactId,
-          });
-        }
-        logger.debug("turn:tool_end", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id, ok: result.ok });
-        if (!result.ok && result.errorCode) {
-          // M2.1: surface the classified failure mode in the structured
-          // log so the M5.1 + M5.2 sinks can answer "which tools fail
-          // most, and how?" without parsing message strings.
-          logger.warn("tool:error_classified", {
-            sessionId: opts.sessionId,
-            tool: tc.function.name,
-            toolCallId: tc.id,
-            code: result.errorCode,
-            recoverable: result.recoverable,
-          });
-        }
-        toolResults.push(result);
-        opts.messages.push({
-          role: "tool",
-          tool_call_id: result.tool_call_id,
-          content: sanitizeString(content),
-          name: result.name,
-        });
-        opts.callbacks.onToolResult?.(result);
-        if (result.waitRequest) {
-          if (opts.onIterationEnd) {
-            replaceMessagesInPlace(opts.messages, await opts.onIterationEnd(opts.messages, opts.signal));
-          }
-          logger.info("run:yielded", {
-            runId: result.waitRequest.runId,
-            timerId: result.waitRequest.timerId,
-            condition: result.waitRequest.condition,
-            wakeAt: result.waitRequest.wakeAt,
-          });
-          tr.endReason = "needs_input";
+      }
+      logger.debug("turn:code_mode_start", { sessionId: opts.sessionId, toolCallId: tc.id, codeChars: code.length });
+      const sandboxResult = await runInSandbox({
+        code,
+        tools: sandboxTools,
+        executor: opts.executor,
+        askPermission: opts.callbacks.askPermission,
+        ctx: {
+          cwd: opts.cwd,
+          signal: opts.signal,
+          onTasks: wrappedOnTasks,
+          onPlanOptions: opts.callbacks.onPlanOptions,
+          coauthor: opts.coauthor,
+          memoryManager: opts.memoryManager,
+          sessionId: opts.sessionId,
+          githubToken: opts.githubToken,
+          trace,
+          turnId,
+          codeModeParentToolCallId: tc.id,
+        },
+        timeoutMs: 30000,
+        memoryLimitMB: 128,
+      });
+      logger.debug("turn:code_mode_end", {
+        sessionId: opts.sessionId,
+        toolCallId: tc.id,
+        durationMs: Math.round(performance.now() - sandboxStartedAt),
+        error: sandboxResult.error ?? null,
+        calls: sandboxResult.toolCalls.map((c) => ({
+          name: c.name,
+          ok: c.ok,
+          path: typeof (c.args as { path?: unknown })?.path === "string" ? (c.args as { path: string }).path : undefined,
+        })),
+      });
+      // Individual tool results from inside the script.
+      for (const stc of sandboxResult.toolCalls) {
+        const inner: ToolResult = { tool_call_id: tc.id, name: stc.name, content: stc.result, ok: stc.ok };
+        toolResults.push(inner);
+        opts.callbacks.onToolResult?.(inner);
+      }
+      // Sandbox warnings (e.g. isolated-vm fallback) as a separate UI notice.
+      for (const w of sandboxResult.warnings ?? []) opts.callbacks.onWarning?.(w);
+      const raw = sandboxResult.error ? `Error: ${sandboxResult.error}\n\nOutput:\n${sandboxResult.output}` : sandboxResult.output;
+      const content = truncate(tc, raw);
+      const result: ToolResult = { tool_call_id: tc.id, name: "execute_code", content, ok: !sandboxResult.error };
+      if (trace.enabled) {
+        const rawBlob = trace.blob(raw) ?? "";
+        trace.emit(
+          "tool_result",
+          {
+            tool_call_id: tc.id,
+            name: "execute_code",
+            ok: result.ok,
+            ...(sandboxResult.error ? { error_code: "sandbox_error" } : {}),
+            raw_blob: rawBlob,
+            raw_bytes: Buffer.byteLength(raw, "utf8"),
+            reduced_blob: raw === content ? rawBlob : trace.blob(content) ?? "",
+            reduced_bytes: Buffer.byteLength(content, "utf8"),
+            duration_ms: Math.round(performance.now() - sandboxStartedAt),
+          },
+          turnId,
+        );
+      }
+      return result;
+    };
+
+    /** Fire-and-forget memory extraction from a tool result (never breaks the turn). */
+    const extractMemories = (tc: ToolCall, result: ToolResult): void => {
+      if (!opts.memoryManager) return;
+      const toolArgs = parseArgsObject(tc.function.arguments);
+      const filePath = toolArgs.path as string | undefined;
+      // The preceding assistant message, for intent context.
+      const lastAssistant = [...opts.messages].reverse().find((m) => m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0);
+      const assistantMessage = typeof lastAssistant?.content === "string" ? lastAssistant.content : "";
+      const llmOpts = opts.memoryManager.getExtractionLlmOpts();
+      // Anchor drift detection to when the memory was extracted, not when the await settles.
+      const turnAtMemoryCommit = turn;
+      const session = sessionToolState(opts.sessionId);
+      for (const extractor of EXTRACTORS) {
+        if (!extractor.match(tc.function.name, filePath)) continue;
+        void (async () => {
           try {
-            opts.callbacks.onRunYield?.(result.waitRequest);
-          } catch (error) {
-            logger.warn("run:yield_callback_failed", {
-              runId: result.waitRequest.runId,
-              timerId: result.waitRequest.timerId,
-              error: error instanceof Error ? error.message : String(error),
+            const memory = await extractor.extract(result.content, filePath, {
+              toolArgs: { ...toolArgs, _toolName: tc.function.name },
+              assistantMessage,
+              llmOpts: { ...llmOpts, signal: opts.signal },
             });
-          }
-          await fireStopHook();
-          return;
-        }
-
-        // Auto-extract memories from tool results
-        if (opts.memoryManager) {
-          let filePath: string | undefined;
-          let toolArgs: Record<string, unknown> = {};
-          try {
-            toolArgs = JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>;
-            filePath = toolArgs.path as string | undefined;
-          } catch {
-            // ignore parse errors
-          }
-
-          // Find the preceding assistant message for intent context
-          const lastAssistant = [...opts.messages].reverse().find(
-            (m) => m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0
-          );
-          const assistantMessage = lastAssistant?.content ?? "";
-
-          const llmOpts = opts.memoryManager.getExtractionLlmOpts();
-
-          // Capture turn at IIFE creation so the sliding-window drift
-          // detector below is anchored to when the memory was extracted,
-          // not whatever value `turn` has when the await chain settles.
-          const turnAtMemoryCommit = turn;
-          for (const extractor of EXTRACTORS) {
-            if (extractor.match(tc.function.name, filePath)) {
-              void (async () => {
+            if (!memory) return;
+            await opts.memoryManager!.remember(
+              memory.content,
+              memory.category,
+              memory.importance,
+              opts.cwd,
+              opts.sessionId ?? "unknown",
+              opts.signal,
+              undefined,
+              memory.topicKey,
+            );
+            // Drift detection, sliding window: fire `onKimiMdStale` when
+            // >=DRIFT_THRESHOLD high-signal memories land within DRIFT_WINDOW
+            // turns. Clustered changes = drift. (RF-2 / OP-8.)
+            if (isHighSignalMemory(memory)) {
+              session.driftEvents.push(turnAtMemoryCommit);
+              session.driftEvents = session.driftEvents.filter((t) => t >= turnAtMemoryCommit - DRIFT_WINDOW + 1);
+              if (session.driftEvents.length >= DRIFT_THRESHOLD) {
+                // A throwing callback here would be an unhandled rejection.
                 try {
-                  const memory = await extractor.extract(result.content, filePath, {
-                    toolArgs: { ...toolArgs, _toolName: tc.function.name },
-                    assistantMessage: typeof assistantMessage === "string" ? assistantMessage : "",
-                    llmOpts: {
-                      ...llmOpts,
-                      signal: opts.signal,
-                    },
-                  });
-                  if (memory) {
-                    await opts.memoryManager!.remember(
-                      memory.content,
-                      memory.category,
-                      memory.importance,
-                      opts.cwd,
-                      opts.sessionId ?? "unknown",
-                      opts.signal,
-                      undefined,
-                      memory.topicKey,
-                    );
-
-                    // Real-time drift detection — sliding window:
-                    // fire `onKimiMdStale` when >=DRIFT_THRESHOLD high-signal
-                    // memories land within DRIFT_WINDOW turns. Clustered
-                    // changes = drift; spread-out changes = incremental work
-                    // and aren't worth nagging about. (RF-2 / OP-8.)
-                    if (isHighSignalMemory(memory)) {
-                      const sid = opts.sessionId ?? "default";
-                      const events = driftEvents.get(sid) ?? [];
-                      events.push(turnAtMemoryCommit);
-                      const cutoff = turnAtMemoryCommit - DRIFT_WINDOW + 1;
-                      const recent = events.filter((t) => t >= cutoff);
-                      driftEvents.set(sid, recent);
-                      if (recent.length >= DRIFT_THRESHOLD) {
-                        // Wrapped defensively: a throwing callback inside
-                        // this fire-and-forget IIFE would become an
-                        // unhandled rejection (process-fatal under Node's
-                        // default --unhandled-rejections=throw).
-                        try {
-                          opts.callbacks.onKimiMdStale?.();
-                        } catch (cbErr) {
-                          logger.debug("memory:onKimiMdStale_threw", {
-                            sessionId: opts.sessionId,
-                            error: cbErr instanceof Error ? cbErr.message : String(cbErr),
-                          });
-                        }
-                        driftEvents.set(sid, []);
-                      }
-                    }
-                  }
-                } catch (err) {
-                  // Auto-extraction must never break the turn, but a silent
-                  // swallow hides systemic failures (bad embedding endpoint,
-                  // DB lock, schema mismatch). Track per session and surface
-                  // through onWarning so /memory health (and SDK consumers)
-                  // can see something is wrong.
-                  const sid = opts.sessionId ?? "default";
-                  const next = (memoryExtractionErrorCounts.get(sid) ?? 0) + 1;
-                  memoryExtractionErrorCounts.set(sid, next);
-                  const msg = err instanceof Error ? err.message : String(err);
-                  logger.debug("memory:extract_error", {
-                    sessionId: opts.sessionId,
-                    tool: tc.function.name,
-                    count: next,
-                    error: msg,
-                  });
-                  // Only emit the user-visible warning on the first failure
-                  // per session — repeated errors stay in the counter.
-                  // Wrapped defensively for the same reason as the
-                  // onKimiMdStale fire above.
-                  if (next === 1) {
-                    try {
-                      opts.callbacks.onWarning?.(
-                        `[memory] auto-extraction failed (${msg}). Subsequent failures will be counted silently; check /memory health.`,
-                      );
-                    } catch (cbErr) {
-                      logger.debug("memory:onWarning_threw", {
-                        sessionId: opts.sessionId,
-                        error: cbErr instanceof Error ? cbErr.message : String(cbErr),
-                      });
-                    }
-                  }
+                  opts.callbacks.onKimiMdStale?.();
+                } catch (cbErr) {
+                  logger.debug("memory:onKimiMdStale_threw", { sessionId: opts.sessionId, error: cbErr instanceof Error ? cbErr.message : String(cbErr) });
                 }
-              })();
+                session.driftEvents = [];
+              }
+            }
+          } catch (err) {
+            // Never break the turn, but count failures and warn once per session.
+            session.memoryExtractionErrors++;
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.debug("memory:extract_error", { sessionId: opts.sessionId, tool: tc.function.name, count: session.memoryExtractionErrors, error: msg });
+            if (session.memoryExtractionErrors === 1) {
+              try {
+                opts.callbacks.onWarning?.(`[memory] auto-extraction failed (${msg}). Subsequent failures will be counted silently; check /memory health.`);
+              } catch (cbErr) {
+                logger.debug("memory:onWarning_threw", { sessionId: opts.sessionId, error: cbErr instanceof Error ? cbErr.message : String(cbErr) });
+              }
             }
           }
-        }
+        })();
+      }
+    };
 
+    /** Put a call's outcome in history and on the UI; returns true when a durable run asked to yield. */
+    const record = (tc: ToolCall, index: number, loopSignature: string, outcome: Guarded, result: ToolResult): boolean => {
+      const guardrailBlocked = outcome.kind === "blocked" && !outcome.redirected;
+      if (outcome.kind === "blocked") {
+        traceBlocked(tc, result, outcome.errorCode, outcome.redirected === true);
+        // A Code Mode redirect is a nudge, not a block: the model retries via execute_code.
+        if (guardrailBlocked) blockedCount++;
+      }
+      toolResults.push(result);
+      opts.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: sanitizeString(result.content), name: result.name });
+      opts.callbacks.onToolResult?.(result);
+      // A Code Mode redirect isn't a repeated call; everything else feeds the loop guard.
+      if (!(outcome.kind === "blocked" && outcome.redirected)) {
         recentToolCalls.push(loopSignature);
         if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
       }
+      if (outcome.kind === "run") extractMemories(tc, result);
 
-      // Heuristic auto-advance: if the model has executed multiple mutating
-      // tools without calling tasks_set, nudge the task list forward so the
-      // UI stays honest. We only do this when tasks_set is not coming later
-      // in the same batch of tool calls.
-      if (MUTATING_TOOLS.has(tc.function.name)) {
+      // Heuristic auto-advance: several mutating tools without tasks_set
+      // nudge the task list forward so the UI stays honest (unless
+      // tasks_set comes later in this batch).
+      if (!guardrailBlocked && MUTATING_TOOLS.has(tc.function.name)) {
         mutatingToolsSinceLastTasksSet++;
-        const hasTasksSetComing = toolCalls.slice(i + 1).some((t) => t.function.name === "tasks_set");
+        const hasTasksSetComing = toolCalls.slice(index + 1).some((t) => t.function.name === "tasks_set");
         if (!hasTasksSetComing && mutatingToolsSinceLastTasksSet >= AUTO_ADVANCE_THRESHOLD) {
           const inProgressIdx = currentTasks.findIndex((t) => t.status === "in_progress");
           const nextPendingIdx = currentTasks.findIndex((t) => t.status === "pending");
@@ -1806,7 +1342,85 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           }
         }
       }
+      return !!result.waitRequest;
+    };
+
+    /** A durable run's wait_for: end the turn here (zero tokens while waiting). */
+    const yieldRun = async (waitRequest: NonNullable<ToolResult["waitRequest"]>): Promise<void> => {
+      if (opts.onIterationEnd) replaceMessagesInPlace(opts.messages, await opts.onIterationEnd(opts.messages, opts.signal));
+      logger.info("run:yielded", { runId: waitRequest.runId, timerId: waitRequest.timerId, condition: waitRequest.condition, wakeAt: waitRequest.wakeAt });
+      tr.endReason = "needs_input";
+      try {
+        opts.callbacks.onRunYield?.(waitRequest);
+      } catch (error) {
+        logger.warn("run:yield_callback_failed", { runId: waitRequest.runId, timerId: waitRequest.timerId, error: error instanceof Error ? error.message : String(error) });
+      }
+      await fireStopHook();
+    };
+
+    // Scheduling class per call: concurrent (read-only, or isolated from
+    // the workspace like sandboxed subagents) vs. sequential. Extending
+    // parallelism to mutating calls would need an explicit dependency graph.
+    const isConcurrent = (tc: ToolCall): boolean => {
+      if (!availableToolNames.has(tc.function.name)) return false;
+      const tool = executorTools.find((t) => t.name === tc.function.name);
+      return tool?.isReadOnly === true || tool?.concurrent === true;
+    };
+    const segments: Array<{ concurrent: boolean; calls: Array<{ tc: ToolCall; index: number }> }> = [];
+    for (const [index, tc] of toolCalls.entries()) {
+      const concurrent = isConcurrent(tc);
+      const last = segments[segments.length - 1];
+      if (last && last.concurrent === concurrent) last.calls.push({ tc, index });
+      else segments.push({ concurrent, calls: [{ tc, index }] });
     }
+
+    let yielded: NonNullable<ToolResult["waitRequest"]> | undefined;
+    for (const segment of segments) {
+      if (segment.concurrent && segment.calls.length > 1) {
+        const workerCount = segment.calls.filter(({ tc }) => executorTools.find((t) => t.name === tc.function.name)?.concurrent === true).length;
+        opts.callbacks.onInfo?.(
+          workerCount > 0
+            ? `${segment.calls.length} tool calls running in parallel (${workerCount} isolated worker${workerCount === 1 ? "" : "s"})`
+            : `${segment.calls.length} read-only tools running in parallel`,
+        );
+        // Concurrent calls must not raise overlapping permission prompts: the
+        // gate serializes them and approves same-tool calls as one batch.
+        const ask = createPermissionGate(
+          opts.callbacks.askPermission,
+          segment.calls.map(({ tc }) => ({ name: tc.function.name, args: parseArgsObject(tc.function.arguments) })),
+        );
+        if (opts.signal.aborted) throw new DOMException("aborted", "AbortError");
+        const guarded = segment.calls.map(({ tc }) => {
+          const loopSignature = `${tc.function.name}:${stableStringify(tc.function.arguments)}`;
+          return { loopSignature, outcome: guard(tc, loopSignature) };
+        });
+        const results = await Promise.all(
+          segment.calls.map(({ tc }, i) => {
+            const g = guarded[i]!;
+            return g.outcome.kind === "blocked" ? Promise.resolve(g.outcome.result) : execute(tc, ask);
+          }),
+        );
+        for (const [i, { tc, index }] of segment.calls.entries()) {
+          if (record(tc, index, guarded[i]!.loopSignature, guarded[i]!.outcome, results[i]!) && !yielded) yielded = results[i]!.waitRequest;
+        }
+      } else {
+        for (const { tc, index } of segment.calls) {
+          if (opts.signal.aborted) throw new DOMException("aborted", "AbortError");
+          const loopSignature = `${tc.function.name}:${stableStringify(tc.function.arguments)}`;
+          const outcome = guard(tc, loopSignature);
+          const result =
+            outcome.kind === "blocked" ? outcome.result : outcome.kind === "code" ? await executeCode(tc) : await execute(tc, opts.callbacks.askPermission);
+          if (record(tc, index, loopSignature, outcome, result)) {
+            yielded = result.waitRequest;
+            break;
+          }
+        }
+      }
+      if (yielded) break;
+    }
+    if (yielded) {
+      await yieldRun(yielded);
+      return;
     }
 
     if (blockedCount === toolCalls.length && toolCalls.length > 0) {

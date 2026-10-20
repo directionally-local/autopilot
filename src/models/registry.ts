@@ -17,6 +17,8 @@
  * by `migrateLegacyModelId()`.
  */
 
+import type { WireProtocol } from "../providers/presets.js";
+
 export interface ModelPricing {
   /** USD per million uncached input tokens. */
   inputPerMtok: number;
@@ -75,6 +77,8 @@ export interface ModelEntry {
   reasoningEfforts?: string[];
   /** The model takes an explicit thinking token budget (Anthropic `budget_tokens`) rather than only an effort level. */
   reasoningBudget?: boolean;
+  /** Wire protocol for this model when its provider serves models over several (GitHub Copilot). */
+  protocol?: WireProtocol;
   /** Field the API expects reasoning echoed back in on assistant history (e.g. "reasoning_content"). */
   reasoningEchoField?: string;
   contextWindow: number;

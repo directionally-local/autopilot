@@ -8,7 +8,7 @@ The `subagent` tool is always offered as a direct tool, including in Code Mode (
 
 **/subagents auto** is the default. For substantial requests, the coordinator may split independent research into bounded missions, launch read-only subagents in parallel, wait for their results, and synthesize them. Small, sequential, or tightly coupled work stays in the main session. An explicit request for or against delegation takes precedence.
 
-**/subagents suggest** requests conservative suggestions; **/subagents off** disables automatic suggestions. Worker calls still require normal tool permission. When the coordinator launches several workers in one step they run in parallel, and a single prompt listing every mission approves (or denies) the whole batch. Running subagents are listed above the prompt with their elapsed time (Ink) or in the activity panel opened with `/agents` (Camouflage, which also has a Stop action per subagent); `/subagents list` shows them and `/subagents cancel <n>` (or `/subagents cancel all`) stops one without interrupting the turn or the other workers. These commands run immediately even while the agent is busy. Interrupting a turn (Ctrl+C) is separate and still stops everything. **/multi-agent** is retired and no longer configures remote workers or deploys Cloudflare workers.
+**/subagents suggest** requests conservative suggestions; **/subagents off** disables automatic suggestions. Worker calls still require normal tool permission. When the coordinator launches several workers in one step they run in parallel, and a single prompt listing every mission approves (or denies) the whole batch. Running subagents are listed above the prompt with their elapsed time (Ink) or in the activity panel opened with `/agents` (Camouflage, which also has a Stop action per subagent); `/subagents list` shows them and `/subagents cancel <n>` (or `/subagents cancel all`) stops one without interrupting the turn or the other workers. These commands run immediately even while the agent is busy. Interrupting a turn (Ctrl+C) is separate and still stops everything. The old `/multi-agent` and `/remote` commands (Cloudflare workers and remote sessions) were removed.
 
 Automatic subagents are for research only. Workers cannot edit files, open PRs, or execute the old remote execute mode. The coordinator performs implementation in the local checkout after reviewing findings.
 
@@ -28,7 +28,7 @@ Hotcell workers have a narrow read-only tool profile, a per-worker spend cap, an
 
 Workers add model cost and latency. Defaults are $1 per worker, a $5 hard ceiling, a ten-minute research timeout, and at most three concurrent Hotcell cells. Configure limits with the environment variables KIMIFLARE_WORKER_BUDGET_USD, KIMIFLARE_WORKER_BUDGET_MAX_USD, KIMIFLARE_WORKER_TIMEOUT_MS, and KIMIFLARE_WORKER_MAX_PARALLEL. Each worker's cumulative input-token budget is derived from its spend cap and the model's input price (80% of the cap, clamped to 60k–3M tokens; 400k when the price is unknown); override it with KIMIFLARE_WORKER_MAX_INPUT_TOKENS. Workers end with a JSON report of cited findings, open questions, and files read, which the coordinator receives as structured results; an answer without a valid report is passed through and marked unverified. If Hotcell's spend cap stops a worker, Autopilot returns any findings already produced as partial results for review.
 
-Legacy workerEndpoint, workerApiKey, KIMIFLARE_WORKER_ENDPOINT, and KIMIFLARE_WORKER_BACKEND settings do not enable or route workers. The separate /remote command for interactive remote sessions is unaffected.
+Legacy workerEndpoint, workerApiKey, KIMIFLARE_WORKER_ENDPOINT, and KIMIFLARE_WORKER_BACKEND settings do not enable or route workers.
 
 ## Usage stats
 
@@ -39,3 +39,9 @@ Legacy workerEndpoint, workerApiKey, KIMIFLARE_WORKER_ENDPOINT, and KIMIFLARE_WO
 Autopilot reports Hotcell setup, repository, provider, and spend failures as tool errors. It does not silently fall back to a remote service. The coordinator can continue locally, but should not claim a worker ran when it did not.
 
 For upstream design inspiration, see [Anthropic’s guide to when to use subagents](https://claude.com/blog/subagents-in-claude-code) and the [Claude Code subagents documentation](https://code.claude.com/docs/en/sub-agents).
+
+## Background subagents
+
+`subagent` takes `background: true`: the call returns a worker id at once and the agent keeps working (or answers you) while the subagent runs. When it finishes, its findings are delivered to the agent automatically — at the next tool step if a turn is running, or with your next message — with no polling. The agent can also check early with `worker_status`, fetch one with `worker_result` (optionally `wait=true`), or `wait_for` with `worker_id`.
+
+Background subagents keep every safeguard: the same permission prompt, spend cap, concurrency limit and read-only profile. They are not tied to a turn — interrupting a turn doesn't stop them — so stop one with `/subagents cancel <n>`. They live as long as the Autopilot session (the TUI shows "Background subagent #n …" when one finishes; the SDK emits `worker.finished`); disposing an SDK session cancels its running background subagents.
