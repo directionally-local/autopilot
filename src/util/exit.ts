@@ -48,8 +48,18 @@ export function onShutdown(name: string, task: ShutdownTask, phase: number = SHU
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)).unref());
+/**
+ * Settle with `work`, or with "timeout" after `ms`. The deadline timer is
+ * deliberately not unref'd: during shutdown it may be the only thing keeping
+ * the event loop alive while a hook or flush runs. It's cleared as soon as
+ * `work` settles, so it never delays an exit.
+ */
+export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), Math.max(0, ms));
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -81,7 +91,7 @@ export function runShutdownTasks(timeoutMs: number = SHUTDOWN_TIMEOUT_MS): Promi
           }
         }),
       );
-      const timedOut = await Promise.race([settled.then(() => false), sleep(remaining).then(() => true)]);
+      const timedOut = (await withDeadline(settled, remaining)) === "timeout";
       if (timedOut) logger.warn("shutdown:timeout", { phase, tasks: group.map((t) => t.name) });
     }
   })();

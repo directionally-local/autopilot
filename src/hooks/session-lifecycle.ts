@@ -7,7 +7,7 @@
 
 import type { HooksManager } from "./manager.js";
 import { emitOtelEvent } from "../util/otel-events.js";
-import { onShutdown, SHUTDOWN_TIMEOUT_MS } from "../util/exit.js";
+import { onShutdown, SHUTDOWN_TIMEOUT_MS, withDeadline } from "../util/exit.js";
 
 const started = new Map<string, { hooks: HooksManager | undefined; cwd: string }>();
 let shutdownRegistered = false;
@@ -70,12 +70,12 @@ export async function endSession(sessionId: string, reason: "exit" | "clear", ti
   started.delete(sessionId);
   emitOtelEvent("session.end", sessionId, { "session.end_reason": reason });
   if (!entry.hooks?.hasEnabledHooks("SessionEnd")) return;
-  const done: Promise<void> = Promise.race([
-    entry.hooks
-      .fire("SessionEnd", { event: "SessionEnd", session_id: sessionId, cwd: entry.cwd, reason }, null)
-      .then(() => undefined, () => undefined),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs).unref()),
-  ]).finally(() => ending.delete(done));
+  const fired = entry.hooks
+    .fire("SessionEnd", { event: "SessionEnd", session_id: sessionId, cwd: entry.cwd, reason }, null)
+    .then(() => undefined, () => undefined);
+  const done: Promise<void> = withDeadline(fired, timeoutMs)
+    .then(() => undefined)
+    .finally(() => ending.delete(done));
   ending.add(done);
   await done;
 }
