@@ -107,3 +107,10 @@ describe("runStopForError", () => {
     assert.deepStrictEqual(runStopForError(new Error("HTTP 500")), { status: "failed", reason: "HTTP 500" });
   });
 });
+
+describe("describeSubagentGuidance: no per-turn noise", () => {
+  it("says nothing for the default auto policy, but answers explicit requests", () => {
+    assert.strictEqual(describeSubagentGuidance({ kind: "auto-delegate" } as never), null);
+    assert.match(String(describeSubagentGuidance({ kind: "explicit-delegate" } as never)), /explicit request/);
+  });
+});
