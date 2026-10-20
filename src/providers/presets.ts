@@ -35,6 +35,10 @@ export const PROVIDER_IDS = [
   "deepinfra",
   "vercel",
   "cloudflare",
+  "azure",
+  "chatgpt",
+  "vertex",
+  "bedrock",
   "zai",
   "zai-coding",
   "ollama",
@@ -100,10 +104,10 @@ export interface EmbeddingPreset {
  * Messages API, or the OpenAI Responses API. The agent loop always speaks
  * Chat Completions shapes; src/agent/protocols/ converts.
  */
-export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses";
+export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses" | "bedrock-converse";
 
 /** Where the model list for the picker comes from. */
-export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "none";
+export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "chatgpt" | "none";
 
 export interface ProviderPreset {
   id: ProviderId;
@@ -113,6 +117,8 @@ export interface ProviderPreset {
   protocol?: WireProtocol;
   /** Billed by a subscription plan rather than per token (cost shows $0 with a note). */
   subscription?: boolean;
+  /** How the key is sent: `Authorization: Bearer` (default) or Azure's `api-key` header. */
+  authHeader?: "bearer" | "api-key";
   /** OpenAI-compatible base URL (without /chat/completions). Unset for custom/OpenRouter/Requesty. */
   baseUrl?: string;
   /** Env vars that hold the key, in priority order. */
@@ -466,6 +472,78 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
+  azure: {
+    id: "azure",
+    name: "Azure OpenAI",
+    protocol: "openai-responses",
+    // Azure OpenAI's v1 API (no api-version needed). The resource comes from
+    // AZURE_RESOURCE_NAME, or set providers.azure.baseUrl
+    // (`autopilot auth azure --resource <name>` does).
+    baseUrl: "https://${AZURE_RESOURCE_NAME}.openai.azure.com/openai/v1",
+    apiKeyEnv: ["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
+    authHeader: "api-key",
+    keyRequired: true,
+    keysUrl: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/OpenAI",
+    statusUrl: "https://azure.status.microsoft",
+    // Model ids are your deployment names: discovered from the resource.
+    embedding: null,
+    catalog: "azure",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  chatgpt: {
+    id: "chatgpt",
+    name: "ChatGPT",
+    // Token sharing: your ChatGPT plan's GPT models through the normal Responses API.
+    protocol: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+    // Set by `autopilot auth chatgpt` (refreshed automatically); the env var is for short headless runs.
+    apiKeyEnv: ["CHATGPT_ACCESS_TOKEN"],
+    keyRequired: true,
+    statusUrl: "https://status.openai.com",
+    subscription: true,
+    defaultModel: "gpt-6.1-sol",
+    plumbingModel: "gpt-6-luna",
+    embedding: null,
+    catalog: "chatgpt",
+    modelsDevId: "openai",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  vertex: {
+    id: "vertex",
+    name: "Google Vertex AI",
+    // Built from the project and location (src/providers/vertex.ts); Claude goes to
+    // Anthropic's Messages API on Vertex, everything else to the OpenAI-compatible endpoint.
+    apiKeyEnv: ["GOOGLE_VERTEX_ACCESS_TOKEN"],
+    keyRequired: false,
+    keysUrl: "https://cloud.google.com/docs/authentication/provide-credentials-adc",
+    statusUrl: "https://status.cloud.google.com",
+    defaultModel: "gemini-3.8-flash",
+    plumbingModel: "gemini-3.5-flash-lite",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "google-vertex",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, toolCallExtras: true, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  bedrock: {
+    id: "bedrock",
+    name: "Amazon Bedrock",
+    protocol: "bedrock-converse",
+    // Built from the region (src/providers/bedrock.ts); credentials are AWS's (SigV4) or a Bedrock API key.
+    apiKeyEnv: ["AWS_BEARER_TOKEN_BEDROCK"],
+    keyRequired: false,
+    keysUrl: "https://console.aws.amazon.com/bedrock/home#/api-keys",
+    statusUrl: "https://health.aws.amazon.com/health/status",
+    defaultModel: "global.anthropic.claude-sonnet-5-5",
+    plumbingModel: "global.anthropic.claude-haiku-5-5",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "amazon-bedrock",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
   "kimi-code": {
     id: "kimi-code",
     name: "Kimi Code",
@@ -538,4 +616,10 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
 
 export function getPreset(id: ProviderId): ProviderPreset {
   return PROVIDER_PRESETS[id];
+}
+
+/** The auth header(s) a provider expects for `key` (Bearer for all but Azure's api-key). */
+export function keyHeaders(id: ProviderId | undefined, key: string | undefined): Record<string, string> {
+  if (!key) return {};
+  return id && PROVIDER_PRESETS[id].authHeader === "api-key" ? { "api-key": key } : { Authorization: `Bearer ${key}` };
 }

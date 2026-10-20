@@ -231,6 +231,35 @@ export async function discoverOpenAiModels(baseUrl: string, apiKey: string | und
 }
 
 /**
+ * Azure OpenAI deployments: model ids are deployment names. Each deployment's
+ * underlying model is looked up in OpenAI's models.dev entry for limits,
+ * capabilities and pricing.
+ */
+export async function discoverAzureDeployments(baseUrl: string, apiKey: string, fetchImpl: typeof fetch = fetch): Promise<ModelEntry[]> {
+  // The v1 base is https://<resource>.openai.azure.com/openai/v1; deployments are listed by the data-plane API.
+  const root = baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+  const res = await fetchImpl(`${root}/deployments?api-version=2022-12-01`, {
+    headers: { "api-key": apiKey, Accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`Azure deployments returned HTTP ${res.status}`);
+  const body = (await res.json()) as { data?: Array<{ id: string; model?: string; status?: string }> };
+  const openai = await loadModelsDevProvider("openai", { fetchImpl });
+  const out: ModelEntry[] = [];
+  for (const d of body.data ?? []) {
+    if (d.status && d.status !== "succeeded") continue;
+    const base = d.model ? openai?.models[d.model] : undefined;
+    if (base && base.tool_call !== true) continue; // embeddings, image models
+    if (!base && /embed|dall-e|whisper|tts/i.test(d.model ?? d.id)) continue;
+    const mapped: ModelEntry = base
+      ? mapModelsDevModel(base)
+      : { id: d.id, contextWindow: 128_000, maxOutputTokens: 16_384, pricing: { inputPerMtok: 0, outputPerMtok: 0 }, supports: { tools: true, reasoning: false, streaming: true } };
+    out.push({ ...mapped, id: d.id, name: d.model ? `${d.id} (${d.model})` : d.id });
+  }
+  return out;
+}
+
+/**
  * Load and register the catalog for a non-OpenRouter, non-Requesty
  * provider. Never throws: with nothing available the registry keeps its
  * defaults and unknown models are inferred.
@@ -249,6 +278,15 @@ export async function ensureProviderCatalog(
     } else if (preset.catalog === "copilot" && endpoint.baseUrl && endpoint.apiKey) {
       const { loadCopilotModels } = await import("../providers/copilot.js");
       models = await loadCopilotModels(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
+    } else if (preset.catalog === "azure" && endpoint.baseUrl && endpoint.apiKey) {
+      models = await discoverAzureDeployments(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
+    } else if (preset.catalog === "chatgpt") {
+      // OpenAI's catalog, limited to the models token sharing serves; billed by plan.
+      const { CHATGPT_MODELS } = await import("../providers/chatgpt.js");
+      const p = await loadModelsDevProvider("openai", { fetchImpl });
+      models = (p ? mapModelsDevProvider(p) : [])
+        .filter((m) => CHATGPT_MODELS.has(m.id))
+        .map((m) => ({ ...m, pricing: { inputPerMtok: 0, outputPerMtok: 0 } }));
     } else if (preset.catalog === "ollama" && endpoint.baseUrl) {
       models = await discoverOllamaModels(endpoint.baseUrl, fetchImpl);
     } else if ((preset.catalog === "openai-models" || preset.catalog === "none") && endpoint.baseUrl) {
