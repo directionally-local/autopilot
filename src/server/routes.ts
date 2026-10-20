@@ -5,9 +5,12 @@
 import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { listModels } from "../models/registry.js";
+import { JobManager } from "../jobs/manager.js";
 import { hostname } from "node:os";
 import { notificationSettingsFromConfig, startNotificationDispatcher } from "../runs/notifications.js";
-import { JobManager } from "../jobs/manager.js";
+import { handleDecisionMail } from "../runs/decisions.js";
+import { imapSettingsFromEnv, startDecisionPoller } from "../runs/decisions-imap.js";
 import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
@@ -213,6 +216,31 @@ function runAdmissionRefusal(config: KimiConfig): { status: number; error: strin
 }
 
 export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterApiRuntime } = {}) {
+  /**
+   * Resume a run paused for input: optionally switch model, revise budgets
+   * and pass the operator's answer, then start the next turn. Shared by the
+   * HTTP resume endpoint and emailed decisions.
+   */
+  async function resumePausedRun(
+    store: RunStore,
+    run: RunRecord,
+    opts: { budgets: RunBudgetUpdate; model?: string; answer?: string; via?: string },
+  ): Promise<{ ok: true; run: RunRecord } | { ok: false; error: string }> {
+    const active = await getOrRestoreActiveRun(run);
+    if (active.running) return { ok: false, error: "The previous turn is still stopping; retry resume shortly" };
+    if (opts.model) active.sessionFile.model = opts.model;
+    const change = opts.model ? `It now runs on ${opts.model}.` : Object.values(opts.budgets).some((v) => v !== undefined) ? "Its budget was updated." : "The operator asked to continue.";
+    const answer = opts.answer ? ` The operator answered: "${opts.answer}"` : "";
+    active.messages.push({ role: "user", content: "The run was paused because " + (run.stopReason ?? "it needs input") + ". " + change + answer + " Continue the task from the last saved checkpoint." });
+    active.sessionFile.messages = active.messages;
+    await saveSession(active.sessionFile);
+    const changeTag = [opts.model ? `model:${opts.model}` : "", opts.answer ? "answer" : "", opts.via ? `via:${opts.via}` : ""].filter(Boolean).join(",");
+    const resumed = store.resumeWithBudgets(run.id, opts.budgets, changeTag ? { change: changeTag } : {});
+    store.recordCheckpoint(run.id);
+    launchAgentTurnForSession(active, config, false);
+    return { ok: true, run: resumed };
+  }
+
   async function getOrRestoreActiveRun(run: RunRecord): Promise<ActiveSession> {
     if (!run.sessionId) throw new Error("Cannot restore run without a session id: " + run.id);
     const existing = activeRuns.get(run.id) ?? activeSessions.get(run.sessionId);
@@ -280,6 +308,29 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
   const notificationSettings = notificationSettingsFromConfig(config);
   const stopNotifications = notificationSettings
     ? startNotificationDispatcher(() => new RunStore(), notificationSettings, { host: hostname() })
+    : () => {};
+  // Email decisions (#671 1.6): replies to "needs input" emails, polled over IMAP.
+  const imapSettings = notificationSettings?.decisionsReplyTo ? imapSettingsFromEnv() : null;
+  const stopDecisions = imapSettings && notificationSettings
+    ? startDecisionPoller(imapSettings, async (mail) => {
+        const store = new RunStore();
+        try {
+          await handleDecisionMail(mail, store, {
+            resume: (run, opts) => resumePausedRun(store, run, { ...opts, via: "email" }).then((r) => (r.ok ? { ok: true as const } : r)),
+            cancel: (run) => {
+              activeRuns.get(run.id)?.controller?.abort();
+              store.transition(run.id, "cancelled", "cancelled_by_operator_email");
+              store.cancelTimersForRun(run.id);
+            },
+            modelExists: (id) => listModels().some((m) => m.id === id),
+            confirm: async (to, subject, text) => {
+              await notificationSettings.transport.send({ to: [to], from: notificationSettings.from, subject, text, idempotencyKey: `confirm_${randomUUID()}` });
+            },
+          }, { allowedSenders: notificationSettings.to, requireAuthentication: process.env.AUTOPILOT_DECISIONS_REQUIRE_AUTH !== "0" });
+        } finally {
+          store.close();
+        }
+      })
     : () => {};
 
   const wakeScheduler = new RunWakeScheduler({
@@ -609,20 +660,15 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
               badRequest(res, "Provide a revised budget (use null to remove a limit) or a model to continue with");
               return;
             }
-            const active = await getOrRestoreActiveRun(run);
-            if (active.running) {
-              json(res, 409, { error: "The previous turn is still stopping; retry resume shortly", run });
+            const result = await resumePausedRun(store, run, {
+              budgets,
+              ...(typeof requestedModel === "string" ? { model: requestedModel.trim() } : {}),
+            });
+            if (!result.ok) {
+              json(res, 409, { error: result.error, run });
               return;
             }
-            if (typeof requestedModel === "string") active.sessionFile.model = requestedModel.trim();
-            const change = typeof requestedModel === "string" ? `It now runs on ${requestedModel.trim()}.` : "Its budget was updated.";
-            active.messages.push({ role: "user", content: "The run was paused because " + (run.stopReason ?? "it needs input") + ". " + change + " Continue the task from the last saved checkpoint." });
-            active.sessionFile.messages = active.messages;
-            await saveSession(active.sessionFile);
-            const resumed = store.resumeWithBudgets(runId, budgets, typeof requestedModel === "string" ? { change: `model:${requestedModel.trim()}` } : {});
-            store.recordCheckpoint(runId);
-            launchAgentTurnForSession(active, config, false);
-            json(res, 202, { run: resumed });
+            json(res, 202, { run: result.run });
             return;
           }
           if (suffix === "cancel" && method === "POST") {
@@ -819,6 +865,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
   function cleanup(): void {
     wakeScheduler.dispose();
     stopNotifications();
+    stopDecisions();
     for (const [, active] of activeSessions) {
       active.shuttingDown = true;
       if (active.trace?.enabled) active.trace.emit("session_end", { reason: "exit" }, null);

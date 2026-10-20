@@ -101,6 +101,35 @@ Delivery is separate from run state:
 
 Each run's notifications (status, attempts, provider message id) are in the `run_notifications` table of the runs database.
 
+## Deciding by email
+
+With notifications on, you can also **answer a "needs input" email by replying**. Autopilot polls a mailbox over IMAP, so the server needs no public endpoint. Use a mailbox dedicated to Autopilot:
+
+```sh
+export AUTOPILOT_DECISIONS_REPLY_TO=autopilot-decisions@your-domain.com   # Reply-To on "needs input" emails
+export AUTOPILOT_DECISIONS_IMAP_HOST=imap.your-provider.com
+export AUTOPILOT_DECISIONS_IMAP_USER=autopilot-decisions@your-domain.com
+export AUTOPILOT_DECISIONS_IMAP_PASSWORD=...        # an app password
+# AUTOPILOT_DECISIONS_IMAP_PORT=993  AUTOPILOT_DECISIONS_IMAP_MAILBOX=INBOX
+```
+
+Reply with one line:
+
+| Reply | Effect |
+| --- | --- |
+| `resume` | Continue. If a budget ran out, that one budget is doubled, once. |
+| `resume model <id>` | Continue on another catalog model (e.g. a larger context window). |
+| `cancel` | Stop the run. |
+| `answer: <text>` | Pass the text (up to 2,000 characters) to the agent, then continue. |
+
+A reply is acted on only if every check passes. It must:
+- come from one of the notification recipients;
+- be authenticated by your mail server (DKIM or DMARC pass in `Authentication-Results`);
+- carry the email's `[ref:…]` token, which works **once** and expires after **72 hours**;
+- arrive while the run is still waiting for input.
+
+A reply can't change tools, permissions or other runs. Every reply, accepted or rejected, is recorded as a `decision` event on the run, and accepted ones get a confirmation email. Over SSH, the HTTP API is still the admin path.
+
 ## Restart and machine-lifetime guarantees
 
 Waiting runs and their timers are stored in SQLite, and the training process is detached from the Autopilot server process. If the server restarts while an agent turn is active, Autopilot resumes automatically only when the latest saved session checkpoint has no tool call with an unknown outcome. If any tool intent occurred after the last saved checkpoint—whether its result is missing or the result was journaled but not yet saved into the session—the run becomes `interrupted_unknown`; Autopilot will not risk replaying an action such as starting a second training job.
