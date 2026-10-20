@@ -15,9 +15,13 @@ import {
   type LlmDumpResponse,
 } from "../util/llm-dump.js";
 import { getModelOrInfer, vendorOf } from "../models/registry.js";
+import { getPreset, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
+import { anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
 import { resolveCustomEndpoint, customChatCompletionsUrl, type CustomEndpoint } from "./custom-endpoint.js";
+import type { LlmAuth } from "./llm-auth.js";
 
 export type KimiEvent =
   | { type: "response_meta"; meta: ResponseMeta }
@@ -30,20 +34,7 @@ export type KimiEvent =
   | { type: "usage"; usage: Usage }
   | { type: "done"; finishReason: string | null; usage: Usage | null };
 
-export interface RunKimiOpts {
-  /**
-   * The user's OpenRouter API key, sent as `Authorization: Bearer`. Required
-   * unless a custom endpoint is in effect. Build it (with `customEndpoint`
-   * and `provider`) from config via `llmAuthFromConfig()`.
-   */
-  openrouterApiKey?: string;
-  /**
-   * The user's Requesty key. Used only when there is no OpenRouter key and no
-   * custom endpoint: the request then goes to Requesty's OpenAI-compatible API.
-   */
-  requestyApiKey?: string;
-  /** Extra OpenRouter provider-routing preferences (config: openrouterProvider). */
-  provider?: OpenRouterProviderPrefs;
+export interface RunKimiOpts extends LlmAuth {
   model: string;
   messages: ChatMessage[];
   tools?: ToolDef[];
@@ -58,13 +49,6 @@ export interface RunKimiOpts {
   /** Once the first byte arrives, tighten the idle timeout to this value.
    *  Default 30000 — a live stream stalling mid-flight should surface fast. */
   postFirstByteIdleTimeoutMs?: number;
-  /**
-   * Custom OpenAI-compatible endpoint (see src/agent/custom-endpoint.ts).
-   * When set — or when KIMIFLARE_BASE_URL is in the environment — the request
-   * goes to `<baseUrl>/chat/completions` with `Authorization: Bearer <apiKey>`
-   * instead of OpenRouter. Model ids pass through in the body unchanged.
-   */
-  customEndpoint?: CustomEndpoint;
   /** Session trace recorder; `llm_request` / `llm_response` are emitted on it. No-op when absent or disabled. */
   trace?: TraceRecorder;
   /** Turn id stamped on the trace events of this request. */
@@ -103,12 +87,12 @@ export interface ResponseMeta {
 
 const MAX_ATTEMPTS = 5;
 
-function isRetryable(err: KimiApiError, attempt: number): boolean {
+function isRetryable(err: KimiApiError, attempt: number, openrouter = true): boolean {
   if (attempt >= MAX_ATTEMPTS - 1) return false;
   if (err.httpStatus === 408 || err.httpStatus === 429) return true;
-  // 402 "in-flight budget" is transient (a concurrent request is holding the
-  // key's remaining credit); a plain out-of-credits 402 is not.
-  if (err.httpStatus === 402 && /in.?flight/i.test(err.message)) return true;
+  // OpenRouter's 402 "in-flight budget" is transient (a concurrent request is
+  // holding the key's remaining credit); a plain out-of-credits 402 is not.
+  if (openrouter && err.httpStatus === 402 && /in.?flight/i.test(err.message)) return true;
   if (err.httpStatus !== undefined && err.httpStatus >= 500 && err.httpStatus < 600) return true;
   if (err.message.includes("Internal server error")) return true;
   return false;
@@ -130,21 +114,33 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
 
   const hasTools = !!opts.tools && opts.tools.length > 0;
   const maxTokens = opts.maxCompletionTokens ?? 16384;
+  // Request-shape quirks of the provider this request goes to (presets.ts).
+  const preset = getPreset(
+    customEndpoint ? (customEndpoint.providerId ?? "custom") : requesty ? "requesty" : "openrouter",
+  );
   const body: Record<string, unknown> = {
     model: opts.model,
-    messages: sanitizeMessagesForApi(opts.messages),
+    messages: sanitizeMessagesForApi(
+      customEndpoint || requesty ? stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField) : opts.messages,
+    ),
     stream: true,
   };
   if (customEndpoint || requesty) {
-    // The host's gateway (and Requesty) gets the plain OpenAI-shaped request.
-    if (hasTools) Object.assign(body, { tools: opts.tools, tool_choice: "auto", parallel_tool_calls: true });
+    // Every provider but OpenRouter gets a plain OpenAI-shaped request,
+    // adjusted by its preset's compat flags.
+    const compat = preset.compat;
+    if (hasTools) {
+      Object.assign(body, { tools: opts.tools, tool_choice: "auto" });
+      if (compat.parallelToolCalls) body.parallel_tool_calls = true;
+    }
     if (supportsTemperature) body.temperature = opts.temperature ?? 0.2;
-    body.max_completion_tokens = maxTokens;
-    if (opts.reasoningEffort && supportsReasoning) body.reasoning_effort = opts.reasoningEffort;
+    body[compat.maxTokensField] = maxTokens;
+    if (opts.reasoningEffort && supportsReasoning && compat.reasoningEffort && entry.reasoningEfforts?.length !== 0) {
+      body.reasoning_effort = effortFor(opts.reasoningEffort, entry.reasoningEfforts);
+    }
     // OpenAI's streaming API omits `usage` unless asked; OpenRouter always
-    // sends it (and documents this flag as a no-op), so only custom
-    // endpoints get it.
-    body.stream_options = { include_usage: true };
+    // sends it (and documents this flag as a no-op).
+    if (compat.streamUsage) body.stream_options = { include_usage: true };
   } else {
     // Only send optional parameters the model's endpoints accept. With
     // `require_parameters` (below) a single unsupported parameter would leave
@@ -177,7 +173,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // tool calling, and a coding agent is useless there. Tool-calling quality
     // ordering (Auto Exacto) is applied by OpenRouter on top of this. Skipped
     // when the model's parameter list is unknown (we can't guarantee a match).
-    const provider = { ...(known ? { require_parameters: true } : {}), ...(opts.provider ?? {}) };
+    const provider = { ...(known ? { require_parameters: true } : {}), ...(opts.openrouterRouting ?? {}) };
     if (Object.keys(provider).length > 0) body.provider = provider;
     // Anthropic models only cache with explicit breakpoints; the top-level
     // directive makes OpenRouter place them automatically. Everyone else
@@ -185,6 +181,38 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // implicitly.
     if (vendorOf(opts.model) === "anthropic") body.cache_control = { type: "ephemeral" };
   }
+
+  // The wire body: Chat Completions as built above, or converted for
+  // providers that speak another protocol (src/agent/protocols/).
+  const protocol = customEndpoint ? (preset.protocol ?? "openai-chat") : "openai-chat";
+  const wireBody: Record<string, unknown> =
+    protocol === "anthropic-messages"
+      ? toAnthropicRequest({
+          model: opts.model,
+          messages: body.messages as ChatMessage[],
+          tools: hasTools ? opts.tools : undefined,
+          maxTokens,
+          temperature: opts.temperature,
+          reasoningEffort: opts.reasoningEffort,
+          supportsReasoning,
+          supportsTemperature,
+          reasoningEfforts: entry.reasoningEfforts,
+          reasoningBudget: entry.reasoningBudget,
+        })
+      : protocol === "openai-responses"
+        ? toResponsesRequest({
+            model: opts.model,
+            messages: body.messages as ChatMessage[],
+            tools: hasTools ? opts.tools : undefined,
+            maxTokens,
+            temperature: opts.temperature,
+            reasoningEffort: opts.reasoningEffort,
+            supportsReasoning,
+            supportsTemperature,
+            reasoningEfforts: entry.reasoningEfforts,
+            parallelToolCalls: preset.compat.parallelToolCalls,
+          })
+        : body;
 
   // Observers of the finalized request body: the debug payload dump
   // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body
@@ -289,7 +317,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       res = await fetch(url, {
         method: "POST",
         headers,
-        body: stableStringify(body, jsonReplacer),
+        body: stableStringify(wireBody, jsonReplacer),
         signal: opts.signal,
       });
     } catch (fetchErr) {
@@ -302,7 +330,13 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
         await sleep(delay, opts.signal);
         continue;
       }
-      throw new KimiApiError(`kimiflare: network error: ${msg}`, undefined, undefined);
+      const local = customEndpoint?.providerId && !preset.keyRequired;
+      throw new KimiApiError(
+        `kimiflare: network error: ${msg}` +
+          (local ? `\n\nIs ${preset.name} running at ${customEndpoint!.baseUrl}? Start it, or set providers.${preset.id}.baseUrl in config.` : ""),
+        undefined,
+        undefined,
+      );
     }
 
     const contentType = res.headers.get("content-type") ?? "";
@@ -334,7 +368,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
         status,
       );
       traceResponse(attemptStartedAt, apiErr.message);
-      if (isRetryable(apiErr, attempt)) {
+      if (isRetryable(apiErr, attempt, !customEndpoint && !requesty)) {
         const isRateLimit = apiErr.httpStatus === 429;
         const baseDelay = isRateLimit ? 2000 : 500;
         // OpenRouter sends Retry-After (seconds) on 429/503; honour it, capped
@@ -360,7 +394,13 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     logger.debug("runKimi:stream_start", { requestId });
     let streamError: string | undefined;
     try {
-      for await (const ev of parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs)) {
+      const events =
+        protocol === "anthropic-messages"
+          ? parseAnthropicStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
+          : protocol === "openai-responses"
+            ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
+            : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs);
+      for await (const ev of events) {
         if (captured) accumulateDumpResponse(response, ev);
         yield ev;
       }
@@ -395,6 +435,7 @@ function describeHttpError(
   customEndpoint: CustomEndpoint | null,
   requesty = false,
 ): string {
+  if (customEndpoint?.providerId) return describePresetHttpError(getPreset(customEndpoint.providerId), model, status, msg);
   if (customEndpoint) {
     if (status === 401 || status === 403) {
       return [
@@ -434,6 +475,22 @@ function describeHttpError(
       ``,
       `Pick another model with  /model .`,
     ].join("\n");
+  }
+  return msg;
+}
+
+/** Error text for a preset provider (OpenAI, DeepSeek, Ollama, …): its name, key env var and console. */
+function describePresetHttpError(preset: ProviderPreset, model: string, status: number, msg: string): string {
+  const keyHint = `Fix: run  /key set <key>  with a key from ${preset.keysUrl ?? `your ${preset.name} account`}` +
+    (preset.apiKeyEnv[0] ? ` (or set ${preset.apiKeyEnv[0]} in the environment).` : ".");
+  if (status === 401 || status === 403) {
+    return [`${preset.name} rejected the request (HTTP ${status}): ${msg || "invalid key"}.`, ``, keyHint].join("\n");
+  }
+  if (status === 402) {
+    return [`Your ${preset.name} account is out of credit (HTTP 402): ${msg}.`, ``, `Add credit in your ${preset.name} account, then retry.`].join("\n");
+  }
+  if (status === 404 && /model/i.test(msg)) {
+    return [`${preset.name} can't serve ${model} (HTTP 404): ${msg}.`, ``, `Pick another model with  /model .`].join("\n");
   }
   return msg;
 }
@@ -544,6 +601,12 @@ function buildKimiRequestTarget(
   // id passes through.
   if (customEndpoint) {
     if (!opts.model) throw new KimiApiError(`Invalid model ID: ${opts.model}`, 400);
+    const protocol = customEndpoint.providerId ? getPreset(customEndpoint.providerId).protocol : undefined;
+    const base = customEndpoint.baseUrl.replace(/\/+$/, "");
+    if (protocol === "anthropic-messages") return { url: `${base}/messages`, headers: anthropicHeaders(customEndpoint.apiKey) };
+    if (protocol === "openai-responses") {
+      return { url: `${base}/responses`, headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {} };
+    }
     return {
       url: customChatCompletionsUrl(customEndpoint.baseUrl),
       headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {},
@@ -628,8 +691,8 @@ async function* parseStream(
     }
 
     if (chunk.usage) {
-      lastUsage = chunk.usage;
-      yield { type: "usage", usage: chunk.usage };
+      lastUsage = normalizeUsage(chunk.usage);
+      yield { type: "usage", usage: lastUsage };
     }
 
     // OpenAI-compatible format: { choices: [{ delta: { content: "..." } }] }
@@ -725,6 +788,55 @@ interface StreamToolCall {
   id?: string | null;
   type?: string | null;
   function?: { name?: string | null; arguments?: string | null };
+}
+
+/** Effort levels from least to most, as models.dev names them. */
+const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Map the user's /reasoning level onto the levels a model accepts (models.dev
+ * `reasoning_options`): the level itself if allowed, else the nearest allowed
+ * level above it, else the highest one. DeepSeek, for one, has no "medium".
+ */
+export function effortFor(level: "low" | "medium" | "high", allowed: string[] | undefined): string {
+  if (!allowed || allowed.length === 0 || allowed.includes(level)) return level;
+  const rank = (l: string) => EFFORT_ORDER.indexOf(l);
+  const sorted = allowed.filter((l) => rank(l) >= 0).sort((a, b) => rank(a) - rank(b));
+  return sorted.find((l) => rank(l) >= rank(level) && l !== "none") ?? sorted[sorted.length - 1] ?? level;
+}
+
+/**
+ * Drop reasoning fields the provider doesn't accept back on assistant
+ * history. OpenRouter's `reasoning_details` only goes to OpenRouter; the
+ * `reasoning_content` echo goes to providers that need it during tool loops
+ * (DeepSeek, Kimi, Z.ai) or whose model declares it (models.dev `interleaved`).
+ */
+export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderCompat, modelEchoField?: string): ChatMessage[] {
+  const keepContent = compat.reasoningEcho.content || modelEchoField === "reasoning_content";
+  const keepDetails = compat.reasoningEcho.details;
+  if (keepContent && keepDetails) return messages;
+  return messages.map((m) => {
+    if (m.role !== "assistant" || (m.reasoning_content === undefined && m.reasoning_details === undefined)) return m;
+    const { reasoning_content, reasoning_details, ...rest } = m;
+    return {
+      ...rest,
+      ...(keepContent && reasoning_content !== undefined ? { reasoning_content } : {}),
+      ...(keepDetails && reasoning_details !== undefined ? { reasoning_details } : {}),
+    };
+  });
+}
+
+/**
+ * Fill `prompt_tokens_details.cached_tokens` from providers that report
+ * cache hits elsewhere: DeepSeek's `prompt_cache_hit_tokens`, Moonshot's
+ * top-level `cached_tokens`. Cost and the status bar read the one field.
+ */
+export function normalizeUsage(usage: Usage): Usage {
+  if (typeof usage.prompt_tokens_details?.cached_tokens === "number") return usage;
+  const u = usage as Usage & { prompt_cache_hit_tokens?: number; cached_tokens?: number };
+  const cached = typeof u.prompt_cache_hit_tokens === "number" ? u.prompt_cache_hit_tokens : u.cached_tokens;
+  if (typeof cached !== "number") return usage;
+  return { ...usage, prompt_tokens_details: { ...(usage.prompt_tokens_details ?? {}), cached_tokens: cached } };
 }
 
 function sanitizeMessagesForApi(messages: ChatMessage[]): ChatMessage[] {

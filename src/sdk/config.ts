@@ -1,5 +1,5 @@
 import { loadConfig, saveConfig, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, type KimiConfig } from "../config.js";
-import { resolveCustomEndpoint } from "../agent/custom-endpoint.js";
+import { isProviderUsable, resolveActiveProvider } from "../providers/resolve.js";
 import type { CreateSessionOptions } from "./types.js";
 
 export { loadConfig, saveConfig, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT };
@@ -13,14 +13,16 @@ export async function resolveSdkConfig(opts: CreateSessionOptions): Promise<Kimi
     ...opts.config,
   };
 
-  // An OpenRouter key is required unless a custom OpenAI-compatible endpoint
-  // is configured (KIMIFLARE_BASE_URL / config baseUrl) — with one, the
-  // host's gateway owns routing and auth. A Requesty key also works.
-  if (!merged.openrouterApiKey && !merged.requestyApiKey && !resolveCustomEndpoint(merged)) {
+  // The active provider (config.provider / AUTOPILOT_PROVIDER, else inferred
+  // from the credentials present) must be able to take requests.
+  const active = resolveActiveProvider(merged);
+  if (!isProviderUsable(active)) {
+    const envs = active.preset.apiKeyEnv.join(" or ");
     throw new Error(
-      "kimiflare SDK: missing credentials. Set OPENROUTER_API_KEY (or config.openrouterApiKey), " +
-        "REQUESTY_API_KEY (or config.requestyApiKey), " +
-        "or set KIMIFLARE_BASE_URL (+ KIMIFLARE_API_KEY) for a custom OpenAI-compatible endpoint.",
+      `kimiflare SDK: missing credentials for ${active.preset.name}. ` +
+        (active.id === "custom"
+          ? "Set KIMIFLARE_BASE_URL (+ KIMIFLARE_API_KEY) for a custom OpenAI-compatible endpoint."
+          : `Set ${envs}, or config.providers.${active.id}.apiKey (OpenRouter: config.openrouterApiKey).`),
     );
   }
 

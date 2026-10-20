@@ -1,6 +1,8 @@
 import { readFile, mkdir, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isProviderId, PROVIDER_PRESETS, type ProviderId } from "./providers/presets.js";
+import { isProviderUsable, noteActiveProvider, resolveActiveProvider, resolveProviderId, type ProviderSettings } from "./providers/resolve.js";
 import { migrateLegacyModelId } from "./models/registry.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
@@ -42,6 +44,14 @@ export interface TraceConfig {
 }
 
 export interface KimiConfig {
+  /**
+   * The active LLM provider (env: AUTOPILOT_PROVIDER). Unset on configs
+   * written before multi-provider support: the provider is then inferred
+   * from which credential is present (see src/providers/resolve.ts).
+   */
+  provider?: ProviderId;
+  /** Per-provider keys, base URL overrides and last-used models, keyed by provider id. */
+  providers?: Partial<Record<ProviderId, ProviderSettings>>;
   /**
    * The user's own OpenRouter API key (`sk-or-…`; env: OPENROUTER_API_KEY or
    * KIMIFLARE_OPENROUTER_KEY, which win over the file). Every model call —
@@ -120,8 +130,15 @@ export interface KimiConfig {
   memoryMaxAgeDays?: number;
   /** Max memories per repo. Default: 1000. */
   memoryMaxEntries?: number;
-  /** Embedding model for memory vectors (OpenRouter id). Default: baai/bge-base-en-v1.5. */
+  /** Embedding model for memory and skill vectors. Default: the embedding provider's preset model. */
   memoryEmbeddingModel?: string;
+  /**
+   * Provider for memory/skill embeddings when it should differ from the chat
+   * provider (env: AUTOPILOT_EMBEDDING_PROVIDER) — e.g. keep an OpenAI key
+   * for embeddings while chatting with Anthropic or DeepSeek, which have no
+   * embeddings API. Unset: the active provider.
+   */
+  embeddingProvider?: ProviderId;
   /** Model for internal plumbing tasks (memory verification, hypothetical queries). Default: DEFAULT_PLUMBING_MODEL. */
   plumbingModel?: string;
   /** Model for auto-extracting high-signal edit events. Default: DEFAULT_PLUMBING_MODEL. */
@@ -224,13 +241,22 @@ export interface KimiConfig {
   trace?: TraceConfig;
 }
 
-export const DEFAULT_MODEL = "moonshotai/kimi-k2.6";
-/** Cheap, fast model for internal side-calls (summaries, memory extraction,
- *  task decomposition, …) when no per-task model is configured. */
-export const DEFAULT_PLUMBING_MODEL = "moonshotai/kimi-k2.5";
+/** OpenRouter's default chat model (each provider's defaults live in src/providers/presets.ts). */
+export const DEFAULT_MODEL = PROVIDER_PRESETS.openrouter.defaultModel!;
+/** OpenRouter's cheap model for side calls; other providers use their preset's. */
+export const DEFAULT_PLUMBING_MODEL = PROVIDER_PRESETS.openrouter.plumbingModel!;
 /** Defaults when Requesty is the gateway (Requesty managed policy ids). */
-export const REQUESTY_DEFAULT_MODEL = "kimi-k2.6";
-export const REQUESTY_PLUMBING_MODEL = "deepseek-v4-flash";
+export const REQUESTY_DEFAULT_MODEL = PROVIDER_PRESETS.requesty.defaultModel!;
+export const REQUESTY_PLUMBING_MODEL = PROVIDER_PRESETS.requesty.plumbingModel!;
+
+/**
+ * Model for internal side calls (summaries, compaction, memory, decomposition):
+ * the configured plumbing model — which loadConfig() defaults from the active
+ * provider — else the session's chat model. Never another provider's id.
+ */
+export function plumbingModelOf(cfg: Pick<KimiConfig, "plumbingModel" | "model"> | null | undefined, sessionModel?: string): string {
+  return cfg?.plumbingModel || sessionModel || cfg?.model || "";
+}
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
 
 export function configPath(): string {
@@ -299,9 +325,9 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     /* no config file yet — env-only is still valid */
   }
 
-  // The one required credential: the user's own OpenRouter key. Env wins so a
-  // headless instance can be configured without ever touching the file.
-  // Configs written by the pre-release OpenRouter branch kept the key under
+  // OpenRouter and Requesty keys keep their own top-level fields (and env
+  // vars); every other provider's key lives under providers.<id>. Configs
+  // written by the pre-release OpenRouter branch kept the key under
   // providerKeys.openrouter — honoured as a fallback.
   const openrouterApiKey =
     process.env.OPENROUTER_API_KEY ||
@@ -314,12 +340,21 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   // complete setup on its own, no OpenRouter key needed.
   const baseUrl = process.env.KIMIFLARE_BASE_URL ?? persisted.baseUrl;
   const apiKey = process.env.KIMIFLARE_API_KEY ?? persisted.apiKey;
-
-  // Requesty is opt-in: only used when neither of the above is configured.
   const requestyApiKey = process.env.REQUESTY_API_KEY || persisted.requestyApiKey || undefined;
-  const requesty = !!requestyApiKey && !openrouterApiKey && !baseUrl;
+  const providerFields = {
+    provider: isProviderId(persisted.provider) ? persisted.provider : undefined,
+    providers: persisted.providers,
+    openrouterApiKey,
+    requestyApiKey,
+    baseUrl,
+    apiKey,
+  };
 
-  if (!openrouterApiKey && !baseUrl && !requestyApiKey) return null;
+  // Every LLM default below follows the active provider.
+  const active = resolveActiveProvider(providerFields);
+  if (!isProviderUsable(active)) return null;
+  noteActiveProvider(active.id);
+  const preset = active.preset;
 
   // KIMI_MODEL is an override, not a default: leave it undefined when unset so
   // the persisted `model` (set via /model) is honoured on the next launch.
@@ -339,10 +374,25 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     ? process.env.KIMIFLARE_WORKER_PRE_READ_FILES.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
 
-  const m = migrateLegacyModelId;
-  // The OpenRouter plumbing default is not a Requesty id.
-  const requestyPlumbing = requesty ? REQUESTY_PLUMBING_MODEL : undefined;
+  // Cloudflare-era ids only exist on OpenRouter; other providers' ids pass through.
+  const m = active.id === "openrouter" ? migrateLegacyModelId : (id: string | undefined) => id;
+  // Top-level model fields belong to the provider the file was written for
+  // (its `provider`, or the one its credentials imply). When another
+  // provider is active — AUTOPILOT_PROVIDER, or a switch — they are ignored,
+  // so an OpenRouter id is never sent to OpenAI and vice versa.
+  const savedFor = isProviderId(persisted.provider)
+    ? persisted.provider
+    : resolveProviderId({ ...providerFields, provider: undefined, baseUrl: persisted.baseUrl }, {});
+  const own = <T,>(v: T | undefined): T | undefined => (savedFor === active.id ? v : undefined);
+  const model =
+    m(envModel ?? persisted.providers?.[active.id]?.model ?? own(persisted.model)) ?? preset.defaultModel;
+  // Side calls use the provider's cheap model; with none (custom gateways,
+  // local runtimes) they fall back to the chat model, never to another
+  // provider's id.
+  const plumbingDefault = preset.plumbingModel;
   const cfg: KimiConfig = {
+    provider: providerFields.provider,
+    providers: persisted.providers,
     openrouterApiKey,
     requestyApiKey,
     baseUrl,
@@ -351,7 +401,9 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     // deploys a Worker into the user's own Cloudflare account.
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CF_ACCOUNT_ID ?? persisted.accountId,
     apiToken: process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN ?? persisted.apiToken,
-    model: m(envModel ?? persisted.model) ?? (requesty ? REQUESTY_DEFAULT_MODEL : DEFAULT_MODEL),
+    // Empty only for providers without a default (custom gateways, local
+    // runtimes) until the user picks one; onboarding/`/model` handle that.
+    model: model ?? "",
     openrouterProvider: persisted.openrouterProvider,
     reasoningEffort: envEffort ?? persisted.reasoningEffort,
     subagentPolicy: envSubagentPolicy ?? (
@@ -378,10 +430,11 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     memoryDbPath: process.env.KIMIFLARE_MEMORY_DB_PATH ?? persisted.memoryDbPath,
     memoryMaxAgeDays: readNumberEnv("KIMIFLARE_MEMORY_MAX_AGE_DAYS") ?? persisted.memoryMaxAgeDays,
     memoryMaxEntries: readNumberEnv("KIMIFLARE_MEMORY_MAX_ENTRIES") ?? persisted.memoryMaxEntries,
-    memoryEmbeddingModel: m(process.env.KIMIFLARE_MEMORY_EMBEDDING_MODEL ?? persisted.memoryEmbeddingModel),
-    plumbingModel: m(process.env.KIMIFLARE_PLUMBING_MODEL ?? persisted.plumbingModel) ?? requestyPlumbing,
+    memoryEmbeddingModel: m(process.env.KIMIFLARE_MEMORY_EMBEDDING_MODEL ?? own(persisted.memoryEmbeddingModel)),
+    embeddingProvider: isProviderId(persisted.embeddingProvider) ? persisted.embeddingProvider : undefined,
+    plumbingModel: m(process.env.KIMIFLARE_PLUMBING_MODEL ?? own(persisted.plumbingModel)) ?? plumbingDefault,
     memoryExtractionModel:
-      m(process.env.KIMIFLARE_MEMORY_EXTRACTION_MODEL ?? persisted.memoryExtractionModel) ?? requestyPlumbing,
+      m(process.env.KIMIFLARE_MEMORY_EXTRACTION_MODEL ?? own(persisted.memoryExtractionModel)) ?? plumbingDefault,
     codeMode: readBooleanEnv("KIMIFLARE_CODE_MODE") ?? persisted.codeMode ?? true,
     completionCheck: readBooleanEnv("KIMIFLARE_COMPLETION_CHECK") ?? persisted.completionCheck ?? true,
     lspEnabled: persisted.lspEnabled,
@@ -407,9 +460,9 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     autoFreshEnabled: persisted.autoFreshEnabled,
     autoCompactTokenThreshold: persisted.autoCompactTokenThreshold,
     autoFreshTokenThreshold: persisted.autoFreshTokenThreshold,
-    decompositionModel: m(persisted.decompositionModel) ?? requestyPlumbing,
+    decompositionModel: m(own(persisted.decompositionModel)) ?? plumbingDefault,
     decompositionStrategy: persisted.decompositionStrategy,
-    synthesisModel: m(persisted.synthesisModel),
+    synthesisModel: m(own(persisted.synthesisModel)),
     synthesisStrategy: persisted.synthesisStrategy,
     disableLlmSynthesis: persisted.disableLlmSynthesis,
     workerPreReadFiles: envWorkerPreReadFiles ?? persisted.workerPreReadFiles,
@@ -519,6 +572,38 @@ function stripUndefined<T extends object>(obj: T): T {
 }
 
 /**
+ * Side-call models that loadConfig() filled in from the active provider's
+ * preset are not user choices: persisting them would pin one provider's ids
+ * into the file and leak them into the next provider after a switch.
+ */
+async function forSaving(cfg: KimiConfig, path: string): Promise<KimiConfig> {
+  const active = resolveActiveProvider(cfg);
+  const out: KimiConfig = { ...cfg };
+  const plumbing = active.preset.plumbingModel;
+  if (plumbing) {
+    for (const k of ["plumbingModel", "memoryExtractionModel", "decompositionModel"] as const) {
+      if (out[k] === plumbing) delete out[k];
+    }
+  }
+  // The top-level `model` belongs to the provider the file is written for.
+  // When another provider is active only for this run (AUTOPILOT_PROVIDER),
+  // its model goes under providers.<id>.model and the file's own model stays.
+  const owner = isProviderId(cfg.provider) ? cfg.provider : resolveProviderId({ ...cfg, provider: undefined }, {});
+  if (owner !== active.id) {
+    let onDisk: Partial<KimiConfig> = {};
+    try {
+      onDisk = JSON.parse(await readFile(path, "utf8")) as Partial<KimiConfig>;
+    } catch {
+      /* no file yet */
+    }
+    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: cfg.model } };
+    if (onDisk.model) out.model = onDisk.model;
+    else delete (out as Partial<KimiConfig>).model;
+  }
+  return out;
+}
+
+/**
  * Merge `patch` into the on-disk config without disturbing unrelated fields
  * (unlike saveConfig(), which rewrites the whole file from an in-memory cfg
  * that may carry env-derived defaults).
@@ -569,7 +654,7 @@ export function resolveWorkerBudgetUsd(cfg: KimiConfig | null): number {
 export async function saveConfig(cfg: KimiConfig): Promise<string> {
   const p = configPath();
   await mkdir(join(p, ".."), { recursive: true });
-  await writeFile(p, JSON.stringify(cfg, null, 2), "utf8");
+  await writeFile(p, JSON.stringify(await forSaving(cfg, p), null, 2), "utf8");
   await chmod(p, 0o600);
   return p;
 }

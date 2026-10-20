@@ -1,3 +1,4 @@
+import { activeOpenRouterKey } from "./llm-auth.js";
 import { askJev, type AskJevOptions, type JevAnswer, type JevQuestion } from "./jev.js";
 import { redactPrompt } from "../intent/subagent-policy.js";
 import type { ChatMessage } from "./messages.js";
@@ -79,7 +80,9 @@ export function toolsUsedSince(messages: ChatMessage[], turnUser: ChatMessage | 
 }
 
 /** The check for a session, or undefined when unavailable or turned off. */
-export function completionCheckFromConfig(cfg: { openrouterApiKey?: string; baseUrl?: string; completionCheck?: boolean }): CompletionCheck | undefined {
-  if (cfg.completionCheck === false || !cfg.openrouterApiKey || cfg.baseUrl) return undefined;
-  return createJevCompletionCheck(cfg.openrouterApiKey);
+export function completionCheckFromConfig(cfg: Parameters<typeof activeOpenRouterKey>[0] & { completionCheck?: boolean }): CompletionCheck | undefined {
+  // Jev is OpenRouter's Decisions API: off whenever OpenRouter isn't the active provider.
+  const apiKey = activeOpenRouterKey(cfg);
+  if (cfg?.completionCheck === false || !apiKey) return undefined;
+  return createJevCompletionCheck(apiKey);
 }

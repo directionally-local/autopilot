@@ -1,6 +1,6 @@
 import { runKimi } from "./client.js";
 import type { ResponseMeta } from "./client.js";
-import type { LlmAuth } from "./llm-auth.js";
+import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
 import { toOpenAIToolDefs, type ToolSpec } from "../tools/registry.js";
 import type { ToolExecutor, PermissionAsker, ToolResult } from "../tools/executor.js";
 import { mergeReasoningDetails, sanitizeString, stableStringify, stripOldImages } from "./messages.js";
@@ -159,6 +159,8 @@ export interface AgentTurnOpts extends LlmAuth {
   /** Config for skill routing. */
   skillRoutingConfig?: {
     embeddingModel?: string;
+    /** Embedding credentials when they differ from chat (config `embeddingProvider`). */
+    embeddingAuth?: LlmAuth;
     maxSkillTokens?: number;
   };
   /** Current mode for system prompt. */
@@ -503,7 +505,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           },
           {
             db: opts.skillsDb,
-            ...llmAuthOf(opts),
+            ...(opts.skillRoutingConfig.embeddingAuth ?? llmAuthOf(opts)),
             embeddingModel: opts.skillRoutingConfig.embeddingModel,
           },
         )
@@ -1932,11 +1934,4 @@ function validateToolArguments(raw: string, name: string, id: string, finishReas
 }
 
 /** The credential subset of turn opts, for side-calls made on the turn's behalf. */
-function llmAuthOf(opts: LlmAuth): LlmAuth {
-  return {
-    ...(opts.openrouterApiKey ? { openrouterApiKey: opts.openrouterApiKey } : {}),
-    ...(opts.requestyApiKey ? { requestyApiKey: opts.requestyApiKey } : {}),
-    ...(opts.customEndpoint ? { customEndpoint: opts.customEndpoint } : {}),
-    ...(opts.provider ? { provider: opts.provider } : {}),
-  };
-}
+const llmAuthOf = pickLlmAuth;

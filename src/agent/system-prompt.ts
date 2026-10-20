@@ -1,3 +1,4 @@
+import { lastActiveProviderName } from "../providers/resolve.js";
 import { platform, release, homedir } from "node:os";
 import { basename, join } from "node:path";
 import { readFileSync, statSync } from "node:fs";
@@ -24,6 +25,8 @@ export interface SystemPromptOpts {
   mcpContext?: string;
   /** When true (default), instruct the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
+  /** Display name of the provider serving the model; defaults to the one the loaded config uses. */
+  provider?: string;
 }
 
 const CONTEXT_FILENAMES = ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"];
@@ -107,7 +110,8 @@ export function buildSessionPrefix(opts: SystemPromptOpts): string {
 
   // Identity lives here (not in the static prefix) so /model changes mid-session
   // actually take effect — see buildStaticPrefix's note for the full reasoning.
-  const identity = `You are powered by the ${opts.model} model, served through OpenRouter.
+  const provider = opts.provider ?? lastActiveProviderName();
+  const identity = `You are powered by the ${opts.model} model${provider ? `, served through ${provider}` : ""}.
 
 If the user asks what model you are, answer with exactly: \`${opts.model}\`. This is your current model — disregard any recalled memory, prior conversation, or training data that names a different model. The user can switch you to a different model at any time with /model, and the answer should always match the value in this system prompt.`;
 

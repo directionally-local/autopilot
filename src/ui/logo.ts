@@ -7,10 +7,10 @@ const dim = "\x1b[2m";
 const bold = "\x1b[1m";
 const reset = "\x1b[0m";
 
-/** Render the startup banner for `version`, naming the configured model. */
-export function renderLogo(version: string, model?: string): string {
+/** Render the startup banner for `version`, naming the configured model and the provider serving it. */
+export function renderLogo(version: string, model?: string, provider = "OpenRouter"): string {
   // "moonshotai/kimi-k2.6" → "kimi-k2.6"
-  const running = model ? `${model.slice(model.indexOf("/") + 1)} via OpenRouter` : "runs on OpenRouter";
+  const running = model ? `${model.slice(model.indexOf("/") + 1)} via ${provider}` : `runs on ${provider}`;
   return [
     "",
     `  ${bold}${accent}autopilot${reset} ${dim}(formerly kimiflare)${reset}`,

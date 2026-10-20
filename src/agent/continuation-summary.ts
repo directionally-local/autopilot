@@ -1,20 +1,15 @@
 import { execSync } from "node:child_process";
+import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
 import { runKimi } from "./client.js";
-import type { OpenRouterProviderPrefs } from "./client.js";
-import type { CustomEndpoint } from "./custom-endpoint.js";
 import type { ChatMessage } from "./messages.js";
 import type { Mode } from "../mode.js";
 import type { MemoryManager } from "../memory/manager.js";
 import { distillSessionPlan } from "./distill.js";
 
-export interface ContinuationSummaryOpts {
+export interface ContinuationSummaryOpts extends LlmAuth {
   messages: ChatMessage[];
   mode: Mode;
-  openrouterApiKey?: string;
-  requestyApiKey?: string;
-  customEndpoint?: CustomEndpoint;
   model: string;
-  provider?: OpenRouterProviderPrefs;
   memoryManager?: MemoryManager | null;
   memoryEnabled?: boolean;
   signal?: AbortSignal;
@@ -124,25 +119,18 @@ async function gatherMemoryEvidence(
   }
 }
 
-async function runKimiText(opts: {
-  openrouterApiKey?: string;
-  requestyApiKey?: string;
-  customEndpoint?: CustomEndpoint;
+async function runKimiText(opts: LlmAuth & {
   model: string;
-  provider?: OpenRouterProviderPrefs;
   messages: ChatMessage[];
   signal?: AbortSignal;
   onProgress?: (delta: number) => void;
 }): Promise<string> {
   const events = runKimi({
-    openrouterApiKey: opts.openrouterApiKey,
-    requestyApiKey: opts.requestyApiKey,
-    customEndpoint: opts.customEndpoint,
+    ...pickLlmAuth(opts),
     model: opts.model,
     messages: opts.messages,
     temperature: 0.1,
     reasoningEffort: "low",
-    provider: opts.provider,
     signal: opts.signal,
   });
   let text = "";
@@ -192,11 +180,8 @@ export async function generateContinuationSummary(
   const userPrompt = evidenceParts.join("\n\n");
 
   const summary = await runKimiText({
-    openrouterApiKey: opts.openrouterApiKey,
-    requestyApiKey: opts.requestyApiKey,
-    customEndpoint: opts.customEndpoint,
+    ...pickLlmAuth(opts),
     model: opts.model,
-    provider: opts.provider,
     signal: opts.signal,
     onProgress: opts.onProgress,
     messages: [

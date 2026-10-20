@@ -4,7 +4,7 @@ import Spinner from "./ui/spinner.js";
 
 import { runAgentTurn, AgentLoopError, type GuardrailEvent } from "./agent/loop.js";
 import type { ResponseMeta } from "./agent/client.js";
-import { llmAuthFromConfig } from "./agent/llm-auth.js";
+import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerPresetOf } from "./agent/llm-auth.js";
 import { buildSystemPrompt, buildSessionPrefix } from "./agent/system-prompt.js";
 import { summarizeMessagesViaLlm } from "./agent/llm-summarize.js";
 import {
@@ -60,7 +60,7 @@ import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { Onboarding } from "./ui/onboarding.js";
 import { Welcome } from "./ui/welcome.js";
-import { configPath, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, DEFAULT_PLUMBING_MODEL } from "./config.js";
+import { configPath, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { startRemoteSession, streamRemoteProgress } from "./remote/worker-client.js";
 import { saveRemoteSession, type RemoteSession } from "./remote/session-store.js";
 import { deployForTui } from "./remote/deploy.js";
@@ -1691,7 +1691,7 @@ function App({
                 messages: messagesRef.current,
                 mode: modeRef.current,
                 ...llmAuthFromConfig(cfg),
-                model: cfg.plumbingModel ?? DEFAULT_PLUMBING_MODEL,
+                model: plumbingModelOf(cfg),
                 memoryManager: memoryManagerRef.current,
                 memoryEnabled: cfg.memoryEnabled,
               });
@@ -1951,8 +1951,7 @@ function App({
         prompt: display,
         tier: classification.tier,
         policy: cfg.subagentPolicy ?? "auto",
-        apiKey: cfg.openrouterApiKey,
-        customEndpoint: Boolean(cfg.baseUrl),
+        apiKey: activeOpenRouterKey(cfg),
         signal: turnScope.signal,
       });
       if (delegationGuidance.kind !== "none") {
@@ -2060,6 +2059,7 @@ function App({
           skillsDb: getMemoryDb() ?? undefined,
           skillRoutingConfig: {
             embeddingModel: cfg.memoryEmbeddingModel,
+            embeddingAuth: embeddingAuthFromConfig(cfg),
             maxSkillTokens: modelContextLimit - 10_000,
           },
           mode: modeRef.current,
@@ -2298,7 +2298,7 @@ function App({
                       messages: messagesRef.current,
                       mode: modeRef.current,
                       ...llmAuthFromConfig(cfg),
-                      model: cfg.plumbingModel ?? DEFAULT_PLUMBING_MODEL,
+                      model: plumbingModelOf(cfg),
                       memoryManager: memoryManagerRef.current,
                       memoryEnabled: cfg.memoryEnabled,
                     });
@@ -2367,9 +2367,10 @@ function App({
             ) {
               const err = { httpStatus: e.httpStatus, code: e.code, message: humanizeApiError(e) };
               lastApiErrorRef.current = err;
+              const statusUrl = providerPresetOf(llmAuthFromConfig(cfg)).statusUrl;
               setEvents((es) => [
                 ...es,
-                { kind: "api_error", key: mkKey(), ...err },
+                { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) },
               ]);
             } else {
               const displayText =
@@ -2678,8 +2679,7 @@ function App({
   };
   triageQueuedRef.current = async (item: QueuedPrompt) => {
     const result = await triageIncoming(item.full, describeActivity(), {
-      apiKey: cfg?.openrouterApiKey,
-      customEndpoint: Boolean(cfg?.baseUrl),
+      apiKey: activeOpenRouterKey(cfg),
     });
     if (!queueRef.current.some((q) => q.key === item.key)) return; // promoted or already ran
     applyTriage(item, result);

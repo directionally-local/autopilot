@@ -25,7 +25,7 @@
 import * as readline from "node:readline";
 import { execSync } from "node:child_process";
 import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "./agent/loop.js";
-import { llmAuthFromConfig } from "./agent/llm-auth.js";
+import { llmAuthFromConfig, providerIdOf } from "./agent/llm-auth.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
 import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
 import type { ChatMessage } from "./agent/messages.js";
@@ -368,7 +368,8 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
       } else if (err instanceof KimiApiError) {
         emit("RuntimeError", {
           message: humanizeApiError(err),
-          source: "openrouter",
+          // The provider the request went to ("openrouter", "openai", "ollama", …).
+          source: providerIdOf(llmAuthFromConfig(opts)),
           kind: "api_error",
           severity: "error",
         });

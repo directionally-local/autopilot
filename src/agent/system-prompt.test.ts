@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { buildStaticPrefix, buildSessionPrefix, buildSystemMessages, buildSystemPrompt } from "./system-prompt.js";
 import type { ToolSpec } from "../tools/registry.js";
+import { noteActiveProvider } from "../providers/resolve.js";
 
 const DUMMY_TOOLS: ToolSpec[] = [
   {
@@ -147,4 +148,14 @@ describe("buildSystemPrompt", () => {
     assert.strictEqual(full, staticP + "\n\n" + sessionP);
   });
 
+});
+
+describe("model identity names the provider", () => {
+  it("names the provider passed in, or the one the loaded config uses", () => {
+    const base = { cwd: process.cwd(), tools: [], model: "deepseek-v4-pro" };
+    assert.match(buildSessionPrefix({ ...base, provider: "DeepSeek" }), /powered by the deepseek-v4-pro model, served through DeepSeek\./);
+    noteActiveProvider("ollama");
+    assert.match(buildSessionPrefix(base), /served through Ollama\./);
+    assert.doesNotMatch(buildSessionPrefix(base), /served through OpenRouter/);
+  });
 });
