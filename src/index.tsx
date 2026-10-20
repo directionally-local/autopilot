@@ -264,7 +264,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, gemini, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, gemini, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -294,7 +294,7 @@ const authCommand = program
       }),
   );
 
-for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", "groq", "cerebras", "together", "fireworks", "deepinfra", "vercel", "cloudflare", "deepseek", "moonshot", "kimi-code", "zai", "zai-coding", "ollama", "lmstudio"] as const) {
+for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", "groq", "cerebras", "together", "fireworks", "deepinfra", "vercel", "cloudflare", "azure", "deepseek", "moonshot", "kimi-code", "zai", "zai-coding", "ollama", "lmstudio"] as const) {
   authCommand.addCommand(
     new Command(id)
       .description(
@@ -305,7 +305,13 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", 
       .argument("[key]", "the key to save instead of pasting one")
       .option("--base-url <url>", "use a different endpoint (e.g. Ollama on another host)")
       .option("--account-id <id>", "Cloudflare account id (Workers AI)")
-      .action(async (keyArg: string | undefined, cmdOpts: { baseUrl?: string; accountId?: string }) => {
+      .option("--resource <name>", "Azure OpenAI resource name (https://<name>.openai.azure.com)")
+      .action(async (keyArg: string | undefined, cmdOpts: { baseUrl?: string; accountId?: string; resource?: string }) => {
+        if (id === "azure" && cmdOpts.resource && !cmdOpts.baseUrl) cmdOpts.baseUrl = `https://${cmdOpts.resource}.openai.azure.com/openai/v1`;
+        if (id === "azure" && !cmdOpts.baseUrl && !process.env.AZURE_RESOURCE_NAME) {
+          console.error("Azure OpenAI needs your resource: pass --resource <name> (or --base-url), or set AZURE_RESOURCE_NAME.");
+          process.exit(1);
+        }
         const { getPreset } = await import("./providers/presets.js");
         const { checkProviderKey, saveProviderKey, switchProvider } = await import("./providers/keys.js");
         const preset = getPreset(id);

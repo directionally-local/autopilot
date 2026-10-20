@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { configPath, patchPersistedConfig, type KimiConfig } from "../config.js";
 import { checkOpenRouterKey, looksLikeOpenRouterKey } from "../models/openrouter.js";
 import { checkRequestyKey } from "../models/requesty.js";
-import { getPreset, PROVIDER_IDS, type ProviderId } from "./presets.js";
+import { getPreset, keyHeaders, PROVIDER_IDS, type ProviderId } from "./presets.js";
 import { anthropicHeaders } from "../agent/protocols/anthropic.js";
 import { resolveActiveProvider, resolveProviderKey, type ProviderSettings } from "./resolve.js";
 
@@ -78,7 +78,7 @@ export async function checkProviderKey(
   let res: Response;
   try {
     const auth: Record<string, string> =
-      preset.protocol === "anthropic-messages" ? anthropicHeaders(key) : key ? { Authorization: `Bearer ${key}` } : {};
+      preset.protocol === "anthropic-messages" ? anthropicHeaders(key) : keyHeaders(id, key);
     res = await fetchImpl(`${base}/models`, {
       headers: { Accept: "application/json", ...auth },
       signal: AbortSignal.timeout(10_000),
