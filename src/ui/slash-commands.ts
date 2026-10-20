@@ -34,6 +34,7 @@ import type { DailyUsage } from "../usage-tracker.js";
 import {
   carryOverSessionBaseline,
   formatCostReport,
+  costNote,
   formatGenerationsSection,
   getCostReport,
   getSessionGenerations,
@@ -422,7 +423,8 @@ const handleCost: Handler = (ctx, _rest, arg) => {
   }
   void getCostReport(sessionIdRef.current ?? undefined)
     .then(async (report) => {
-      const lines = [formatCostReport(report)];
+      const provider = providerPresetOf(llmAuthFromConfig(cfg));
+      const lines = [formatCostReport(report, costNote(provider))];
       const sid = sessionIdRef.current;
       const logs = sid ? await getSessionGenerations(sid).catch(() => []) : [];
       const genSection = formatGenerationsSection(logs);

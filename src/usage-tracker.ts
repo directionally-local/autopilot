@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { Usage } from "./agent/messages.js";
 import type { ResponseMeta } from "./agent/client.js";
+import type { ProviderPreset } from "./providers/presets.js";
 import { calculateCost } from "./pricing.js";
 import { fetchWithNetworkRetry, openRouterHeaders, openRouterUrl } from "./models/openrouter.js";
 import { RETENTION } from "./storage-limits.js";
@@ -299,6 +300,7 @@ export async function recordUsage(
     usage.completion_tokens,
     usage.prompt_tokens_details?.cached_tokens ?? 0,
     model,
+    usage.prompt_tokens_details?.cache_write_tokens ?? 0,
   );
   const estimatedCost = cost.total;
   const cachedTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
@@ -597,7 +599,24 @@ export function formatGenerationsSection(recent: GenerationSnapshot[] = []): str
   return lines.join("\n");
 }
 
-export function formatCostReport(report: CostReport): string {
+/**
+ * How /cost figures were produced for a provider: confirmed by OpenRouter,
+ * estimated from a hosted provider's published prices (final — it doesn't
+ * report per-request cost), free for local runtimes, or unknown for a custom
+ * gateway whose models aren't in any catalog.
+ */
+export function costNote(preset: Pick<ProviderPreset, "id" | "name" | "keyRequired" | "capabilities">): string | undefined {
+  if (preset.capabilities.costConfirmation) return undefined;
+  if (preset.id === "custom") return "Custom endpoint: costs are estimated only for models found in a catalog; your gateway's own metering is authoritative.";
+  if (!preset.keyRequired) return `${preset.name} runs locally: no per-token cost.`;
+  return `Costs are estimates from ${preset.name}'s published prices (models.dev); ${preset.name} doesn't report per-request cost, so these are final.`;
+}
+
+export function formatCostReport(
+  report: CostReport,
+  /** A line about how the figures were produced (see costNote). */
+  note?: string,
+): string {
   const lines: string[] = [];
   const add = (label: string, u: DailyUsage) => {
     const cached = u.cachedTokens > 0 ? ` (${fmtTokens(u.cachedTokens)} cached)` : "";
@@ -609,5 +628,6 @@ export function formatCostReport(report: CostReport): string {
   add("Today", report.today);
   add("Month", report.month);
   add("All time", report.allTime);
+  if (note) lines.push(note);
   return lines.join("\n");
 }
