@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve";
-export type AsterConversationStatus = "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted";
+export type AsterConversationStatus = "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "merged";
 export type AsterApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
 
 export interface AsterPrincipal {
@@ -27,6 +27,8 @@ export interface AsterConversation {
   kind: "chat" | "code";
   repository: string | null;
   baseBranch: string | null;
+  pullRequestNumber: number | null;
+  pullRequestURL: string | null;
   status: AsterConversationStatus;
   activeRunId: string | null;
   lastEventSequence: number;
@@ -106,6 +108,8 @@ interface ConversationRow extends Record<string, unknown> {
   kind: "chat" | "code";
   repository: string | null;
   base_branch: string | null;
+  pull_request_number: number | null;
+  pull_request_url: string | null;
   status: AsterConversationStatus;
   active_run_id: string | null;
   last_event_sequence: number;
@@ -176,6 +180,8 @@ export class AsterStore {
         kind TEXT NOT NULL DEFAULT 'chat',
         repository TEXT,
         base_branch TEXT,
+        pull_request_number INTEGER,
+        pull_request_url TEXT,
         status TEXT NOT NULL,
         active_run_id TEXT,
         last_event_sequence INTEGER NOT NULL DEFAULT 0,
@@ -183,6 +189,14 @@ export class AsterStore {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_aster_conversations_workspace ON aster_conversations(workspace_id, updated_at);
+      CREATE TABLE IF NOT EXISTS aster_github_grants (
+        token_hash TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES aster_conversations(id) ON DELETE CASCADE,
+        repository TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_aster_github_grants_conversation ON aster_github_grants(conversation_id);
       CREATE TABLE IF NOT EXISTS aster_events (
         conversation_id TEXT NOT NULL REFERENCES aster_conversations(id) ON DELETE CASCADE,
         sequence INTEGER NOT NULL,
@@ -225,6 +239,8 @@ export class AsterStore {
     if (!conversationColumns.has("kind")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'");
     if (!conversationColumns.has("repository")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN repository TEXT");
     if (!conversationColumns.has("base_branch")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN base_branch TEXT");
+    if (!conversationColumns.has("pull_request_number")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN pull_request_number INTEGER");
+    if (!conversationColumns.has("pull_request_url")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN pull_request_url TEXT");
     try { chmodSync(dbPath, 0o600); } catch { /* existing/read-only database permissions are managed by the caller */ }
   }
 
@@ -305,6 +321,55 @@ export class AsterStore {
   getConversation(id: string): AsterConversation | undefined {
     const row = this.db.prepare("SELECT * FROM aster_conversations WHERE id = ?").get(id) as ConversationRow | undefined;
     return row ? rowToConversation(row) : undefined;
+  }
+
+  createGitHubGrant(conversationId: string, grantToken: string): void {
+    if (grantToken.length < 32) throw new Error("invalid GitHub grant token");
+    const conversation = this.getConversation(conversationId);
+    if (!conversation || conversation.kind !== "code" || !conversation.repository) throw new Error("GitHub grants require a code conversation");
+    const tokenHash = createHash("sha256").update(grantToken).digest("hex");
+    this.db.prepare("INSERT OR IGNORE INTO aster_github_grants (token_hash, conversation_id, repository, branch, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(tokenHash, conversationId, conversation.repository, conversation.branch, Date.now());
+  }
+
+  resolveGitHubGrant(grantToken: string): { conversationId: string; repository: string; branch: string } | undefined {
+    if (!grantToken || grantToken.length > 256) return undefined;
+    const tokenHash = createHash("sha256").update(grantToken).digest("hex");
+    return this.db.prepare("SELECT conversation_id AS conversationId, repository, branch FROM aster_github_grants WHERE token_hash = ?")
+      .get(tokenHash) as { conversationId: string; repository: string; branch: string } | undefined;
+  }
+
+  setPullRequest(conversationId: string, pullRequest: { number: number; url: string; title: string; summary?: string }): boolean {
+    const parsed = URL.canParse(pullRequest.url) ? new URL(pullRequest.url) : undefined;
+    if (!Number.isSafeInteger(pullRequest.number) || pullRequest.number < 1
+      || parsed?.protocol !== "https:" || parsed.hostname !== "github.com") {
+      throw new Error("invalid pull request metadata");
+    }
+    const update = this.db.transaction(() => {
+      const result = this.db.prepare("UPDATE aster_conversations SET pull_request_number = ?, pull_request_url = ?, updated_at = ? WHERE id = ? AND kind = 'code' AND repository IS NOT NULL")
+        .run(pullRequest.number, pullRequest.url, Date.now(), conversationId);
+      if (result.changes !== 1) return false;
+      this.insertEvent(conversationId, null, "outcome", {
+        pullRequestNumber: pullRequest.number,
+        pullRequestURL: pullRequest.url,
+        title: pullRequest.title,
+        ...(pullRequest.summary ? { summary: pullRequest.summary } : {}),
+      }, Date.now());
+      return true;
+    });
+    return update.immediate();
+  }
+
+  markMerged(conversationId: string, sha?: string): boolean {
+    const update = this.db.transaction(() => {
+      const result = this.db.prepare("UPDATE aster_conversations SET status = 'merged', active_run_id = NULL, updated_at = ? WHERE id = ? AND pull_request_number IS NOT NULL AND active_run_id IS NULL")
+        .run(Date.now(), conversationId);
+      if (result.changes !== 1) return false;
+      const row = this.db.prepare("SELECT pull_request_number FROM aster_conversations WHERE id = ?").get(conversationId) as { pull_request_number: number };
+      this.insertEvent(conversationId, null, "pull_request.merged", { pullRequestNumber: row.pull_request_number, ...(sha ? { sha } : {}) }, Date.now());
+      return true;
+    });
+    return update.immediate();
   }
 
   listActiveConversations(): AsterConversation[] {
@@ -518,6 +583,8 @@ function rowToConversation(row: ConversationRow): AsterConversation {
     kind: row.kind,
     repository: row.repository,
     baseBranch: row.base_branch,
+    pullRequestNumber: row.pull_request_number,
+    pullRequestURL: row.pull_request_url,
     status: row.status,
     activeRunId: row.active_run_id,
     lastEventSequence: row.last_event_sequence,

@@ -28,11 +28,15 @@ interface FakeCellState {
   writeSizes?: number[];
   activeRunId?: string | null;
   promptEvents?: Array<Record<string, unknown>>;
+  commitAhead?: boolean;
 }
 
 function fakeSandbox(state: FakeCellState) {
   const exec = async (command: string) => {
     (state.commands ??= []).push(command);
+    if (command.includes("rev-list --count")) {
+      return { exitCode: 0, stdout: state.commitAhead ? "1\n" : "0\n", stderr: "", success: true };
+    }
     if (command.startsWith("test -f ")) {
       return { exitCode: state.files.has(command.slice("test -f ".length)) ? 0 : 1, stdout: "", stderr: "", success: true };
     }
@@ -320,6 +324,10 @@ describe("Aster Hotcell runtime", () => {
         repository: "me/app",
         baseBranch: "main",
       } as never,
+      githubProxy: {
+        token: "conversation-scoped-placeholder-grant-token",
+        gitUrl: "http://proxy.test/api/v1/github-proxy/git",
+      },
       userText: "make a small change",
     });
 
@@ -334,6 +342,45 @@ describe("Aster Hotcell runtime", () => {
     assert.ok(state.prompts[0]?.message.includes("GitHub repository me/app"));
     assert.ok(state.prompts[0]?.message.endsWith("make a small change"));
     assert.ok(turn.events.some((event) => event.type === "assistant.delta"));
+    assert.deepEqual(turn.finished, ["completed"]);
+  });
+
+  it("pushes a completed code branch before invoking the PR publication hook", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const conversationId = crypto.randomUUID();
+    const state = emptyCellState("repo-cell");
+    state.commitAhead = true;
+    cells.set(conversationId, state);
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { pollIntervalMs: 5 });
+    let published = 0;
+    const turn = fakeTurn({
+      cellId: state.id,
+      cellEventCursor: 0,
+      conversation: {
+        id: conversationId,
+        sessionId: "session-code",
+        workspaceId: "default",
+        worktreePath: "/tmp/repo",
+        model: "test/model",
+        branch: "aster/12345678",
+        kind: "code",
+        repository: "me/app",
+        baseBranch: "main",
+        pullRequestNumber: null,
+      } as never,
+      githubProxy: {
+        token: "conversation-scoped-placeholder-grant-token",
+        gitUrl: "http://proxy.test/api/v1/github-proxy/git",
+      },
+      beforeFinish: async () => { published++; },
+    });
+
+    runtime.startTurn(turn);
+    await waitFor(() => turn.finished.length > 0);
+
+    const pushIndex = state.commands?.findIndex((command) => command.includes("push -u origin 'aster/12345678'") ) ?? -1;
+    assert.ok(pushIndex >= 0, "The feature branch should be pushed");
+    assert.equal(published, 1);
     assert.deepEqual(turn.finished, ["completed"]);
   });
 

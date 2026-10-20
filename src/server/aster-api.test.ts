@@ -7,6 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { KimiConfig } from "../config.js";
 import { AsterApi, type AsterApiRuntime, type AsterTurnStart } from "./aster-api.js";
+import { createAsterGitHubGrantToken } from "./aster-github-proxy.js";
 import { AsterStore } from "./aster-store.js";
 import { startServer } from "./index.js";
 import { RunStore } from "../runs/store.js";
@@ -184,6 +185,112 @@ describe("Aster control-plane API", () => {
       assert.equal(conversation.repository, "me/app");
       assert.match(conversation.branch, /^aster\/[0-9a-f]{8}$/);
       assert.equal(await exists(join(harness.worktreeRoot, conversation.conversationId)), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await harness.close();
+    }
+  });
+
+  it("opens and persists a pull request after a code turn, then merges it explicitly", async () => {
+    const harness = await createHarness("complete");
+    const originalFetch = globalThis.fetch;
+    const rawRepository = {
+      full_name: "me/app", name: "app", owner: { login: "me" }, private: true,
+      description: "A private test repo", default_branch: "main", pushed_at: "2026-10-20T00:00:00Z",
+    };
+    let pullRequestCreates = 0;
+    let pullRequestMerges = 0;
+    let expectedBranch = "";
+    setEnv("GITHUB_TOKEN", "placeholder-github-token");
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (!url.startsWith("https://api.github.com/")) return originalFetch(input, init);
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer placeholder-github-token");
+      if (url.endsWith("/repos/me/app")) return Response.json(rawRepository);
+      if (url.endsWith("/repos/me/app/pulls") && init?.method === "POST") {
+        pullRequestCreates++;
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        assert.equal(body.head, expectedBranch);
+        assert.equal(body.base, "main");
+        return Response.json({
+          number: 42, html_url: "https://github.com/me/app/pull/42", title: body.title, state: "open",
+          merged_at: null, head: { ref: body.head }, base: { ref: body.base },
+        }, { status: 201 });
+      }
+      if (url.endsWith("/repos/me/app/pulls/42/merge") && init?.method === "PUT") {
+        pullRequestMerges++;
+        return Response.json({ merged: true, message: "Pull Request successfully merged", sha: "abc123" });
+      }
+      if (url.includes("/repos/me/app/commits/") && url.includes("/check-runs")) {
+        return Response.json({ check_runs: [{ id: 7, name: "Tests", status: "completed", conclusion: "success", html_url: "https://github.com/me/app/actions/runs/7" }] });
+      }
+      assert.fail(`Unexpected GitHub request ${init?.method} ${url}`);
+    };
+
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", {
+        workspaceId: "default", model: "test/model", kind: "code", repository: "me/app",
+      });
+      assert.equal(created.status, 201);
+      const conversation = await created.json() as { conversationId: string; branch: string };
+      expectedBranch = conversation.branch;
+      const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, {
+        text: "Build account settings", clientTurnId: "turn-code-pr",
+      });
+      assert.equal(turn.status, 202);
+      await waitForStatus(harness, conversation.conversationId, "completed");
+
+      const saved = await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}`);
+      const savedBody = await saved.json() as { pullRequestNumber: number; pullRequestURL: string };
+      assert.equal(savedBody.pullRequestNumber, 42);
+      assert.equal(savedBody.pullRequestURL, "https://github.com/me/app/pull/42");
+      assert.equal(pullRequestCreates, 1);
+
+      const checks = await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}/pull-request/checks`);
+      assert.equal(checks.status, 200);
+      assert.equal((await checks.json() as { checks: Array<{ conclusion: string }> }).checks[0]?.conclusion, "success");
+
+      const merged = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/pull-request/merge`);
+      assert.equal(merged.status, 200);
+      assert.equal((await merged.json() as { status: string }).status, "merged");
+      const repeated = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/pull-request/merge`);
+      assert.equal(repeated.status, 200);
+      assert.equal(pullRequestMerges, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await harness.close();
+    }
+  });
+
+  it("limits a code-cell GitHub grant to its bound repository", async () => {
+    setEnv("GITHUB_TOKEN", "proxy-signing-placeholder-token");
+    const harness = await createHarness("hang");
+    const originalFetch = globalThis.fetch;
+    const rawRepository = {
+      full_name: "me/app", name: "app", owner: { login: "me" }, private: true,
+      description: null, default_branch: "main", pushed_at: null,
+    };
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (!url.startsWith("https://api.github.com/")) return originalFetch(input, init);
+      return Response.json(rawRepository);
+    };
+
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", {
+        workspaceId: "default", model: "test/model", kind: "code", repository: "me/app",
+      });
+      assert.equal(created.status, 201);
+      const conversation = await created.json() as { conversationId: string };
+      const grant = createAsterGitHubGrantToken("proxy-signing-placeholder-token", conversation.conversationId, "me/app");
+      const crossRepository = await fetch(`${harness.baseUrl}/api/v1/github-proxy/git/other/repo.git/info/refs?service=git-upload-pack`, {
+        headers: { Authorization: `Bearer ${grant}` },
+      });
+      assert.equal(crossRepository.status, 403);
+      const invalidGrant = await fetch(`${harness.baseUrl}/api/v1/github-proxy/git/me/app.git/info/refs?service=git-upload-pack`, {
+        headers: { Authorization: "Bearer invalid-grant" },
+      });
+      assert.equal(invalidGrant.status, 403);
     } finally {
       globalThis.fetch = originalFetch;
       await harness.close();
@@ -523,6 +630,7 @@ async function createHarness(mode: "complete" | "hang" | "approval"): Promise<Ha
   setEnv("AUTOPILOT_ASTER_DB", asterDb);
   setEnv("AUTOPILOT_RUNS_DB", runsDb);
   setEnv("AUTOPILOT_ASTER_CONFIG", configPath);
+  setEnv("AUTOPILOT_ASTER_GITHUB_PROXY_BASE_URL", "http://aster-proxy.test/api/v1/github-proxy");
   setEnv("KIMIFLARE_SERVER_PASSWORD", "legacy-only-secret");
 
   const asterStore = new AsterStore(asterDb);
@@ -597,13 +705,14 @@ async function completeTurn(turn: AsterTurnStart, text: string): Promise<void> {
   turn.sessionFile.messages = turn.messages;
   turn.sessionFile.updatedAt = new Date().toISOString();
   await saveSession(turn.sessionFile);
+  turn.publishEvent("assistant.delta", { delta: text });
+  await turn.beforeFinish?.();
   const runs = new RunStore();
   try {
     if (runs.getRun(turn.runId)?.status === "running") runs.transition(turn.runId, "completed");
   } finally {
     runs.close();
   }
-  turn.publishEvent("assistant.delta", { delta: text });
   turn.finish("completed");
 }
 

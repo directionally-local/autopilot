@@ -314,6 +314,14 @@ export function getOpenApiSpec(): string {
           responses: { "200": { description: "API version and supported capabilities; contains no host paths or secrets" }, "401": { description: "Invalid or expired credential" } },
         },
       },
+      "/api/v1/github/repositories": {
+        get: {
+          summary: "List repositories accessible to the server's GitHub token",
+          security: [{ asterBearer: [] }],
+          parameters: [{ name: "q", in: "query", required: false, schema: { type: "string", maxLength: 200 } }],
+          responses: { "200": { description: "Repository owner/name, privacy, and default branch metadata" }, "503": { description: "GitHub token is not configured" } },
+        },
+      },
       "/api/v1/workspaces": {
         get: {
           summary: "List credential-scoped workspaces",
@@ -338,9 +346,14 @@ export function getOpenApiSpec(): string {
             content: { "application/json": { schema: {
               type: "object",
               required: ["workspaceId", "model"],
-              properties: { workspaceId: { type: "string" }, model: { type: "string" } },
+              properties: {
+                workspaceId: { type: "string" },
+                model: { type: "string" },
+                kind: { type: "string", enum: ["chat", "code"], default: "chat" },
+                repository: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$", description: "Required for kind=code; must be accessible to the server's GitHub token." },
+              },
               additionalProperties: false,
-            }, example: { workspaceId: "default", model: "moonshotai/kimi-k2.6" } } },
+            }, example: { workspaceId: "default", model: "moonshotai/kimi-k2.6", kind: "code", repository: "acme/project" } } },
           },
           responses: { "201": { description: "Created conversation with opaque ID" }, "200": { description: "Idempotent replay of the original creation" }, "400": { description: "Invalid workspace, model, or missing Idempotency-Key" }, "409": { description: "Idempotency-Key reused with different parameters" }, "410": { description: "Key belongs to a destroyed conversation" }, "503": { description: "Hotcell runtime unavailable or provisioning failed" } },
         },
@@ -382,6 +395,22 @@ export function getOpenApiSpec(): string {
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["text"], properties: { clientTurnId: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", description: "Optional stable idempotency key, scoped to this conversation. Omit only for non-idempotent legacy submission." }, text: { type: "string", maxLength: 20000 } }, additionalProperties: false }, examples: { legacy: { summary: "Legacy text-only submission (do not automatically retry ambiguous requests)", value: { text: "Summarize the failing test and propose a fix." } }, idempotent: { summary: "Retry-safe submission", value: { clientTurnId: "turn-550e8400-e29b-41d4-a716-446655440000", text: "Summarize the failing test and propose a fix." } } } } } },
           responses: { "202": { description: "Turn accepted; keyed submissions replay the persisted response for the same ID and text" }, "400": { description: "clientTurnId, when present, or text is invalid" }, "409": { description: "conversation_busy or idempotency_conflict for a reused key with different text" } },
+        },
+      },
+      "/api/v1/conversations/{conversationId}/pull-request/checks": {
+        get: {
+          summary: "List check runs for the conversation's pull-request branch",
+          security: [{ asterBearer: [] }],
+          parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+          responses: { "200": { description: "GitHub check-run status and conclusion values" }, "404": { description: "Conversation or pull request not found" } },
+        },
+      },
+      "/api/v1/conversations/{conversationId}/pull-request/merge": {
+        post: {
+          summary: "Merge the conversation's pull request after explicit user confirmation",
+          security: [{ asterBearer: [] }],
+          parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+          responses: { "200": { description: "Merged conversation metadata" }, "409": { description: "No completed pull request is ready to merge" }, "403": { description: "GitHub token cannot merge this pull request" } },
         },
       },
       "/api/v1/conversations/{conversationId}/events": {
