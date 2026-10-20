@@ -196,31 +196,6 @@ export interface KimiConfig {
   autoCompactTokenThreshold?: number;
   /** Estimated in-memory token threshold to trigger auto-fresh when compaction cannot reduce below this. Default: 2_000_000. */
   autoFreshTokenThreshold?: number;
-  /** Model used for LLM-based task decomposition in multi-agent mode.
-   *  Default: DEFAULT_PLUMBING_MODEL (fast and cheap). */
-  decompositionModel?: string;
-  /** Strategy for decomposing heavy prompts into parallel research tasks.
-   *  - "llm": use a lightweight LLM call (default)
-   *  - "regex": pure regex heuristic (no LLM, fastest)
-   *  - "hybrid": regex for explicit lists, LLM for prose */
-  decompositionStrategy?: "llm" | "regex" | "hybrid";
-  /** Model for synthesizing multi-agent findings.
-   *  Default: DEFAULT_PLUMBING_MODEL (fast and cheap). */
-  synthesisModel?: string;
-  /** Strategy for synthesizing worker findings.
-   *  - "llm": use a lightweight LLM call (default)
-   *  - "heuristic": pure heuristic (no LLM, fastest)
-   *  - "hybrid": try LLM, fall back to heuristic on failure */
-  synthesisStrategy?: "llm" | "heuristic" | "hybrid";
-  /** Explicit opt-out for LLM-based synthesis. When true, always uses heuristic. */
-  disableLlmSynthesis?: boolean;
-  /** Files to pre-read on the coordinator and inject into every worker's
-   *  context. Saves redundant `read` tool calls across workers. Paths are
-   *  relative to the repo root. */
-  workerPreReadFiles?: string[];
-  /** Max characters of pre-read content to inject per worker batch.
-   *  Default: 50_000. */
-  workerPreReadMaxChars?: number;
   /** Permission rules for headless/CI mode. Keys are tool names (e.g. "bash", "write").
    *  Values are glob-pattern → rule mappings. Patterns are matched against the
    *  target path (for file tools) or command string (for bash). */
@@ -372,9 +347,6 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   const envImageTurns = process.env.KIMIFLARE_IMAGE_HISTORY_TURNS;
   const imageHistoryTurns = envImageTurns ? parseInt(envImageTurns, 10) : undefined;
 
-  const envWorkerPreReadFiles = process.env.KIMIFLARE_WORKER_PRE_READ_FILES
-    ? process.env.KIMIFLARE_WORKER_PRE_READ_FILES.split(",").map((s) => s.trim()).filter(Boolean)
-    : undefined;
 
   // Cloudflare-era ids only exist on OpenRouter; other providers' ids pass through.
   const m = active.id === "openrouter" ? migrateLegacyModelId : (id: string | undefined) => id;
@@ -399,8 +371,8 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     requestyApiKey,
     baseUrl,
     apiKey,
-    // Cloudflare credentials survive only for /multi-agent Commute, which
-    // deploys a Worker into the user's own Cloudflare account.
+    // Cloudflare account id and token: the Workers AI provider uses them
+    // (and Cloudflare-era configs still carry them).
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CF_ACCOUNT_ID ?? persisted.accountId,
     apiToken: process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN ?? persisted.apiToken,
     // Empty only for providers without a default (custom gateways, local
@@ -462,13 +434,6 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     autoFreshEnabled: persisted.autoFreshEnabled,
     autoCompactTokenThreshold: persisted.autoCompactTokenThreshold,
     autoFreshTokenThreshold: persisted.autoFreshTokenThreshold,
-    decompositionModel: m(own(persisted.decompositionModel)) ?? plumbingDefault,
-    decompositionStrategy: persisted.decompositionStrategy,
-    synthesisModel: m(own(persisted.synthesisModel)),
-    synthesisStrategy: persisted.synthesisStrategy,
-    disableLlmSynthesis: persisted.disableLlmSynthesis,
-    workerPreReadFiles: envWorkerPreReadFiles ?? persisted.workerPreReadFiles,
-    workerPreReadMaxChars: readNumberEnv("KIMIFLARE_WORKER_PRE_READ_MAX_CHARS") ?? persisted.workerPreReadMaxChars,
     permissions: persisted.permissions,
     preferPullRequests: readBooleanEnv("KIMIFLARE_PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,
     allowDirectPush: readBooleanEnv("KIMIFLARE_ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
@@ -523,6 +488,14 @@ interface LegacyConfigFields {
   secretsStoreId?: string;
   unifiedBilling?: boolean;
   cloudMode?: boolean;
+  /** Remote-era multi-agent decomposition/synthesis settings (no longer used). */
+  decompositionModel?: string;
+  decompositionStrategy?: string;
+  synthesisModel?: string;
+  synthesisStrategy?: string;
+  disableLlmSynthesis?: boolean;
+  workerPreReadFiles?: string[];
+  workerPreReadMaxChars?: number;
 }
 
 const LEGACY_KEYS: readonly (keyof LegacyConfigFields)[] = [
@@ -537,6 +510,13 @@ const LEGACY_KEYS: readonly (keyof LegacyConfigFields)[] = [
   "secretsStoreId",
   "unifiedBilling",
   "cloudMode",
+  "decompositionModel",
+  "decompositionStrategy",
+  "synthesisModel",
+  "synthesisStrategy",
+  "disableLlmSynthesis",
+  "workerPreReadFiles",
+  "workerPreReadMaxChars",
 ];
 
 const MODEL_ID_KEYS = [
@@ -544,8 +524,6 @@ const MODEL_ID_KEYS = [
   "plumbingModel",
   "memoryExtractionModel",
   "memoryEmbeddingModel",
-  "decompositionModel",
-  "synthesisModel",
 ] as const;
 
 function hasLegacyFields(persisted: Partial<KimiConfig> & LegacyConfigFields): boolean {
@@ -592,7 +570,7 @@ async function forSaving(cfg: KimiConfig, path: string): Promise<KimiConfig> {
   const out: KimiConfig = { ...cfg };
   const plumbing = active.preset.plumbingModel;
   if (plumbing) {
-    for (const k of ["plumbingModel", "memoryExtractionModel", "decompositionModel"] as const) {
+    for (const k of ["plumbingModel", "memoryExtractionModel"] as const) {
       if (out[k] === plumbing) delete out[k];
     }
   }

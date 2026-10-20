@@ -37,6 +37,8 @@ export const PROVIDER_IDS = [
   "cloudflare",
   "azure",
   "chatgpt",
+  "vertex",
+  "bedrock",
   "zai",
   "zai-coding",
   "ollama",
@@ -102,7 +104,7 @@ export interface EmbeddingPreset {
  * Messages API, or the OpenAI Responses API. The agent loop always speaks
  * Chat Completions shapes; src/agent/protocols/ converts.
  */
-export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses";
+export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses" | "bedrock-converse";
 
 /** Where the model list for the picker comes from. */
 export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "chatgpt" | "none";
@@ -505,6 +507,40 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: null,
     catalog: "chatgpt",
     modelsDevId: "openai",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  vertex: {
+    id: "vertex",
+    name: "Google Vertex AI",
+    // Built from the project and location (src/providers/vertex.ts); Claude goes to
+    // Anthropic's Messages API on Vertex, everything else to the OpenAI-compatible endpoint.
+    apiKeyEnv: ["GOOGLE_VERTEX_ACCESS_TOKEN"],
+    keyRequired: false,
+    keysUrl: "https://cloud.google.com/docs/authentication/provide-credentials-adc",
+    statusUrl: "https://status.cloud.google.com",
+    defaultModel: "gemini-3.8-flash",
+    plumbingModel: "gemini-3.5-flash-lite",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "google-vertex",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, toolCallExtras: true, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  bedrock: {
+    id: "bedrock",
+    name: "Amazon Bedrock",
+    protocol: "bedrock-converse",
+    // Built from the region (src/providers/bedrock.ts); credentials are AWS's (SigV4) or a Bedrock API key.
+    apiKeyEnv: ["AWS_BEARER_TOKEN_BEDROCK"],
+    keyRequired: false,
+    keysUrl: "https://console.aws.amazon.com/bedrock/home#/api-keys",
+    statusUrl: "https://health.aws.amazon.com/health/status",
+    defaultModel: "global.anthropic.claude-sonnet-5-5",
+    plumbingModel: "global.anthropic.claude-haiku-5-5",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "amazon-bedrock",
     compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
