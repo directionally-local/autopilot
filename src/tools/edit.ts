@@ -22,11 +22,14 @@ interface Args {
 /** The replacements a call asks for: `edits[]`, or the single old/new pair. */
 export function editPairs(args: Partial<Args> | Record<string, unknown>): EditPair[] {
   const a = args as Partial<Args>;
-  if (Array.isArray(a.edits)) return a.edits;
-  if (typeof a.old_string === "string" && typeof a.new_string === "string") {
-    return [{ old_string: a.old_string, new_string: a.new_string, ...(a.replace_all ? { replace_all: true } : {}) }];
-  }
-  return [];
+  // Some models fill every field of the schema, sending an empty or null
+  // old_string next to edits[]: only a non-empty old_string is a real edit.
+  const single: EditPair[] =
+    typeof a.old_string === "string" && a.old_string !== "" && typeof a.new_string === "string"
+      ? [{ old_string: a.old_string, new_string: a.new_string, ...(a.replace_all ? { replace_all: true } : {}) }]
+      : [];
+  // Both forms given for real: apply them all, the single edit first.
+  return Array.isArray(a.edits) ? [...single, ...a.edits] : single;
 }
 
 /** Apply edits in order to `text`; throws (naming the failing edit) without partial results. */
@@ -99,8 +102,6 @@ export const editTool: ToolSpec<Args> = {
     };
   },
   async run(args, ctx) {
-    const hasSingle = args.old_string !== undefined || args.new_string !== undefined;
-    if (args.edits !== undefined && hasSingle) throw new Error("pass either edits[] or old_string/new_string, not both");
     const pairs = editPairs(args);
     if (pairs.length === 0) throw new Error("pass old_string and new_string, or a non-empty edits[] array");
     const abs = resolvePath(ctx.cwd, args.path);

@@ -159,11 +159,16 @@ describe("edit: edits[] (several replacements in one call)", () => {
     assert.strictEqual(await readFile(file, "utf8"), before);
   });
 
-  it("rejects mixing both forms or passing neither", async () => {
+  it("tolerates schema-filled empty fields next to edits[], applies both real forms, rejects neither", async () => {
     const dir = await tmp();
-    await writeFile(join(dir, "a.ts"), "x");
-    await assert.rejects(editTool.run({ path: "a.ts", old_string: "x", new_string: "y", edits: [{ old_string: "x", new_string: "z" }] }, ctxIn(dir)), /either edits\[\] or old_string/);
+    const file = join(dir, "a.ts");
+    await writeFile(file, "a b c");
+    await editTool.run({ path: "a.ts", old_string: "", new_string: "", edits: [{ old_string: "a", new_string: "A" }] }, ctxIn(dir));
+    await editTool.run({ path: "a.ts", old_string: null, new_string: null, edits: [{ old_string: "b", new_string: "B" }] } as never, ctxIn(dir));
+    await editTool.run({ path: "a.ts", old_string: "A", new_string: "x", edits: [{ old_string: "B", new_string: "y" }] }, ctxIn(dir));
+    assert.strictEqual(await readFile(file, "utf8"), "x y c");
     await assert.rejects(editTool.run({ path: "a.ts" }, ctxIn(dir)), /non-empty edits/);
+    await assert.rejects(editTool.run({ path: "a.ts", old_string: "", new_string: "z" }, ctxIn(dir)), /non-empty edits/);
   });
 
   it("renders one permission diff covering every edit", () => {
