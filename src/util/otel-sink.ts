@@ -209,6 +209,20 @@ export async function flushOtelSink(): Promise<void> {
   return inFlightFlush;
 }
 
+/** Drain everything queued, including entries enqueued while a flush was
+ *  in flight (process shutdown). Bounded by the caller's own timeout. */
+export async function shutdownOtelSink(): Promise<void> {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  // A flush in flight leaves later entries queued; loop until both are empty.
+  for (let i = 0; i < 5 && (queue.length > 0 || inFlightFlush); i++) {
+    if (inFlightFlush) await inFlightFlush;
+    else await flushOtelSink();
+  }
+}
+
 // ── OTLP/HTTP JSON payload encoding ──────────────────────────────────────
 
 interface OtlpAttribute {
