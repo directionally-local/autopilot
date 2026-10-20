@@ -1,3 +1,4 @@
+import { encodeImageFile, imageNote, normalizeImageData } from "../util/image.js";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -307,20 +308,19 @@ class InternalSession implements KimiFlareSession {
     let userContent: string | ContentPart[] = text;
     if (options?.images && options.images.length > 0) {
       const parts: ContentPart[] = [{ type: "text", text }];
+      const imageOpts = { maxEdge: this.config.imageMaxEdge, quality: this.config.imageQuality };
+      const notes: string[] = [];
       for (const img of options.images) {
         if ("path" in img) {
-          const { readFile } = await import("node:fs/promises");
-          const data = await readFile(img.path, "base64");
-          const mimeType = img.path.endsWith(".png")
-            ? "image/png"
-            : img.path.endsWith(".jpg") || img.path.endsWith(".jpeg")
-              ? "image/jpeg"
-              : "image/webp";
-          parts.push({ type: "image_url", image_url: { url: `data:${mimeType};base64,${data}` } });
+          const encoded = await encodeImageFile(img.path, imageOpts);
+          if (encoded.change) notes.push(imageNote(img.path, encoded.change));
+          parts.push({ type: "image_url", image_url: { url: encoded.dataUrl } });
         } else {
-          parts.push({ type: "image_url", image_url: { url: `data:${img.mimeType};base64,${img.data}` } });
+          const normalized = normalizeImageData(img.data, img.mimeType, imageOpts);
+          parts.push({ type: "image_url", image_url: { url: `data:${normalized.mime};base64,${normalized.base64}` } });
         }
       }
+      if (notes.length > 0) parts[0] = { type: "text", text: `${text}\n\n${notes.join("\n")}` };
       userContent = parts;
     }
 

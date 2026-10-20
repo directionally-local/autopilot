@@ -119,6 +119,11 @@ export interface KimiConfig {
   compiledContext?: boolean;
   /** Number of recent user turns to retain image content; older images are dropped. */
   imageHistoryTurns?: number;
+  /** Attached images are downscaled to this long edge (px) and re-encoded
+   *  before upload. 0 sends images unchanged. Default 1568. */
+  imageMaxEdge?: number;
+  /** JPEG quality (1–100) for re-encoded images. Default 75. */
+  imageQuality?: number;
   /** Hard safety ceiling on tool iterations per turn, across automatic
    *  200-call counter resets. Defaults to 1000. */
   maxTotalToolIterations?: number;
@@ -398,6 +403,8 @@ export async function loadConfig(): Promise<KimiConfig | null> {
       imageHistoryTurns === undefined || Number.isNaN(imageHistoryTurns)
         ? persisted.imageHistoryTurns
         : imageHistoryTurns,
+    imageMaxEdge: readNumberEnv("KIMIFLARE_IMAGE_MAX_EDGE") ?? persisted.imageMaxEdge,
+    imageQuality: readNumberEnv("KIMIFLARE_IMAGE_QUALITY") ?? persisted.imageQuality,
     maxTotalToolIterations:
       readNumberEnv("KIMIFLARE_MAX_TOTAL_TOOL_ITERATIONS") ?? persisted.maxTotalToolIterations,
     memoryEnabled: readBooleanEnv("KIMIFLARE_MEMORY_ENABLED") ?? persisted.memoryEnabled ?? false,
