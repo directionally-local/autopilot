@@ -264,7 +264,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, vertex, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, vertex, bedrock, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -345,6 +345,23 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", 
       }),
   );
 }
+
+authCommand.addCommand(
+  new Command("bedrock")
+    .description("Use Amazon Bedrock with your AWS credentials or a Bedrock API key, and make it the active provider")
+    .option("--region <region>", "AWS region (default: AWS_REGION / AWS_DEFAULT_REGION / us-east-1)")
+    .action(async (cmdOpts: { region?: string }) => {
+      const { bedrockAuth } = await import("./providers/bedrock.js");
+      const { patchProviderSettings, switchProvider } = await import("./providers/keys.js");
+      if (!bedrockAuth()) {
+        console.error("No AWS credentials found. Set AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key), or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials (AWS_PROFILE). For SSO: eval \"$(aws configure export-credentials --format env)\".");
+        process.exit(1);
+      }
+      if (cmdOpts.region) await patchProviderSettings("bedrock", { region: cmdOpts.region });
+      await switchProvider(await loadConfig().catch(() => null), "bedrock");
+      console.log(`✓ Amazon Bedrock${cmdOpts.region ? ` (${cmdOpts.region})` : ""} is now the active provider.`);
+    }),
+);
 
 authCommand.addCommand(
   new Command("vertex")
