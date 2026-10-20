@@ -83,6 +83,8 @@ export interface LlmRequestPayload {
   messages_sha: string;
   tools_sha: string;
   estimated_tokens: number;
+  /** Bytes of the serialized body (uploaded in full on every call). */
+  body_bytes?: number;
 }
 
 export interface TraceToolCall {
@@ -108,6 +110,10 @@ export interface LlmResponsePayload {
   usage?: TraceUsage;
   generation_id?: string;
   latency_ms: number;
+  /** Request start → response headers: includes uploading the body, so slow uploads show up here. */
+  headers_ms?: number;
+  /** Request start → first streamed token. */
+  first_token_ms?: number;
   aborted: boolean;
   error?: string;
 }

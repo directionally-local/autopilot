@@ -840,6 +840,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
 
     logger.debug("turn:api_request", { sessionId: opts.sessionId, messageCount: apiMessages.length });
     const events = runKimi({
+      onLargeBody: (warning) => opts.callbacks.onWarning?.(warning),
       ...llmAuthOf(opts),
       model: opts.model,
       messages: apiMessages,
