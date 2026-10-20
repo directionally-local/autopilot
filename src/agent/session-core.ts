@@ -97,7 +97,9 @@ export function describeSubagentGuidance(guidance: SubagentGuidance): string | n
   if (guidance.kind === "none") return null;
   if (guidance.kind === "explicit-delegate") return "Subagent policy: respecting your explicit request to delegate. Worker calls still require permission.";
   if (guidance.kind === "explicit-sequential") return "Subagent policy: respecting your instruction to work without delegation.";
-  if (guidance.kind === "auto-delegate") return "Subagent policy: auto will assess this substantial task for independent work; worker calls remain permission-gated.";
+  // "auto" is the default and every worker call still asks permission:
+  // restating it each turn is noise.
+  if (guidance.kind === "auto-delegate") return null;
   const probability = guidance.probability === undefined ? "" : ` (Jev estimate: ${Math.round(guidance.probability * 100)}%)`;
   return `Subagent suggestion: independent work may help${probability}. No worker will launch without your confirmation.`;
 }
