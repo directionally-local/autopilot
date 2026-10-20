@@ -2,6 +2,7 @@ import { getUserAgent } from "../util/version.js";
 import { openRouterHeaders, openRouterUrl } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl } from "../models/requesty.js";
 import { providerPresetOf, usesRequesty, type LlmAuth } from "../agent/llm-auth.js";
+import { keyHeaders } from "../providers/presets.js";
 import { resolveCustomEndpoint } from "../agent/custom-endpoint.js";
 
 export interface EmbedOpts extends LlmAuth {
@@ -125,7 +126,7 @@ export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> 
   let headers: Record<string, string>;
   if (custom) {
     url = `${custom.baseUrl.replace(/\/+$/, "").replace(/\/chat\/completions$/, "")}/embeddings`;
-    headers = { "User-Agent": getUserAgent(), ...(custom.apiKey ? { Authorization: `Bearer ${custom.apiKey}` } : {}) };
+    headers = { "User-Agent": getUserAgent(), ...keyHeaders(custom.providerId, custom.apiKey) };
   } else if (requesty && opts.requestyApiKey) {
     url = requestyUrl("embeddings");
     headers = requestyHeaders(opts.requestyApiKey);

@@ -25,6 +25,20 @@ export const PROVIDER_IDS = [
   "anthropic",
   "gemini",
   "minimax",
+  "copilot",
+  "xai",
+  "mistral",
+  "groq",
+  "cerebras",
+  "together",
+  "fireworks",
+  "deepinfra",
+  "vercel",
+  "cloudflare",
+  "azure",
+  "chatgpt",
+  "vertex",
+  "bedrock",
   "zai",
   "zai-coding",
   "ollama",
@@ -57,6 +71,10 @@ export interface ProviderCompat {
   extraBody?: Record<string, unknown>;
   /** The model may stream its reasoning inline as `<think>…</think>` in the content; split it out. */
   thinkTags?: boolean;
+  /** Tool-call id format the API enforces: Mistral requires exactly 9 alphanumerics. */
+  toolIdFormat?: "mistral";
+  /** Extra headers on every request (e.g. Cerebras' integration header). */
+  headers?: Record<string, string>;
   /**
    * Reasoning fields to echo back on assistant history. DeepSeek and Kimi
    * thinking models require `reasoning_content` during tool loops; strict
@@ -86,17 +104,21 @@ export interface EmbeddingPreset {
  * Messages API, or the OpenAI Responses API. The agent loop always speaks
  * Chat Completions shapes; src/agent/protocols/ converts.
  */
-export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses";
+export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses" | "bedrock-converse";
 
 /** Where the model list for the picker comes from. */
-export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "none";
+export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "chatgpt" | "none";
 
 export interface ProviderPreset {
   id: ProviderId;
   /** Display name: "served through <name>", "/cost — <name>", error messages. */
   name: string;
-  /** Wire protocol; default "openai-chat". */
+  /** Wire protocol; default "openai-chat". A model's catalog entry can override it (Copilot). */
   protocol?: WireProtocol;
+  /** Billed by a subscription plan rather than per token (cost shows $0 with a note). */
+  subscription?: boolean;
+  /** How the key is sent: `Authorization: Bearer` (default) or Azure's `api-key` header. */
+  authHeader?: "bearer" | "api-key";
   /** OpenAI-compatible base URL (without /chat/completions). Unset for custom/OpenRouter/Requesty. */
   baseUrl?: string;
   /** Env vars that hold the key, in priority order. */
@@ -289,6 +311,239 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     },
     capabilities: NO_OPENROUTER_FEATURES,
   },
+  copilot: {
+    id: "copilot",
+    name: "GitHub Copilot",
+    // Overridden per account by the API base /copilot_internal/user reports (providers.copilot.baseUrl).
+    baseUrl: "https://api.githubcopilot.com",
+    // A Copilot OAuth token from `autopilot auth copilot`. Deliberately not GITHUB_TOKEN:
+    // ordinary PATs aren't Copilot tokens, and that variable is set in many CI environments.
+    apiKeyEnv: ["GITHUB_COPILOT_TOKEN"],
+    keyRequired: true,
+    statusUrl: "https://www.githubstatus.com",
+    subscription: true,
+    embedding: null,
+    catalog: "copilot",
+    // Per-model protocol from the live list: Claude → Messages, GPT-5+ → Responses, others → chat.
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, streamUsage: true, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  xai: {
+    id: "xai",
+    name: "xAI",
+    protocol: "openai-responses",
+    baseUrl: "https://api.x.ai/v1",
+    apiKeyEnv: ["XAI_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://console.x.ai",
+    statusUrl: "https://status.x.ai",
+    defaultModel: "grok-4.7",
+    plumbingModel: "grok-4.3",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "xai",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  mistral: {
+    id: "mistral",
+    name: "Mistral",
+    baseUrl: "https://api.mistral.ai/v1",
+    apiKeyEnv: ["MISTRAL_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://console.mistral.ai/api-keys",
+    statusUrl: "https://status.mistral.ai",
+    defaultModel: "mistral-large-4",
+    plumbingModel: "mistral-small-latest",
+    embedding: { model: "mistral-embed", dim: 1024 },
+    catalog: "models.dev",
+    modelsDevId: "mistral",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEffort: false, toolIdFormat: "mistral" },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  groq: {
+    id: "groq",
+    name: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    apiKeyEnv: ["GROQ_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://console.groq.com/keys",
+    statusUrl: "https://groqstatus.com",
+    defaultModel: "openai/gpt-oss-120b",
+    plumbingModel: "openai/gpt-oss-20b",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "groq",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", streamUsage: false },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  cerebras: {
+    id: "cerebras",
+    name: "Cerebras",
+    baseUrl: "https://api.cerebras.ai/v1",
+    apiKeyEnv: ["CEREBRAS_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://cloud.cerebras.ai",
+    defaultModel: "gpt-oss-120b",
+    plumbingModel: "gpt-oss-120b",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "cerebras",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_completion_tokens", headers: { "X-Cerebras-3rd-Party-Integration": "autopilot" } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  together: {
+    id: "together",
+    name: "Together AI",
+    baseUrl: "https://api.together.xyz/v1",
+    apiKeyEnv: ["TOGETHER_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://api.together.ai/settings/api-keys",
+    defaultModel: "deepseek-ai/DeepSeek-V4.1-Flash",
+    plumbingModel: "zai-org/GLM-5.3-Flash",
+    // Same model as OpenRouter's default, so memory vectors stay comparable.
+    embedding: { model: "BAAI/bge-base-en-v1.5", dim: 768 },
+    catalog: "models.dev",
+    modelsDevId: "togetherai",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEcho: { content: true, details: false } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  fireworks: {
+    id: "fireworks",
+    name: "Fireworks AI",
+    baseUrl: "https://api.fireworks.ai/inference/v1",
+    apiKeyEnv: ["FIREWORKS_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://app.fireworks.ai/settings/users/api-keys",
+    defaultModel: "accounts/fireworks/models/deepseek-v4p1-flash",
+    plumbingModel: "accounts/fireworks/models/deepseek-v4p1-flash",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "fireworks-ai",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEcho: { content: true, details: false } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  deepinfra: {
+    id: "deepinfra",
+    name: "DeepInfra",
+    baseUrl: "https://api.deepinfra.com/v1/openai",
+    apiKeyEnv: ["DEEPINFRA_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://deepinfra.com/dash/api_keys",
+    defaultModel: "deepseek-ai/DeepSeek-V4.1-Flash",
+    plumbingModel: "XiaomiMiMo/MiMo-V2.6-Flash",
+    embedding: { model: "BAAI/bge-base-en-v1.5", dim: 768 },
+    catalog: "models.dev",
+    modelsDevId: "deepinfra",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEcho: { content: true, details: false } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  vercel: {
+    id: "vercel",
+    name: "Vercel AI Gateway",
+    baseUrl: "https://ai-gateway.vercel.sh/v1",
+    apiKeyEnv: ["AI_GATEWAY_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://vercel.com/dashboard/ai-gateway",
+    defaultModel: "anthropic/claude-sonnet-5.5",
+    plumbingModel: "deepseek/deepseek-v4.1-flash-1017",
+    embedding: { model: "openai/text-embedding-3-small", dim: 1536 },
+    catalog: "models.dev",
+    modelsDevId: "vercel",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: true, details: false } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  cloudflare: {
+    id: "cloudflare",
+    name: "Cloudflare Workers AI",
+    // The account id is filled in from CLOUDFLARE_ACCOUNT_ID or `accountId` in config
+    // (configs from the Cloudflare-era kimiflare still have it).
+    baseUrl: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+    apiKeyEnv: ["CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"],
+    keyRequired: true,
+    keysUrl: "https://dash.cloudflare.com/profile/api-tokens",
+    statusUrl: "https://www.cloudflarestatus.com",
+    defaultModel: "@cf/zai-org/glm-5.3",
+    plumbingModel: "@cf/zai-org/glm-5.3-flash",
+    // The model kimiflare's Cloudflare-era memory used: old memory databases stay comparable.
+    embedding: { model: "@cf/baai/bge-base-en-v1.5", dim: 768 },
+    catalog: "models.dev",
+    modelsDevId: "cloudflare-workers-ai",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  azure: {
+    id: "azure",
+    name: "Azure OpenAI",
+    protocol: "openai-responses",
+    // Azure OpenAI's v1 API (no api-version needed). The resource comes from
+    // AZURE_RESOURCE_NAME, or set providers.azure.baseUrl
+    // (`autopilot auth azure --resource <name>` does).
+    baseUrl: "https://${AZURE_RESOURCE_NAME}.openai.azure.com/openai/v1",
+    apiKeyEnv: ["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
+    authHeader: "api-key",
+    keyRequired: true,
+    keysUrl: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/OpenAI",
+    statusUrl: "https://azure.status.microsoft",
+    // Model ids are your deployment names: discovered from the resource.
+    embedding: null,
+    catalog: "azure",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  chatgpt: {
+    id: "chatgpt",
+    name: "ChatGPT",
+    // Token sharing: your ChatGPT plan's GPT models through the normal Responses API.
+    protocol: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+    // Set by `autopilot auth chatgpt` (refreshed automatically); the env var is for short headless runs.
+    apiKeyEnv: ["CHATGPT_ACCESS_TOKEN"],
+    keyRequired: true,
+    statusUrl: "https://status.openai.com",
+    subscription: true,
+    defaultModel: "gpt-6.1-sol",
+    plumbingModel: "gpt-6-luna",
+    embedding: null,
+    catalog: "chatgpt",
+    modelsDevId: "openai",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  vertex: {
+    id: "vertex",
+    name: "Google Vertex AI",
+    // Built from the project and location (src/providers/vertex.ts); Claude goes to
+    // Anthropic's Messages API on Vertex, everything else to the OpenAI-compatible endpoint.
+    apiKeyEnv: ["GOOGLE_VERTEX_ACCESS_TOKEN"],
+    keyRequired: false,
+    keysUrl: "https://cloud.google.com/docs/authentication/provide-credentials-adc",
+    statusUrl: "https://status.cloud.google.com",
+    defaultModel: "gemini-3.8-flash",
+    plumbingModel: "gemini-3.5-flash-lite",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "google-vertex",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, toolCallExtras: true, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  bedrock: {
+    id: "bedrock",
+    name: "Amazon Bedrock",
+    protocol: "bedrock-converse",
+    // Built from the region (src/providers/bedrock.ts); credentials are AWS's (SigV4) or a Bedrock API key.
+    apiKeyEnv: ["AWS_BEARER_TOKEN_BEDROCK"],
+    keyRequired: false,
+    keysUrl: "https://console.aws.amazon.com/bedrock/home#/api-keys",
+    statusUrl: "https://health.aws.amazon.com/health/status",
+    defaultModel: "global.anthropic.claude-sonnet-5-5",
+    plumbingModel: "global.anthropic.claude-haiku-5-5",
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "amazon-bedrock",
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
   "kimi-code": {
     id: "kimi-code",
     name: "Kimi Code",
@@ -361,4 +616,10 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
 
 export function getPreset(id: ProviderId): ProviderPreset {
   return PROVIDER_PRESETS[id];
+}
+
+/** The auth header(s) a provider expects for `key` (Bearer for all but Azure's api-key). */
+export function keyHeaders(id: ProviderId | undefined, key: string | undefined): Record<string, string> {
+  if (!key) return {};
+  return id && PROVIDER_PRESETS[id].authHeader === "api-key" ? { "api-key": key } : { Authorization: `Bearer ${key}` };
 }

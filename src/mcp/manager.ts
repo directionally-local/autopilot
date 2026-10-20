@@ -102,22 +102,4 @@ export class McpManager {
     }
     return out;
   }
-
-  /** Export a compact MCP context summary for multi-agent workers. */
-  exportContext(): string {
-    const servers = this.listServers();
-    if (servers.length === 0) return "";
-    const lines = ["Available MCP servers:"];
-    for (const s of servers) {
-      lines.push(`- ${s.name} (${s.type}, ${s.toolCount} tools)`);
-      // Also list tool names for each server
-      const conn = this.connections.get(s.name);
-      if (conn) {
-        for (const entry of conn.tools.slice(0, 20)) {
-          lines.push(`  - ${entry.spec.name}: ${entry.spec.description.split("\n")[0]}`);
-        }
-      }
-    }
-    return lines.join("\n");
-  }
 }

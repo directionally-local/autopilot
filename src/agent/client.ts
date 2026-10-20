@@ -1,3 +1,4 @@
+import * as zlib from "node:zlib";
 import { readSSE } from "../util/sse.js";
 import { KimiApiError } from "../util/errors.js";
 import { getUserAgent } from "../util/version.js";
@@ -15,8 +16,17 @@ import {
   type LlmDumpResponse,
 } from "../util/llm-dump.js";
 import { getModelOrInfer, vendorOf } from "../models/registry.js";
-import { getPreset, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
-import { anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
+import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
+import { copilotRequestHeaders } from "../providers/copilot.js";
+import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
+import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
+import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
+
+/** "https://bedrock-runtime.us-west-2.amazonaws.com/…" → "us-west-2". */
+function bedrockRegionOf(url: string): string {
+  return /bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com/.exec(url)?.[1] ?? "us-east-1";
+}
 import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
@@ -89,6 +99,8 @@ const MAX_ATTEMPTS = 5;
 
 function isRetryable(err: KimiApiError, attempt: number, openrouter = true): boolean {
   if (attempt >= MAX_ATTEMPTS - 1) return false;
+  // ChatGPT token sharing: usage limits and eligibility don't change on retry (even as a 429).
+  if (NON_RETRYABLE_SHARING_CODES.some((c) => err.message.includes(c))) return false;
   if (err.httpStatus === 408 || err.httpStatus === 429) return true;
   // OpenRouter's 402 "in-flight budget" is transient (a concurrent request is
   // holding the key's remaining credit); a plain out-of-credits 402 is not.
@@ -104,7 +116,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   const customEndpoint = opts.customEndpoint ?? resolveCustomEndpoint();
   const requesty = !customEndpoint && !opts.openrouterApiKey && !!opts.requestyApiKey;
   const requestId = opts.requestId ?? crypto.randomUUID();
-  const { url, headers: targetHeaders } = buildKimiRequestTarget(opts, customEndpoint, requesty);
+  let { url, headers: targetHeaders } = buildKimiRequestTarget(opts, customEndpoint, requesty);
   // Per-model capability gates, from the OpenRouter catalog. OpenRouter drops
   // params a model doesn't support, but a few models reject a supported param
   // outright for non-default values (Kimi K3 only allows temperature=1).
@@ -120,7 +132,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   );
   const body: Record<string, unknown> = {
     model: opts.model,
-    messages: sanitizeMessagesForApi(stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField)),
+    messages: sanitizeMessagesForApi(
+      normalizeToolIds(stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField), preset.compat.toolIdFormat),
+    ),
     stream: true,
   };
   if (customEndpoint || requesty) {
@@ -183,8 +197,12 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
 
   // The wire body: Chat Completions as built above, or converted for
   // providers that speak another protocol (src/agent/protocols/).
-  const protocol = customEndpoint ? (preset.protocol ?? "openai-chat") : "openai-chat";
-  const wireBody: Record<string, unknown> =
+  // A model's catalog entry can pick the protocol (Copilot serves Claude over
+  // Messages and GPT-5 over Responses from one account); Vertex routes Claude
+  // to Anthropic's Messages API by model name.
+  const vertex = customEndpoint?.providerId === "vertex" ? vertexTarget(customEndpoint.baseUrl.replace(/\/+$/, ""), opts.model) : null;
+  const protocol = vertex?.protocol ?? (customEndpoint ? (entry.protocol ?? preset.protocol ?? "openai-chat") : "openai-chat");
+  let wireBody: Record<string, unknown> =
     protocol === "anthropic-messages"
       ? toAnthropicRequest({
           model: opts.model,
@@ -198,6 +216,17 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
           reasoningEfforts: entry.reasoningEfforts,
           reasoningBudget: entry.reasoningBudget,
         })
+      : protocol === "bedrock-converse"
+        ? toConverseRequest({
+            model: opts.model,
+            messages: body.messages as ChatMessage[],
+            tools: hasTools ? opts.tools : undefined,
+            maxTokens,
+            temperature: opts.temperature,
+            reasoningEffort: opts.reasoningEffort,
+            supportsReasoning,
+            supportsTemperature,
+          })
       : protocol === "openai-responses"
         ? toResponsesRequest({
             model: opts.model,
@@ -212,6 +241,46 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
             parallelToolCalls: preset.compat.parallelToolCalls,
           })
         : body;
+
+  if (customEndpoint && preset.id === "copilot") {
+    // Copilot routes by endpoint and needs its own headers per request.
+    const base = customEndpoint.baseUrl.replace(/\/+$/, "");
+    url = protocol === "anthropic-messages" ? `${base}/v1/messages` : protocol === "openai-responses" ? `${base}/responses` : `${base}/chat/completions`;
+    targetHeaders = {
+      ...copilotRequestHeaders(customEndpoint.apiKey, wireBody, protocol),
+      ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}),
+    };
+  }
+
+  // Bedrock: the model is in the URL; SigV4 headers are computed per attempt (they cover the body and time).
+  const bedrock = customEndpoint?.providerId === "bedrock" ? bedrockAuth() : undefined;
+  if (customEndpoint?.providerId === "bedrock") {
+    url = converseUrl(customEndpoint.baseUrl, opts.model);
+    targetHeaders = {};
+    if (!bedrock) {
+      throw new KimiApiError(
+        "kimiflare: no AWS credentials for Bedrock — set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials.",
+        undefined,
+        401,
+      );
+    }
+  }
+
+  if (vertex) {
+    url = vertex.url;
+    if (protocol === "anthropic-messages") wireBody = toVertexAnthropicBody(wireBody);
+    else if (vertex.bodyModel) wireBody = { ...wireBody, model: vertex.bodyModel };
+    targetHeaders = {
+      Authorization: `Bearer ${await vertexAccessToken()}`,
+      ...(protocol === "anthropic-messages" ? { "anthropic-version": ANTHROPIC_VERSION } : {}),
+    };
+  }
+
+  if (customEndpoint?.providerId === "chatgpt") {
+    // A fresh token (refreshed shortly before expiry) and the Codex session headers.
+    const token = (await chatgptAccessToken()) ?? customEndpoint.apiKey;
+    targetHeaders = { ...targetHeaders, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...chatgptSessionHeaders(opts.sessionId) };
+  }
 
   // Observers of the finalized request body: the debug payload dump
   // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body
@@ -313,10 +382,12 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       };
       if (opts.sessionId) headers["X-Session-ID"] = opts.sessionId;
       headers["X-Request-ID"] = requestId;
+      const serialized = stableStringify(wireBody, jsonReplacer);
+      if (bedrock) Object.assign(headers, bedrockHeaders(bedrock, url, serialized, bedrockRegionOf(url)));
       res = await fetch(url, {
         method: "POST",
         headers,
-        body: stableStringify(wireBody, jsonReplacer),
+        body: customEndpoint?.providerId === "chatgpt" ? compressLargeBody(serialized, headers) : serialized,
         signal: opts.signal,
       });
     } catch (fetchErr) {
@@ -343,7 +414,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // Errors come back as JSON (not SSE): OpenRouter's { error: { code,
     // message } } or an OpenAI-style error from a custom endpoint. Retry the
     // transient ones (408/429/5xx); surface everything else with a fix.
-    if (!contentType.includes("text/event-stream")) {
+    // Bedrock streams AWS's binary event stream, not SSE.
+    const streaming = protocol === "bedrock-converse" ? res.ok && contentType.includes("eventstream") : contentType.includes("text/event-stream");
+    if (!streaming) {
       if (res.bodyUsed) {
         throw new KimiApiError(
           `kimiflare: Received HTTP ${res.status} but could not read the response body. Please try again.`,
@@ -396,6 +469,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       const events =
         protocol === "anthropic-messages"
           ? parseAnthropicStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
+          : protocol === "bedrock-converse"
+            ? parseConverseStream(res.body, opts.signal)
           : protocol === "openai-responses"
             ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
             : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs, customEndpoint ? preset.compat.thinkTags === true : false);
@@ -417,6 +492,21 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     logger.debug("runKimi:stream_end", { requestId });
     return;
   }
+}
+
+/**
+ * ChatGPT token sharing rejects uncompressed request bodies over ~1 MiB and
+ * accepts zstd. Compress large bodies when this Node has zstd (22.15+);
+ * otherwise send them as they are.
+ */
+export function compressLargeBody(serialized: string, headers: Record<string, string>, threshold = 512 * 1024): string | Uint8Array<ArrayBuffer> {
+  const zstd = (zlib as { zstdCompressSync?: (b: Buffer) => Buffer }).zstdCompressSync;
+  if (Buffer.byteLength(serialized) < threshold || !zstd) return serialized;
+  headers["Content-Encoding"] = "zstd";
+  const compressed = zstd(Buffer.from(serialized));
+  const out = new Uint8Array(new ArrayBuffer(compressed.byteLength));
+  out.set(compressed);
+  return out;
 }
 
 function isAbortError(e: unknown): boolean {
@@ -604,11 +694,14 @@ function buildKimiRequestTarget(
     const base = customEndpoint.baseUrl.replace(/\/+$/, "");
     if (protocol === "anthropic-messages") return { url: `${base}/messages`, headers: anthropicHeaders(customEndpoint.apiKey) };
     if (protocol === "openai-responses") {
-      return { url: `${base}/responses`, headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {} };
+      return { url: `${base}/responses`, headers: keyHeaders(customEndpoint.providerId, customEndpoint.apiKey) };
     }
     return {
       url: customChatCompletionsUrl(customEndpoint.baseUrl),
-      headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {},
+      headers: {
+        ...(customEndpoint.providerId ? getPreset(customEndpoint.providerId).compat.headers : {}),
+        ...keyHeaders(customEndpoint.providerId, customEndpoint.apiKey),
+      },
     };
   }
 
@@ -886,6 +979,49 @@ export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderComp
       ...(keepDetails && reasoning_details !== undefined ? { reasoning_details } : {}),
       ...(hasExtras ? { tool_calls: m.tool_calls!.map(({ extra_content: _drop, ...tc }) => tc) } : {}),
     };
+  });
+}
+
+/**
+ * Rewrite tool-call ids into the format a provider enforces. Mistral accepts
+ * only exactly nine alphanumerics; ids from other providers ("call_…",
+ * "toolu_…") are hashed to nine characters, the same way for a call and its
+ * result, with collisions resolved. Ids already in the format are kept.
+ */
+export function normalizeToolIds(messages: ChatMessage[], format: "mistral" | undefined): ChatMessage[] {
+  if (format !== "mistral") return messages;
+  const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  const toMistral = (id: string): string => {
+    const known = map.get(id);
+    if (known) return known;
+    let out: string;
+    if (/^[A-Za-z0-9]{9}$/.test(id) && !used.has(id)) out = id;
+    else {
+      let h = 2166136261;
+      for (let salt = 0; ; salt++) {
+        for (const ch of `${id}#${salt}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+        let n = h;
+        let s = "";
+        for (let i = 0; i < 9; i++) {
+          s += ALPHA[n % 62];
+          n = Math.imul(n, 31) + 7 + i >>> 0;
+        }
+        if (!used.has(s)) {
+          out = s;
+          break;
+        }
+      }
+    }
+    map.set(id, out!);
+    used.add(out!);
+    return out!;
+  };
+  return messages.map((m) => {
+    if (m.role === "assistant" && m.tool_calls?.length) return { ...m, tool_calls: m.tool_calls.map((tc) => ({ ...tc, id: toMistral(tc.id) })) };
+    if (m.role === "tool" && m.tool_call_id) return { ...m, tool_call_id: toMistral(m.tool_call_id) };
+    return m;
   });
 }
 

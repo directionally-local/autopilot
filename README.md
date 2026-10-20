@@ -91,12 +91,22 @@ Requires Node.js ≥ 20.
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | native Messages API: extended/adaptive thinking, explicit prompt caching (API keys only — Claude Pro/Max sign-in isn't permitted for third-party tools) |
 | OpenAI | `openai` | `OPENAI_API_KEY` | Responses API: reasoning carries across tool loops (encrypted, stateless), codex models |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | OpenAI-compatible endpoint; Gemini 3 thought signatures are kept with each tool call |
+| ChatGPT (Plus/Pro/Team plan) | `chatgpt` | `autopilot auth chatgpt` (browser sign-in with token sharing) | your plan's GPT models over the Responses API; tokens refresh automatically; usage counts against your plan. Uses OpenAI's official token-sharing sign-in, not the Codex backend |
+| GitHub Copilot | `copilot` | `autopilot auth copilot` (GitHub device login; `--enterprise <domain>`) | your Copilot plan's models — Claude over Messages, GPT over Responses; usage counts as premium requests. Not a documented public API, so GitHub may change it |
+| Google Vertex AI | `vertex` | Google credentials (`gcloud auth application-default login`, a service-account key in `GOOGLE_APPLICATION_CREDENTIALS`, or `GOOGLE_VERTEX_ACCESS_TOKEN`) + `GOOGLE_VERTEX_PROJECT` (or `autopilot auth vertex --project …`) | Gemini and partner models through Vertex's OpenAI-compatible endpoint, Claude through Anthropic's Messages API on Vertex; location `GOOGLE_VERTEX_LOCATION` (default `global`) |
+| Amazon Bedrock | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` (Bedrock API key), or AWS credentials (env or `~/.aws/credentials` / `AWS_PROFILE`; for SSO, `eval "$(aws configure export-credentials --format env)"`); region `AWS_REGION` | Converse API with SigV4 signing; Claude thinking and prompt caching; inference-profile ids like `global.anthropic.claude-sonnet-5-5` |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` | OpenAI-compatible endpoint with split reasoning (`<think>` tags are separated out if they appear) |
 | Moonshot AI (Kimi) | `moonshot` | `MOONSHOT_API_KEY` | |
 | Kimi Code (subscription) | `kimi-code` | `KIMI_API_KEY` | |
 | Z.ai (GLM) | `zai` | `ZHIPU_API_KEY` | |
 | Z.ai GLM Coding Plan | `zai-coding` | `ZHIPU_API_KEY` | |
+| xAI | `xai` | `XAI_API_KEY` | Grok over the Responses API |
+| Mistral | `mistral` | `MISTRAL_API_KEY` | tool-call ids adapted to Mistral's format; `mistral-embed` |
+| Groq · Cerebras · Together AI · Fireworks AI · DeepInfra | `groq` · `cerebras` · `together` · `fireworks` · `deepinfra` | `GROQ_API_KEY` · `CEREBRAS_API_KEY` · `TOGETHER_API_KEY` · `FIREWORKS_API_KEY` · `DEEPINFRA_API_KEY` | fast / open-model hosts |
+| Vercel AI Gateway | `vercel` | `AI_GATEWAY_API_KEY` | many vendors with one key |
+| Cloudflare Workers AI | `cloudflare` | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (or `autopilot auth cloudflare --account-id …`) | Cloudflare-era kimiflare configs reuse their credentials, and memory stays on `bge-base-en-v1.5`. For **AI Gateway**, use its OpenAI-compatible URL as a `custom` endpoint |
+| Azure OpenAI | `azure` | `AZURE_API_KEY` + `AZURE_RESOURCE_NAME` (or `autopilot auth azure --resource <name>`) | v1 API over Responses; model ids are your deployment names, discovered from the resource. Entra ID sign-in isn't supported yet — use a key |
 | Ollama (local) | `ollama` | none | installed models are discovered; `providers.ollama.baseUrl` for another host |
 | LM Studio (local) | `lmstudio` | none | |
 | Requesty | `requesty` | `REQUESTY_API_KEY` | |
