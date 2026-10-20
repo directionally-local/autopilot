@@ -104,6 +104,7 @@ import { compactAfterTurn, compactMidTurn, type AutoCompactionDeps } from "./age
 import { prepareAutoFresh } from "./agent/auto-fresh.js";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents } from "./ui/turn-callbacks.js";
 import { buildPromptContent, expandCustomCommand, turnReasoningEffort } from "./ui/prepare-prompt.js";
+import { freshSuggestion, INIT_TIP, turnNudges } from "./ui/turn-nudges.js";
 import { classifyNextMessage, makeTurnId } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 import { distillSessionPlan } from "./agent/distill.js";
@@ -852,6 +853,18 @@ function App({
         }),
     });
 
+  /** Start a fresh session from a continuation summary (after a silent checkpoint), with a notice. */
+  const runAutoFresh = async (notice: string): Promise<void> => {
+    try {
+      const summary = await prepareAutoFreshNow();
+      if (!summary) return;
+      executeFreshStart(buildSlashContext(), summary);
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
+    } catch (e) {
+      setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` }]);
+    }
+  };
+
   /** Mid-turn compaction hook: called between tool-iteration cycles in runAgentTurn.
    *  Prevents context overflow during long exploration sessions. */
   const onIterationEnd = useCallback(
@@ -1533,57 +1546,22 @@ function App({
         }
       }
 
-      // Occasional gentle nudge about /init (educational, not a warning)
+      // Occasional /init tip; for long auto/edit sessions, suggest /fresh or start fresh.
       turnCounterRef.current += 1;
-      if (
-        turnCounterRef.current % 15 === 0 &&
-        ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))) &&
-        !kimiMdStale
-      ) {
-        setEvents((e) => [
-          ...e,
-          { kind: "info", key: mkKey(), text: "Tip: Rerunning /init occasionally helps autopilot (formerly kimiflare) stay accurate as your project evolves." },
-        ]);
-      }
-
-      // Auto-fresh suggestion for long auto/edit sessions
-      const autoFreshThreshold = cfg?.autoFreshSuggestionTurns ?? DEFAULT_AUTO_FRESH_SUGGESTION_TURNS;
-      if (
-        autoFreshThreshold > 0 &&
-        turnCounterRef.current >= autoFreshThreshold &&
-        (modeRef.current === "auto" || modeRef.current === "edit") &&
-        !freshSuggestedRef.current
-      ) {
+      const nudges = turnNudges({
+        turn: turnCounterRef.current,
+        hasContextFile: ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))),
+        contextStale: kimiMdStale,
+        mode: modeRef.current,
+        freshAfterTurns: cfg?.autoFreshSuggestionTurns ?? DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
+        freshSuggested: freshSuggestedRef.current,
+        autoFreshEnabled: cfg?.autoFreshEnabled === true,
+      });
+      if (nudges.initTip) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: INIT_TIP }]);
+      if (nudges.fresh) {
         freshSuggestedRef.current = true;
-        if (cfg?.autoFreshEnabled) {
-          // Auto-execute /fresh after a silent checkpoint
-          void (async () => {
-            try {
-              const summary = await prepareAutoFreshNow();
-              if (summary) {
-                executeFreshStart(buildSlashContext(), summary);
-                setEvents((e) => [
-                  ...e,
-                  { kind: "info", key: mkKey(), text: "Auto-fresh triggered: starting new session with continuation context…" },
-                ]);
-              }
-            } catch (e) {
-              setEvents((es) => [
-                ...es,
-                { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` },
-              ]);
-            }
-          })();
-        } else {
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "info",
-              key: mkKey(),
-              text: `Session has run for ${turnCounterRef.current} turns. The model may slow down with accumulated context. Run /fresh to continue with a summarized state, or /compact to compress history.`,
-            },
-          ]);
-        }
+        if (nudges.fresh === "auto") void runAutoFresh("Auto-fresh triggered: starting new session with continuation context…");
+        else setEvents((e) => [...e, { kind: "info", key: mkKey(), text: freshSuggestion(turnCounterRef.current) }]);
       }
 
       responseMetaRef.current = null;
@@ -1827,22 +1805,9 @@ function App({
                 autoCompactionDeps(turnId),
               );
               if (tokensAfterAggressive !== null && tokensAfterAggressive > (cfg?.autoFreshTokenThreshold ?? 2_000_000)) {
-                try {
-                  const summary = await prepareAutoFreshNow();
-                  if (summary) {
-                    executeFreshStart(buildSlashContext(), summary);
-                    setEvents((e) => [
-                      ...e,
-                      {
-                        kind: "info",
-                        key: mkKey(),
-                        text: `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
-                      },
-                    ]);
-                  }
-                } catch (e) {
-                  setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` }]);
-                }
+                await runAutoFresh(
+                  `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
+                );
               }
             })();
 
