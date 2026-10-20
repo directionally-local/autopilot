@@ -10,6 +10,10 @@ import {
   setHookEnabled,
   globalSettingsPath,
   projectSettingsPath,
+  legacyGlobalSettingsPath,
+  legacyProjectSettingsPath,
+  hookSettingsLocations,
+  legacyOnlyHookPaths,
   deriveHookId,
   SettingsFileError,
 } from "./settings.js";
@@ -37,8 +41,9 @@ beforeEach(() => {
   projectDir = mkdtempSync(join(tmpdir(), "hooks-project-"));
   // Wipe the sandboxed global settings between tests so tests don't
   // see each other's writes.
-  const gp = globalSettingsPath();
-  if (existsSync(gp)) rmSync(gp, { force: true });
+  for (const gp of [globalSettingsPath(), legacyGlobalSettingsPath()]) {
+    if (existsSync(gp)) rmSync(gp, { force: true });
+  }
 });
 
 describe("loadHooksSettings", () => {
@@ -48,7 +53,7 @@ describe("loadHooksSettings", () => {
   });
 
   it("loads + normalizes a project settings file", () => {
-    mkdirSync(join(projectDir, ".kimiflare"), { recursive: true });
+    mkdirSync(dirname(projectSettingsPath(projectDir)), { recursive: true });
     writeFileSync(
       projectSettingsPath(projectDir),
       JSON.stringify({
@@ -66,7 +71,7 @@ describe("loadHooksSettings", () => {
   });
 
   it("drops malformed hook entries silently", () => {
-    mkdirSync(join(projectDir, ".kimiflare"), { recursive: true });
+    mkdirSync(dirname(projectSettingsPath(projectDir)), { recursive: true });
     writeFileSync(
       projectSettingsPath(projectDir),
       JSON.stringify({
@@ -87,14 +92,14 @@ describe("loadHooksSettings", () => {
   });
 
   it("does not crash on invalid JSON", () => {
-    mkdirSync(join(projectDir, ".kimiflare"), { recursive: true });
+    mkdirSync(dirname(projectSettingsPath(projectDir)), { recursive: true });
     writeFileSync(projectSettingsPath(projectDir), "{not valid json", "utf8");
     const cfg = loadHooksSettings(projectDir);
     assert.deepStrictEqual(cfg, { hooks: {} });
   });
 
   it("merges global + project (project entries listed after global)", () => {
-    mkdirSync(join(xdgDir, "kimiflare"), { recursive: true });
+    mkdirSync(dirname(globalSettingsPath()), { recursive: true });
     writeFileSync(
       globalSettingsPath(),
       JSON.stringify({
@@ -104,7 +109,7 @@ describe("loadHooksSettings", () => {
       }),
       "utf8",
     );
-    mkdirSync(join(projectDir, ".kimiflare"), { recursive: true });
+    mkdirSync(dirname(projectSettingsPath(projectDir)), { recursive: true });
     writeFileSync(
       projectSettingsPath(projectDir),
       JSON.stringify({
@@ -123,7 +128,7 @@ describe("loadHooksSettings", () => {
   });
 
   it("preserves explicit enabled=false", () => {
-    mkdirSync(join(projectDir, ".kimiflare"), { recursive: true });
+    mkdirSync(dirname(projectSettingsPath(projectDir)), { recursive: true });
     writeFileSync(
       projectSettingsPath(projectDir),
       JSON.stringify({
@@ -303,3 +308,107 @@ describe("appendHook + setHookEnabled", () => {
 
 // Silence unused homedir import in some test environments.
 void homedir;
+
+function writeJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(value), "utf8");
+}
+
+describe("settings locations (#887)", () => {
+  it("names the autopilot paths as canonical and the kimiflare ones as legacy, honouring XDG_CONFIG_HOME", () => {
+    assert.strictEqual(globalSettingsPath(), join(xdgDir, "autopilot", "settings.json"));
+    assert.strictEqual(legacyGlobalSettingsPath(), join(xdgDir, "kimiflare", "settings.json"));
+    assert.strictEqual(projectSettingsPath(projectDir), join(projectDir, ".autopilot", "settings.json"));
+    assert.strictEqual(legacyProjectSettingsPath(projectDir), join(projectDir, ".kimiflare", "settings.json"));
+    assert.deepStrictEqual(
+      hookSettingsLocations(projectDir).map((l) => l.path),
+      [legacyGlobalSettingsPath(), globalSettingsPath(), legacyProjectSettingsPath(projectDir), projectSettingsPath(projectDir)],
+    );
+  });
+
+  it("falls back to ~/.config when XDG_CONFIG_HOME is unset", () => {
+    const saved = process.env.XDG_CONFIG_HOME;
+    delete process.env.XDG_CONFIG_HOME;
+    try {
+      assert.strictEqual(globalSettingsPath(), join(homedir(), ".config", "autopilot", "settings.json"));
+      assert.strictEqual(legacyGlobalSettingsPath(), join(homedir(), ".config", "kimiflare", "settings.json"));
+    } finally {
+      process.env.XDG_CONFIG_HOME = saved;
+    }
+  });
+
+  it("reads hooks that live only in the legacy kimiflare paths", () => {
+    writeJson(legacyGlobalSettingsPath(), { hooks: { Stop: [{ command: "old-global" }] } });
+    writeJson(legacyProjectSettingsPath(projectDir), { hooks: { Stop: [{ command: "old-project" }] } });
+    const stop = loadHooksSettings(projectDir).hooks!.Stop!;
+    assert.deepStrictEqual(stop.map((h) => [h.command, h.source]), [["old-global", "global"], ["old-project", "project"]]);
+    assert.deepStrictEqual(legacyOnlyHookPaths(projectDir), [legacyGlobalSettingsPath(), legacyProjectSettingsPath(projectDir)]);
+  });
+
+  it("reads hooks that live only in the autopilot paths", () => {
+    writeJson(globalSettingsPath(), { hooks: { Stop: [{ command: "new-global" }] } });
+    writeJson(projectSettingsPath(projectDir), { hooks: { Stop: [{ command: "new-project" }] } });
+    const stop = loadHooksSettings(projectDir).hooks!.Stop!;
+    assert.deepStrictEqual(stop.map((h) => [h.command, h.source]), [["new-global", "global"], ["new-project", "project"]]);
+    assert.deepStrictEqual(legacyOnlyHookPaths(projectDir), []);
+  });
+
+  it("merges all four files in order: global kimiflare, global autopilot, project kimiflare, project autopilot", () => {
+    writeJson(legacyGlobalSettingsPath(), { hooks: { Stop: [{ command: "a" }] } });
+    writeJson(globalSettingsPath(), { hooks: { Stop: [{ command: "b" }] } });
+    writeJson(legacyProjectSettingsPath(projectDir), { hooks: { Stop: [{ command: "c" }] } });
+    writeJson(projectSettingsPath(projectDir), { hooks: { Stop: [{ command: "d" }] } });
+    assert.deepStrictEqual(loadHooksSettings(projectDir).hooks!.Stop!.map((h) => h.command), ["a", "b", "c", "d"]);
+    assert.deepStrictEqual(legacyOnlyHookPaths(projectDir), []);
+  });
+
+  it("a later entry with the same id replaces an earlier one (and takes its position)", () => {
+    writeJson(legacyGlobalSettingsPath(), { hooks: { Stop: [{ id: "bell", command: "old" }, { command: "keep" }] } });
+    writeJson(projectSettingsPath(projectDir), { hooks: { Stop: [{ id: "bell", command: "new", enabled: false }] } });
+    const stop = loadHooksSettings(projectDir).hooks!.Stop!;
+    assert.deepStrictEqual(stop.map((h) => [h.command, h.source, h.enabled]), [["keep", "global", true], ["new", "project", false]]);
+  });
+
+  it("a hook copied verbatim from the legacy file to the autopilot file runs once", () => {
+    const hooks = { PreToolUse: [{ matcher: "bash", command: "echo guard" }] };
+    writeJson(legacyProjectSettingsPath(projectDir), { hooks });
+    writeJson(projectSettingsPath(projectDir), { hooks });
+    assert.strictEqual(loadHooksSettings(projectDir).hooks!.PreToolUse!.length, 1);
+  });
+
+  it("only flags the legacy file whose own scope has no autopilot hooks", () => {
+    writeJson(legacyGlobalSettingsPath(), { hooks: { Stop: [{ command: "a" }] } });
+    writeJson(globalSettingsPath(), { hooks: { Stop: [{ command: "b" }] } });
+    writeJson(legacyProjectSettingsPath(projectDir), { hooks: { Stop: [{ command: "c" }] } });
+    assert.deepStrictEqual(legacyOnlyHookPaths(projectDir), [legacyProjectSettingsPath(projectDir)]);
+    // A legacy file without hooks (other settings only) is not flagged.
+    writeJson(legacyProjectSettingsPath(projectDir), { other: true });
+    assert.deepStrictEqual(legacyOnlyHookPaths(projectDir), []);
+  });
+
+  it("appendHook writes new hooks to the autopilot path, leaving the legacy file untouched", () => {
+    writeJson(legacyProjectSettingsPath(projectDir), { hooks: { Stop: [{ command: "old" }] } });
+    const before = readFileSync(legacyProjectSettingsPath(projectDir), "utf8");
+    assert.strictEqual(appendHook("project", projectDir, "Stop", { command: "new" }), projectSettingsPath(projectDir));
+    assert.strictEqual(appendHook("global", projectDir, "Stop", { command: "g" }), globalSettingsPath());
+    assert.strictEqual(readFileSync(legacyProjectSettingsPath(projectDir), "utf8"), before);
+    assert.ok(!existsSync(legacyGlobalSettingsPath()));
+    assert.deepStrictEqual(loadHooksSettings(projectDir).hooks!.Stop!.map((h) => h.command), ["g", "old", "new"]);
+  });
+
+  it("setHookEnabled edits a legacy hook in the legacy file it lives in", () => {
+    writeJson(legacyGlobalSettingsPath(), { hooks: { Stop: [{ id: "g-old", command: "x" }] } });
+    writeJson(legacyProjectSettingsPath(projectDir), { hooks: { Stop: [{ id: "p-old", command: "y" }] } });
+    assert.strictEqual(setHookEnabled(projectDir, "g-old", false), legacyGlobalSettingsPath());
+    assert.strictEqual(setHookEnabled(projectDir, "p-old", false), legacyProjectSettingsPath(projectDir));
+    assert.ok(!existsSync(globalSettingsPath()) && !existsSync(projectSettingsPath(projectDir)), "nothing moved");
+    assert.deepStrictEqual(loadHooksSettings(projectDir).hooks!.Stop!.map((h) => h.enabled), [false, false]);
+  });
+
+  it("setHookEnabled edits the entry that takes effect when an id is in several files", () => {
+    writeJson(legacyProjectSettingsPath(projectDir), { hooks: { Stop: [{ id: "dup", command: "x" }] } });
+    writeJson(projectSettingsPath(projectDir), { hooks: { Stop: [{ id: "dup", command: "x" }] } });
+    assert.strictEqual(setHookEnabled(projectDir, "dup", false), projectSettingsPath(projectDir));
+    assert.strictEqual(loadHooksSettings(projectDir).hooks!.Stop![0]!.enabled, false);
+  });
+});

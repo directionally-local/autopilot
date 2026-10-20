@@ -11,7 +11,7 @@ Neither ever contains API keys or provider tokens. OTel events carry sizes, name
 
 ## Hooks
 
-Until Beacon ships an `autopilot` platform, use its Claude Code mode. Add this to `~/.config/kimiflare/settings.json`, or to `.kimiflare/settings.json` for a single project:
+Until Beacon ships an `autopilot` platform, use its Claude Code mode. Add this to `~/.config/autopilot/settings.json`, or to `.autopilot/settings.json` for a single project (see [Settings location](#settings-location)):
 
 ```json
 {
@@ -31,9 +31,24 @@ With Beacon's endpoint installed, sessions appear as `session.started` / `sessio
 
 Run `/hooks reload` in a running session to pick up the change.
 
+### Settings location
+
+The canonical hook settings files, which an installer should write, are:
+
+- global: `$XDG_CONFIG_HOME/autopilot/settings.json` (default `~/.config/autopilot/settings.json`)
+- project: `<project>/.autopilot/settings.json`
+
+Autopilot still reads the legacy `~/.config/kimiflare/settings.json` and `.kimiflare/settings.json`. All four are merged in this order: legacy global, global, legacy project, project. Within an event, hooks run in that order, and an entry with the same `id` as an earlier one replaces it, so writing the Beacon hooks above with their fixed ids to the autopilot file never runs them twice. In code these paths come from `globalSettingsPath()`, `projectSettingsPath(cwd)`, `legacyGlobalSettingsPath()`, `legacyProjectSettingsPath(cwd)` and `hookSettingsLocations(cwd)` in `src/hooks/settings.ts`.
+
+Hook commands also get `AUTOPILOT_HOOK_*` env vars (`EVENT`, `CWD`, `SESSION_ID`, `TOOL`, `PATH`, `TIER`, `PAYLOAD`, …), each set under its older `KIMIFLARE_HOOK_*` name too.
+
+### Matchers
+
+A hook `matcher` is a case-sensitive regex tried against both the Autopilot name and the Claude Code name in the table below (and `MultiEdit` for an edit with `edits[]`), so `bash`, `Bash` and `Bash|Edit` all work, as do matchers copied from a Claude Code config. `*`, an empty matcher or none matches every tool. `BASH` matches nothing.
+
 ### Tool names and result shapes
 
-`tool_name` and `tool_input` use Claude Code's names. Autopilot's own name stays in `tool` and `autopilot_tool_name`, its own arguments in `args`, and hook `matcher`s still match Autopilot's names.
+`tool_name` and `tool_input` use Claude Code's names. Autopilot's own name stays in `tool` and `autopilot_tool_name`, its own arguments in `args`. Hook `matcher`s match either name (see [Matchers](#matchers)).
 
 | Autopilot tool | `tool_name` | `tool_input` |
 | --- | --- | --- |

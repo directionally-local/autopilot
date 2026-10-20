@@ -2,8 +2,13 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-interface StateFile {
+export interface StateFile {
   creatorMessageSeenVersion?: string;
+  /** Legacy kimiflare hook settings files the "hooks found only in the
+   *  legacy path" notice was already shown for (#887). */
+  legacyHooksNoticePaths?: string[];
+  /** The 1.29.0 "only exit 2 blocks" hooks notice was shown (#888). */
+  hooksExitCodeNoticeShown?: boolean;
 }
 
 function statePath(): string {

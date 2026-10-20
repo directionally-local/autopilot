@@ -50,24 +50,24 @@ export const EVENT_DESCRIPTIONS: Record<HookEvent, string> = {
 export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
   PreToolUse: [
     `# Block edits to secrets / .env files:`,
-    `case "$KIMIFLARE_HOOK_PATH" in *.env|*.pem|*.key) echo blocked >&2; exit 2 ;; esac`,
+    `case "$AUTOPILOT_HOOK_PATH" in *.env|*.pem|*.key) echo blocked >&2; exit 2 ;; esac`,
     ``,
     `# Block writes anywhere outside src/:`,
-    `case "$KIMIFLARE_HOOK_PATH" in src/*) exit 0 ;; *) echo "writes restricted to src/" >&2; exit 2 ;; esac`,
+    `case "$AUTOPILOT_HOOK_PATH" in src/*) exit 0 ;; *) echo "writes restricted to src/" >&2; exit 2 ;; esac`,
   ],
   PostToolUse: [
     `# Auto-format JS/TS files with prettier after every edit:`,
-    `npx --no-install prettier --write "$KIMIFLARE_HOOK_PATH" 2>/dev/null || true`,
+    `npx --no-install prettier --write "$AUTOPILOT_HOOK_PATH" 2>/dev/null || true`,
     ``,
     `# Log every tool call to an audit file:`,
-    `echo "$(date -u +%FT%TZ) $KIMIFLARE_HOOK_TOOL $KIMIFLARE_HOOK_RESULT_OK" >> ~/.local/state/kimiflare/tool-audit.log`,
+    `echo "$(date -u +%FT%TZ) $AUTOPILOT_HOOK_TOOL $AUTOPILOT_HOOK_RESULT_OK" >> ~/.local/state/kimiflare/tool-audit.log`,
   ],
   UserPromptSubmit: [
     `# Block prompts that contain "password":`,
     `jq -r .prompt | grep -qiv password || { echo "no passwords in prompts" >&2; exit 2; }`,
     ``,
     `# Log every prompt with its tier:`,
-    `echo "[$KIMIFLARE_HOOK_TIER] $(jq -r .prompt)" >> ~/.local/state/kimiflare/prompts.log`,
+    `echo "[$AUTOPILOT_HOOK_TIER] $(jq -r .prompt)" >> ~/.local/state/kimiflare/prompts.log`,
   ],
   Stop: [
     `# Terminal bell when the agent finishes:`,
@@ -78,15 +78,15 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
   ],
   PreCompact: [
     `# Snapshot the session file before compaction shrinks it:`,
-    `mkdir -p ~/snapshots && cp ~/.config/kimiflare/sessions/$KIMIFLARE_HOOK_SESSION_ID.json ~/snapshots/`,
+    `mkdir -p ~/snapshots && cp ~/.config/kimiflare/sessions/$AUTOPILOT_HOOK_SESSION_ID.json ~/snapshots/`,
   ],
   SessionStart: [
     `# Record session starts:`,
-    `echo "$(date -u +%FT%TZ) start $KIMIFLARE_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
+    `echo "$(date -u +%FT%TZ) start $AUTOPILOT_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
   ],
   SessionEnd: [
     `# Record session ends:`,
-    `echo "$(date -u +%FT%TZ) end $KIMIFLARE_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
+    `echo "$(date -u +%FT%TZ) end $AUTOPILOT_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
   ],
 };
 
@@ -95,6 +95,7 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
 export const MATCHER_EXAMPLES = [
   `"^(edit|write)$"  — only file edits / writes (the common case)`,
   `"^bash$"          — only bash commands`,
+  `"Bash|Edit|Write"  — Claude Code names work too (case-sensitive)`,
   `"^mcp_"           — every MCP-server tool`,
   `"^lsp_"           — every LSP tool`,
   `""                — match every tool (or just leave blank)`,
@@ -227,13 +228,13 @@ export function HooksWizard(props: HooksWizardProps): React.ReactElement {
         hint={
           `A POSIX shell command (zsh / bash compatible). Required.\n` +
           `Runs every time the ${event} event fires${matcher ? ` and the tool name matches /${matcher}/` : ""}.\n\n` +
-          `Available env vars in your command:\n` +
-          `  $KIMIFLARE_HOOK_EVENT     — the event name (${event})\n` +
-          (TOOL_EVENTS.has(event!) ? `  $KIMIFLARE_HOOK_TOOL      — the tool being called\n` : "") +
-          (TOOL_EVENTS.has(event!) ? `  $KIMIFLARE_HOOK_PATH      — the path arg, when the tool takes one\n` : "") +
-          `  $KIMIFLARE_HOOK_TIER      — light | medium | heavy (when classified)\n` +
-          `  $KIMIFLARE_HOOK_SESSION_ID — id of the current session\n` +
-          `  stdin                     — the full JSON event payload (also $KIMIFLARE_HOOK_PAYLOAD when under 32 KB)` +
+          `Available env vars in your command (also as KIMIFLARE_HOOK_*):\n` +
+          `  $AUTOPILOT_HOOK_EVENT     — the event name (${event})\n` +
+          (TOOL_EVENTS.has(event!) ? `  $AUTOPILOT_HOOK_TOOL      — the tool being called\n` : "") +
+          (TOOL_EVENTS.has(event!) ? `  $AUTOPILOT_HOOK_PATH      — the path arg, when the tool takes one\n` : "") +
+          `  $AUTOPILOT_HOOK_TIER      — light | medium | heavy (when classified)\n` +
+          `  $AUTOPILOT_HOOK_SESSION_ID — id of the current session\n` +
+          `  stdin                     — the full JSON event payload (also $AUTOPILOT_HOOK_PAYLOAD when under 32 KB)` +
           (event === "PreToolUse" || event === "UserPromptSubmit"
             ? `\n\nNote: this is a VETO event — \`exit 2\` cancels the ${event === "PreToolUse" ? "tool call" : "prompt"}; stderr becomes the\nreason shown to the model.` +
               (event === "PreToolUse"
@@ -341,17 +342,17 @@ export function HooksWizard(props: HooksWizardProps): React.ReactElement {
       <WizardFrame
         title={`Create hook · step ${stepNum} of 6: scope`}
         hint={
-          `project — lives in this repo's .kimiflare/settings.json (commit it\n` +
+          `project — lives in this repo's .autopilot/settings.json (commit it\n` +
           `          to share with teammates)\n` +
-          `global  — lives in ~/.config/kimiflare/settings.json (applies to\n` +
+          `global  — lives in ~/.config/autopilot/settings.json (applies to\n` +
           `          every project)`
         }
         error={error}
       >
         <SelectInput
           items={[
-            { label: "project (.kimiflare/settings.json)", value: "project" as const, key: "project" },
-            { label: "global  (~/.config/kimiflare/settings.json)", value: "global" as const, key: "global" },
+            { label: "project (.autopilot/settings.json)", value: "project" as const, key: "project" },
+            { label: "global  (~/.config/autopilot/settings.json)", value: "global" as const, key: "global" },
           ]}
           onSelect={(it) => {
             setScope(it.value);

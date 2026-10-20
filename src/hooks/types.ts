@@ -3,8 +3,10 @@
  * the harness fires at a specific moment in an agent turn. The agent
  * doesn't decide whether a hook fires — the harness does, based on
  * config the user pre-registers in
- *   `~/.config/kimiflare/settings.json`      (global)
- *   `.kimiflare/settings.json`               (per-project, overrides)
+ *   `~/.config/autopilot/settings.json`      (global)
+ *   `.autopilot/settings.json`               (per-project, overrides)
+ * plus the legacy `~/.config/kimiflare/settings.json` and
+ * `.kimiflare/settings.json`, which are still read (see settings.ts).
  *
  * See README "## Hooks" for the user-facing schema docs and examples.
  */
