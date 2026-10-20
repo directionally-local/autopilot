@@ -58,6 +58,7 @@
     "build": "tsup",
     "dev": "tsx src/index.tsx",
     "typecheck": "tsc --noEmit",
+    "typecheck:fast": "tsrs --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\" \"scripts/**/*.test.mjs\"",
     "record-demos": "vhs demos/*.tape",
     "start": "node bin/autopilot.mjs",
@@ -90,6 +91,7 @@
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.0",
     "@types/turndown": "^5.0.5",
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
