@@ -1072,8 +1072,8 @@ class View implements AppBridge {
     if (f.cancelled || !f.values?.command?.trim()) return null;
     const v = f.values;
     const scope = await this.select("Save to", [
-      { value: "project", label: "project", description: ".kimiflare/settings.json" },
-      { value: "global", label: "global", description: "~/.config/kimiflare/settings.json" },
+      { value: "project", label: "project", description: ".autopilot/settings.json" },
+      { value: "global", label: "global", description: "~/.config/autopilot/settings.json" },
     ]);
     if (scope === null) return null;
     const draft: HookConfig = {

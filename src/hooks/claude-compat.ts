@@ -37,6 +37,37 @@ export function claudeToolName(tool: string, args: Record<string, unknown>): str
   return CLAUDE_TOOL_NAMES[tool] ?? tool;
 }
 
+/**
+ * The names a hook `matcher` is tested against for a call (#890): the
+ * native name and its Claude Code name, so a matcher copied from a Claude
+ * Code config (`Bash`, `Edit|Write`) works as well as `bash`. An edit
+ * carrying `edits[]` also answers to `MultiEdit`. Without `args` (only a
+ * name known) the MultiEdit form is not added.
+ */
+export function hookMatcherNames(tool: string, args?: Record<string, unknown>): string[] {
+  const names = [tool];
+  const claude = CLAUDE_TOOL_NAMES[tool];
+  if (claude && claude !== tool) names.push(claude);
+  if (args && claudeToolName(tool, args) === "MultiEdit") names.push("MultiEdit");
+  return names;
+}
+
+/**
+ * True when `matcher` selects a call known by `names`. Empty or `*`
+ * matches everything; anything else is a case-sensitive, unanchored
+ * regex tested against each name. A malformed regex matches nothing.
+ */
+export function hookMatcherMatches(matcher: string | undefined, names: readonly string[]): boolean {
+  if (!matcher || matcher === "*") return true;
+  let re: RegExp;
+  try {
+    re = new RegExp(matcher);
+  } catch {
+    return false;
+  }
+  return names.some((n) => re.test(n));
+}
+
 /** The call's arguments under Claude Code's field names (absolute `file_path`). */
 export function claudeToolInput(tool: string, args: Record<string, unknown>, cwd: string): Record<string, unknown> {
   // Claude Code sends absolute paths; Autopilot's tools accept relative ones.

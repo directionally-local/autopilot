@@ -12,7 +12,7 @@ import type {
 import { logger } from "../util/logger.js";
 import { join } from "node:path";
 import { sessionsDir } from "../sessions.js";
-import { claudeToolFields } from "./claude-compat.js";
+import { claudeToolFields, hookMatcherMatches, hookMatcherNames } from "./claude-compat.js";
 import { BEACON_HARNESS_ATTR, HARNESS_NAME } from "../util/harness.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -83,7 +83,8 @@ export function parseHookDecision(stdout: string): ParsedHookDecision | null {
 
 /**
  * Extract a few convenient fields from the payload to expose as
- * `KIMIFLARE_HOOK_*` env vars. The full payload is always on stdin;
+ * `AUTOPILOT_HOOK_*` env vars (each also as its legacy `KIMIFLARE_HOOK_*`
+ * name). The full payload is always on stdin;
  * `KIMIFLARE_HOOK_PAYLOAD` carries a copy only when it is at most
  * HOOK_ENV_PAYLOAD_MAX_BYTES. Env vars are friendlier in shell
  * one-liners like:
@@ -119,6 +120,11 @@ export function buildHookEnv(payload: HookPayload, payloadJson?: string): Record
   if (payload.event === "UserPromptSubmit") {
     const p = payload as { tier?: IntentTier };
     if (p.tier) env.KIMIFLARE_HOOK_TIER = p.tier;
+  }
+  // #887: every KIMIFLARE_HOOK_* var is also set as AUTOPILOT_HOOK_* (same
+  // value); the old names stay for existing scripts.
+  for (const [k, v] of Object.entries(env)) {
+    if (k.startsWith("KIMIFLARE_HOOK_")) env[`AUTOPILOT_HOOK_${k.slice("KIMIFLARE_HOOK_".length)}`] = v;
   }
   return env;
 }
@@ -273,22 +279,19 @@ export async function runHook(
 }
 
 /** Filter hooks for an event by matcher (regex on tool name for the
- *  events that have one) and enabled state. */
+ *  events that have one) and enabled state. `toolName` is a native name,
+ *  whose Claude Code name is tried too, or the full list of names to test
+ *  (see hookMatcherNames). */
 export function filterHooks(
   hooks: HookConfig[] | undefined,
-  toolName: string | null,
+  toolName: string | readonly string[] | null,
 ): HookConfig[] {
   if (!hooks || hooks.length === 0) return [];
+  const names = typeof toolName === "string" ? (toolName ? hookMatcherNames(toolName) : null) : toolName;
   return hooks.filter((h) => {
     if (h.enabled === false) return false;
-    if (!h.matcher) return true;
-    if (!toolName) return true; // matcher is meaningless without a tool name
-    try {
-      return new RegExp(h.matcher).test(toolName);
-    } catch {
-      // Malformed regex matches nothing rather than crashing the loop.
-      return false;
-    }
+    if (!names || names.length === 0) return true; // matcher is meaningless without a tool name
+    return hookMatcherMatches(h.matcher, names);
   });
 }
 
@@ -313,7 +316,7 @@ export async function runHooks(
   event: HookEvent,
   hooks: HookConfig[] | undefined,
   payload: HookPayload,
-  toolName: string | null = null,
+  toolName: string | readonly string[] | null = null,
   signal?: AbortSignal,
 ): Promise<HookEventOutcome> {
   const matched = filterHooks(hooks, toolName);

@@ -171,6 +171,8 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   const baseWorkerTools = getWorkerTools(opts.workerProfile);
   const { HooksManager } = await import("./hooks/manager.js");
   const hooks = new HooksManager(cwd);
+  const { takeHookStartupNotices } = await import("./hooks/notices.js");
+  for (const notice of await takeHookStartupNotices(cwd)) process.stderr.write(`${notice}\n`);
 
   // Resolve session
   const { sessionFile, isNew } = await resolveSession(opts);

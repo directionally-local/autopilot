@@ -473,8 +473,9 @@ on the resource.
 ## Hooks
 
 autopilot can fire shell commands at these points, configured
-per-project (`.kimiflare/settings.json`) or globally
-(`~/.config/kimiflare/settings.json`):
+per-project (`.autopilot/settings.json`) or globally
+(`~/.config/autopilot/settings.json`); the older kimiflare paths are
+still read (see [Settings location](#settings-location)):
 
 | Event              | Fires when                                      | Veto? |
 |--------------------|-------------------------------------------------|-------|
@@ -487,10 +488,12 @@ per-project (`.kimiflare/settings.json`) or globally
 | `SessionEnd`       | autopilot exits, or `/clear` (`reason`)         | No    |
 
 Hooks receive the event payload as JSON on stdin **and** as
-`KIMIFLARE_HOOK_*` env vars (for shell-one-liner ergonomics). The full
-JSON copy in `KIMIFLARE_HOOK_PAYLOAD` is only set for payloads up to
+`AUTOPILOT_HOOK_*` env vars (for shell-one-liner ergonomics; every one
+is also set under its old `KIMIFLARE_HOOK_*` name, so existing scripts
+keep working). The full
+JSON copy in `AUTOPILOT_HOOK_PAYLOAD` is only set for payloads up to
 32 KiB (OSes cap environment variable size); above that it is omitted,
-`KIMIFLARE_HOOK_PAYLOAD_OMITTED=1` is set, and stdin is the only source —
+`AUTOPILOT_HOOK_PAYLOAD_OMITTED=1` is set, and stdin is the only source —
 prefer reading stdin. Payloads
 also carry Claude Code's field names (`hook_event_name`, `tool_name`,
 `tool_input`, `tool_response`, `tool_call_id`, `transcript_path`), so
@@ -526,15 +529,54 @@ The legacy `{"decision": "block", "reason": "..."}` form also blocks
 before. Hooks written for older versions that blocked with `exit 1`
 must switch to `exit 2`.
 
+### Settings location
+
+Hooks are read from four files and merged, in this order:
+
+1. `~/.config/kimiflare/settings.json` (legacy global)
+2. `~/.config/autopilot/settings.json` (global)
+3. `.kimiflare/settings.json` (legacy project)
+4. `.autopilot/settings.json` (project)
+
+`~/.config` is `$XDG_CONFIG_HOME` when that is set. For each event,
+hooks run in that order; an entry with the same `id` as an earlier one
+replaces it (ids are derived from event + command when not set, so a
+hook copied verbatim from a legacy file runs once). The autopilot paths
+are canonical: `/hooks enable`, the hook wizard and the dashboard write
+new hooks there, while enabling or disabling an existing hook edits the
+file it lives in. Legacy files are never moved or dropped; if your hooks
+are only in a legacy file, autopilot shows a one-time notice naming the
+new path. `/hooks path` prints all four.
+
+### Matchers
+
+`matcher` is a regex tested against the tool name for `PreToolUse` and
+`PostToolUse`. It is tried against both autopilot's native name and the
+Claude Code name (`bash`/`Bash`, `edit`/`Edit`, `write`/`Write`,
+`read`/`Read`, `glob`/`Glob`, `grep`/`Grep`, `web_fetch`/`WebFetch`,
+`search_web`/`WebSearch`; an edit with `edits[]` also answers to
+`MultiEdit`), so a matcher copied from a Claude Code config works.
+
+| Matcher | Matches |
+|---------|---------|
+| `bash`, `Bash`, `^bash$` | bash calls |
+| `Bash\|Edit`, `^(edit\|write)$` | either tool |
+| `^mcp_` | every MCP tool |
+| `*`, `""`, or no matcher | every tool |
+
+Matching is case-sensitive (`BASH` matches nothing) and unanchored
+(`dit` matches `edit`; use `^…$` for an exact name). An invalid regex
+matches nothing.
+
 ### Browse + enable from the TUI
 
 ```text
 /hooks                            # list configured hooks
 /hooks recommended                # list starter hooks shipped with autopilot
-/hooks enable stop-bell           # enable one (writes to .kimiflare/settings.json)
+/hooks enable stop-bell           # enable one (writes to .autopilot/settings.json)
 /hooks enable stop-bell global    # ...or the global file
 /hooks disable stop-bell
-/hooks path                       # print settings.json paths
+/hooks path                       # print settings.json paths (incl. legacy ones)
 /hooks reload                     # re-read settings.json after a manual edit
 ```
 
@@ -552,14 +594,14 @@ audit log. All ship disabled — `/hooks recommended` lists them.
       {
         "id": "no-secrets",
         "matcher": "^(edit|write)$",
-        "command": "case \"$KIMIFLARE_HOOK_PATH\" in *.env|*.pem) echo 'blocked' >&2; exit 2;; esac"
+        "command": "case \"$AUTOPILOT_HOOK_PATH\" in *.env|*.pem) echo 'blocked' >&2; exit 2;; esac"
       }
     ],
     "PostToolUse": [
       {
         "id": "format-ts",
         "matcher": "^(edit|write)$",
-        "command": "npx --no-install prettier --write \"$KIMIFLARE_HOOK_PATH\" >/dev/null 2>&1 || true"
+        "command": "npx --no-install prettier --write \"$AUTOPILOT_HOOK_PATH\" >/dev/null 2>&1 || true"
       }
     ],
     "Stop": [
@@ -571,8 +613,9 @@ audit log. All ship disabled — `/hooks recommended` lists them.
 
 Per-hook fields:
 - `command` (required) — the shell command.
-- `matcher` (optional) — anchored regex matched against the tool name
-  for `PreToolUse` / `PostToolUse`. Ignored for other events.
+- `matcher` (optional) — regex matched against the native or Claude Code
+  tool name for `PreToolUse` / `PostToolUse` (see [Matchers](#matchers)).
+  Ignored for other events.
 - `id` (optional) — stable handle for `/hooks enable|disable`.
   Auto-derived from `event + command` when omitted.
 - `enabled` (default `true`) — set `false` to keep a hook in config
@@ -589,7 +632,7 @@ path uses the same plumbing.
 
 When intent classification has assigned a tier, hook payloads include
 it as `tier: "light" | "medium" | "heavy"` (on `UserPromptSubmit`,
-`PreToolUse`, `PostToolUse`) and as `$KIMIFLARE_HOOK_TIER`. Useful for
+`PreToolUse`, `PostToolUse`) and as `$AUTOPILOT_HOOK_TIER`. Useful for
 "skip auto-format on light turns" or "audit every heavy-turn write."
 
 SDK consumers opt in to hooks with `enableHooks: true` on

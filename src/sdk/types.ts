@@ -30,7 +30,8 @@ export interface CreateSessionOptions {
   onKimiMdStale?: () => void;
   /**
    * M6.1: enable user-configured lifecycle hooks loaded from
-   * `~/.config/kimiflare/settings.json` + `<cwd>/.kimiflare/settings.json`.
+   * `~/.config/autopilot/settings.json` + `<cwd>/.autopilot/settings.json`
+   * (the legacy kimiflare paths are read too).
    * Default `false` (SDK is a primitive; opt in if you want the
    * TUI's hook behavior).
    */

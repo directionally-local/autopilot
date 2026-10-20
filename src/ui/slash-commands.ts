@@ -74,6 +74,8 @@ import {
   setHookEnabled,
   globalSettingsPath,
   projectSettingsPath,
+  legacyGlobalSettingsPath,
+  legacyProjectSettingsPath,
 } from "../hooks/settings.js";
 import { HOOK_EVENTS } from "../hooks/types.js";
 import type { AbortScope } from "../util/abort-scope.js";
@@ -1504,7 +1506,8 @@ const handleHooks: Handler = (ctx, rest, arg) => {
         key: mkKey(),
         text:
           `global: ${globalSettingsPath()}\n` +
-          `project: ${projectSettingsPath(cwd)}`,
+          `project: ${projectSettingsPath(cwd)}\n` +
+          `also read (legacy): ${legacyGlobalSettingsPath()}, ${legacyProjectSettingsPath(cwd)}`,
       },
     ]);
     return true;

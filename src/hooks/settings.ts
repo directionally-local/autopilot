@@ -11,16 +11,61 @@ import {
   type KimiflareSettings,
 } from "./types.js";
 
-/** Path to the global settings file. Honors XDG_CONFIG_HOME like the
- *  rest of the codebase. */
-export function globalSettingsPath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "settings.json");
+// ── Where hook settings live ─────────────────────────────────────────────
+//
+// Canonical (#887): `~/.config/autopilot/settings.json` (global) and
+// `<project>/.autopilot/settings.json`. The pre-rename kimiflare paths are
+// still read, never dropped, so existing setups keep working. All four are
+// merged, in HOOK_SETTINGS_MERGE_ORDER; a later entry with the same id (per
+// event) replaces an earlier one. New hooks are written to the autopilot
+// paths; enabling/disabling an existing hook edits the file it lives in.
+
+function configHome(): string {
+  return process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
 }
 
-/** Path to the per-project settings file, given a cwd. */
+/** Canonical global settings file (`$XDG_CONFIG_HOME/autopilot/settings.json`,
+ *  default `~/.config/autopilot/settings.json`). New global hooks go here. */
+export function globalSettingsPath(): string {
+  return join(configHome(), "autopilot", "settings.json");
+}
+
+/** Canonical per-project settings file (`<cwd>/.autopilot/settings.json`).
+ *  New project hooks go here. */
 export function projectSettingsPath(cwd: string): string {
+  return join(cwd, ".autopilot", "settings.json");
+}
+
+/** Legacy global settings file (`$XDG_CONFIG_HOME/kimiflare/settings.json`).
+ *  Still read; existing hooks in it are edited in place. */
+export function legacyGlobalSettingsPath(): string {
+  return join(configHome(), "kimiflare", "settings.json");
+}
+
+/** Legacy per-project settings file (`<cwd>/.kimiflare/settings.json`). */
+export function legacyProjectSettingsPath(cwd: string): string {
   return join(cwd, ".kimiflare", "settings.json");
+}
+
+export interface HookSettingsLocation {
+  scope: "global" | "project";
+  /** True for the pre-rename kimiflare paths. */
+  legacy: boolean;
+  path: string;
+}
+
+/**
+ * Every settings file hooks are read from, in merge order (lowest
+ * precedence first): global kimiflare, global autopilot, project kimiflare,
+ * project autopilot.
+ */
+export function hookSettingsLocations(cwd: string): HookSettingsLocation[] {
+  return [
+    { scope: "global", legacy: true, path: legacyGlobalSettingsPath() },
+    { scope: "global", legacy: false, path: globalSettingsPath() },
+    { scope: "project", legacy: true, path: legacyProjectSettingsPath(cwd) },
+    { scope: "project", legacy: false, path: projectSettingsPath(cwd) },
+  ];
 }
 
 function readSettingsFile(path: string): KimiflareSettings | null {
@@ -104,31 +149,33 @@ function normalizeHook(
   return { id, matcher, command, timeoutMs, enabled, description, source };
 }
 
-/** Merge two `hooks` blocks into one. Project entries come after
- *  global entries so they run later for a given event. */
-function mergeHookMaps(
-  a: KimiflareSettings["hooks"],
-  b: KimiflareSettings["hooks"],
-): KimiflareSettings["hooks"] {
+/** Merge `hooks` blocks in order. Later blocks run later for a given
+ *  event, and an entry whose id is already present replaces the earlier
+ *  one (taking the later file's position), so a hook copied from the
+ *  legacy file to the autopilot one runs once. */
+function mergeHookMaps(...maps: KimiflareSettings["hooks"][]): KimiflareSettings["hooks"] {
   const out: KimiflareSettings["hooks"] = {};
   for (const ev of HOOK_EVENTS) {
-    const left = a?.[ev] ?? [];
-    const right = b?.[ev] ?? [];
-    if (left.length + right.length === 0) continue;
-    out[ev] = [...left, ...right];
+    // normalizeHook always sets an id (explicit, or derived from event+command).
+    const byId = new Map<string, HookConfig>();
+    for (const m of maps) {
+      for (const h of m?.[ev] ?? []) {
+        const id = h.id ?? deriveHookId(ev, h.command);
+        byId.delete(id);
+        byId.set(id, h);
+      }
+    }
+    if (byId.size > 0) out[ev] = [...byId.values()];
   }
   return out;
 }
 
 /**
- * Load + merge global + project settings. Always returns a valid
- * (possibly empty) `KimiflareSettings`. Hook entries are normalized
- * and stamped with their `source`.
+ * Load + merge every hook settings file (see hookSettingsLocations).
+ * Always returns a valid (possibly empty) `KimiflareSettings`. Hook
+ * entries are normalized and stamped with their `source` scope.
  */
 export function loadHooksSettings(cwd: string): KimiflareSettings {
-  const global = readSettingsFile(globalSettingsPath());
-  const project = readSettingsFile(projectSettingsPath(cwd));
-
   const normalized = (
     raw: KimiflareSettings | null,
     source: NonNullable<HookConfig["source"]>,
@@ -145,8 +192,32 @@ export function loadHooksSettings(cwd: string): KimiflareSettings {
     return out;
   };
 
-  const merged = mergeHookMaps(normalized(global, "global"), normalized(project, "project"));
+  const merged = mergeHookMaps(
+    ...hookSettingsLocations(cwd).map((loc) => normalized(readSettingsFile(loc.path), loc.scope)),
+  );
   return { hooks: merged };
+}
+
+/** True when the settings file at `path` declares at least one hook entry. */
+function fileHasHooks(path: string): boolean {
+  const hooks = readSettingsFile(path)?.hooks;
+  if (!hooks || typeof hooks !== "object") return false;
+  return HOOK_EVENTS.some((ev) => Array.isArray(hooks[ev]) && hooks[ev]!.length > 0);
+}
+
+/**
+ * Legacy settings files that hold hooks while their autopilot counterpart
+ * (same scope) holds none: the "your hooks are only in the old path" case.
+ * They keep working; callers show a one-time notice (see notices.ts).
+ */
+export function legacyOnlyHookPaths(cwd: string): string[] {
+  const out: string[] = [];
+  const locs = hookSettingsLocations(cwd);
+  for (const legacy of locs.filter((l) => l.legacy)) {
+    const current = locs.find((l) => !l.legacy && l.scope === legacy.scope)!;
+    if (fileHasHooks(legacy.path) && !fileHasHooks(current.path)) out.push(legacy.path);
+  }
+  return out;
 }
 
 // ── Edit operations used by the `/hooks` slash command ───────────────────
@@ -162,7 +233,9 @@ export function loadHooksSettings(cwd: string): KimiflareSettings {
  * event list at write time (one-shot cleanup for users who hit
  * the pre-fix double-Enter bug).
  *
- * Returns the path that was written. Throws `SettingsFileError` (and
+ * Always writes the canonical autopilot path for `scope` (never the
+ * legacy kimiflare file). Returns the path that was written. Throws
+ * `SettingsFileError` (and
  * writes nothing) if the file exists but isn't a valid JSON object.
  */
 export function appendHook(
@@ -213,15 +286,14 @@ export function appendHook(
 }
 
 /**
- * Flip `enabled` on a hook matched by its id. Searches both global
- * and project; the first match wins. Returns the file path that was
- * modified, or null if no hook with that id exists.
+ * Flip `enabled` on a hook matched by its id, in the file it lives in
+ * (autopilot or legacy kimiflare path; nothing is moved). Searches in
+ * reverse merge order, so the entry that actually takes effect is the one
+ * edited. Returns the file path that was modified, or null if no hook with
+ * that id exists.
  */
 export function setHookEnabled(cwd: string, id: string, enabled: boolean): string | null {
-  for (const [scope, path] of [
-    ["global", globalSettingsPath()],
-    ["project", projectSettingsPath(cwd)],
-  ] as const) {
+  for (const { path } of [...hookSettingsLocations(cwd)].reverse()) {
     const existing = readSettingsFile(path);
     if (!existing?.hooks) continue;
     let changed = false;
@@ -243,8 +315,6 @@ export function setHookEnabled(cwd: string, id: string, enabled: boolean): strin
       writeFileSync(path, JSON.stringify(existing, null, 2) + "\n", "utf8");
       return path;
     }
-    // suppress unused warning
-    void scope;
   }
   return null;
 }

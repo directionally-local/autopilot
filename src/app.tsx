@@ -22,6 +22,7 @@ import type { ToolSpec } from "./tools/registry.js";
 import { McpManager } from "./mcp/manager.js";
 import { LspManager } from "./lsp/manager.js";
 import { HooksManager } from "./hooks/manager.js";
+import { takeHookStartupNotices } from "./hooks/notices.js";
 import { sanitizeString, appendStoppedToolResults } from "./agent/messages.js";
 import type { ChatMessage, Usage } from "./agent/messages.js";
 import { AbortScope } from "./util/abort-scope.js";
@@ -450,6 +451,18 @@ function App({
   useEffect(() => {
     executorRef.current.setHooks(hooksManagerRef.current);
     return () => executorRef.current.setHooks(null);
+  }, []);
+  // One-time hook notices (legacy kimiflare settings path, 1.29.0 exit-code
+  // change). Non-blocking: shown as info lines, recorded so they never repeat.
+  useEffect(() => {
+    let cancelled = false;
+    void takeHookStartupNotices(process.cwd()).then((notices) => {
+      if (cancelled) return;
+      for (const text of notices) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const sessionStartRecallRef = useRef<Promise<import("./memory/schema.js").HybridResult[]> | null>(null);
   const kimiMdStaleNudgedRef = useRef(false);
