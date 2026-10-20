@@ -6,7 +6,6 @@ import { resolveLspConfig } from "./util/lsp-config.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { getAppVersion } from "./util/version.js";
-import { createRemoteCommand } from "./remote/cli.js";
 import { renderLogo } from "./ui/logo.js";
 import { runPrintMode } from "./print-mode.js";
 import { registerEvalCommand } from "./eval/cli.js";
@@ -88,7 +87,15 @@ program
     await runCostCommand({ ...cmdOpts, config: cfg });
   });
 
-program.addCommand(createRemoteCommand());
+program
+  .command("remote")
+  .description("Retired: remote sessions on Cloudflare")
+  .allowUnknownOption()
+  .argument("[args...]")
+  .action(() => {
+    console.error("autopilot remote was retired. For unattended work use local subagents (/subagents) or a headless run: autopilot -p \"…\".");
+    process.exit(2);
+  });
 registerEvalCommand(program);
 
 const asterCommand = program.command("aster").description("Manage the Aster mobile API");
@@ -442,7 +449,7 @@ authCommand.addCommand(
     new Command("github")
       .description("Authenticate with GitHub via OAuth device flow")
       .action(async () => {
-        const { authGitHubForTui } = await import("./remote/tui-auth.js");
+        const { authGitHubForTui } = await import("./util/github-auth.js");
         for await (const step of authGitHubForTui()) {
           console.log(step.message);
           if (step.url && step.code) {

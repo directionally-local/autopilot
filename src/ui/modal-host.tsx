@@ -14,7 +14,6 @@ import { ShellPicker } from "./shell-picker.js";
 import { MemoryPicker } from "./memory-picker.js";
 import { SkillsPicker } from "./skills-picker.js";
 import type { ModelEntry } from "../models/registry.js";
-import { RemoteDashboard, RemoteSessionDetail } from "./remote-dashboard.js";
 import { InboxModal } from "./inbox-modal.js";
 import { HooksDashboard } from "./hooks-dashboard.js";
 import { HelpMenu } from "./help-menu.js";
@@ -24,7 +23,6 @@ import type { Theme } from "./theme.js";
 import type { ModalHostController } from "./use-modal-host.js";
 import type { CustomCommand } from "../commands/types.js";
 import type { SaveCustomCommandOptions } from "../commands/save.js";
-import type { RemoteSession } from "../remote/session-store.js";
 import type { HookConfig, HookEvent } from "../hooks/types.js";
 import type { MemoryManager } from "../memory/manager.js";
 
@@ -68,9 +66,6 @@ export interface ModalHostProps {
   currentMode: import("../mode.js").Mode;
   onPickMode: (mode: import("../mode.js").Mode | null) => void;
   // Remote dashboard
-  selectedRemoteSession: RemoteSession | null;
-  onSelectRemoteSession: (s: RemoteSession | null) => void;
-  onCancelRemoteSession: (session: RemoteSession) => void | Promise<void>;
   // Inbox
   onInboxOpen: (url: string) => void;
   // M6.1: hooks dashboard. Pass `getConfiguredHooks` rather than a
@@ -123,34 +118,8 @@ export function ModalHost(props: ModalHostProps): React.ReactElement | null {
     onPickUi,
     currentModel,
     onPickModel,
-    selectedRemoteSession,
-    onSelectRemoteSession,
-    onCancelRemoteSession,
     onInboxOpen,
   } = props;
-
-  if (modals.showRemoteDashboard) {
-    return (
-      <ThemeProvider theme={theme}>
-        <Box flexDirection="column">
-          {selectedRemoteSession ? (
-            <RemoteSessionDetail
-              session={selectedRemoteSession}
-              onBack={() => onSelectRemoteSession(null)}
-              onCancel={(session) => {
-                void onCancelRemoteSession(session);
-              }}
-            />
-          ) : (
-            <RemoteDashboard
-              onSelect={(session) => onSelectRemoteSession(session)}
-              onCancel={() => modals.setShowRemoteDashboard(false)}
-            />
-          )}
-        </Box>
-      </ThemeProvider>
-    );
-  }
 
   if (modals.showInboxModal) {
     return (

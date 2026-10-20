@@ -1,3 +1,5 @@
+> **Retired (2026-10):** `/remote` and the Cloudflare remote agent were removed (#730). Kept as a design record.
+
 # Development Plan: `/slash remote`
 
 ## Phase 0: Core Loop Changes (KimiFlare itself)
