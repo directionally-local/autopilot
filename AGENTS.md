@@ -55,6 +55,7 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - Keep ink, ink-select-input, react, commander, turndown, and camouflage-tui external in the root tsup.config.ts; do not accidentally bundle runtime UI dependencies.
 - isolated-vm and camouflage-tui are optional dependencies; preserve their graceful/intentional fallback behavior.
 - Run npm run typecheck before considering a change complete. Add or update tests for behavior changes.
+- Mark behaviour changes that can silently break existing users (hook semantics, config paths, CLI flags, API responses) as breaking: `feat!:`/`fix!:` plus a `BREAKING CHANGE:` footer with the migration, so release-please surfaces them.
 - Use Conventional Commits. Do not bump the root package version manually; release-please manages releases. The active workflows publish npm releases and deploy docs/ to GitHub Pages.
 - Never commit secrets or user state. .kimiflare/, ~, .config/, sessions/, and coverage output are ignored; config and historical user data remain under the legacy kimiflare paths for compatibility.
 

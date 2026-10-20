@@ -3,6 +3,11 @@
 ## [1.29.0](https://github.com/sinameraji/autopilot/compare/v1.28.0...v1.29.0) (2026-10-20)
 
 
+### ⚠ BREAKING CHANGES
+
+* **hooks:** hook exit codes changed ([#880](https://github.com/sinameraji/autopilot/issues/880)). Only **exit code 2** blocks a tool call or prompt; stderr becomes the reason. Any other non-zero exit, a timeout or a hook that can't start (e.g. missing binary) is now logged and the call is **allowed**. Before 1.29.0, any failure blocked. A custom guard that blocks with `exit 1` silently stops blocking after you upgrade. **Migration:** change it to `echo "reason" >&2; exit 2`, or print `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"…"}}` and exit 0. The bundled recommended hooks are upgraded automatically. See [Blocking and exit codes](https://github.com/sinameraji/autopilot#blocking-and-exit-codes).
+
+
 ### Features
 
 * **hooks:** Beacon-compatible tool names, result shapes, Stop reply and OTel harness name ([#881](https://github.com/sinameraji/autopilot/issues/881)) ([dfdd4e7](https://github.com/sinameraji/autopilot/commit/dfdd4e78daba27ab668fa1e23c08a1406b99e39e))
