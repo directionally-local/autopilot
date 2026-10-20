@@ -52,7 +52,7 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - Prefer async/await; use type-only imports (import type) when appropriate.
 - When adding a tool, define its schema/implementation and register it in ALL_TOOLS in src/tools/executor.ts; cover behavior with a co-located test.
 - Pass and respect AbortSignal for long-running work, especially requests and streams.
-- Keep ink, ink-text-input, ink-spinner, ink-select-input, react, commander, turndown, and camouflage-tui external in the root tsup.config.ts; do not accidentally bundle runtime UI dependencies.
+- Keep ink, ink-select-input, react, commander, turndown, and camouflage-tui external in the root tsup.config.ts; do not accidentally bundle runtime UI dependencies.
 - isolated-vm and camouflage-tui are optional dependencies; preserve their graceful/intentional fallback behavior.
 - Run npm run typecheck before considering a change complete. Add or update tests for behavior changes.
 - Use Conventional Commits. Do not bump the root package version manually; release-please manages releases. The active workflows publish npm releases and deploy docs/ to GitHub Pages.

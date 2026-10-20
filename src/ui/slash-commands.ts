@@ -12,7 +12,7 @@ import { workerRegistry } from "../tools/worker-registry.js";
 import { formatSubagentStats, readSubagentStats } from "../tools/subagent-stats.js";
 import { join } from "node:path";
 import { unlink } from "node:fs/promises";
-import QRCode from "qrcode";
+import { renderTerminalQr } from "./terminal-qr.js";
 
 import type { Cfg } from "../app.js";
 import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
@@ -1589,8 +1589,7 @@ const handleHello: Handler = (ctx) => {
   openBrowser(url);
   void (async () => {
     try {
-      const qr = await QRCode.toString(url, { type: "terminal", small: true });
-      const lines = qr.split("\n").map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+      const lines = renderTerminalQr(url);
       setEvents((e) => [
         ...e,
         {
