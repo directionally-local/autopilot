@@ -474,7 +474,7 @@ export class AsterStore {
   }
 }
 
-function defaultAsterDbPath(): string {
+export function defaultAsterDbPath(): string {
   const root = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
   return process.env.AUTOPILOT_ASTER_DB || join(root, "autopilot", "aster.db");
 }

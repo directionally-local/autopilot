@@ -30,10 +30,18 @@ export interface AsterTurnStart {
   messages: ChatMessage[];
   executor: ToolExecutor;
   allowedTools: Set<string>;
-  maxToolIterations: number;
-  maxRuntimeMs: number;
+  maxToolIterations: number | null;
+  maxRuntimeMs: number | null;
+  userText: string;
+  /** Populated by the Hotcell runtime after finding or creating the conversation's cell. */
+  cellId?: string;
+  /** Cell event cursor for resumable turn streaming. */
+  cellEventCursor?: number;
+  memory?: { snapshot: string; note: string };
   askPermission: (request: PermissionRequest) => Promise<PermissionDecision>;
   publishEvent: (type: string, data: Record<string, unknown>) => void;
+  onCellCursor?: (cursor: number) => void;
+  beforeFinish?: () => Promise<void>;
   finish: (status: "completed" | "failed" | "cancelled", reason?: string) => void;
 }
 
@@ -419,6 +427,7 @@ export class AsterApi {
         allowedTools,
         maxToolIterations: run.maxToolIterations,
         maxRuntimeMs: run.maxRuntimeMs,
+        userText: text,
         askPermission: (request) => this.askForApproval(store, conversation, runId, request, publishEvent),
         publishEvent,
         finish: (status, reason) => {

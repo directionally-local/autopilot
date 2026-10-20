@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { KimiConfig } from "../config.js";
-import { AsterApi, type AsterTurnStart } from "./aster-api.js";
+import { AsterApi, type AsterApiRuntime, type AsterTurnStart } from "./aster-api.js";
 import { AsterStore } from "./aster-store.js";
 import { startServer } from "./index.js";
 import { RunStore } from "../runs/store.js";
@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 describe("Aster control-plane API", () => {
-  it("runs persisted follow-up turns through the shared server runner with SSE replay", async () => {
+  it("runs keyed follow-up turns through an injected Aster runtime with SSE replay", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-live-route-")));
     tempDirs.push(root);
     const workspaceRoot = join(root, "repo");
@@ -54,20 +54,29 @@ describe("Aster control-plane API", () => {
     });
     credentialStore.close();
 
-    const realFetch = globalThis.fetch;
-    const modelMessages: Array<Array<{ role: string; content: unknown }>> = [];
-    let modelCalls = 0;
-    globalThis.fetch = async (input, init) => {
-      const url = String(input);
-      if (url.startsWith("http://127.0.0.1:")) return realFetch(input, init);
-      if (!url.includes("openrouter.ai")) return realFetch(input, init);
-      const requestBody = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: unknown }> };
-      modelMessages.push(requestBody.messages ?? []);
-      modelCalls++;
-      return openRouterResponse(modelCalls === 1 ? "FIRST_REPLIED" : "SECOND_REPLIED");
+    const turnHistories: Array<Array<{ role: string; content: unknown }>> = [];
+    let turnCount = 0;
+    const testRuntime: AsterApiRuntime = {
+      startTurn: (turn: AsterTurnStart) => {
+        void (async () => {
+          turnHistories.push(turn.messages.map(({ role, content }) => ({ role, content })));
+          const reply = turnCount++ === 0 ? "FIRST_REPLIED" : "SECOND_REPLIED";
+          turn.messages.push({ role: "assistant", content: reply });
+          turn.sessionFile.messages = turn.messages;
+          await saveSession(turn.sessionFile);
+          turn.publishEvent("assistant.delta", { text: reply });
+          turn.finish("completed");
+        })().catch(() => turn.finish("failed", "test_runtime_error"));
+      },
+      cancelRun: () => {},
     };
 
-    const server = await startServer({ port: 0, hostname: "127.0.0.1", config: { openrouterApiKey: "test-provider-key", model: "test/model" } as KimiConfig });
+    const server = await startServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      config: { openrouterApiKey: "test-provider-key", model: "test/model" } as KimiConfig,
+      asterRuntime: testRuntime,
+    });
     try {
       const address = server.address();
       assert.ok(address && typeof address !== "string");
@@ -127,11 +136,10 @@ describe("Aster control-plane API", () => {
       await waitForStatusAt(base, credential.token, conversation.conversationId, "completed");
       const secondEvents = await secondEventsPromise;
       assert.match(secondEvents, /SECOND_REPLIED/);
-      assert.ok(modelMessages[1]!.some((message) => message.role === "user" && message.content === "first turn"));
-      assert.ok(modelMessages[1]!.some((message) => message.role === "assistant" && message.content === "FIRST_REPLIED"));
-      assert.ok(modelMessages[1]!.some((message) => message.role === "user" && message.content === "second turn"));
+      assert.ok(turnHistories[1]!.some((message) => message.role === "user" && message.content === "first turn"));
+      assert.ok(turnHistories[1]!.some((message) => message.role === "assistant" && message.content === "FIRST_REPLIED"));
+      assert.ok(turnHistories[1]!.some((message) => message.role === "user" && message.content === "second turn"));
     } finally {
-      globalThis.fetch = realFetch;
       await closeServer(server);
     }
   });

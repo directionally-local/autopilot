@@ -107,6 +107,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   private readonly pollIntervalMs: number;
   private readonly healthTimeoutMs: number;
   private readonly activeRuns = new Map<string, { cellId: string; stop: () => void }>();
+  private readonly cellCursors = new Map<string, number>();
 
   constructor(
     private readonly provider: HotcellProvider,
@@ -270,7 +271,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   startTurn(turn: AsterTurnStart): void {
-    void this.runTurn(turn).catch(() => {
+    void this.prepareAndRunTurn(turn).catch(() => {
       turn.finish("failed", "cell_runtime_error");
     });
   }
@@ -280,9 +281,43 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
    * and journaled its events, so this only resumes reading them from the saved cursor.
    */
   resumeTurn(turn: AsterTurnStart): void {
-    void this.runTurn(turn, { resume: true }).catch(() => {
+    void this.prepareAndRunTurn(turn, { resume: true }).catch(() => {
       turn.finish("failed", "cell_runtime_error");
     });
+  }
+
+  private async prepareAndRunTurn(
+    turn: AsterTurnStart,
+    options: { resume?: boolean } = {},
+  ): Promise<void> {
+    const conversationId = turn.conversation.id;
+    let cellId = turn.cellId;
+    if (!cellId) {
+      const provisioned = await this.provisionConversation({
+        conversationId,
+        sessionId: turn.conversation.sessionId,
+        cellName: `aster-${conversationId.slice(0, 8)}`,
+        workspaceId: turn.conversation.workspaceId,
+        workspaceRoot: turn.conversation.worktreePath,
+        model: turn.conversation.model,
+        allowCreate: true,
+        onCellCreated: () => {},
+      });
+      cellId = provisioned.cellId;
+    }
+
+    const cellStatus = turn.cellEventCursor === undefined && this.cellCursors.get(conversationId) === undefined
+      ? await this.controlById(cellId, "GET", "/status").catch(() => undefined) as { cursor?: number } | undefined
+      : undefined;
+    const cursor = turn.cellEventCursor
+      ?? this.cellCursors.get(conversationId)
+      ?? (typeof cellStatus?.cursor === "number" ? cellStatus.cursor : 0);
+    const onCellCursor = (next: number) => {
+      this.cellCursors.set(conversationId, next);
+      turn.onCellCursor?.(next);
+    };
+
+    await this.runTurn({ ...turn, cellId, cellEventCursor: cursor, onCellCursor }, options);
   }
 
   cancelRun(runId: string): void {
@@ -292,7 +327,10 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     void this.controlById(active.cellId, "POST", "/rpc", { id: randomUUID(), type: "abort" }).catch(() => {});
   }
 
-  private async runTurn(turn: AsterTurnStart, options: { resume?: boolean } = {}): Promise<void> {
+  private async runTurn(
+    turn: AsterTurnStart & { cellId: string; cellEventCursor: number },
+    options: { resume?: boolean } = {},
+  ): Promise<void> {
     const { cellId, runId } = turn;
     let cursor = turn.cellEventCursor;
     let stopped = false;

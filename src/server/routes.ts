@@ -274,12 +274,6 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
     startTurn: (turn) => turn.finish("failed", "hotcell_unavailable"),
     cancelRun: () => {},
   });
-  if (!options.asterRuntime) {
-    // Repository-scoped GitHub access for code cells (no-op unless configured).
-    void asterApi.startGitHubProxy().catch((error: unknown) => {
-      process.stderr.write(`aster: GitHub proxy failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
-    });
-  }
 
   const wakeScheduler = new RunWakeScheduler({
     onWake: async (event: RunWakeEvent) => {

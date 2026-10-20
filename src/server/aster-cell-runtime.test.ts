@@ -301,6 +301,35 @@ describe("Aster Hotcell runtime", () => {
     assert.ok(state.writeSizes?.every((size) => size <= 32 * 1024));
   });
 
+  it("provisions a cell from the API conversation and streams its first turn", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const conversationId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    const turn = fakeTurn({
+      cellId: undefined,
+      cellEventCursor: undefined,
+      conversation: {
+        id: conversationId,
+        sessionId,
+        workspaceId: "default",
+        worktreePath: "/tmp/repo-worktree",
+        model: "test/model",
+      } as never,
+      userText: "make a small change",
+    });
+
+    runtime.startTurn(turn);
+    await waitFor(() => turn.finished.length > 0);
+
+    const state = cells.get(conversationId);
+    assert.ok(state, "The runtime should provision one cell for this API conversation");
+    assert.deepEqual(state.sessions, [sessionId]);
+    assert.deepEqual(state.prompts.map(({ message }) => message), ["make a small change"]);
+    assert.ok(turn.events.some((event) => event.type === "assistant.delta"));
+    assert.deepEqual(turn.finished, ["completed"]);
+  });
+
   it("maps cell events to Aster events, advances the cursor, and finishes completed turns", async () => {
     const cells = new Map<string, FakeCellState>();
     const provider = fakeProvider(cells);
