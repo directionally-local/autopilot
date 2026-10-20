@@ -35,8 +35,9 @@ import { CheckpointPicker } from "./ui/checkpoint-picker.js";
 import { PlanOptionsPicker } from "./ui/plan-options-picker.js";
 import { QueuePlanPicker } from "./ui/queue-plan-picker.js";
 import { createQueueBatch, canDrainQueue, type QueuedPrompt } from "./agent/queue-batch.js";
-import { isImmediateSubagentCommand, isRunNowCommand, SubagentPanel, useSubagentList } from "./ui/subagent-panel.js";
-import { planTriageAction, steerMessage, triageIncoming, type TriageResult } from "./agent/inbox-triage.js";
+import { SubagentPanel, useSubagentList } from "./ui/subagent-panel.js";
+import { triageIncoming } from "./agent/inbox-triage.js";
+import { createTriageCoordinator, decideSubmit, describeActivity, pushHistory, type PromptEditTarget } from "./ui/input-coordinator.js";
 import { answerAside } from "./agent/aside.js";
 import { workerRegistry } from "./tools/worker-registry.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
@@ -103,6 +104,7 @@ import { compactAfterTurn, compactMidTurn, type AutoCompactionDeps } from "./age
 import { prepareAutoFresh } from "./agent/auto-fresh.js";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents } from "./ui/turn-callbacks.js";
 import { buildPromptContent, expandCustomCommand, turnReasoningEffort } from "./ui/prepare-prompt.js";
+import { freshSuggestion, INIT_TIP, turnNudges } from "./ui/turn-nudges.js";
 import { classifyNextMessage, makeTurnId } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 import { distillSessionPlan } from "./agent/distill.js";
@@ -133,18 +135,11 @@ import {
   mkKey,
   openBrowser,
   trackRecentFile,
-  replaceQueuedPrompt,
   replaceUserPromptEvent,
 } from "./ui/app-helpers.js";
 
 /** The TUI's config is exactly the loaded config. */
 export type Cfg = KimiConfig;
-
-interface PromptEditTarget {
-  key: string;
-  historyText: string;
-  messagesBefore: ChatMessage[] | null;
-}
 
 interface PendingPromptEdit {
   key: string;
@@ -287,11 +282,10 @@ function App({
   const [queueDrainRevision, setQueueDrainRevision] = useState(0);
   /** Running subagents, for the Camouflage activity panel (bridge snapshot). */
   const runningSubagents = useSubagentList();
-  const announcedSubagentsRef = useRef<Set<string>>(new Set());
   /** Latest queue for async triage callbacks (state closures go stale). */
   const queueRef = useRef<QueuedPrompt[]>([]);
   queueRef.current = queue;
-  const triageQueuedRef = useRef<((item: QueuedPrompt) => Promise<void>) | null>(null);
+  const triageRef = useRef<ReturnType<typeof createTriageCoordinator> | null>(null);
   const promoteQueuedRef = useRef<(() => boolean) | null>(null);
   const [queuePlanDraft, setQueuePlanDraft] = useState<QueuedPrompt[] | null>(null);
   const [history, setHistory] = useState<string[]>([]);
@@ -858,6 +852,18 @@ function App({
           memoryEnabled: cfg!.memoryEnabled,
         }),
     });
+
+  /** Start a fresh session from a continuation summary (after a silent checkpoint), with a notice. */
+  const runAutoFresh = async (notice: string): Promise<void> => {
+    try {
+      const summary = await prepareAutoFreshNow();
+      if (!summary) return;
+      executeFreshStart(buildSlashContext(), summary);
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
+    } catch (e) {
+      setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` }]);
+    }
+  };
 
   /** Mid-turn compaction hook: called between tool-iteration cycles in runAgentTurn.
    *  Prevents context overflow during long exploration sessions. */
@@ -1540,57 +1546,22 @@ function App({
         }
       }
 
-      // Occasional gentle nudge about /init (educational, not a warning)
+      // Occasional /init tip; for long auto/edit sessions, suggest /fresh or start fresh.
       turnCounterRef.current += 1;
-      if (
-        turnCounterRef.current % 15 === 0 &&
-        ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))) &&
-        !kimiMdStale
-      ) {
-        setEvents((e) => [
-          ...e,
-          { kind: "info", key: mkKey(), text: "Tip: Rerunning /init occasionally helps autopilot (formerly kimiflare) stay accurate as your project evolves." },
-        ]);
-      }
-
-      // Auto-fresh suggestion for long auto/edit sessions
-      const autoFreshThreshold = cfg?.autoFreshSuggestionTurns ?? DEFAULT_AUTO_FRESH_SUGGESTION_TURNS;
-      if (
-        autoFreshThreshold > 0 &&
-        turnCounterRef.current >= autoFreshThreshold &&
-        (modeRef.current === "auto" || modeRef.current === "edit") &&
-        !freshSuggestedRef.current
-      ) {
+      const nudges = turnNudges({
+        turn: turnCounterRef.current,
+        hasContextFile: ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))),
+        contextStale: kimiMdStale,
+        mode: modeRef.current,
+        freshAfterTurns: cfg?.autoFreshSuggestionTurns ?? DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
+        freshSuggested: freshSuggestedRef.current,
+        autoFreshEnabled: cfg?.autoFreshEnabled === true,
+      });
+      if (nudges.initTip) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: INIT_TIP }]);
+      if (nudges.fresh) {
         freshSuggestedRef.current = true;
-        if (cfg?.autoFreshEnabled) {
-          // Auto-execute /fresh after a silent checkpoint
-          void (async () => {
-            try {
-              const summary = await prepareAutoFreshNow();
-              if (summary) {
-                executeFreshStart(buildSlashContext(), summary);
-                setEvents((e) => [
-                  ...e,
-                  { kind: "info", key: mkKey(), text: "Auto-fresh triggered: starting new session with continuation context…" },
-                ]);
-              }
-            } catch (e) {
-              setEvents((es) => [
-                ...es,
-                { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` },
-              ]);
-            }
-          })();
-        } else {
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "info",
-              key: mkKey(),
-              text: `Session has run for ${turnCounterRef.current} turns. The model may slow down with accumulated context. Run /fresh to continue with a summarized state, or /compact to compress history.`,
-            },
-          ]);
-        }
+        if (nudges.fresh === "auto") void runAutoFresh("Auto-fresh triggered: starting new session with continuation context…");
+        else setEvents((e) => [...e, { kind: "info", key: mkKey(), text: freshSuggestion(turnCounterRef.current) }]);
       }
 
       responseMetaRef.current = null;
@@ -1834,22 +1805,9 @@ function App({
                 autoCompactionDeps(turnId),
               );
               if (tokensAfterAggressive !== null && tokensAfterAggressive > (cfg?.autoFreshTokenThreshold ?? 2_000_000)) {
-                try {
-                  const summary = await prepareAutoFreshNow();
-                  if (summary) {
-                    executeFreshStart(buildSlashContext(), summary);
-                    setEvents((e) => [
-                      ...e,
-                      {
-                        kind: "info",
-                        key: mkKey(),
-                        text: `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
-                      },
-                    ]);
-                  }
-                } catch (e) {
-                  setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` }]);
-                }
+                await runAutoFresh(
+                  `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
+                );
               }
             })();
 
@@ -1963,252 +1921,147 @@ function App({
     [queuePlanDraft],
   );
 
+  // --- Mid-turn triage (#725) -------------------------------------------
+  // Messages sent while the agent works are queued first; triage may then
+  // pull them out to steer the current turn, interrupt it, or answer as an
+  // aside. Unsure → stays queued, and Ctrl+G promotes it.
+  /** Update the queue ref and the rendered queue together. */
+  const setQueueBoth = (update: (queue: QueuedPrompt[]) => QueuedPrompt[]) => {
+    queueRef.current = update(queueRef.current);
+    setQueue(update);
+  };
+  const currentActivity = () =>
+    describeActivity({
+      messages: messagesRef.current,
+      tasks: tasksRef.current,
+      pendingTools: [...pendingToolCallsRef.current.values()],
+      workers: workerRegistry.list(),
+    });
+  const triage = createTriageCoordinator({
+    isBusy: () => busyRef.current || supervisorRef.current.isRunning,
+    subagentsRunning: () => workerRegistry.list().length > 0,
+    getQueue: () => queueRef.current,
+    setQueue: setQueueBoth,
+    markDelivered: (key, note) =>
+      setEvents((evts) => [
+        ...evts.map((e) => (e.kind === "user" && e.key === key ? { ...e, queued: false } : e)),
+        { kind: "info", key: mkKey(), text: note },
+      ]),
+    notice: (text) => setEvents((evts) => [...evts, { kind: "info", key: mkKey(), text }]),
+    transcriptQueueNotes: Boolean(bridge),
+    activity: currentActivity,
+    triage: (text, activity) => triageIncoming(text, activity, { apiKey: activeOpenRouterKey(cfg) }),
+    answerAside: cfg
+      ? (text, activity) => answerAside(text, activity, { ...llmAuthFromConfig(cfg), model: cfg.plumbingModel ?? cfg.model })
+      : null,
+    steer: (item, content) => pendingSteersRef.current.push({ key: item.key, full: item.full, display: item.display, content }),
+    interrupt: () => runInterruptTurn(interruptDepsRef.current!),
+  });
+  triageRef.current = triage;
+  promoteQueuedRef.current = triage.promoteLatest;
+
   const submit = useCallback(
     (full: string, display?: string) => {
       const trimmedFull = full.trim();
-      if (!trimmedFull) return;
       const trimmedDisplay = (display ?? full).trim() || trimmedFull;
-
-      if (/^\/queue\s+plan$/i.test(trimmedFull)) {
-        const historyEntry = trimmedDisplay;
-        setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
+      const busyNow = busyRef.current || supervisorRef.current.isRunning;
+      const editTarget = latestPromptRef.current;
+      const decision = decideSubmit(trimmedFull, trimmedDisplay, {
+        busy: busyNow,
+        queue,
+        history,
+        historyIndex,
+        editTarget,
+        editTargetVisible: editTarget !== null && events.some((event) => event.kind === "user" && event.key === editTarget.key),
+      });
+      const clearInput = () => {
         setInput("");
         setHistoryIndex(-1);
-        if (queue.length < 2) {
-          setEvents((events) => [...events, { kind: "info", key: mkKey(), text: "Queue planning needs at least two queued chat prompts." }]);
-        } else if (!createQueueBatch(queue)) {
-          setEvents((events) => [...events, { kind: "info", key: mkKey(), text: "Queue planning only groups chat prompts; slash commands and ! shell commands stay in the FIFO queue." }]);
-        } else {
-          setQueuePlanDraft([...queue]);
-        }
-        return;
-      }
+      };
+      const info = (text: string) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
 
-      const historyEntry = trimmedDisplay;
-      const editTarget = latestPromptRef.current;
-      const selectedHistoryEntry = history[historyIndex];
-      const isEditedLatestPrompt =
-        historyIndex === history.length - 1 &&
-        editTarget !== null &&
-        events.some((event) => event.kind === "user" && event.key === editTarget.key) &&
-        selectedHistoryEntry === editTarget.historyText;
-
-      if (isEditedLatestPrompt && editTarget) {
-        if (trimmedDisplay === selectedHistoryEntry) {
-          setInput("");
-          setHistoryIndex(-1);
+      switch (decision.do) {
+        case "ignore":
           return;
-        }
-        const updatedQueue = replaceQueuedPrompt(queue, editTarget.key, trimmedFull, trimmedDisplay);
-        if (updatedQueue || editTarget.messagesBefore) {
+        case "queue-plan":
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          if (decision.notice) info(decision.notice);
+          else setQueuePlanDraft([...queue]);
+          return;
+        case "edit-unchanged":
+          clearInput();
+          return;
+        case "edit-queued":
+        case "edit-rerun": {
+          const target = decision.target;
           setHistory((items) =>
-            items.length > 0 && items[items.length - 1] === editTarget.historyText
-              ? [...items.slice(0, -1), trimmedDisplay]
-              : items,
+            items.length > 0 && items[items.length - 1] === target.historyText ? [...items.slice(0, -1), trimmedDisplay] : items,
           );
-          setInput("");
-          setHistoryIndex(-1);
-          latestPromptRef.current = { ...editTarget, historyText: trimmedDisplay };
-          setEvents((events) => replaceUserPromptEvent(events, editTarget.key, trimmedDisplay));
-
-          if (updatedQueue) {
-            setQueue(updatedQueue);
+          clearInput();
+          latestPromptRef.current = { ...target, historyText: trimmedDisplay };
+          setEvents((events) => replaceUserPromptEvent(events, target.key, trimmedDisplay));
+          if (decision.do === "edit-queued") {
+            setQueue(decision.queue);
             return;
           }
-
-          const edit: PendingPromptEdit = {
-            key: editTarget.key,
-            full: trimmedFull,
-            display: trimmedDisplay,
-            messagesBefore: editTarget.messagesBefore!,
-          };
-          if (busyRef.current || supervisorRef.current.isRunning) {
+          const edit: PendingPromptEdit = { key: target.key, full: trimmedFull, display: trimmedDisplay, messagesBefore: decision.target.messagesBefore };
+          if (busyNow) {
             pendingPromptEditRef.current = edit;
             runInterruptTurn(interruptDepsRef.current!);
           } else {
             messagesRef.current = [...edit.messagesBefore];
             setEvents((events) => replaceUserPromptEvent(events, edit.key, edit.display, true));
-            processMessage(edit.full, edit.display, {
-              queuedKeys: [edit.key],
-              historyText: edit.display,
-            });
+            processMessage(edit.full, edit.display, { queuedKeys: [edit.key], historyText: edit.display });
           }
           return;
         }
-      }
-
-      if (isRunNowCommand(trimmedFull)) {
-        setInput("");
-        setHistoryIndex(-1);
-        const promoted = promoteQueuedRef.current?.() ?? false;
-        if (!promoted) {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: busyRef.current || supervisorRef.current.isRunning ? "nothing queued to run now" : "nothing is running — queued messages run next anyway" }]);
+        case "run-now":
+          clearInput();
+          if (!triageRef.current!.promoteLatest()) {
+            info(busyNow ? "nothing queued to run now" : "nothing is running — queued messages run next anyway");
+          }
+          return;
+        case "subagent-command":
+          // Subagent management must work mid-turn: queueing it would make it useless.
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          void handleSlash(trimmedFull);
+          return;
+        case "enqueue": {
+          // Queue first so order is preserved and "unsure" already means queued;
+          // triage then decides whether to pull it out to steer, interrupt, or
+          // answer as an aside (#725).
+          const key = mkKey();
+          setEvents((e) => [...e, { kind: "user", key, text: trimmedDisplay, queued: true }]);
+          const queued: QueuedPrompt = {
+            full: trimmedFull,
+            display: trimmedDisplay,
+            key,
+            ...(decision.isChatPrompt ? { triage: { source: "pending" as const, reason: "deciding…" } } : {}),
+          };
+          setQueueBoth((q) => [...q, queued]);
+          if (decision.isChatPrompt) {
+            latestPromptRef.current = { key, historyText: trimmedDisplay, messagesBefore: null };
+            void triageRef.current!.triageQueued(queued);
+          }
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          return;
         }
-        return;
+        case "run":
+          setHistory((h) => pushHistory(h, trimmedDisplay));
+          clearInput();
+          processMessage(trimmedFull, trimmedDisplay !== trimmedFull ? trimmedDisplay : undefined, {
+            eventKey: mkKey(),
+            historyText: trimmedDisplay,
+          });
+          return;
       }
-
-      // Subagent management must work mid-turn: workers only run while a turn
-      // is busy, so queueing these commands would make them useless.
-      if ((busyRef.current || supervisorRef.current.isRunning) && isImmediateSubagentCommand(trimmedFull)) {
-        setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
-        setInput("");
-        setHistoryIndex(-1);
-        void handleSlash(trimmedFull);
-        return;
-      }
-
-      if (busyRef.current || supervisorRef.current.isRunning) {
-        const key = mkKey();
-        const isChatPrompt = !trimmedFull.startsWith("/") && parseBangCommand(trimmedFull) === null;
-        setEvents((e) => [...e, { kind: "user", key, text: trimmedDisplay, queued: true }]);
-        // Queue first so order is preserved and "unsure" already means queued;
-        // triage then decides whether to pull it out to steer, interrupt, or
-        // answer as an aside (#725).
-        const queued: QueuedPrompt = {
-          full: trimmedFull,
-          display: trimmedDisplay,
-          key,
-          ...(isChatPrompt ? { triage: { source: "pending" as const, reason: "deciding…" } } : {}),
-        };
-        queueRef.current = [...queueRef.current, queued];
-        setQueue((q) => [...q, queued]);
-        if (isChatPrompt) {
-          latestPromptRef.current = { key, historyText: historyEntry, messagesBefore: null };
-          void triageQueuedRef.current?.(queued);
-        }
-        setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
-        setInput("");
-        setHistoryIndex(-1);
-        return;
-      }
-
-      setHistory((h) => (h.length > 0 && h[h.length - 1] === historyEntry ? h : [...h, historyEntry]));
-      setInput("");
-      setHistoryIndex(-1);
-      const key = mkKey();
-      processMessage(trimmedFull, trimmedDisplay !== trimmedFull ? trimmedDisplay : undefined, {
-        eventKey: key,
-        historyText: historyEntry,
-      });
     },
     [processMessage, handleSlash, queue, history, historyIndex, events],
   );
   submitRef.current = submit;
-
-  // Subagents are shown in the compact live region trail; no need for inline notices.
-  // useEffect(() => {
-  //   if (!bridge) return;
-  //   const seen = announcedSubagentsRef.current;
-  //   const fresh = runningSubagents.filter((w) => !seen.has(w.id));
-  //   if (fresh.length === 0) return;
-  //   for (const w of fresh) seen.add(w.id);
-  //   setEvents((evts) => [
-  //     ...evts,
-  //     ...fresh.map((w) => ({
-  //       kind: "info" as const,
-  //       key: mkKey(),
-  //       text: `subagent #${w.index} started: ${w.task.replace(/\s+/g, " ").slice(0, 100)} · /agents to view or stop`,
-  //     })),
-  //   ]);
-  // }, [bridge, runningSubagents]);
-
-  // --- Mid-turn triage (#725) -------------------------------------------
-  // Messages sent while the agent works are queued first; triage may then
-  // pull them out to steer the current turn, interrupt it, or answer as an
-  // aside. Unsure → stays queued, and Ctrl+G promotes it.
-  const textOf = (m: ChatMessage | undefined): string =>
-    !m ? "" : typeof m.content === "string" ? m.content : Array.isArray(m.content)
-      ? m.content.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join(" ")
-      : "";
-  const describeActivity = (): { currentTask: string; activity?: string; progress?: string; recentAssistantText?: string } => {
-    const msgs = messagesRef.current;
-    const currentTask = textOf([...msgs].reverse().find((m) => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[Message from the user") && !m.content.startsWith("[The user asked to handle")));
-    const recentAssistantText = textOf([...msgs].reverse().find((m) => m.role === "assistant" && textOf(m).length > 0));
-    const inProgress = tasksRef.current.find((t) => t.status === "in_progress");
-    const done = tasksRef.current.filter((t) => t.status === "completed").length;
-    const progress = tasksRef.current.length > 0
-      ? `${done}/${tasksRef.current.length} tasks done${inProgress ? `; working on: ${inProgress.title}` : ""}`
-      : undefined;
-    const tools = [...pendingToolCallsRef.current.values()];
-    const workers = workerRegistry.list();
-    const activity = [
-      tools.length ? `tools: ${tools.join(", ")}` : "",
-      workers.length ? `${workers.length} subagent(s): ${workers.map((w) => w.task.slice(0, 60)).join("; ")}` : "",
-    ].filter(Boolean).join(" · ") || undefined;
-    return { currentTask, activity, progress, recentAssistantText };
-  };
-  const removeQueued = (key: string): QueuedPrompt | null => {
-    const item = queueRef.current.find((q) => q.key === key) ?? null;
-    if (!item) return null;
-    queueRef.current = queueRef.current.filter((q) => q.key !== key);
-    setQueue((q) => q.filter((i) => i.key !== key));
-    return item;
-  };
-  const markDelivered = (key: string, note: string) => {
-    setEvents((evts) => [
-      ...evts.map((e) => (e.kind === "user" && e.key === key ? { ...e, queued: false } : e)),
-      { kind: "info", key: mkKey(), text: note },
-    ]);
-  };
-  const applyTriage = (item: QueuedPrompt, result: TriageResult, promoted = false): void => {
-    const action = planTriageAction(result, {
-      busy: busyRef.current || supervisorRef.current.isRunning,
-      subagentsRunning: workerRegistry.list().length > 0,
-      promoted,
-    });
-    switch (action.do) {
-      case "keep-queued":
-        if (action.note) {
-          setQueue((q) => q.map((i) => (i.key === item.key ? { ...i, triage: { source: result.source, reason: result.reason } } : i)));
-          // Camouflage has no inline queue line; say it in the transcript.
-          if (bridge) {
-            setEvents((evts) => [...evts, { kind: "info", key: mkKey(), text: `${action.note} — runs after the current turn · /now to run it first` }]);
-          }
-        }
-        return;
-      case "aside": {
-        if (!cfg) return;
-        void answerAside(item.full, describeActivity(), { ...llmAuthFromConfig(cfg), model: cfg.plumbingModel ?? cfg.model })
-          .then((answer) => {
-            if (!removeQueued(item.key)) return; // already ran as a normal turn
-            markDelivered(item.key, `aside (the agent keeps working): ${answer}`);
-          })
-          .catch(() => {
-            setQueue((q) => q.map((i) => (i.key === item.key ? { ...i, triage: { source: "default", reason: "couldn't answer as an aside" } } : i)));
-          });
-        return;
-      }
-      case "interrupt": {
-        if (!removeQueued(item.key)) return;
-        // Run it next, ahead of anything else queued; completed tool results are kept.
-        const front: QueuedPrompt = { ...item, triage: undefined };
-        queueRef.current = [front, ...queueRef.current];
-        setQueue((q) => [front, ...q]);
-        setEvents((evts) => [...evts, { kind: "info", key: mkKey(), text: action.note }]);
-        runInterruptTurn(interruptDepsRef.current!);
-        return;
-      }
-      case "steer":
-        if (!removeQueued(item.key)) return;
-        pendingSteersRef.current.push({ key: item.key, full: item.full, display: item.display, content: steerMessage(item.full, action.urgent) });
-        markDelivered(item.key, action.note);
-        return;
-    }
-  };
-  triageQueuedRef.current = async (item: QueuedPrompt) => {
-    const result = await triageIncoming(item.full, describeActivity(), {
-      apiKey: activeOpenRouterKey(cfg),
-    });
-    if (!queueRef.current.some((q) => q.key === item.key)) return; // promoted or already ran
-    applyTriage(item, result);
-  };
-  promoteQueuedRef.current = () => {
-    if (!(busyRef.current || supervisorRef.current.isRunning)) return false;
-    const latest = [...queueRef.current].reverse().find((q) => q.triage !== undefined);
-    if (!latest) return false;
-    applyTriage(latest, { kind: "steer", source: "rule", reason: "you asked to run it now" }, true);
-    return true;
-  };
 
   useEffect(() => {
     if (usage && usage.prompt_tokens / modelContextLimit < AUTO_COMPACT_THRESHOLD * 0.7) {
