@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpOptions, listMentionDir, modelOptions, shouldSendSubagentPolicyNotice, splitBangResult, syncSlashCommands, toolRow, toolSummary, validateCommandName } from "./camouflage-view.js";
+import { helpOptions, listMentionDir, modelOptions, noticeSeverity, shouldSendSubagentPolicyNotice, splitBangResult, syncSlashCommands, toolRow, toolSummary, validateCommandName } from "./camouflage-view.js";
 import { listModels } from "./models/registry.js";
 
 describe("Camouflage event sync helpers", () => {
@@ -37,6 +37,13 @@ describe("Camouflage event sync helpers", () => {
     assert.deepEqual(splitBangResult("Bash", "exit=1\nnot a bang command"), { output: "exit=1\nnot a bang command" });
   });
 });
+describe("noticeSeverity (#889)", () => {
+  it("shows warning-toned info events, such as a failed hook, as warnings", () => {
+    assert.strictEqual(noticeSeverity({ kind: "info", key: "k", text: "hook x (PreToolUse) failed: …", tone: "warn" }), "warn");
+    assert.strictEqual(noticeSeverity({ kind: "info", key: "k", text: "plain" }), "info");
+  });
+});
+
 describe("listMentionDir", () => {
   it("lists the folder being typed, folders first, prefixed as typed", async () => {
     const root = await mkdtemp(join(tmpdir(), "mention-"));

@@ -3,7 +3,7 @@ import { Box, Text, useInput } from "ink";
 import SelectInput from "ink-select-input";
 import { CustomTextInput } from "./text-input.js";
 import { useTheme } from "./theme-context.js";
-import type { HookEvent, HookConfig } from "../hooks/types.js";
+import { TOOL_HOOK_EVENTS, type HookEvent, type HookConfig } from "../hooks/types.js";
 import { appendHook } from "../hooks/settings.js";
 
 /**
@@ -32,11 +32,13 @@ type Step =
   | "scope"
   | "review";
 
-const TOOL_EVENTS = new Set<HookEvent>(["PreToolUse", "PostToolUse"]);
+const TOOL_EVENTS = TOOL_HOOK_EVENTS;
 
 export const EVENT_DESCRIPTIONS: Record<HookEvent, string> = {
   PreToolUse: "before every tool call — can VETO (block) it",
   PostToolUse: "after every tool call — informational only",
+  PostToolUseFailure: "after a tool call fails — informational only",
+  PermissionRequest: "before you're asked to approve a call — can allow or deny it",
   UserPromptSubmit: "when you hit Enter — can VETO the prompt",
   Stop: "when the agent finishes a turn — informational only",
   PreCompact: "before auto-compaction shrinks the conversation",
@@ -61,6 +63,17 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
     ``,
     `# Log every tool call to an audit file:`,
     `echo "$(date -u +%FT%TZ) $AUTOPILOT_HOOK_TOOL $AUTOPILOT_HOOK_RESULT_OK" >> ~/.local/state/kimiflare/tool-audit.log`,
+  ],
+  PostToolUseFailure: [
+    `# Log failed tool calls with their error:`,
+    `jq -c '{tool: .tool_name, error: .error}' >> ~/.local/state/kimiflare/tool-failures.log`,
+  ],
+  PermissionRequest: [
+    `# Never let the agent touch .env files, without asking you:`,
+    `case "$AUTOPILOT_HOOK_PATH" in *.env) echo "no .env edits" >&2; exit 2 ;; esac`,
+    ``,
+    `# Auto-approve writes under src/ (other calls still prompt):`,
+    `case "$AUTOPILOT_HOOK_PATH" in src/*) echo '{"hookSpecificOutput":{"permissionDecision":"allow"}}' ;; esac`,
   ],
   UserPromptSubmit: [
     `# Block prompts that contain "password":`,
@@ -235,12 +248,17 @@ export function HooksWizard(props: HooksWizardProps): React.ReactElement {
           `  $AUTOPILOT_HOOK_TIER      — light | medium | heavy (when classified)\n` +
           `  $AUTOPILOT_HOOK_SESSION_ID — id of the current session\n` +
           `  stdin                     — the full JSON event payload (also $AUTOPILOT_HOOK_PAYLOAD when under 32 KB)` +
-          (event === "PreToolUse" || event === "UserPromptSubmit"
+          (event === "PermissionRequest"
+            ? `\n\nNote: \`exit 2\` (or {"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}})\n` +
+              `denies the call without asking you; permissionDecision "allow" approves it without asking\n` +
+              `(never in plan mode, never past a config deny rule); "ask" or no output shows the normal prompt.\n` +
+              `A failing hook falls back to the prompt (set "failClosed": true in settings.json to deny instead).`
+            : event === "PreToolUse" || event === "UserPromptSubmit"
             ? `\n\nNote: this is a VETO event — \`exit 2\` cancels the ${event === "PreToolUse" ? "tool call" : "prompt"}; stderr becomes the\nreason shown to the model.` +
               (event === "PreToolUse"
                 ? ` Or exit 0 and print {"hookSpecificOutput":{"permissionDecision":"deny"|"ask"|"allow",\n"permissionDecisionReason":"..."}}.`
                 : ` Or exit 0 and print {"decision":"block","reason":"..."}.`) +
-              `\nAny other non-zero exit, a timeout or a missing command only logs a warning\nand lets it through (fail-open).`
+              `\nAny other non-zero exit, a timeout or a missing command shows a warning\nand lets it through (fail-open) — unless the hook sets "failClosed": true.`
             : "")
         }
         error={error}

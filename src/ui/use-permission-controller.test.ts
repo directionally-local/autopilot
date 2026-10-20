@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { decidePermission } from "./use-permission-controller.js";
+import { decidePermission, resolvePermission } from "./use-permission-controller.js";
 import type { PermissionRequest } from "../tools/executor.js";
 
 function req(toolName: string, args: Record<string, unknown> = {}): PermissionRequest {
@@ -99,5 +99,51 @@ describe("decidePermission", () => {
         { kind: "prompt" },
       );
     });
+  });
+});
+
+describe("resolvePermission — PermissionRequest hooks (#891)", () => {
+  const host = (prompts: string[], blocked: string[] = []) => ({
+    onPlanModeBlocked: (t: string) => void blocked.push(t),
+    prompt: async () => {
+      prompts.push("prompt");
+      return "allow" as const;
+    },
+  });
+  const withHook = (decision: "allow" | "deny" | null, calls: string[]): PermissionRequest => ({
+    ...req("write"),
+    firePermissionHook: async (mode) => {
+      calls.push(mode);
+      return decision ? { decision } : null;
+    },
+  });
+
+  it("a hook's deny answers without prompting", async () => {
+    const prompts: string[] = [];
+    const calls: string[] = [];
+    assert.deepStrictEqual(await resolvePermission(withHook("deny", calls), "edit", {}, host(prompts)), { decision: "deny", scope: "once" });
+    assert.deepStrictEqual(prompts, []);
+    assert.deepStrictEqual(calls, ["edit"]);
+  });
+
+  it("a hook's allow skips the prompt", async () => {
+    const prompts: string[] = [];
+    assert.deepStrictEqual(await resolvePermission(withHook("allow", []), "edit", {}, host(prompts)), { decision: "allow", scope: "once" });
+    assert.deepStrictEqual(prompts, []);
+  });
+
+  it("no decision shows the prompt", async () => {
+    const prompts: string[] = [];
+    await resolvePermission(withHook(null, []), "edit", {}, host(prompts));
+    assert.deepStrictEqual(prompts, ["prompt"]);
+  });
+
+  it("plan mode's block and auto mode's allow come first; the hook isn't asked", async () => {
+    const calls: string[] = [];
+    const blocked: string[] = [];
+    assert.deepStrictEqual(await resolvePermission(withHook("allow", calls), "plan", {}, host([], blocked)), { decision: "deny", scope: "once" });
+    assert.deepStrictEqual(blocked, ["write"]);
+    await resolvePermission(withHook("deny", calls), "auto", {}, host([]));
+    assert.deepStrictEqual(calls, []);
   });
 });

@@ -3,9 +3,13 @@ import type {
   HookConfig,
   HookEvent,
   HookEventOutcome,
+  HookFailure,
+  HookFailureKind,
   HookOutcome,
   HookPayload,
   IntentTier,
+  PermissionRequestPayload,
+  PostToolUseFailurePayload,
   PostToolUsePayload,
   PreToolUsePayload,
 } from "./types.js";
@@ -33,7 +37,19 @@ export const HOOK_BLOCK_EXIT_CODE = 2;
 
 /** Events a hook can block (exit 2, or a deny/block JSON decision). */
 function isVetoEvent(event: HookEvent): boolean {
-  return event === "PreToolUse" || event === "UserPromptSubmit";
+  return event === "PreToolUse" || event === "UserPromptSubmit" || event === "PermissionRequest";
+}
+
+/** Events whose payload describes one tool call (tool, args, tool_call_id). */
+type ToolEventPayload = PreToolUsePayload | PostToolUsePayload | PostToolUseFailurePayload | PermissionRequestPayload;
+
+function isToolEventPayload(payload: HookPayload): payload is ToolEventPayload {
+  return (
+    payload.event === "PreToolUse" ||
+    payload.event === "PostToolUse" ||
+    payload.event === "PostToolUseFailure" ||
+    payload.event === "PermissionRequest"
+  );
 }
 
 export type HookPermissionDecision = "allow" | "deny" | "ask";
@@ -71,6 +87,16 @@ export function parseHookDecision(stdout: string): ParsedHookDecision | null {
       const reason = typeof s.permissionDecisionReason === "string" ? s.permissionDecisionReason : undefined;
       return { decision: d, ...(reason ? { reason } : {}) };
     }
+    // Claude Code's PermissionRequest form:
+    //   { "hookSpecificOutput": { "decision": { "behavior": "allow"|"deny", "message": "..." } } }
+    const nested = s.decision;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const n = nested as Record<string, unknown>;
+      const reason = typeof n.message === "string" ? n.message : undefined;
+      if (n.behavior === "allow" || n.behavior === "deny" || n.behavior === "ask") {
+        return { decision: n.behavior, ...(reason ? { reason } : {}) };
+      }
+    }
   }
   const legacy = obj.decision;
   const reason = typeof obj.reason === "string" ? obj.reason : undefined;
@@ -103,18 +129,19 @@ export function buildHookEnv(payload: HookPayload, payloadJson?: string): Record
     env.KIMIFLARE_HOOK_PAYLOAD_BYTES = String(bytes);
   }
   if (payload.session_id) env.KIMIFLARE_HOOK_SESSION_ID = payload.session_id;
-  if (payload.event === "PreToolUse" || payload.event === "PostToolUse") {
-    const p = payload as PreToolUsePayload | PostToolUsePayload;
+  if (isToolEventPayload(payload)) {
+    const p = payload;
     env.KIMIFLARE_HOOK_TOOL = p.tool;
     // Common per-tool path arg — surfaced for ergonomic shell tests.
     const path = (p.args as Record<string, unknown>).path;
     if (typeof path === "string") env.KIMIFLARE_HOOK_PATH = path;
     if (p.tier) env.KIMIFLARE_HOOK_TIER = p.tier;
-    if (p.event === "PostToolUse") {
-      env.KIMIFLARE_HOOK_RESULT_OK = String((p as PostToolUsePayload).result.ok);
-      const ec = (p as PostToolUsePayload).result.errorCode;
+    if (p.event === "PostToolUse" || p.event === "PostToolUseFailure") {
+      env.KIMIFLARE_HOOK_RESULT_OK = String(p.result.ok);
+      const ec = p.result.errorCode;
       if (ec) env.KIMIFLARE_HOOK_RESULT_ERROR_CODE = ec;
     }
+    if (p.event === "PermissionRequest") env.KIMIFLARE_HOOK_MODE = p.mode;
   }
   if (payload.event === "UserPromptSubmit") {
     const p = payload as { tier?: IntentTier };
@@ -146,8 +173,19 @@ export function hookWirePayload(payload: HookPayload): Record<string, unknown> {
   // Claude Code-style JSONL transcript (src/transcript/claude-jsonl.ts), and its format.
   if (payload.session_id) Object.assign(wire, hookTranscriptFields(payload.session_id));
   // Claude Code's tool names and shapes (tool_name, tool_input, tool_response, error): see claude-compat.ts.
-  if (payload.event === "PreToolUse" || payload.event === "PostToolUse") Object.assign(wire, claudeToolFields(payload));
+  if (isToolEventPayload(payload)) {
+    Object.assign(wire, claudeToolFields(payload));
+    if (payload.tool_call_id) wire.tool_use_id = payload.tool_call_id;
+    if (payload.event === "PermissionRequest") wire.permission_mode = claudePermissionMode(payload.mode);
+  }
   return wire;
+}
+
+/** Autopilot's mode under Claude Code's `permission_mode` names. */
+function claudePermissionMode(mode: string): string {
+  if (mode === "edit") return "default";
+  if (mode === "auto") return "bypassPermissions";
+  return mode;
 }
 
 function capStream(s: string): string {
@@ -300,7 +338,8 @@ export function filterHooks(
  * than parallel so users can reason about ordering — and so the first
  * blocking hook short-circuits the rest for blocking events.
  *
- * Blocking semantics (PreToolUse, UserPromptSubmit), as in Claude Code:
+ * Blocking semantics (PreToolUse, UserPromptSubmit, PermissionRequest), as
+ * in Claude Code:
  *   - exit 2 blocks; stderr (else stdout) is the reason given to the model.
  *   - exit 0 with a JSON decision on stdout: `deny` (or legacy
  *     `decision: "block"`) blocks with `permissionDecisionReason`; `ask`
@@ -309,7 +348,9 @@ export function filterHooks(
  *   - exit 0 with anything else on stdout: allow.
  *   - any other exit code, a timeout, or a spawn failure (e.g. 127,
  *     command not found) logs a warning and ALLOWS — a broken hook must not
- *     wedge every tool call.
+ *     wedge every tool call — unless the hook sets `failClosed: true`, in
+ *     which case it blocks. Either way the failure is returned in
+ *     `failures` so the host can tell the user (see HooksManager).
  *   - an aborted turn (signal) blocks, since the caller is giving up anyway.
  */
 export async function runHooks(
@@ -321,6 +362,7 @@ export async function runHooks(
 ): Promise<HookEventOutcome> {
   const matched = filterHooks(hooks, toolName);
   const outcomes: HookOutcome[] = [];
+  const failures: HookFailure[] = [];
   const veto = isVetoEvent(event);
   let vetoed = false;
   let vetoReason = "";
@@ -334,34 +376,48 @@ export async function runHooks(
       vetoReason = `hook ${outcome.id} interrupted: the turn was aborted`;
       break;
     }
-    if (outcome.timedOut) {
-      logger.warn("hook:timeout", {
+    // Killed because the turn was aborted: not the hook's fault.
+    if (signal?.aborted) continue;
+    // A hook that didn't run to an answer: timed out, couldn't start, or
+    // exited non-zero other than 2 (exit 2 is a decision). Blocking events
+    // fail open unless the hook is failClosed.
+    const failure = classifyHookFailure(outcome, hook);
+    if (failure) {
+      const failClosed = veto && hook.failClosed === true;
+      const record: HookFailure = {
+        hookId: outcome.id,
+        event,
+        kind: failure.kind,
+        reason: failure.reason,
+        allowed: !failClosed,
+        failClosed,
+      };
+      failures.push(record);
+      (veto || failure.kind !== "nonzero_exit" ? logger.warn : logger.info)(`hook:${failure.kind}`, {
         event,
         id: outcome.id,
-        timeoutMs: hook.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        ...(veto ? { failOpen: true } : {}),
+        reason: failure.reason,
+        ...(outcome.exitCode !== null ? { exitCode: outcome.exitCode } : {}),
+        ...(outcome.stderr ? { stderr: outcome.stderr.slice(0, 500) } : {}),
+        ...(veto ? (failClosed ? { failClosed: true } : { failOpen: true }) : {}),
       });
+      if (failClosed) {
+        vetoed = true;
+        vetoReason = `hook ${outcome.id} failed (${failure.reason}) and is set to failClosed, so this was blocked`;
+        break;
+      }
       continue;
-    }
-    if (outcome.exitCode === null) {
-      logger.warn("hook:spawn_failed", { event, id: outcome.id, error: outcome.stderr, ...(veto ? { failOpen: true } : {}) });
-      continue;
-    }
-    if (veto && outcome.exitCode === HOOK_BLOCK_EXIT_CODE) {
-      vetoed = true;
-      vetoReason = outcome.stderr || outcome.stdout || `hook ${outcome.id} exited ${HOOK_BLOCK_EXIT_CODE}`;
-      // First block wins: don't run e.g. a slow type-check after a fast deny.
-      break;
     }
     if (outcome.exitCode !== 0) {
-      (veto ? logger.warn : logger.info)("hook:nonzero_exit", {
-        event,
-        id: outcome.id,
-        exitCode: outcome.exitCode,
-        ...(outcome.stderr ? { stderr: outcome.stderr.slice(0, 500) } : {}),
-        // Only exit 2 blocks; anything else is a hook failure, not a decision.
-        ...(veto ? { failOpen: true } : {}),
-      });
+      // Exit 2 on a blocking event: the hook's decision to block.
+      if (veto && outcome.exitCode === HOOK_BLOCK_EXIT_CODE) {
+        vetoed = true;
+        vetoReason = outcome.stderr || outcome.stdout || `hook ${outcome.id} exited ${HOOK_BLOCK_EXIT_CODE}`;
+        // First block wins: don't run e.g. a slow type-check after a fast deny.
+        break;
+      }
+      // Exit 2 on an informational event: nothing to block; noted only.
+      logger.info("hook:nonzero_exit", { event, id: outcome.id, exitCode: outcome.exitCode });
       continue;
     }
     if (!veto || !outcome.decision) continue;
@@ -388,5 +444,37 @@ export async function runHooks(
     vetoReason,
     ...(permissionDecision ? { permissionDecision } : {}),
     ...(permissionDecisionReason ? { permissionDecisionReason } : {}),
+    failures,
   };
+}
+
+/** Shell exit code for "command not found". */
+const COMMAND_NOT_FOUND_EXIT_CODE = 127;
+
+function firstLine(s: string, max = 200): string {
+  const line = s.split("\n").find((l) => l.trim()) ?? "";
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+/**
+ * Classify a hook outcome as a failure, or null when the hook answered:
+ * exit 0, or exit 2 (a block on blocking events; a deliberate signal on
+ * the others).
+ */
+export function classifyHookFailure(
+  outcome: HookOutcome,
+  hook: HookConfig,
+): { kind: HookFailureKind; reason: string } | null {
+  const detail = firstLine(outcome.stderr);
+  if (outcome.timedOut) {
+    return { kind: "timeout", reason: `timed out after ${hook.timeoutMs ?? DEFAULT_TIMEOUT_MS} ms` };
+  }
+  if (outcome.exitCode === null) {
+    return { kind: "spawn_failed", reason: `could not be started${detail ? `: ${detail}` : ""}` };
+  }
+  if (outcome.exitCode === 0 || outcome.exitCode === HOOK_BLOCK_EXIT_CODE) return null;
+  if (outcome.exitCode === COMMAND_NOT_FOUND_EXIT_CODE) {
+    return { kind: "command_not_found", reason: `command not found (exit 127)${detail ? `: ${detail}` : ""}` };
+  }
+  return { kind: "nonzero_exit", reason: `exited ${outcome.exitCode}${detail ? `: ${detail}` : ""}` };
 }

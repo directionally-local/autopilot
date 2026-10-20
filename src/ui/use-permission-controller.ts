@@ -1,8 +1,9 @@
 import { useCallback, useRef, useState } from "react";
-import type {
-  PermissionDecision,
-  PermissionDecisionResult,
-  PermissionRequest,
+import {
+  permissionFromHook,
+  type PermissionDecision,
+  type PermissionDecisionResult,
+  type PermissionRequest,
 } from "../tools/executor.js";
 import { isBlockedInPlanMode, isReadOnlyBash, type Mode } from "../mode.js";
 
@@ -57,6 +58,27 @@ export function decidePermission(
   return { kind: "prompt" };
 }
 
+/**
+ * The TUI's answer to one permission request: mode rules first, then any
+ * PermissionRequest hooks (#891), and only then the user's prompt.
+ */
+export async function resolvePermission(
+  req: PermissionRequest,
+  mode: Mode,
+  opts: DecidePermissionOptions | undefined,
+  host: { onPlanModeBlocked: (toolName: string) => void; prompt: () => Promise<PermissionDecision> },
+): Promise<PermissionDecision> {
+  const outcome = decidePermission(req, mode, opts);
+  if (outcome.kind === "resolve") return outcome.decision;
+  if (outcome.kind === "plan_blocked") {
+    host.onPlanModeBlocked(outcome.toolName);
+    return AUTO_DENY;
+  }
+  const fromHook = await permissionFromHook(req, mode);
+  if (fromHook) return fromHook;
+  return host.prompt();
+}
+
 export interface PermissionController {
   pending: PendingPermission | null;
   askPermission: (
@@ -101,20 +123,13 @@ export function usePermissionController(
 
   const askPermission = useCallback<PermissionController["askPermission"]>(
     (req, askOpts) =>
-      new Promise<PermissionDecision>((resolve) => {
-        const outcome = decidePermission(req, getModeRef.current(), askOpts);
-        if (outcome.kind === "resolve") {
-          resolve(outcome.decision);
-          return;
-        }
-        if (outcome.kind === "plan_blocked") {
-          onPlanModeBlockedRef.current(outcome.toolName);
-          resolve(AUTO_DENY);
-          return;
-        }
-        // outcome.kind === "prompt"
-        resolveRef.current = resolve;
-        setPending({ tool: req.tool, args: req.args, resolve });
+      resolvePermission(req, getModeRef.current(), askOpts, {
+        onPlanModeBlocked: (toolName) => onPlanModeBlockedRef.current(toolName),
+        prompt: () =>
+          new Promise<PermissionDecision>((resolve) => {
+            resolveRef.current = resolve;
+            setPending({ tool: req.tool, args: req.args, resolve });
+          }),
       }),
     [],
   );

@@ -2,6 +2,7 @@ import type { ToolSpec, ToolContext, ToolOutput, ToolOutputMeta, RunWaitRequest 
 import { wrapAsToolError, type ToolErrorCode } from "./tool-error.js";
 import type { HooksManager } from "../hooks/manager.js";
 import type { PostToolUsePayload } from "../hooks/types.js";
+import { claudeError, toolCallFailed } from "../hooks/claude-compat.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import { classifyVerification } from "../trace/verification.js";
 import { detectGitRevert } from "../trace/git-delta.js";
@@ -197,6 +198,34 @@ export interface PermissionRequest {
    *  prompt is forced (even for tools that skip it) and this is the hook's
    *  `permissionDecisionReason`, if it gave one. */
   hookAskReason?: string;
+  /**
+   * Fires the `PermissionRequest` hooks for this call. Hosts call it right
+   * before they would prompt the user — after plan mode, `--dangerously-
+   * allow-all` and config permission rules have had their say — passing
+   * their current mode. A non-null result decides the request without a
+   * prompt; null means show the prompt as usual. Absent when no
+   * PermissionRequest hook is enabled. Never returns "allow" in plan mode.
+   */
+  firePermissionHook?: (mode: string) => Promise<PermissionHookResult | null>;
+}
+
+/** A PermissionRequest hook's answer: approve or deny without a prompt. */
+export interface PermissionHookResult {
+  decision: "allow" | "deny";
+  reason?: string;
+}
+
+/**
+ * Ask the request's PermissionRequest hooks (if any) before prompting.
+ * Returns the decision to hand back to the executor, or null to prompt.
+ */
+export async function permissionFromHook(
+  req: PermissionRequest,
+  mode: string,
+): Promise<PermissionDecisionResult | null> {
+  const hook = await req.firePermissionHook?.(mode);
+  if (!hook) return null;
+  return { decision: hook.decision, scope: "once" };
 }
 
 export type PermissionAsker = (req: PermissionRequest) => Promise<PermissionDecision>;
@@ -449,24 +478,46 @@ export class ToolExecutor {
       const sessionKey = this.permissionKey(tool, args);
       if (hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
         const askedAt = performance.now();
+        // PermissionRequest hooks (#891): the host calls this right before
+        // it would prompt; we remember a deny so the model hears who denied.
+        let hookDenial: PermissionHookResult | null = null;
+        const firePermissionHook = this.hooks?.hasEnabledHooks("PermissionRequest")
+          ? async (mode: string): Promise<PermissionHookResult | null> => {
+              const decided = await this.firePermissionRequest(call, args, ctx, mode, hookAskReason);
+              if (decided?.decision === "deny") hookDenial = decided;
+              return decided;
+            }
+          : undefined;
         const raw = await askPermission({
           tool,
           args,
           sessionKey,
           ...(hookForcesAsk && hookAskReason ? { hookAskReason } : {}),
+          ...(firePermissionHook ? { firePermissionHook } : {}),
         });
         const result = toPermissionResult(raw);
         tr?.permission(tracePermissionDecision(result), Math.round(performance.now() - askedAt), result.feedback);
         if (result.decision === "deny") {
-          const denied: ToolResult = {
-            tool_call_id: call.id,
-            name: call.name,
-            content: `Permission denied by user. Do not retry this exact call; ask the user what they want to do differently.`,
-            ok: false,
-            errorCode: "permission_denied",
-            recoverable: false,
-            suggestion: "ask the user what they want to do differently",
-          };
+          const byHook = hookDenial as PermissionHookResult | null;
+          const denied: ToolResult = byHook
+            ? {
+                tool_call_id: call.id,
+                name: call.name,
+                content: `Permission denied by a PermissionRequest hook: ${byHook.reason || "no reason given"}`,
+                ok: false,
+                errorCode: "policy_rejection",
+                recoverable: false,
+                suggestion: "the user has a hook that denies this call — try a different approach",
+              }
+            : {
+                tool_call_id: call.id,
+                name: call.name,
+                content: `Permission denied by user. Do not retry this exact call; ask the user what they want to do differently.`,
+                ok: false,
+                errorCode: "permission_denied",
+                recoverable: false,
+                suggestion: "ask the user what they want to do differently",
+              };
           this.firePostToolUse(call, args, denied, ctx);
           return denied;
         }
@@ -587,11 +638,52 @@ export class ToolExecutor {
   }
 
   /**
-   * Fire-and-forget PostToolUse. Wraps every code path that returns a
-   * `ToolResult` so success / failure / permission-denied all surface
-   * to PostToolUse hooks uniformly. The `content` field is capped via
-   * `capContentForHook` to keep large tool outputs from blowing the OS
-   * env-var limits on `KIMIFLARE_HOOK_PAYLOAD`.
+   * Run the PermissionRequest hooks for one call. Returns allow/deny when a
+   * hook decided (exit 2 or a failing failClosed hook count as deny), or
+   * null to show the normal prompt (`ask`, no decision, or a hook that
+   * failed open). `allow` is ignored in plan mode: a hook can't switch
+   * plan mode off.
+   */
+  private async firePermissionRequest(
+    call: ToolInvocation,
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+    mode: string,
+    hookAskReason: string | undefined,
+  ): Promise<PermissionHookResult | null> {
+    if (!this.hooks) return null;
+    const outcome = await this.hooks.fire(
+      "PermissionRequest",
+      {
+        event: "PermissionRequest",
+        session_id: ctx.sessionId ?? null,
+        cwd: ctx.cwd,
+        tool: call.name,
+        tool_call_id: call.id,
+        args,
+        tier: ctx.intentTier,
+        mode,
+        ...(hookAskReason ? { hook_ask_reason: hookAskReason } : {}),
+      },
+      call.name,
+      ctx.signal,
+    );
+    if (outcome.vetoed) {
+      return { decision: "deny", reason: outcome.permissionDecisionReason || outcome.vetoReason || undefined };
+    }
+    if (outcome.permissionDecision === "allow" && mode !== "plan") {
+      return { decision: "allow", ...(outcome.permissionDecisionReason ? { reason: outcome.permissionDecisionReason } : {}) };
+    }
+    return null;
+  }
+
+  /**
+   * Fire-and-forget PostToolUse, plus PostToolUseFailure when the call
+   * failed. Wraps every code path that returns a `ToolResult` so success /
+   * failure / permission-denied all surface to PostToolUse hooks uniformly
+   * (PostToolUse keeps firing for failures, for compatibility). The
+   * `content` field is capped via `capContentForHook` to keep large tool
+   * outputs from blowing the OS env-var limits on `KIMIFLARE_HOOK_PAYLOAD`.
    */
   private firePostToolUse(
     call: ToolInvocation,
@@ -600,31 +692,35 @@ export class ToolExecutor {
     ctx: ToolContext,
     meta?: ToolOutputMeta,
   ): void {
-    if (!this.hooks?.hasEnabledHooks("PostToolUse")) return;
-    void this.hooks
-      .fire(
-        "PostToolUse",
-        {
-          event: "PostToolUse",
-          session_id: ctx.sessionId ?? null,
-          cwd: ctx.cwd,
-          tool: call.name,
-          tool_call_id: call.id,
-          args,
-          tier: ctx.intentTier,
-          result: {
-            ok: result.ok,
-            content: capContentForHook(result.content),
-            errorCode: result.errorCode,
-            ...shellResultForHook(meta),
-          },
-        },
-        call.name,
-        ctx.signal,
-      )
-      .catch(() => {
-        // hooks are best-effort; never crash the tool path
-      });
+    const hooks = this.hooks;
+    if (!hooks) return;
+    const post = hooks.hasEnabledHooks("PostToolUse");
+    const failure = hooks.hasEnabledHooks("PostToolUseFailure");
+    if (!post && !failure) return;
+    const resultFields: PostToolUsePayload["result"] = {
+      ok: result.ok,
+      content: capContentForHook(result.content),
+      errorCode: result.errorCode,
+      ...shellResultForHook(meta),
+    };
+    const base = {
+      session_id: ctx.sessionId ?? null,
+      cwd: ctx.cwd,
+      tool: call.name,
+      tool_call_id: call.id,
+      args,
+      tier: ctx.intentTier,
+      result: resultFields,
+    };
+    const swallow = () => {
+      // hooks are best-effort; never crash the tool path
+    };
+    if (post) void hooks.fire("PostToolUse", { event: "PostToolUse", ...base }, call.name, ctx.signal).catch(swallow);
+    if (failure && toolCallFailed(resultFields)) {
+      void hooks
+        .fire("PostToolUseFailure", { event: "PostToolUseFailure", ...base, error: claudeError(resultFields) }, call.name, ctx.signal)
+        .catch(swallow);
+    }
   }
 
   private permissionKey(tool: ToolSpec, args: Record<string, unknown>): string {

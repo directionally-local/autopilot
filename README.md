@@ -481,7 +481,9 @@ still read (see [Settings location](#settings-location)):
 |--------------------|-------------------------------------------------|-------|
 | `SessionStart`     | A session's first turn (`source`: startup/resume) | No  |
 | `PreToolUse`       | A tool call is about to run                     | Yes   |
-| `PostToolUse`      | A tool call just finished                       | No    |
+| `PostToolUse`      | A tool call just finished (success or failure)  | No    |
+| `PostToolUseFailure` | A tool call failed (also fires `PostToolUse`) | No    |
+| `PermissionRequest` | You're about to be asked to approve a call     | Allow / deny |
 | `UserPromptSubmit` | You hit Enter on a prompt                       | Yes   |
 | `Stop`             | A turn ended cleanly                            | No    |
 | `PreCompact`       | Auto-compaction is about to run                 | No    |
@@ -507,7 +509,7 @@ Veto events (`PreToolUse`, `UserPromptSubmit`) follow Claude Code's rules:
 |-------------|--------|
 | exit `0` | Allowed. Stdout may carry a JSON decision (below). |
 | exit `2` | **Blocked.** Stderr (or stdout if stderr is empty) is the reason shown to the model. |
-| any other non-zero exit, timeout, command not found (127), spawn error | Logged as a warning; the action is **allowed** (fail-open), so a broken or missing hook never wedges every tool call. |
+| any other non-zero exit, timeout, command not found (127), spawn error | The hook **failed**: you get a warning and the action is **allowed** (fail-open), so a broken or missing hook never wedges every tool call — unless the hook sets `"failClosed": true` (see [Hook failures](#hook-failures-and-failclosed)). |
 
 A `PreToolUse` hook that exits `0` can instead print a JSON decision:
 
@@ -528,6 +530,74 @@ The legacy `{"decision": "block", "reason": "..."}` form also blocks
 (use it for `UserPromptSubmit`). Stdout that isn't JSON is ignored, as
 before. Hooks written for older versions that blocked with `exit 1`
 must switch to `exit 2`.
+
+#### Hook failures and `failClosed`
+
+When a hook times out, can't be started (missing binary, exit 127) or
+exits non-zero (other than `2` on a veto event), Autopilot tells you
+instead of only logging it:
+
+- The TUI (classic and Camouflage) shows a warning naming the hook, the
+  event, why it failed and what happened to the action. `--print` writes
+  it to stderr (`hook_failed` event in `--output-format stream-json`, a
+  `hookFailures` array in `json`); `--emit` sends a `RuntimeError`
+  warning; the SDK emits a `hook.failed` session event; `autopilot
+  serve` sends a `hook.failed` SSE event and lists them under
+  `hookFailures` in `GET /session/:id`.
+- It is shown **once per hook per session**. Later failures are counted
+  (`/hooks list` shows `[failed N× this session]`) but not shown again.
+- Every failure is also an OpenTelemetry event, `autopilot.hook.failed`
+  at WARN, with `hook.id`, `hook.event`, `hook.failure`
+  (`timeout` / `spawn_failed` / `command_not_found` / `nonzero_exit`),
+  `hook.reason`, `hook.allowed`, `hook.fail_closed` and
+  `hook.failure_count`, so a collector such as Agent Beacon records that
+  a policy hook did not run.
+
+For a policy hook that must never be skipped, set `"failClosed": true`
+on it. On the veto events (`PreToolUse`, `UserPromptSubmit`,
+`PermissionRequest`) a failure then **blocks** the action, with a reason
+naming the hook and the failure. It has no effect on informational
+events.
+
+```json
+{ "hooks": { "PreToolUse": [
+  { "id": "policy", "command": "my-policy-check", "timeoutMs": 10000, "failClosed": true }
+] } }
+```
+
+#### `PermissionRequest` and `PostToolUseFailure`
+
+`PermissionRequest` fires when Autopilot is about to ask you to approve a
+tool call — after plan mode, `--dangerously-allow-all` and config
+permission rules have had their say, so it never fires for calls those
+already settled. The payload has `tool`, `args`, `tool_call_id`,
+`mode` (`edit`, `plan`, …; also `$AUTOPILOT_HOOK_MODE`), plus Claude Code's `tool_name`,
+`tool_input`, `tool_use_id` and `permission_mode`; `matcher` matches the
+tool name. The hook decides like a `PreToolUse` hook:
+
+- exit `2`, or `{"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "..."}}`:
+  **denied** without asking you; the reason goes to the model.
+- `permissionDecision: "allow"`: **approved without asking you**. Unlike
+  `PreToolUse`, where `allow` only means "no objection", answering the
+  approval prompt is what this event is for. It never overrides plan mode
+  (an `allow` there still shows the prompt) or a config deny rule (those
+  calls never reach the hook).
+- `"ask"`, no JSON, or a hook that fails open: the normal prompt.
+  Hosts with no one to ask answer as before (`--print` denies).
+
+Claude Code's form, `{"hookSpecificOutput": {"decision": {"behavior": "allow"|"deny", "message": "..."}}}`,
+works too.
+
+`PostToolUseFailure` fires when a tool call fails — an error, a denied
+permission, or a `bash` command that exits non-zero or is killed — with
+`tool`, `args`, `tool_call_id`, `error` (the failure as text) and
+`result`, plus Claude Code's `tool_name`, `tool_input`, `tool_use_id`,
+`error` and `is_interrupt`. `PostToolUse` **keeps firing for failures
+too**, as before, so existing hooks are unaffected; register a hook on
+only one of the two if you don't want to see a failure twice.
+
+Both fire from every host: the TUI, `--print`, `--emit`, the SDK and
+`autopilot serve`.
 
 ### Settings location
 
@@ -550,8 +620,8 @@ new path. `/hooks path` prints all four.
 
 ### Matchers
 
-`matcher` is a regex tested against the tool name for `PreToolUse` and
-`PostToolUse`. It is tried against both autopilot's native name and the
+`matcher` is a regex tested against the tool name for `PreToolUse`,
+`PostToolUse`, `PostToolUseFailure` and `PermissionRequest`. It is tried against both autopilot's native name and the
 Claude Code name (`bash`/`Bash`, `edit`/`Edit`, `write`/`Write`,
 `read`/`Read`, `glob`/`Glob`, `grep`/`Grep`, `web_fetch`/`WebFetch`,
 `search_web`/`WebSearch`; an edit with `edits[]` also answers to
@@ -623,6 +693,8 @@ Per-hook fields:
 - `timeoutMs` (default `30000`) — hard kill if the hook hangs (the
   action then proceeds, with a warning).
 - `description` (optional) — shown by `/hooks list`.
+- `failClosed` (default `false`) — on veto events, block when the hook
+  itself fails instead of failing open.
 
 Hooks are always-on infrastructure: they fire whether the TUI is open
 or autopilot is running in `--print` mode. They also fire for tool

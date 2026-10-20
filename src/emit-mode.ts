@@ -28,7 +28,7 @@ import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "./agent/loop
 import { llmAuthFromConfig, providerIdOf } from "./agent/llm-auth.js";
 import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
-import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
+import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "./tools/executor.js";
 import type { ChatMessage } from "./agent/messages.js";
 import { KimiApiError, humanizeApiError } from "./util/errors.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
@@ -185,8 +185,13 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
   const cwd = process.cwd();
   // The same hooks as print mode and the TUI, under one session id so
   // SessionStart/SessionEnd bracket the run (#877).
-  const { HooksManager } = await import("./hooks/manager.js");
+  const { HooksManager, formatHookFailureNotice } = await import("./hooks/manager.js");
   const hooks = new HooksManager(cwd);
+  // #889: a failing hook is reported once per hook per session.
+  hooks.onFailure((notice) => {
+    if (!notice.firstInSession) return;
+    emit("RuntimeError", { message: formatHookFailureNotice(notice), source: "hooks", kind: "generic", severity: "warn" });
+  });
   const sessionId = makeSessionId(opts.prompt);
   const executor = new ToolExecutor(ALL_TOOLS, { hooks });
   const messages: ChatMessage[] = [
@@ -328,7 +333,8 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
           onGuardrail: (ev) => {
             emit("RuntimeError", { message: ev.message, kind: "generic", severity: "warn" });
           },
-          askPermission: async ({ tool, args }) => {
+          askPermission: async (req) => {
+            const { tool, args } = req;
             const reqId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
             emit("PermissionRequested", {
               request_id: reqId,
@@ -339,6 +345,12 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
             if (opts.allowAll) {
               emit("PermissionGranted", { request_id: reqId });
               return "allow";
+            }
+            // A PermissionRequest hook may answer before the user does.
+            const fromHook = await permissionFromHook(req, "edit");
+            if (fromHook) {
+              emit(fromHook.decision === "allow" ? "PermissionGranted" : "PermissionDenied", { request_id: reqId });
+              return fromHook;
             }
             // In multi-turn mode, wait for the TUI to send PermissionResponse.
             // In one-shot mode, fall back to auto-deny (the user has no way

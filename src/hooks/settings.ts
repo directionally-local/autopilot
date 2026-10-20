@@ -146,7 +146,7 @@ function normalizeHook(
   // Recommended guards written by older releases blocked with `exit 1`,
   // which now fails open; run the current `exit 2` version instead.
   const command = LEGACY_RECOMMENDED_COMMANDS.get(r.command) ?? r.command;
-  return { id, matcher, command, timeoutMs, enabled, description, source };
+  return { id, matcher, command, timeoutMs, enabled, description, source, ...(r.failClosed === true ? { failClosed: true } : {}) };
 }
 
 /** Merge `hooks` blocks in order. Later blocks run later for a given

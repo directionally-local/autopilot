@@ -54,7 +54,7 @@ import { registerTerminalHandoff } from "./ui/bang-command.js";
 import { PRESETS as LSP_PRESETS } from "./ui/lsp-wizard.js";
 import { getShellCommand } from "./tools/bash.js";
 import type { LspServerConfig } from "./config.js";
-import type { HookConfig, HookEvent } from "./hooks/types.js";
+import { TOOL_HOOK_EVENTS, type HookConfig, type HookEvent } from "./hooks/types.js";
 import { RECOMMENDED_HOOKS } from "./hooks/recommended.js";
 import { setHookEnabled, appendHook, deriveHookId } from "./hooks/settings.js";
 import { EVENT_DESCRIPTIONS, EVENT_COMMAND_EXAMPLES, MATCHER_EXAMPLES } from "./ui/hooks-wizard.js";
@@ -82,6 +82,12 @@ interface CamouflageSdk {
 
 /** The renderer couldn't start (not installed, no binary for this
  *  platform); nothing has been drawn, so the caller can fall back to Ink. */
+/** Renderer severity for an info/memory notice: a warning-toned info
+ *  event (e.g. a failed hook, #889) shows as a warning. */
+export function noticeSeverity(e: Extract<ChatEvent, { kind: "info" | "memory" }>): "info" | "warn" {
+  return e.kind === "info" && e.tone === "warn" ? "warn" : "info";
+}
+
 export class CamouflageUnavailable extends Error {}
 
 async function loadSdk(): Promise<CamouflageSdk> {
@@ -596,7 +602,7 @@ class View implements AppBridge {
         if (e.kind === "info" && !shouldSendSubagentPolicyNotice(e.text, this.sentSubagentPolicyNotices)) {
           return this.mark(e.key, 0, true);
         }
-        return this.notice(e.key, e.text, "info");
+        return this.notice(e.key, e.text, noticeSeverity(e));
       case "error":
         return this.notice(e.key, e.text, "error");
       case "api_error":
@@ -1051,7 +1057,7 @@ class View implements AppBridge {
     const ev = await this.select("Create hook · event", events.map((e) => ({ value: e, label: e, description: EVENT_DESCRIPTIONS[e] })));
     if (ev === null) return null;
     const event = ev as HookEvent;
-    const toolEvent = event === "PreToolUse" || event === "PostToolUse";
+    const toolEvent = TOOL_HOOK_EVENTS.has(event);
     this.cam.send("Splash", {
       text: [
         `\x1b[1mExamples for ${event}\x1b[0m`,

@@ -77,7 +77,22 @@ A failed call also gets Claude Code's failure fields at the top level:
 - `is_interrupt`: the call was aborted or timed out.
 - A failed `write` or `edit` keeps its own name (`write`, `edit`) in `tool_name`. `Write`, `Edit` and `MultiEdit` mean the file changed; Beacon's Claude mode records a `file.modified` diff for any call so named, so a write that never landed would otherwise be logged as one. Beacon records it as `tool.failed` instead.
 
-The event stays `PostToolUse` for failures (Claude Code fires `PostToolUseFailure`); check `error` or `tool_response.is_error`.
+`PostToolUse` still fires for failures, so the setup above already records them; check `error` or `tool_response.is_error`. Autopilot also fires Claude Code's `PostToolUseFailure` (see below).
+
+### Failures and approval prompts
+
+Autopilot fires two more Claude Code events:
+
+- `PostToolUseFailure`, for a failed call, alongside `PostToolUse`. It carries `tool_name`, `tool_input`, `tool_use_id`, `error` and `is_interrupt`, with the same naming rules as above. The setup above already records failures through `PostToolUse`, so registering `beacon-hooks --platform claude post-tool` on `PostToolUseFailure` as well would record each failure twice. Use it for other observers that only want failures.
+- `PermissionRequest`, when Autopilot is about to ask you to approve a call. It carries `tool_name`, `tool_input`, `tool_use_id` and `permission_mode`. Add it so Beacon sees approval prompts:
+
+  ```json
+  "PermissionRequest": [{ "id": "beacon-permission", "command": "beacon-hooks --platform claude permission-request" }]
+  ```
+
+  A deny from the hook (exit 2, `permissionDecision: "deny"`, or Claude Code's `decision.behavior: "deny"`) answers the prompt with no; an `allow` answers it with yes, except in plan mode. Beacon only answers when a policy denies the call.
+
+If a hook times out, crashes or its command is missing, Autopilot carries on (fail-open), shows a warning once per hook per session, and emits an `autopilot.hook.failed` OTel event (below). Set `"failClosed": true` on a policy hook to block instead; see the README's "Hook failures and `failClosed`".
 
 ## Transcript
 
@@ -124,6 +139,8 @@ export KIMIFLARE_OTEL_ENDPOINT=http://127.0.0.1:4318   # /v1/logs is appended
 ```
 
 The resource carries `service.name: autopilot` and `beacon.harness.name: autopilot`, and the instrumentation scope is `autopilot`.
+
+When a hook fails (timeout, crash, missing command), Autopilot emits `autopilot.hook.failed` at WARN severity with `hook.id`, `hook.event`, `hook.failure` (`timeout`, `spawn_failed`, `command_not_found` or `nonzero_exit`), `hook.reason`, `hook.allowed` (`false` only when `failClosed` blocked the action), `hook.fail_closed` and `hook.failure_count`. Every failure is sent, not only the first, so Beacon can tell which calls ran without a policy check.
 
 ## Shared memory over MCP
 
