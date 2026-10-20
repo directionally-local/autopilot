@@ -88,6 +88,7 @@ Requires Node.js ≥ 20.
 | Provider | id | Key | Notes |
 |---|---|---|---|
 | [OpenRouter](https://openrouter.ai) (default) | `openrouter` | `OPENROUTER_API_KEY` or browser sign-in | 400+ models, billed cost per turn, sticky routing, subagents, Jev checks |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | native Messages API: extended/adaptive thinking, explicit prompt caching (API keys only — Claude Pro/Max sign-in isn't permitted for third-party tools) |
 | OpenAI | `openai` | `OPENAI_API_KEY` | Chat Completions |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | |
 | Moonshot AI (Kimi) | `moonshot` | `MOONSHOT_API_KEY` | |
@@ -103,7 +104,7 @@ Requires Node.js ≥ 20.
 - **Switch any time** with `/provider <id> [key]` (`/provider` lists them and where each key comes from), or from the CLI: `autopilot auth <id>` (saves a key and makes it active), `autopilot auth use <id>`, `autopilot auth status`. For one run, set `AUTOPILOT_PROVIDER=<id>`.
 - **Everything follows the provider**: chat, compaction and memory side-calls, memory/skill embeddings, the model picker (each provider's own catalog — models.dev for hosted providers, live discovery for Ollama and LM Studio), pricing, error messages and the status page link. Nothing is sent to OpenRouter while another provider is active.
 - **OpenRouter-only features** switch off on other providers: billed-cost confirmation (elsewhere `/cost` shows estimates from the provider's published prices), Hotcell subagents, and the Jev completion/triage checks.
-- **Embeddings**: providers without an embeddings API (DeepSeek, Moonshot, Kimi Code, the Coding Plan, LM Studio) keep memory working through text and topic-key recall. To keep vector recall, set `"embeddingProvider": "openai"` (or `AUTOPILOT_EMBEDDING_PROVIDER`) with that provider's key, or `memoryEmbeddingModel`.
+- **Embeddings**: providers without an embeddings API (Anthropic, DeepSeek, Moonshot, Kimi Code, the Coding Plan, LM Studio) keep memory working through text and topic-key recall. To keep vector recall, set `"embeddingProvider": "openai"` (or `AUTOPILOT_EMBEDDING_PROVIDER`) with that provider's key, or `memoryEmbeddingModel`.
 
 Config file shape (keys can live here instead of the environment):
 

@@ -22,6 +22,7 @@ export const PROVIDER_IDS = [
   "deepseek",
   "moonshot",
   "kimi-code",
+  "anthropic",
   "zai",
   "zai-coding",
   "ollama",
@@ -68,6 +69,13 @@ export interface EmbeddingPreset {
   dim: number;
 }
 
+/**
+ * Wire protocol: OpenAI Chat Completions (most providers), the Anthropic
+ * Messages API, or the OpenAI Responses API. The agent loop always speaks
+ * Chat Completions shapes; src/agent/protocols/ converts.
+ */
+export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses";
+
 /** Where the model list for the picker comes from. */
 export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "none";
 
@@ -75,6 +83,8 @@ export interface ProviderPreset {
   id: ProviderId;
   /** Display name: "served through <name>", "/cost — <name>", error messages. */
   name: string;
+  /** Wire protocol; default "openai-chat". */
+  protocol?: WireProtocol;
   /** OpenAI-compatible base URL (without /chat/completions). Unset for custom/OpenRouter/Requesty. */
   baseUrl?: string;
   /** Env vars that hold the key, in priority order. */
@@ -201,6 +211,25 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     catalog: "models.dev",
     modelsDevId: "moonshotai",
     compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  anthropic: {
+    id: "anthropic",
+    name: "Anthropic",
+    protocol: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com/v1",
+    apiKeyEnv: ["ANTHROPIC_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://console.anthropic.com/settings/keys",
+    statusUrl: "https://status.anthropic.com",
+    defaultModel: "claude-sonnet-5-5",
+    plumbingModel: "claude-haiku-5-5",
+    // No embeddings API: memory uses text recall unless embeddingProvider is set.
+    embedding: null,
+    catalog: "models.dev",
+    modelsDevId: "anthropic",
+    // Thinking blocks (reasoning_details) must be replayed with their signatures.
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEcho: { content: false, details: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   "kimi-code": {
