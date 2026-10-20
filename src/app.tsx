@@ -1471,8 +1471,11 @@ function App({
         if (path) trackRecentFile(recentFilesRef, path, MAX_RECENT_FILES);
       }
 
-      const { content, images, errors: imageErrors } = await buildPromptContent(trimmed, encodeImageFile);
+      const { content, images, errors: imageErrors, notices: imageNotices } = await buildPromptContent(trimmed, (path) =>
+        encodeImageFile(path, { maxEdge: cfg.imageMaxEdge, quality: cfg.imageQuality }),
+      );
       for (const text of imageErrors) setEvents((es) => [...es, { kind: "error", key: mkKey(), text }]);
+      for (const text of imageNotices) setEvents((es) => [...es, { kind: "info", key: mkKey(), text }]);
 
       if (opts?.queuedKeys && opts.queuedKeys.length > 0) {
         const queuedKeys = new Set(opts.queuedKeys);

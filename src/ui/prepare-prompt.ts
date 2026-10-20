@@ -10,7 +10,7 @@ import type { ContentPart } from "../agent/messages.js";
 import { sanitizeString } from "../agent/messages.js";
 import type { CustomCommand, RenderResult } from "../commands/types.js";
 import type { ReasoningEffort } from "../config.js";
-import type { EncodedImage } from "../util/image.js";
+import { describeImageChange, imageNote, type EncodedImage } from "../util/image.js";
 import { findImagePaths, MAX_IMAGES_PER_MESSAGE } from "./app-helpers.js";
 
 export interface ExpandedCommand {
@@ -58,17 +58,26 @@ export interface PromptContent {
   images: string[];
   /** Images that couldn't be encoded (path + reason). */
   errors: string[];
+  /** Size savings from downscaling, for the user (e.g. `image a.png: 595 KB → 112 KB (1568×985 jpeg)`). */
+  notices: string[];
 }
 
-/** The user message content: the text, plus any image paths it mentions (up to the per-message cap). */
+/** The user message content: the text, plus any image paths it mentions (up to the per-message cap), normalized by `encode`. */
 export async function buildPromptContent(text: string, encode: (path: string) => Promise<EncodedImage>): Promise<PromptContent> {
   const errors: string[] = [];
+  const notices: string[] = [];
+  const notes: string[] = [];
   const encoded = await Promise.all(
     findImagePaths(text)
       .slice(0, MAX_IMAGES_PER_MESSAGE)
       .map(async (path) => {
         try {
-          return await encode(path);
+          const img = await encode(path);
+          if (img.change) {
+            notices.push(describeImageChange(img.filename, img.change));
+            notes.push(imageNote(path, img.change));
+          }
+          return img;
         } catch (e) {
           errors.push(`failed to encode image ${path}: ${(e as Error).message}`);
           return null;
@@ -76,14 +85,17 @@ export async function buildPromptContent(text: string, encode: (path: string) =>
       }),
   );
   const valid = encoded.filter((img): img is EncodedImage => img !== null);
-  if (valid.length === 0) return { content: sanitizeString(text), images: [], errors };
+  if (valid.length === 0) return { content: sanitizeString(text), images: [], errors, notices };
+  // Downscaled images: tell the model where the full-resolution original is.
+  const withNotes = notes.length > 0 ? `${text}\n\n${notes.join("\n")}` : text;
   return {
     content: [
-      { type: "text", text: sanitizeString(text) },
+      { type: "text", text: sanitizeString(withNotes) },
       ...valid.map((img) => ({ type: "image_url" as const, image_url: { url: img.dataUrl } })),
     ],
     images: valid.map((img) => img.filename),
     errors,
+    notices,
   };
 }
 

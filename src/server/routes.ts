@@ -26,7 +26,10 @@ import { getOpenApiSpec } from "./openapi.js";
 import { evaluatePermissionRules } from "../permissions-evaluator.js";
 import { readFile, unlink } from "node:fs/promises";
 import { resolve, basename } from "node:path";
-import { encodeImageFile, isImagePath } from "../util/image.js";
+import { isImagePath } from "../util/image.js";
+import { buildAttachmentMessage } from "../util/attachments.js";
+
+const imageOptions = (config: KimiConfig) => ({ maxEdge: config.imageMaxEdge, quality: config.imageQuality });
 import { glob } from "../util/glob.js";
 import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager, type RunWorktree } from "../runs/worktrees.js";
@@ -180,43 +183,6 @@ async function resolveFiles(filePatterns: string[], cwd: string): Promise<string
     }
   }
   return [...resolved];
-}
-
-async function buildUserMessage(prompt: string, files: string[], cwd: string): Promise<string | ContentPart[]> {
-  let text = prompt;
-  const imageParts: ContentPart[] = [];
-  const fileContents: string[] = [];
-
-  for (const filePath of files) {
-    if (isImagePath(filePath)) {
-      try {
-        const img = await encodeImageFile(filePath);
-        imageParts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to attach image ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
-    } else {
-      try {
-        const content = await readFile(filePath, "utf8");
-        const relPath = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath;
-        fileContents.push(`\n--- ${relPath} ---\n${content}\n--- end ${relPath} ---\n`);
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to read ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
-    }
-  }
-
-  if (fileContents.length > 0) {
-    text += "\n\n" + fileContents.join("\n");
-  }
-
-  if (imageParts.length > 0) {
-    const parts: ContentPart[] = [{ type: "text", text }];
-    parts.push(...imageParts);
-    return parts;
-  }
-
-  return text;
 }
 
 export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterApiRuntime } = {}) {
@@ -677,7 +643,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         ];
 
         const resolvedFiles = await resolveFiles(files, cwd);
-        const userContent = await buildUserMessage(prompt, resolvedFiles, cwd);
+        const { content: userContent } = await buildAttachmentMessage(prompt, resolvedFiles, cwd, imageOptions(config));
         messages.push({ role: "user", content: userContent });
 
         const trace = await startSessionTrace(config, sessionFile, ALL_TOOLS, messages);
@@ -725,7 +691,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         }
 
         const resolvedFiles = await resolveFiles(files, active.sessionFile.cwd);
-        const userContent = await buildUserMessage(prompt, resolvedFiles, active.sessionFile.cwd);
+        const { content: userContent } = await buildAttachmentMessage(prompt, resolvedFiles, active.sessionFile.cwd, imageOptions(config));
         active.messages.push({ role: "user", content: userContent });
         active.nextTurnId = makeTurnId();
         if (active.trace?.enabled && active.lastTurnId) {

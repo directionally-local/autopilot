@@ -37,7 +37,7 @@ describe("buildPromptContent", () => {
     const out = await buildPromptContent("hello", async () => {
       throw new Error("unused");
     });
-    assert.deepStrictEqual(out, { content: "hello", images: [], errors: [] });
+    assert.deepStrictEqual(out, { content: "hello", images: [], errors: [], notices: [] });
   });
 
   it("attaches encodable images and reports the rest", async () => {

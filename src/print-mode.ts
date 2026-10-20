@@ -19,7 +19,8 @@ import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile }
 import { sessionFileCompactionTarget } from "./agent/context-budget.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
 import { completionCheckFromConfig } from "./agent/completion-check.js";
-import { encodeImageFile, isImagePath } from "./util/image.js";
+import { isImagePath } from "./util/image.js";
+import { buildAttachmentMessage } from "./util/attachments.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
 import { evaluatePermissionRules } from "./permissions-evaluator.js";
@@ -31,7 +32,7 @@ import { toOpenAIToolDefs } from "./tools/registry.js";
 export type PrintFormat = "text" | "json" | "stream-json";
 
 export interface PrintModeOpts
-  extends Pick<KimiConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck"> {
+  extends Pick<KimiConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck" | "imageMaxEdge" | "imageQuality"> {
   model: string;
   reasoningEffort?: ReasoningEffort;
   prompt: string;
@@ -153,45 +154,6 @@ async function resolveFiles(filePatterns: string[], cwd: string): Promise<string
   return [...resolved];
 }
 
-async function buildUserMessage(prompt: string, files: string[], cwd: string): Promise<{ content: string | ContentPart[]; display: string }> {
-  let text = prompt;
-  const imageParts: ContentPart[] = [];
-  const fileContents: string[] = [];
-
-  for (const filePath of files) {
-    if (isImagePath(filePath)) {
-      try {
-        const img = await encodeImageFile(filePath);
-        imageParts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to attach image ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
-    } else {
-      try {
-        const content = await readFile(filePath, "utf8");
-        const relPath = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath;
-        fileContents.push(`\n--- ${relPath} ---\n${content}\n--- end ${relPath} ---\n`);
-      } catch (e) {
-        fileContents.push(`\n<!-- failed to read ${basename(filePath)}: ${(e as Error).message} -->\n`);
-      }
-    }
-  }
-
-  if (fileContents.length > 0) {
-    text += "\n\n" + fileContents.join("\n");
-  }
-
-  const display = prompt; // Original prompt without file contents for display
-
-  if (imageParts.length > 0) {
-    const parts: ContentPart[] = [{ type: "text", text }];
-    parts.push(...imageParts);
-    return { content: parts, display };
-  }
-
-  return { content: text, display };
-}
-
 export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   const startMs = Date.now();
 
@@ -274,7 +236,11 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   // Build user message with file attachments
   const files = opts.files ? await resolveFiles(opts.files, cwd) : [];
-  const { content: userContent } = await buildUserMessage(opts.prompt, files, cwd);
+  const { content: userContent, notices: imageNotices } = await buildAttachmentMessage(opts.prompt, files, cwd, {
+    maxEdge: opts.imageMaxEdge,
+    quality: opts.imageQuality,
+  });
+  for (const notice of imageNotices) process.stderr.write(`${notice}\n`);
   messages.push({ role: "user", content: userContent });
   const turnId = makeTurnId();
   if (trace.enabled) {
