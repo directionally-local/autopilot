@@ -210,6 +210,8 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     apiKeyEnv: ["KIMI_API_KEY"],
     keyRequired: true,
     keysUrl: "https://www.kimi.com/code",
+    defaultModel: "k3",
+    plumbingModel: "kimi-for-coding-highspeed",
     embedding: null,
     catalog: "models.dev",
     modelsDevId: "kimi-code-plan-global",
