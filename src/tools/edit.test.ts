@@ -120,3 +120,56 @@ describe("replaceLiteral", () => {
     assert.strictEqual(replaceLiteral("abc", "zzz", "y", false), "abc");
   });
 });
+
+describe("edit: edits[] (several replacements in one call)", () => {
+  const ctxIn = (cwd: string) => ({ cwd, signal: new AbortController().signal }) as unknown as ToolContext;
+
+  it("applies edits in order, each seeing the previous result", async () => {
+    const dir = await tmp();
+    const file = join(dir, "a.ts");
+    await writeFile(file, "const a = 1;\nconst b = 2;\nconst c = a + b;\n");
+    const out = await editTool.run(
+      {
+        path: "a.ts",
+        edits: [
+          { old_string: "const a = 1;", new_string: "const alpha = 1;" },
+          { old_string: "a + b", new_string: "alpha + b" },
+          { old_string: "const", new_string: "let", replace_all: true },
+        ],
+      },
+      ctxIn(dir),
+    );
+    assert.strictEqual(await readFile(file, "utf8"), "let alpha = 1;\nlet b = 2;\nlet c = alpha + b;\n");
+    assert.match(String(out), /Applied 3 edits \(5 replacement\(s\)\)/);
+  });
+
+  it("is all-or-nothing: a missing or ambiguous old_string writes nothing and names the edit", async () => {
+    const dir = await tmp();
+    const file = join(dir, "a.ts");
+    const before = "x = 1\ny = 1\n";
+    await writeFile(file, before);
+    await assert.rejects(
+      editTool.run({ path: "a.ts", edits: [{ old_string: "x = 1", new_string: "x = 2" }, { old_string: "zzz", new_string: "q" }] }, ctxIn(dir)),
+      /edits\[1\]: old_string not found .*after applying the earlier edits.*no changes were written/,
+    );
+    await assert.rejects(
+      editTool.run({ path: "a.ts", edits: [{ old_string: "x", new_string: "X" }, { old_string: "= 1", new_string: "= 3" }] }, ctxIn(dir)),
+      /edits\[1\]: old_string appears 2 times/,
+    );
+    assert.strictEqual(await readFile(file, "utf8"), before);
+  });
+
+  it("rejects mixing both forms or passing neither", async () => {
+    const dir = await tmp();
+    await writeFile(join(dir, "a.ts"), "x");
+    await assert.rejects(editTool.run({ path: "a.ts", old_string: "x", new_string: "y", edits: [{ old_string: "x", new_string: "z" }] }, ctxIn(dir)), /either edits\[\] or old_string/);
+    await assert.rejects(editTool.run({ path: "a.ts" }, ctxIn(dir)), /non-empty edits/);
+  });
+
+  it("renders one permission diff covering every edit", () => {
+    const r = editTool.render!({ path: "a.ts", edits: [{ old_string: "a", new_string: "b" }, { old_string: "c", new_string: "d" }] });
+    assert.match(r.title, /\(2 edits\)$/);
+    assert.strictEqual(r.diff?.before, "a\n⋯\nc");
+    assert.strictEqual(r.diff?.after, "b\n⋯\nd");
+  });
+});

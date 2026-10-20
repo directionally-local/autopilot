@@ -4,6 +4,7 @@
  * use a lightweight LLM for high-signal synthesis when context is available.
  */
 
+import { editPairs } from "../tools/edit.js";
 import { pickLlmAuth, type LlmAuth } from "../agent/llm-auth.js";
 import { runKimi } from "../agent/client.js";
 import type { ChatMessage } from "../agent/messages.js";
@@ -109,8 +110,9 @@ async function synthesizeEditEvent(
 ): Promise<string | null> {
   if (!llmOpts) return null;
 
-  const oldString = typeof toolArgs.old_string === "string" ? toolArgs.old_string : "";
-  const newString = typeof toolArgs.new_string === "string" ? toolArgs.new_string : "";
+  const pairs = editPairs(toolArgs);
+  const oldString = pairs.map((p) => p.old_string).join("\n…\n");
+  const newString = pairs.map((p) => p.new_string).join("\n…\n");
   const fullContent = typeof toolArgs.content === "string" ? toolArgs.content : "";
 
   const isWrite = toolName === "write";
