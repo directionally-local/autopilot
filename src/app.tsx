@@ -1,14 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Box, Text, useApp, useInput, useWindowSize, render } from "ink";
-import Spinner from "./ui/spinner.js";
 
-import { runAgentTurn, AgentLoopError, type GuardrailEvent } from "./agent/loop.js";
 import type { ResponseMeta } from "./agent/client.js";
 import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerPresetOf } from "./agent/llm-auth.js";
 import { buildSystemPrompt, buildSessionPrefix } from "./agent/system-prompt.js";
 import { summarizeMessagesViaLlm } from "./agent/llm-summarize.js";
 import {
-  compactMessagesViaArtifacts,
   shouldCompact,
   recallArtifacts,
   estimatePromptTokens,
@@ -18,18 +15,15 @@ import {
   emptySessionState,
   ArtifactStore,
   formatRecalledArtifacts,
-  serializeArtifactStore,
   type SessionState,
 } from "./agent/session-state.js";
 import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
 import type { ToolSpec } from "./tools/registry.js";
-import { getShellCommand } from "./tools/bash.js";
 import { McpManager } from "./mcp/manager.js";
 import { LspManager } from "./lsp/manager.js";
 import { HooksManager } from "./hooks/manager.js";
 import { sanitizeString, appendStoppedToolResults } from "./agent/messages.js";
-import type { ChatMessage, ContentPart, Usage } from "./agent/messages.js";
-import { KimiApiError, humanizeApiError } from "./util/errors.js";
+import type { ChatMessage, Usage } from "./agent/messages.js";
 import { AbortScope } from "./util/abort-scope.js";
 import { logger } from "./util/logger.js";
 import { ChatView, type ChatEvent } from "./ui/chat.js";
@@ -46,51 +40,40 @@ import { planTriageAction, steerMessage, triageIncoming, type TriageResult } fro
 import { answerAside } from "./agent/aside.js";
 import { workerRegistry } from "./tools/worker-registry.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
-import { completionCheckFromConfig } from "./agent/completion-check.js";
 import { TaskList } from "./ui/task-list.js";
 import type { Task, PlanOption } from "./tools/registry.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import QRCode from "qrcode";
-import type { ToolRender } from "./tools/registry.js";
 import { CustomTextInput } from "./ui/text-input.js";
 import { setTerminalTitle } from "./ui/terminal-title.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { Onboarding } from "./ui/onboarding.js";
 import { Welcome } from "./ui/welcome.js";
-import { configPath, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
-import type { SemanticSkillRoutingResult } from "./skills/index.js";
 import { getMemoryDb } from "./memory/db.js";
-import { listAllSkills, createSkill, deleteSkill, setSkillEnabled, findSkillFile } from "./skills/manager.js";
 import {
-  loadSession,
   addCheckpoint,
   generateSessionTitle,
-  type Checkpoint,
 } from "./sessions.js";
-import { unlink } from "node:fs/promises";
-import { encodeImageFile, type EncodedImage } from "./util/image.js";
+import { encodeImageFile } from "./util/image.js";
 import { recordUsage, getCostReport, usageEvents } from "./usage-tracker.js";
 import type { DailyUsage } from "./usage-tracker.js";
 import { MemoryManager } from "./memory/manager.js";
-import { injectRecalledMemoryOnce } from "./memory/recall-inject.js";
 import { loadCustomCommands } from "./commands/loader.js";
 import { renderCommand } from "./commands/renderer.js";
 import type { CustomCommand, SlashItem } from "./commands/types.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { SaveCustomCommandOptions } from "./commands/save.js";
-import { buildInitPrompt } from "./init/context-generator.js";
 import { ThemeProvider } from "./ui/theme-context.js";
-import { resolveTheme, themeList, themeNames, DEFAULT_THEME_NAME } from "./ui/theme.js";
+import { resolveTheme, themeList, DEFAULT_THEME_NAME } from "./ui/theme.js";
 import { loadAndMergeThemes } from "./ui/theme-loader.js";
 import type { Theme } from "./ui/theme.js";
 import { getModelOrInfer, type ModelEntry } from "./models/registry.js";
-import type { ResolvedLspConfig } from "./util/lsp-config.js";
 import { maybeLspNudge } from "./util/lsp-nudge.js";
 import { glob } from "./util/glob.js";
 import { FilePicker, type FilePickerItem } from "./ui/file-picker.js";
@@ -116,11 +99,14 @@ import { runInit as runInitImpl } from "./init/run-init.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
-import { classifyNextMessage, makeTurnId, traceCompiledCompaction, traceLlmCompaction } from "./trace/index.js";
+import { compactAfterTurn, compactMidTurn, type AutoCompactionDeps } from "./agent/auto-compaction.js";
+import { prepareAutoFresh } from "./agent/auto-fresh.js";
+import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents } from "./ui/turn-callbacks.js";
+import { buildPromptContent, expandCustomCommand, turnReasoningEffort } from "./ui/prepare-prompt.js";
+import { classifyNextMessage, makeTurnId } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 import { distillSessionPlan } from "./agent/distill.js";
 import { resolvePlanForFresh } from "./agent/plan-resolver.js";
-import { writeToClipboard } from "./util/clipboard.js";
 import { enableUserShellCommands } from "./agent/user-shell.js";
 import {
   formatBangContext,
@@ -138,19 +124,14 @@ import {
   AUTO_COMPACT_THRESHOLD,
   buildFilePickerIgnoreList,
   capEvents,
-  compactEventsVisual,
   CONTEXT_LIMIT,
   DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
   detectGitBranch,
-  detectGitHubRepo,
-  findImagePaths,
   costLookupFromConfig,
   makePrefixMessages,
-  MAX_IMAGES_PER_MESSAGE,
   mkAssistantId,
   mkKey,
   openBrowser,
-  rebuildSystemPromptForMode,
   trackRecentFile,
   replaceQueuedPrompt,
   replaceUserPromptEvent,
@@ -831,6 +812,53 @@ function App({
     }
   }, [cfg, initMcp, initLsp]);
 
+  /** What automatic compaction needs from the session (refs read at call time). */
+  const autoCompactionDeps = (turnId: string | null): AutoCompactionDeps => ({
+    compiledContext: compiledContextRef.current,
+    getState: () => sessionStateRef.current,
+    setState: (state) => {
+      sessionStateRef.current = state;
+    },
+    store: artifactStoreRef.current,
+    summarize: (messages, opts) => summarizeMessagesViaLlm({ ...llmAuthFromConfig(cfg!), model: cfg!.model, messages, ...opts }),
+    memory: memoryManagerRef.current,
+    cwd: process.cwd(),
+    trace: traceRef.current,
+    turnId,
+    notify: (kind, text) => setEvents((e) => [...e, { kind, key: mkKey(), text }]),
+    save: saveSessionSafe,
+    // M6.1: PreCompact is best-effort and never blocks compaction.
+    firePreCompact: (signal) => {
+      if (!hooksManagerRef.current.hasEnabledHooks("PreCompact")) return;
+      void hooksManagerRef.current
+        .fire("PreCompact", { event: "PreCompact", session_id: sessionIdRef.current, cwd: process.cwd() }, null, signal)
+        .catch(() => {});
+    },
+  });
+
+  /** Checkpoint the session, then build the continuation summary a fresh session starts from. */
+  const prepareAutoFreshNow = (): Promise<string | null> =>
+    prepareAutoFresh({
+      messages: messagesRef.current,
+      compiledContext: compiledContextRef.current,
+      sessionState: sessionStateRef.current,
+      artifactStore: artifactStoreRef.current,
+      saveCheckpoint: async (checkpoint) => {
+        ensureSessionId();
+        const { sessionsDir } = await import("./sessions.js");
+        await addCheckpoint(join(sessionsDir(), `${sessionIdRef.current}.json`), checkpoint);
+      },
+      summarize: () =>
+        generateContinuationSummary({
+          messages: messagesRef.current,
+          mode: modeRef.current,
+          ...llmAuthFromConfig(cfg!),
+          model: plumbingModelOf(cfg!),
+          memoryManager: memoryManagerRef.current,
+          memoryEnabled: cfg!.memoryEnabled,
+        }),
+    });
+
   /** Mid-turn compaction hook: called between tool-iteration cycles in runAgentTurn.
    *  Prevents context overflow during long exploration sessions. */
   const onIterationEnd = useCallback(
@@ -840,99 +868,7 @@ function App({
       // limit; large ones still compact at the cost-driven 80k cap.
       if (!shouldCompact({ messages, tokenThreshold: cfg ? proactiveCompactionThreshold(cfg.model) : undefined })) return messages;
 
-      // M6.1: fire PreCompact before either compaction path runs.
-      // Best-effort + fire-and-forget — never block compaction on a
-      // user hook. Same shape as the user-triggered /compact path.
-      if (hooksManagerRef.current.hasEnabledHooks("PreCompact")) {
-        void hooksManagerRef.current
-          .fire(
-            "PreCompact",
-            {
-              event: "PreCompact",
-              session_id: sessionIdRef.current,
-              cwd: process.cwd(),
-            },
-            null,
-            signal,
-          )
-          .catch(() => {});
-      }
-
-      if (compiledContextRef.current) {
-        const store = artifactStoreRef.current;
-        const result = compactMessagesViaArtifacts({
-          messages,
-          state: sessionStateRef.current,
-          store,
-        });
-        if (result.metrics.rawTurnsRemoved > 0) {
-          traceCompiledCompaction(traceRef.current, result, currentTurnIdRef.current);
-          sessionStateRef.current = result.newState;
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "info",
-              key: mkKey(),
-              text: `auto-compacted: ${result.metrics.estimatedTokensBefore} → ${result.metrics.estimatedTokensAfter} tokens (${result.metrics.archivedArtifacts} artifacts)`,
-            },
-          ]);
-          await saveSessionSafe();
-        }
-        // After compaction, recall memories so the model retains durable anchors
-        const manager = memoryManagerRef.current;
-        if (manager && !signal.aborted) {
-          try {
-            const cwd = process.cwd();
-            const queryText = sessionStateRef.current.task || cwd;
-            const results = await manager.recall({ text: queryText, repoPath: cwd, limit: 5 });
-            if (results.length > 0 && !signal.aborted) {
-              const text = await manager.synthesizeRecalled(results);
-              if (injectRecalledMemoryOnce(result.newMessages, text)) {
-                setEvents((e) => [
-                  ...e,
-                  {
-                    kind: "memory",
-                    key: mkKey(),
-                    text: `recalled ${results.length} memory${results.length === 1 ? "" : "ies"} after compaction`,
-                  },
-                ]);
-                await saveSessionSafe();
-              }
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
-        return result.newMessages;
-      }
-
-      // Non-compiled context: fall back to LLM summarizer
-      if (cfg && !signal.aborted) {
-        try {
-          const result = await summarizeMessagesViaLlm({
-            ...llmAuthFromConfig(cfg),
-            model: cfg.model,
-            messages,
-            signal,
-          });
-          if (result.replacedCount > 0) {
-            traceLlmCompaction(traceRef.current, messages, result, currentTurnIdRef.current);
-            setEvents((e) => [
-              ...e,
-              {
-                kind: "info",
-                key: mkKey(),
-                text: `auto-compacted: ${result.replacedCount} messages summarized`,
-              },
-            ]);
-            await saveSessionSafe();
-          }
-          return result.newMessages;
-        } catch {
-          // Non-fatal: if compaction fails, continue with original messages
-        }
-      }
-      return messages;
+      return compactMidTurn(messages, autoCompactionDeps(currentTurnIdRef.current), signal);
     },
     [cfg],
   );
@@ -1506,35 +1442,19 @@ function App({
           }
           return;
         }
-        const cmdName = head.slice(1);
-        const custom = customCommandsRef.current.find((c) => c.name === cmdName);
-        if (custom) {
-          const info = (text: string) =>
-            setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
-          const { prompt: rendered, warnings } = await renderCommand(custom, trimmed, {
-            cwd: process.cwd(),
-          });
-          for (const w of warnings) info(`/${custom.name}: ${w}`);
-          if (custom.shell) {
-            info(`/${custom.name}: executing shell code from template`);
-          }
-          if (!rendered.trim()) {
+        const expanded = await expandCustomCommand(trimmed, customCommandsRef.current, (cmd, input) =>
+          renderCommand(cmd, input, { cwd: process.cwd() }),
+        );
+        if (expanded) {
+          for (const text of expanded.notices) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
+          if (!expanded.prompt.trim()) {
             endTurn();
             return;
           }
-          const parts: string[] = [];
-          if (custom.model) {
-            overrideModel = custom.model;
-            parts.push(`model=${custom.model}`);
-          }
-          if (custom.effort) {
-            overrideEffort = custom.effort;
-            parts.push(`effort=${custom.effort}`);
-          }
-          if (parts.length > 0) info(`command '${custom.name}' → ${parts.join(", ")} (this turn)`);
-          if (custom.mode) info(`note: mode override (${custom.mode}) is not yet wired; current mode applies`);
+          overrideModel = expanded.model;
+          overrideEffort = expanded.effort;
           display = trimmed;
-          trimmed = rendered;
+          trimmed = expanded.prompt;
         }
       }
 
@@ -1545,35 +1465,8 @@ function App({
         if (path) trackRecentFile(recentFilesRef, path, MAX_RECENT_FILES);
       }
 
-      const imagePaths = findImagePaths(trimmed).slice(0, MAX_IMAGES_PER_MESSAGE);
-      let images: string[] = [];
-      let content: string | ContentPart[] = sanitizeString(trimmed);
-
-      if (imagePaths.length > 0) {
-        const encoded = await Promise.all(
-          imagePaths.map(async (path) => {
-            try {
-              const img = await encodeImageFile(path);
-              return { path, img };
-            } catch (e) {
-              setEvents((es) => [
-                ...es,
-                { kind: "error", key: mkKey(), text: `failed to encode image ${path}: ${(e as Error).message}` },
-              ]);
-              return null;
-            }
-          }),
-        );
-        const valid = encoded.filter((x): x is { path: string; img: EncodedImage } => x !== null);
-        if (valid.length > 0) {
-          images = valid.map((v) => v.img.filename);
-          const parts: ContentPart[] = [
-            { type: "text", text: sanitizeString(trimmed) },
-            ...valid.map((v) => ({ type: "image_url" as const, image_url: { url: v.img.dataUrl } })),
-          ];
-          content = parts;
-        }
-      }
+      const { content, images, errors: imageErrors } = await buildPromptContent(trimmed, encodeImageFile);
+      for (const text of imageErrors) setEvents((es) => [...es, { kind: "error", key: mkKey(), text }]);
 
       if (opts?.queuedKeys && opts.queuedKeys.length > 0) {
         const queuedKeys = new Set(opts.queuedKeys);
@@ -1673,29 +1566,7 @@ function App({
           // Auto-execute /fresh after a silent checkpoint
           void (async () => {
             try {
-              const turnIndex = messagesRef.current.length;
-              if (turnIndex > 0) {
-                const cp: Checkpoint = {
-                  id: `cp_prefresh_${Date.now()}`,
-                  label: "pre-fresh auto-save",
-                  turnIndex,
-                  timestamp: new Date().toISOString(),
-                  sessionState: compiledContextRef.current ? sessionStateRef.current : undefined,
-                  artifactStore: serializeArtifactStore(artifactStoreRef.current),
-                };
-                ensureSessionId();
-                const { sessionsDir } = await import("./sessions.js");
-                const filePath = join(sessionsDir(), `${sessionIdRef.current}.json`);
-                await addCheckpoint(filePath, cp);
-              }
-              const summary = await generateContinuationSummary({
-                messages: messagesRef.current,
-                mode: modeRef.current,
-                ...llmAuthFromConfig(cfg),
-                model: plumbingModelOf(cfg),
-                memoryManager: memoryManagerRef.current,
-                memoryEnabled: cfg.memoryEnabled,
-              });
+              const summary = await prepareAutoFreshNow();
               if (summary) {
                 executeFreshStart(buildSlashContext(), summary);
                 setEvents((e) => [
@@ -1735,12 +1606,7 @@ function App({
         setTerminalTitle(sessionTitleRef.current);
       }
 
-      const effortForTier: Record<string, ReasoningEffort> = {
-        light: "low",
-        medium: "medium",
-        heavy: "high",
-      };
-      const turnReasoningEffort = overrideEffort ?? effortForTier[classification.tier] ?? effortRef.current;
+      const reasoningEffort = turnReasoningEffort(classification.tier, overrideEffort, effortRef.current);
       const effectiveCodeMode = classification.tier === "heavy";
       setCodeMode(effectiveCodeMode);
 
@@ -1751,158 +1617,46 @@ function App({
       // performed inside runAgentTurn so it is covered by the supervisor
       // lifecycle and the turn's abort signal.
 
-      const sharedCallbacks = {
-        onCompacted: (info: { tokensBefore: number; tokensAfter: number; turnsRemoved: number; artifactsArchived: number }) => {
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "info",
-              key: mkKey(),
-              text: `context budget: compacted ${info.turnsRemoved} older turn${info.turnsRemoved === 1 ? "" : "s"} (${info.tokensBefore} → ${info.tokensAfter} tokens, ${info.artifactsArchived} artifacts archived)`,
-            },
-          ]);
-        },
-        onAssistantStart: () => {
-          const id = mkAssistantId();
-          activeAsstIdRef.current = id;
-          beginTurn();
-          setTurnPhase("generating");
-          setLastActivityAt(Date.now());
-          setEvents((e) => [
-            ...e,
-            { kind: "assistant", key: `asst_${id}`, id, text: "", reasoning: "", streaming: true },
-          ]);
-        },
-        onReasoningDelta: (d: string) => {
-          const id = activeAsstIdRef.current;
-          if (id !== null) updateAssistant(id, (e) => ({ reasoning: e.reasoning + d }));
-          setLastActivityAt(Date.now());
-        },
-        onTextDelta: (d: string) => {
-          const id = activeAsstIdRef.current;
-          if (id !== null) updateAssistant(id, (e) => ({ text: e.text + d }));
-          setLastActivityAt(Date.now());
-        },
-        onInfo: (text: string) => {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
-        },
-        onAssistantFinal: () => {
-          const id = activeAsstIdRef.current;
-          if (id !== null) updateAssistant(id, () => ({ streaming: false }));
-          setTurnPhase("waiting");
-
-          // If no tool calls were finalized, the turn is effectively done.
-          // Reset busy immediately so the UI returns to idle without waiting
-          // for the supervisor's onDone hook.
-          if (pendingToolCallsRef.current.size === 0) {
-            endTurn();
-          }
-        },
-        onToolCallFinalized: (call: import("./agent/messages.js").ToolCall) => {
-          pendingToolCallsRef.current.set(call.id, call.function.name);
-          setTurnPhase("executing");
-          setCurrentToolName(call.function.name);
-          setLastActivityAt(Date.now());
-          const spec = executorRef.current.list().find((t) => t.name === call.function.name);
-          let renderMeta: ToolRender | undefined;
-          try {
-            const args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-            renderMeta = spec?.render?.(args);
-          } catch {
-            /* ignore render failure */
-          }
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "tool",
-              key: `tool_${call.id}`,
-              id: call.id,
-              name: call.function.name,
-              args: call.function.arguments,
-              status: "queued",
-              render: renderMeta,
-              expanded: false,
-            },
-          ]);
-        },
-        onToolWillExecute: (id: string, name: string) => {
-          setTurnPhase("executing");
-          setCurrentToolName(name);
-          setLastActivityAt(Date.now());
-          updateTool(id, { status: "running", startedAt: Date.now() });
-        },
-        onToolResult: (r: import("./tools/executor.js").ToolResult) => {
-          pendingToolCallsRef.current.delete(r.tool_call_id);
-          setLastActivityAt(Date.now());
-          if (pendingToolCallsRef.current.size === 0) {
-            setTurnPhase("waiting");
-            setCurrentToolName(null);
-            // Unblock the UI before onIterationEnd (compaction / memory recall)
-            // so the user isn't stuck watching a spinner while housekeeping runs
-            // between iterations.
-            endTurn();
-          }
-          updateTool(r.tool_call_id, {
-            status: r.guardrail ? "blocked" : !r.ok && typeof r.content === "string" && r.content.startsWith("Permission denied") ? "rejected" : r.ok ? "done" : "error",
-            result: r.guardrail ? undefined : r.content,
-          });
-        },
-        onUsage: (u: Usage) => {
+      const sharedCallbacks = createTurnCallbacks({
+        mkKey,
+        mkAssistantId,
+        setEvents,
+        updateAssistant,
+        updateTool,
+        beginTurn,
+        endTurn,
+        setTurnPhase,
+        setCurrentToolName,
+        setLastActivityAt,
+        activeAsstIdRef,
+        pendingToolCallsRef,
+        findTool: (name) => executorRef.current.list().find((t) => t.name === name),
+        onUsage: (u) => {
           usageRef.current = u;
           setUsage(u);
         },
-        onUsageFinal: (u: Usage, meta?: ResponseMeta) => {
+        onUsageFinal: (u, meta) => {
           const sid = ensureSessionId();
           void recordUsage(sid, u, costLookupFromConfig(cfg, meta ?? responseMetaRef.current), cfg?.model);
           void getCostReport(sid).then((report) => setSessionUsage(report.session));
         },
         onResponseMeta: updateResponseMeta,
         onTasks: updateTaskTracking,
-        onPlanOptions: (options: PlanOption[]) => {
+        onPlanOptions: (options) => {
           planOptionsRef.current = options;
         },
         askPermission: askForPermission,
-        // Sandbox/memory warnings (e.g. Code Mode falling back to the plain
-        // node:vm sandbox) were previously dropped on the floor in the TUI.
-        onWarning: (msg: string) => {
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: msg }]);
-        },
-        onGuardrail: (ev: GuardrailEvent) => {
-          if (ev.kind === "loop_recovery" || ev.kind === "loop_stopped") return;
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: ev.message }]);
-        },
         onKimiMdStale: () => {
-          if (!kimiMdStaleNudgedRef.current) {
-            kimiMdStaleNudgedRef.current = true;
-            setKimiMdStale(true);
-            setEvents((e) => [
-              ...e,
-              { kind: "info", key: mkKey(), text: "Project context may be stale. Run /init to refresh AGENTS.md based on recent changes." },
-            ]);
-          }
-        },
-        onMemoryRecalled: (count: number) => {
+          if (kimiMdStaleNudgedRef.current) return;
+          kimiMdStaleNudgedRef.current = true;
+          setKimiMdStale(true);
           setEvents((e) => [
             ...e,
-            { kind: "memory", key: mkKey(), text: `recalled ${count} memory${count === 1 ? "" : "ies"} about this repo` },
+            { kind: "info", key: mkKey(), text: "Project context may be stale. Run /init to refresh AGENTS.md based on recent changes." },
           ]);
         },
-        onSkillsSelected: (result: SemanticSkillRoutingResult) => {
-          setSkillsActive(result.sectionCount);
-        },
-        onMetaBanner: (info: { intentTier: string; skillsActive: number; memoryRecalled: boolean }) => {
-          setEvents((e) => [
-            ...e,
-            {
-              kind: "meta",
-              key: mkKey(),
-              intentTier: info.intentTier as "light" | "medium" | "heavy",
-              skillsActive: info.skillsActive,
-              memoryRecalled: info.memoryRecalled,
-            },
-          ]);
-        },
-      };
+        setSkillsActive,
+      });
 
       const cleanupTurn = () => {
         logger.info("cleanupTurn");
@@ -1919,22 +1673,7 @@ function App({
         // Clear task list so it doesn't linger into the next turn
         clearTaskTracking();
 
-        // Settle everything the turn left in motion. Unsettled events keep
-        // themselves and everything after them in Ink's live tree, and their
-        // spinners animate forever, so a turn must never end with any.
-        setEvents((evts) =>
-          evts.some((e) => (e.kind === "assistant" && e.streaming) || (e.kind === "tool" && (e.status === "running" || e.status === "queued")))
-            ? evts.map((e) =>
-                e.kind === "tool" && e.status === "running"
-                  ? { ...e, status: "error" as const, result: "(stopped)" }
-                  : e.kind === "tool" && e.status === "queued"
-                    ? { ...e, status: "cancelled" as const }
-                    : e.kind === "assistant" && e.streaming
-                      ? { ...e, streaming: false }
-                      : e,
-              )
-            : evts,
-        );
+        setEvents(settleTurnEvents);
       };
 
       // Clear the one-shot session-start recall so it is not reused.
@@ -2014,7 +1753,7 @@ function App({
           executor: executorRef.current,
           cwd: process.cwd(),
           signal: turnScope.signal,
-          reasoningEffort: turnReasoningEffort,
+          reasoningEffort,
           sessionId: ensureSessionId(),
           memoryManager: memoryManagerRef.current,
           hooks: hooksManagerRef.current,
@@ -2078,231 +1817,38 @@ function App({
                 return;
               }
 
-              // Auto-compact after turn when thresholds are met. With compiled
-              // context on, use the heuristic compactor; otherwise fall back to the
-              // LLM summarizer so users have a safety net regardless of the flag.
-              let didCompact = false;
-              if (shouldCompact({ messages: messagesRef.current, tokenThreshold: proactiveCompactionThreshold(overrideModel ?? cfg.model) })) {
-                // M6.1: same PreCompact fire as the mid-turn site above.
-                if (hooksManagerRef.current.hasEnabledHooks("PreCompact")) {
-                  void hooksManagerRef.current
-                    .fire(
-                      "PreCompact",
-                      {
-                        event: "PreCompact",
-                        session_id: sessionIdRef.current,
-                        cwd: process.cwd(),
-                      },
-                      null,
-                    )
-                    .catch(() => {});
-                }
-                if (compiledContextRef.current) {
-                  const store = artifactStoreRef.current;
-                  const result = compactMessagesViaArtifacts({
-                    messages: messagesRef.current,
-                    state: sessionStateRef.current,
-                    store,
-                  });
-                  if (result.metrics.rawTurnsRemoved > 0) {
-                    traceCompiledCompaction(traceRef.current, result, turnId);
-                    messagesRef.current = result.newMessages;
-                    sessionStateRef.current = result.newState;
+              // Proactive compaction past the model's budget threshold, then an
+              // aggressive pass when the history is still huge; if even that
+              // leaves it above the fresh-start threshold, start fresh.
+              const tokensAfterAggressive = await compactAfterTurn(
+                {
+                  getMessages: () => messagesRef.current,
+                  setMessages: (messages) => {
+                    messagesRef.current = messages;
+                  },
+                  overThreshold: shouldCompact({ messages: messagesRef.current, tokenThreshold: proactiveCompactionThreshold(overrideModel ?? cfg.model) }),
+                  estimateTokens: estimatePromptTokens,
+                  aggressiveTokenThreshold: cfg?.autoCompactTokenThreshold ?? 500_000,
+                  signal: turnScope.signal,
+                },
+                autoCompactionDeps(turnId),
+              );
+              if (tokensAfterAggressive !== null && tokensAfterAggressive > (cfg?.autoFreshTokenThreshold ?? 2_000_000)) {
+                try {
+                  const summary = await prepareAutoFreshNow();
+                  if (summary) {
+                    executeFreshStart(buildSlashContext(), summary);
                     setEvents((e) => [
                       ...e,
                       {
                         kind: "info",
                         key: mkKey(),
-                        text: `auto-compacted: ${result.metrics.estimatedTokensBefore} → ${result.metrics.estimatedTokensAfter} tokens (${result.metrics.archivedArtifacts} artifacts)`,
+                        text: `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
                       },
                     ]);
-                    await saveSessionSafe();
-                    didCompact = true;
                   }
-                } else {
-                  try {
-                    const before = messagesRef.current;
-                    const result = await summarizeMessagesViaLlm({
-                      ...llmAuthFromConfig(cfg),
-                      model: cfg.model,
-                      messages: messagesRef.current,
-                      signal: turnScope.signal,
-                    });
-                    if (result.replacedCount > 0) {
-                      traceLlmCompaction(traceRef.current, before, result, turnId);
-                      messagesRef.current = result.newMessages;
-                      setEvents((e) => [
-                        ...e,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `auto-compacted: ${result.replacedCount} messages summarized`,
-                        },
-                      ]);
-                      await saveSessionSafe();
-                      didCompact = true;
-                    }
-                  } catch (compactErr) {
-                    if ((compactErr as Error).name !== "AbortError") {
-                      setEvents((es) => [
-                        ...es,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `auto-compact failed: ${(compactErr as Error).message ?? String(compactErr)}`,
-                        },
-                      ]);
-                    }
-                  }
-                }
-
-                // After compaction, recall memories so the model retains durable anchors.
-                // Only surface the recall event when compaction actually happened —
-                // otherwise the message is noise on turns that merely crossed the
-                // threshold without removing anything.
-                if (didCompact) {
-                  const manager = memoryManagerRef.current;
-                  if (manager) {
-                    try {
-                      const cwd = process.cwd();
-                      const queryText = sessionStateRef.current.task || cwd;
-                      const results = await manager.recall({ text: queryText, repoPath: cwd, limit: 5 });
-                      if (results.length > 0) {
-                        const text = await manager.synthesizeRecalled(results);
-                        if (injectRecalledMemoryOnce(messagesRef.current, text)) {
-                          setEvents((e) => [
-                            ...e,
-                            {
-                              kind: "memory",
-                              key: mkKey(),
-                              text: `recalled ${results.length} memory${results.length === 1 ? "" : "ies"} after compaction`,
-                            },
-                          ]);
-                          await saveSessionSafe();
-                        }
-                      }
-                    } catch {
-                      // Non-fatal
-                    }
-                  }
-                }
-              }
-
-              // Token-based hybrid compaction + fresh start (Option C).
-              // When the in-memory message array grows very large (e.g. massive
-              // file reads or long sessions), the standard 80k/12-turn
-              // compaction may not be enough. We run an aggressive compaction
-              // at a higher token threshold, and if that still leaves us above
-              // the fresh-start threshold we nuke the session with /fresh.
-              const autoCompactTokenThreshold = cfg?.autoCompactTokenThreshold ?? 500_000;
-              const autoFreshTokenThreshold = cfg?.autoFreshTokenThreshold ?? 2_000_000;
-              const estimatedTokens = estimatePromptTokens(messagesRef.current);
-              if (estimatedTokens > autoCompactTokenThreshold) {
-                let didAggressiveCompact = false;
-                if (compiledContextRef.current) {
-                  const store = artifactStoreRef.current;
-                  const result = compactMessagesViaArtifacts({
-                    messages: messagesRef.current,
-                    state: sessionStateRef.current,
-                    store,
-                    keepLastTurns: 1,
-                  });
-                  if (result.metrics.rawTurnsRemoved > 0) {
-                    traceCompiledCompaction(traceRef.current, result, turnId);
-                    messagesRef.current = result.newMessages;
-                    sessionStateRef.current = result.newState;
-                    setEvents((e) => [
-                      ...e,
-                      {
-                        kind: "info",
-                        key: mkKey(),
-                        text: `auto-compacted (aggressive): ${result.metrics.estimatedTokensBefore.toLocaleString()} → ${result.metrics.estimatedTokensAfter.toLocaleString()} tokens (${result.metrics.archivedArtifacts} artifacts)`,
-                      },
-                    ]);
-                    await saveSessionSafe();
-                    didAggressiveCompact = true;
-                  }
-                } else {
-                  try {
-                    const before = messagesRef.current;
-                    const result = await summarizeMessagesViaLlm({
-                      ...llmAuthFromConfig(cfg),
-                      model: cfg.model,
-                      messages: messagesRef.current,
-                      keepLastTurns: 1,
-                      signal: turnScope.signal,
-                    });
-                    if (result.replacedCount > 0) {
-                      traceLlmCompaction(traceRef.current, before, result, turnId);
-                      messagesRef.current = result.newMessages;
-                      setEvents((e) => [
-                        ...e,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `auto-compacted (aggressive): ${result.replacedCount} messages summarized`,
-                        },
-                      ]);
-                      await saveSessionSafe();
-                      didAggressiveCompact = true;
-                    }
-                  } catch (compactErr) {
-                    if ((compactErr as Error).name !== "AbortError") {
-                      setEvents((es) => [
-                        ...es,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `aggressive auto-compact failed: ${(compactErr as Error).message ?? String(compactErr)}`,
-                        },
-                      ]);
-                    }
-                  }
-                }
-
-                const tokensAfterCompact = estimatePromptTokens(messagesRef.current);
-                if (tokensAfterCompact > autoFreshTokenThreshold) {
-                  try {
-                    const turnIndex = messagesRef.current.length;
-                    if (turnIndex > 0) {
-                      const cp: Checkpoint = {
-                        id: `cp_prefresh_${Date.now()}`,
-                        label: "pre-fresh auto-save",
-                        turnIndex,
-                        timestamp: new Date().toISOString(),
-                        sessionState: compiledContextRef.current ? sessionStateRef.current : undefined,
-                        artifactStore: serializeArtifactStore(artifactStoreRef.current),
-                      };
-                      ensureSessionId();
-                      const { sessionsDir } = await import("./sessions.js");
-                      const filePath = join(sessionsDir(), `${sessionIdRef.current}.json`);
-                      await addCheckpoint(filePath, cp);
-                    }
-                    const summary = await generateContinuationSummary({
-                      messages: messagesRef.current,
-                      mode: modeRef.current,
-                      ...llmAuthFromConfig(cfg),
-                      model: plumbingModelOf(cfg),
-                      memoryManager: memoryManagerRef.current,
-                      memoryEnabled: cfg.memoryEnabled,
-                    });
-                    if (summary) {
-                      executeFreshStart(buildSlashContext(), summary);
-                      setEvents((e) => [
-                        ...e,
-                        {
-                          kind: "info",
-                          key: mkKey(),
-                          text: `Auto-fresh triggered at ~${tokensAfterCompact.toLocaleString()} tokens: starting new session with continuation context…`,
-                        },
-                      ]);
-                    }
-                  } catch (e) {
-                    setEvents((es) => [
-                      ...es,
-                      { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` },
-                    ]);
-                  }
+                } catch (e) {
+                  setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` }]);
                 }
               }
             })();
@@ -2337,7 +1883,8 @@ function App({
           },
           onError: async (e) => {
             noteTurnEnded(turnId);
-            if (e.name === "AbortError") {
+            const failure = classifyTurnFailure(e);
+            if (failure.kind === "aborted") {
               // Inject synthetic tool results for any pending tool calls so message
               // history remains valid (assistant msg with tool_calls needs 1:1 results).
               // Idempotent: the interrupt handler may already have done this.
@@ -2345,26 +1892,13 @@ function App({
               setEvents((evts) =>
                 evts.map((e) => (e.kind === "tool" && e.status === "running" ? { ...e, status: "error" as const, result: "(stopped)" } : e)),
               );
-            } else if (
-              e instanceof KimiApiError &&
-              (e.httpStatus === 429 || (e.httpStatus !== undefined && e.httpStatus >= 500))
-            ) {
-              const err = { httpStatus: e.httpStatus, code: e.code, message: humanizeApiError(e) };
+            } else if (failure.kind === "api_error") {
+              const { kind: _kind, ...err } = failure;
               lastApiErrorRef.current = err;
               const statusUrl = providerPresetOf(llmAuthFromConfig(cfg)).statusUrl;
-              setEvents((es) => [
-                ...es,
-                { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) },
-              ]);
+              setEvents((es) => [...es, { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) }]);
             } else {
-              const displayText =
-                e instanceof KimiApiError
-                  ? humanizeApiError(e)
-                  : e.message ?? String(e);
-              setEvents((es) => [
-                ...es,
-                { kind: "error", key: mkKey(), text: displayText },
-              ]);
+              setEvents((es) => [...es, { kind: "error", key: mkKey(), text: failure.text }]);
             }
             cleanupTurn();
           },
