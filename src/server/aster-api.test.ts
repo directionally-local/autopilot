@@ -222,7 +222,7 @@ describe("Aster control-plane API", () => {
         headers: { Authorization: `Basic ${Buffer.from("kimiflare:legacy-only-secret").toString("base64")}` },
       });
       assert.equal(legacyAuthorized.status, 200);
-      assert.equal(legacyAuthorized.headers.get("access-control-allow-origin"), "*");
+      assert.equal(legacyAuthorized.headers.get("access-control-allow-origin"), null);
     } finally {
       await closeServer(server);
     }
