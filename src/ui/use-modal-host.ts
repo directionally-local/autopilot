@@ -31,8 +31,6 @@ export interface ModalHostController {
   setShowModelPicker: (v: boolean) => void;
   showModePicker: boolean;
   setShowModePicker: (v: boolean) => void;
-  showRemoteDashboard: boolean;
-  setShowRemoteDashboard: (v: boolean) => void;
   showInboxModal: boolean;
   setShowInboxModal: (v: boolean) => void;
   /** M6.1: interactive `/hooks` dashboard (arrow-key picker). */
@@ -62,7 +60,7 @@ export interface ModalHostController {
 
 /**
  * Lifts the M4.3 modal state out of `app.tsx`. Owns the seven modal
- * families listed in the roadmap (command*, LSP, theme, remote, inbox) plus the derived activity flags.
+ * families listed in the roadmap (command*, LSP, theme, inbox) plus the derived activity flags.
  *
  * Note on what is NOT here:
  *   - `perm` (permission modal) lives in `usePermissionController` (M4.1).
@@ -83,7 +81,6 @@ export function useModalHost(): ModalHostController {
   const [showUiPicker, setShowUiPicker] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
-  const [showRemoteDashboard, setShowRemoteDashboard] = useState(false);
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [showHooksDashboard, setShowHooksDashboard] = useState(false);
   const [showHelpMenu, setShowHelpMenu] = useState(false);
@@ -104,7 +101,6 @@ export function useModalHost(): ModalHostController {
       showUiPicker ||
       showModelPicker ||
       showModePicker ||
-      showRemoteDashboard ||
       showInboxModal ||
       showHooksDashboard ||
       showHelpMenu ||
@@ -127,7 +123,6 @@ export function useModalHost(): ModalHostController {
     showThemePicker,
     showModelPicker,
     showModePicker,
-    showRemoteDashboard,
     showInboxModal,
     showHooksDashboard,
     showUiPicker,
@@ -149,7 +144,6 @@ export function useModalHost(): ModalHostController {
     showUiPicker, setShowUiPicker,
     showModelPicker, setShowModelPicker,
     showModePicker, setShowModePicker,
-    showRemoteDashboard, setShowRemoteDashboard,
     showInboxModal, setShowInboxModal,
     showHooksDashboard, setShowHooksDashboard,
     showHelpMenu, setShowHelpMenu,
@@ -173,7 +167,6 @@ export interface ModalFlagsInput {
   showThemePicker: boolean;
   showUiPicker: boolean;
   showModelPicker: boolean;
-  showRemoteDashboard: boolean;
   showInboxModal: boolean;
   showHelpMenu: boolean;
   showMemoryPicker: boolean;
@@ -199,7 +192,6 @@ export function computeModalFlags(s: ModalFlagsInput): ModalFlags {
     s.showThemePicker ||
     s.showUiPicker ||
     s.showModelPicker ||
-    s.showRemoteDashboard ||
     s.showInboxModal ||
     s.showHelpMenu ||
     s.showMemoryPicker ||
@@ -223,7 +215,6 @@ export const EMPTY_MODAL_STATE: ModalFlagsInput = {
   showThemePicker: false,
   showUiPicker: false,
   showModelPicker: false,
-  showRemoteDashboard: false,
   showInboxModal: false,
   showHelpMenu: false,
   showMemoryPicker: false,
