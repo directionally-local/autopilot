@@ -4,7 +4,7 @@ import Spinner from "./ui/spinner.js";
 
 import { runAgentTurn, AgentLoopError, type GuardrailEvent } from "./agent/loop.js";
 import type { ResponseMeta } from "./agent/client.js";
-import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig } from "./agent/llm-auth.js";
+import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerPresetOf } from "./agent/llm-auth.js";
 import { buildSystemPrompt, buildSessionPrefix } from "./agent/system-prompt.js";
 import { summarizeMessagesViaLlm } from "./agent/llm-summarize.js";
 import {
@@ -2367,9 +2367,10 @@ function App({
             ) {
               const err = { httpStatus: e.httpStatus, code: e.code, message: humanizeApiError(e) };
               lastApiErrorRef.current = err;
+              const statusUrl = providerPresetOf(llmAuthFromConfig(cfg)).statusUrl;
               setEvents((es) => [
                 ...es,
-                { kind: "api_error", key: mkKey(), ...err },
+                { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) },
               ]);
             } else {
               const displayText =
