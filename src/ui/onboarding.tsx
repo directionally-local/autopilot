@@ -34,7 +34,7 @@ interface Props {
   onCancel?: () => void;
 }
 
-type Step = "provider" | "method" | "signin" | "baseUrl" | "key" | "checking" | "model" | "saving";
+type Step = "provider" | "method" | "signin" | "device" | "baseUrl" | "key" | "checking" | "model" | "saving";
 
 /** Providers offered on the first screen, in order. */
 const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
@@ -43,6 +43,7 @@ const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "openai", hint: "GPT models with an OpenAI API key" },
   { id: "gemini", hint: "Gemini models with a Google AI Studio key" },
   { id: "minimax", hint: "MiniMax models with a MiniMax API key" },
+  { id: "copilot", hint: "your GitHub Copilot plan — sign in with GitHub" },
   { id: "deepseek", hint: "DeepSeek API key" },
   { id: "moonshot", hint: "Kimi models with a Moonshot API key" },
   { id: "kimi-code", hint: "Kimi Code subscription" },
@@ -92,11 +93,32 @@ export function Onboarding({ onDone, onCancel }: Props) {
     setKey("");
     const p = getPreset(id);
     if (id === "openrouter") return setStep("method");
+    if (id === "copilot") return void copilotLogin();
     if (id === "custom") return setStep("baseUrl");
     const envKey = resolveProviderKey(id, null);
     if (envKey) return void accept(id, envKey, "env");
     if (!p.keyRequired) return void accept(id, undefined, "none");
     setStep("key");
+  };
+
+  /** GitHub device login for Copilot: show the code, wait for approval, then continue like a key. */
+  const [device, setDevice] = useState<{ uri: string; code: string } | null>(null);
+  const copilotLogin = async () => {
+    setStep("device");
+    try {
+      const { startDeviceFlow, pollDeviceFlow, checkCopilotAccess } = await import("../providers/copilot.js");
+      const code = await startDeviceFlow();
+      setDevice({ uri: code.verificationUri, code: code.userCode });
+      openBrowser(code.verificationUri);
+      const token = await pollDeviceFlow(code);
+      const access = await checkCopilotAccess(token);
+      setBaseUrl(access.apiBase);
+      setKeySource("signin");
+      await accept("copilot", token, "signin", access.apiBase);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep("provider");
+    }
   };
 
   /** Validate the key (or reach the local runtime), load the provider's models, then pick one. */
@@ -106,7 +128,9 @@ export function Onboarding({ onDone, onCancel }: Props) {
     setStep("checking");
     const p = getPreset(id);
     const effectiveUrl = url ?? p.baseUrl;
-    if (id === "openrouter" && candidate) {
+    if (id === "copilot" && candidate) {
+      // Access was checked during the device login.
+    } else if (id === "openrouter" && candidate) {
       const res = await checkOpenRouterKey(candidate);
       if (res.ok) setOrKeyInfo(res.info);
       else return fail(res.reason === "invalid" ? "OpenRouter rejected this key. Check it was copied in full, or create a new one." : `Couldn't reach OpenRouter (${res.message}).`, id, source);
@@ -140,7 +164,9 @@ export function Onboarding({ onDone, onCancel }: Props) {
     try {
       // Env keys stay in the env; only typed or signed-in keys are saved.
       const toSave = keySource === "key" || keySource === "signin" ? key : undefined;
-      if (toSave || (provider === "custom" && baseUrl)) await saveProviderKey(provider, toSave, provider === "custom" ? baseUrl : undefined);
+      if (toSave || (provider === "custom" && baseUrl)) {
+        await saveProviderKey(provider, toSave, provider === "custom" || provider === "copilot" ? baseUrl || undefined : undefined);
+      }
       await switchProvider(null, provider, modelId);
       const cfg = await loadConfig();
       if (!cfg) throw new Error("config did not load after saving");
@@ -259,6 +285,23 @@ export function Onboarding({ onDone, onCancel }: Props) {
             void accept("openrouter", minted, "signin");
           }}
         />
+      )}
+
+      {step === "device" && (
+        <Box marginTop={1} flexDirection="column">
+          <Text>Sign in to GitHub Copilot</Text>
+          {device ? (
+            <>
+              <Text>
+                Open <Text color={theme.accent}>{device.uri}</Text> and enter the code{" "}
+                <Text bold color={theme.palette.primary}>{device.code}</Text>
+              </Text>
+              <Text {...muted}>Waiting for you to approve in the browser… Copilot usage counts against your plan.</Text>
+            </>
+          ) : (
+            <Text {...muted}>Contacting GitHub…</Text>
+          )}
+        </Box>
       )}
 
       {step === "baseUrl" && (

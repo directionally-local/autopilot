@@ -50,6 +50,16 @@ export async function checkProviderKey(
     const res = await checkRequestyKey(key, fetchImpl);
     return res.ok ? { ok: true } : { ok: false, reason: res.reason === "config" ? "http" : res.reason, message: res.message };
   }
+  if (id === "copilot") {
+    if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth copilot` (GitHub device login)." };
+    try {
+      const { checkCopilotAccess } = await import("./copilot.js");
+      const access = await checkCopilotAccess(key, undefined, fetchImpl);
+      return { ok: true, ...(access.plan ? { detail: `(${access.plan} plan)` } : {}) };
+    } catch (e) {
+      return { ok: false, reason: "invalid", message: e instanceof Error ? e.message : String(e) };
+    }
+  }
   const base = (baseUrl ?? preset.baseUrl)?.replace(/\/+$/, "");
   if (!base) return { ok: false, reason: "http", message: "No base URL configured." };
   if (!key && preset.keyRequired) return { ok: false, reason: "invalid", message: `A ${preset.name} API key is required.` };

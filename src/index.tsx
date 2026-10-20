@@ -264,7 +264,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, gemini, minimax, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, gemini, minimax, copilot, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -329,6 +329,30 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "deepseek", "moons
       }),
   );
 }
+
+authCommand.addCommand(
+  new Command("copilot")
+    .description("Sign in to GitHub Copilot with GitHub's device login and make Copilot the active provider")
+    .option("--enterprise <domain>", "GitHub Enterprise domain (e.g. company.ghe.com)")
+    .action(async (cmdOpts: { enterprise?: string }) => {
+      const { startDeviceFlow, pollDeviceFlow, checkCopilotAccess } = await import("./providers/copilot.js");
+      const { saveProviderKey, switchProvider } = await import("./providers/keys.js");
+      try {
+        const code = await startDeviceFlow(cmdOpts.enterprise);
+        console.log(`Open ${code.verificationUri} and enter the code: ${code.userCode}`);
+        console.log("Waiting for you to approve…");
+        const token = await pollDeviceFlow(code, cmdOpts.enterprise);
+        const access = await checkCopilotAccess(token, cmdOpts.enterprise);
+        const savedTo = await saveProviderKey("copilot", token, access.apiBase);
+        await switchProvider(await loadConfig().catch(() => null), "copilot");
+        console.log(`✓ Connected to GitHub Copilot${access.plan ? ` (${access.plan} plan)` : ""} — now the active provider.`);
+        console.log(`Saved to ${savedTo}. Run \`autopilot\` and pick a model with /model.`);
+      } catch (e) {
+        console.error(e instanceof Error ? e.message : String(e));
+        process.exit(1);
+      }
+    }),
+);
 
 authCommand.addCommand(
     new Command("github")

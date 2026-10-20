@@ -246,6 +246,9 @@ export async function ensureProviderCatalog(
     if (preset.catalog === "models.dev" && preset.modelsDevId) {
       const p = await loadModelsDevProvider(preset.modelsDevId, { fetchImpl });
       models = p ? mapModelsDevProvider(p) : [];
+    } else if (preset.catalog === "copilot" && endpoint.baseUrl && endpoint.apiKey) {
+      const { loadCopilotModels } = await import("../providers/copilot.js");
+      models = await loadCopilotModels(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
     } else if (preset.catalog === "ollama" && endpoint.baseUrl) {
       models = await discoverOllamaModels(endpoint.baseUrl, fetchImpl);
     } else if ((preset.catalog === "openai-models" || preset.catalog === "none") && endpoint.baseUrl) {
