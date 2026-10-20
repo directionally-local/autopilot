@@ -4,7 +4,7 @@ Autopilot's headless server can coordinate work that lasts much longer than one 
 
 ## Start a run
 
-Set a server password and run the headless server under a service manager (for example, systemd or launchd):
+Set a server password and run the headless server under a service manager. For a Linux server (systemd unit, limits, kill switch, upgrades, encrypted backups) see [Running Autopilot on a Linux server](deploy-linux-server.md).
 
 ```sh
 KIMIFLARE_SERVER_PASSWORD='use-a-secret' autopilot serve
