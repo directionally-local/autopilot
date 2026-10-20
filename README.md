@@ -90,6 +90,7 @@ Requires Node.js ≥ 20.
 | [OpenRouter](https://openrouter.ai) (default) | `openrouter` | `OPENROUTER_API_KEY` or browser sign-in | 400+ models, billed cost per turn, sticky routing, subagents, Jev checks |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | native Messages API: extended/adaptive thinking, explicit prompt caching (API keys only — Claude Pro/Max sign-in isn't permitted for third-party tools) |
 | OpenAI | `openai` | `OPENAI_API_KEY` | Responses API: reasoning carries across tool loops (encrypted, stateless), codex models |
+| Google Gemini | `gemini` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | OpenAI-compatible endpoint; Gemini 3 thought signatures are kept with each tool call |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | |
 | Moonshot AI (Kimi) | `moonshot` | `MOONSHOT_API_KEY` | |
 | Kimi Code (subscription) | `kimi-code` | `KIMI_API_KEY` | |

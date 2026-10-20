@@ -41,6 +41,7 @@ const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "openrouter", hint: "recommended — hundreds of models with one account" },
   { id: "anthropic", hint: "Claude models with an Anthropic API key" },
   { id: "openai", hint: "GPT models with an OpenAI API key" },
+  { id: "gemini", hint: "Gemini models with a Google AI Studio key" },
   { id: "deepseek", hint: "DeepSeek API key" },
   { id: "moonshot", hint: "Kimi models with a Moonshot API key" },
   { id: "kimi-code", hint: "Kimi Code subscription" },

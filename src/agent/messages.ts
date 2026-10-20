@@ -4,6 +4,12 @@ export interface ToolCall {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  /**
+   * Provider-specific data attached to the call that must be sent back with
+   * it — Gemini's `{ google: { thought_signature } }`. Kept only for the
+   * provider that produced it (see stripReasoningEcho).
+   */
+  extra_content?: Record<string, unknown>;
 }
 
 export interface TextContentPart {

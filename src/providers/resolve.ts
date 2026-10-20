@@ -110,7 +110,7 @@ export function isProviderUsable(p: ActiveProvider): boolean {
 /** Providers with a key available in the environment, for onboarding to offer first. */
 export function detectEnvProviders(env: NodeJS.ProcessEnv = process.env): ProviderId[] {
   const out: ProviderId[] = [];
-  for (const id of ["openrouter", "anthropic", "openai", "deepseek", "moonshot", "kimi-code", "zai", "requesty"] as const) {
+  for (const id of ["openrouter", "anthropic", "openai", "gemini", "deepseek", "moonshot", "kimi-code", "zai", "requesty"] as const) {
     if (getPreset(id).apiKeyEnv.some((n) => nonEmpty(env[n]))) out.push(id);
   }
   return out;
