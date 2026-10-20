@@ -476,11 +476,17 @@ program
     await initOtel();
     await ensureModelCatalog(cfg);
     const { startServer } = await import("./server/index.js");
-    await startServer({
-      port: cmdOpts.port,
-      hostname: cmdOpts.hostname,
-      config: cfg,
-    });
+    try {
+      await startServer({
+        port: cmdOpts.port,
+        hostname: cmdOpts.hostname,
+        config: cfg,
+      });
+    } catch (err) {
+      // Expected startup failures (no password off-loopback, port in use): a message, not a stack trace.
+      console.error(`autopilot serve: ${(err as Error).message}`);
+      process.exit(1);
+    }
   });
 
 program.action(async () => {
