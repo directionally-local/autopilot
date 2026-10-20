@@ -169,6 +169,9 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
   openai: {
     id: "openai",
     name: "OpenAI",
+    // Responses keeps GPT-5.x reasoning across a tool loop (encrypted items)
+    // and serves the Responses-only codex/pro models.
+    protocol: "openai-responses",
     baseUrl: "https://api.openai.com/v1",
     apiKeyEnv: ["OPENAI_API_KEY"],
     keyRequired: true,
@@ -179,7 +182,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: { model: "text-embedding-3-small", dim: 1536 },
     catalog: "models.dev",
     modelsDevId: "openai",
-    compat: OPENAI_COMPAT,
+    compat: { ...OPENAI_COMPAT, reasoningEcho: { content: false, details: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   deepseek: {
