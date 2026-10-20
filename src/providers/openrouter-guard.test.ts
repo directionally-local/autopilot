@@ -42,6 +42,7 @@ const HELPER_ALLOW: Record<string, string> = {
   "ui/slash-commands.ts": "`/key` OpenRouter key management",
   "ui/onboarding.tsx": "OpenRouter sign-in during onboarding",
   "server/aster-memory.ts": "Aster server memory; runs only with an OpenRouter key (Hotcell gateway)",
+  "providers/keys.ts": "validates an OpenRouter key when the user connects OpenRouter",
 };
 
 /** Files that may read `<config>.openrouterApiKey` directly. */
@@ -50,7 +51,6 @@ const KEY_READ_ALLOW: Record<string, string> = {
   "providers/resolve.ts": "provider resolution",
   "agent/llm-auth.ts": "turns config into credentials",
   "sdk/config.ts": "names the field in an error message",
-  "ui/slash-commands.ts": "`/key` shows and replaces the OpenRouter key",
 };
 
 describe("OpenRouter is only reached through the provider layer", () => {

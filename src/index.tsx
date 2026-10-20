@@ -1,6 +1,7 @@
 import { Command, Option } from "commander";
 import { logger } from "./util/logger.js";
-import { loadConfig, DEFAULT_MODEL, type KimiConfig } from "./config.js";
+import { loadConfig, type KimiConfig } from "./config.js";
+import { PROVIDER_PRESETS } from "./providers/presets.js";
 import { resolveLspConfig } from "./util/lsp-config.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
@@ -17,7 +18,7 @@ program
   .description("Terminal coding agent. Runs any OpenRouter model with your own OpenRouter key.")
   .version(getAppVersion())
   .option("-p, --print <prompt>", "one-shot mode: send prompt, stream reply to stdout, exit")
-  .option("-m, --model <id>", `OpenRouter model id (defaults to ${DEFAULT_MODEL})`)
+  .option("-m, --model <id>", "model id for the active provider (defaults to its configured model)")
   // KimiFlare Cloud was retired with the move to OpenRouter. Keep the flag
   // parseable so old scripts don't break; it's ignored with a notice.
   .addOption(new Option("--cloud", "(retired) KimiFlare Cloud").hideHelp())
@@ -187,9 +188,9 @@ program
     process.exit(2);
   });
 
-program
+const authCommand = program
   .command("auth")
-  .description("Authenticate with external services")
+  .description("Connect an LLM provider (or GitHub); `autopilot auth status` lists providers")
   .addCommand(
     new Command("openrouter")
       .description(
@@ -224,6 +225,8 @@ program
           process.exit(1);
         }
         const savedTo = await patchPersistedConfig({ openrouterApiKey: key });
+        const { switchProvider } = await import("./providers/keys.js");
+        await switchProvider(await loadConfig().catch(() => null), "openrouter");
         const credit = typeof res.info.limitRemaining === "number" ? ` · $${res.info.limitRemaining.toFixed(2)} credit left` : "";
         console.log(`✓ Connected${res.info.label ? ` (${res.info.label})` : ""}${credit}`);
         console.log(`Saved to ${savedTo}. Run \`autopilot\` to start.`);
@@ -232,7 +235,7 @@ program
   .addCommand(
     new Command("requesty")
       .description(
-        "Save a Requesty API key (used when no OpenRouter key is configured). For headless setups, REQUESTY_API_KEY works too.",
+        "Save a Requesty API key and make Requesty the active provider. For headless setups, REQUESTY_API_KEY works too.",
       )
       .argument("[key]", "an existing Requesty key to save instead of pasting one")
       .action(async (keyArg: string | undefined) => {
@@ -253,11 +256,81 @@ program
           process.exit(1);
         }
         const savedTo = await patchPersistedConfig({ requestyApiKey: key });
+        const { switchProvider } = await import("./providers/keys.js");
+        await switchProvider(await loadConfig().catch(() => null), "requesty");
         console.log("✓ Connected to Requesty");
         console.log(`Saved to ${savedTo}. Run \`autopilot\` to start.`);
       }),
   )
   .addCommand(
+    new Command("use")
+      .description("Make a provider the active one: openrouter, requesty, openai, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .argument("<provider>", "provider id")
+      .action(async (id: string) => {
+        const { isProviderId, getPreset } = await import("./providers/presets.js");
+        const { switchProvider } = await import("./providers/keys.js");
+        const { isProviderUsable, resolveActiveProvider } = await import("./providers/resolve.js");
+        if (!isProviderId(id)) {
+          console.error(`Unknown provider "${id}". Run \`autopilot auth status\` to list them.`);
+          process.exit(2);
+        }
+        const cfg = await loadConfig();
+        await switchProvider(cfg, id);
+        const next = resolveActiveProvider({ ...(cfg ?? {}), provider: id });
+        console.log(`✓ ${getPreset(id).name} is now the active provider.`);
+        if (!isProviderUsable(next)) console.log(`It has no key yet: run \`autopilot auth ${id}\`.`);
+      }),
+  )
+  .addCommand(
+    new Command("status")
+      .description("List providers, which one is active, and where each key comes from")
+      .action(async () => {
+        const { providerStatus } = await import("./providers/keys.js");
+        const cfg = await loadConfig();
+        for (const r of providerStatus(cfg)) {
+          const key = r.key === null ? "no key" : r.key === "not needed" ? "no key needed" : `key in ${r.key}`;
+          console.log(`${r.active ? "›" : " "} ${r.id.padEnd(11)} ${r.name}${r.active ? " (active)" : ""} · ${key}`);
+        }
+      }),
+  );
+
+for (const id of ["openai", "deepseek", "moonshot", "kimi-code", "zai", "zai-coding", "ollama", "lmstudio"] as const) {
+  authCommand.addCommand(
+    new Command(id)
+      .description(
+        PROVIDER_PRESETS[id].keyRequired
+          ? `Connect ${PROVIDER_PRESETS[id].name} with an API key (validated, saved to config.json) and make it the active provider`
+          : `Use a local ${PROVIDER_PRESETS[id].name} (checks it is reachable) as the active provider`,
+      )
+      .argument("[key]", "the key to save instead of pasting one")
+      .option("--base-url <url>", "use a different endpoint (e.g. Ollama on another host)")
+      .action(async (keyArg: string | undefined, cmdOpts: { baseUrl?: string }) => {
+        const { getPreset } = await import("./providers/presets.js");
+        const { checkProviderKey, saveProviderKey, switchProvider } = await import("./providers/keys.js");
+        const preset = getPreset(id);
+        let key = keyArg?.trim();
+        if (!key && preset.keyRequired) {
+          if (preset.keysUrl) console.log(`Create a key at ${preset.keysUrl}, then paste it here.`);
+          key = (await promptHidden(`${preset.name} API key: `)).trim();
+        }
+        if (!key && preset.keyRequired) {
+          console.error("No key entered.");
+          process.exit(1);
+        }
+        const res = await checkProviderKey(id, key, cmdOpts.baseUrl);
+        if (!res.ok) {
+          console.error(res.message);
+          process.exit(1);
+        }
+        const savedTo = await saveProviderKey(id, key, cmdOpts.baseUrl);
+        await switchProvider(await loadConfig().catch(() => null), id);
+        console.log(`✓ Connected to ${preset.name}${res.detail ? ` ${res.detail}` : ""} — now the active provider.`);
+        console.log(`Saved to ${savedTo}. Run \`autopilot\` to start.`);
+      }),
+  );
+}
+
+authCommand.addCommand(
     new Command("github")
       .description("Authenticate with GitHub via OAuth device flow")
       .action(async () => {
@@ -282,7 +355,7 @@ program
   .action(async (cmdOpts) => {
     const cfg = await loadConfig();
     if (!cfg) {
-      console.error("autopilot serve: no OpenRouter API key — set OPENROUTER_API_KEY or run `autopilot auth openrouter`.");
+      console.error(`autopilot serve: ${await noCredentialsMessage()}`);
       process.exit(2);
     }
     await ensureModelCatalog(cfg);
@@ -390,7 +463,7 @@ async function main() {
       console.error("autopilot: --emit-events requires credentials.");
       process.exit(2);
     }
-    const model = opts.model ?? cfg.model ?? DEFAULT_MODEL;
+    const model = requireModel(opts.model || cfg.model);
     const { runEmitMode } = await import("./emit-mode.js");
     await runEmitMode({
       ...cfg,
@@ -408,17 +481,10 @@ async function main() {
 
   if (opts.print !== undefined) {
     if (!cfg) {
-      console.error(
-        "autopilot: no OpenRouter API key configured.\n" +
-          "Set OPENROUTER_API_KEY (create a key at https://openrouter.ai/keys), run\n" +
-          "  autopilot auth openrouter\n" +
-          "or write it to ~/.config/kimiflare/config.json (chmod 600):\n" +
-          `  { "openrouterApiKey": "sk-or-...", "model": "${DEFAULT_MODEL}" }\n` +
-          "To use Requesty instead, set REQUESTY_API_KEY or run  autopilot auth requesty",
-      );
+      console.error(`autopilot: ${await noCredentialsMessage()}`);
       process.exit(2);
     }
-    const model = opts.model ?? cfg.model ?? DEFAULT_MODEL;
+    const model = requireModel(opts.model || cfg.model);
     const format = (opts.format ?? "text") as PrintFormat;
     if (format !== "text" && format !== "json" && format !== "stream-json") {
       console.error(`autopilot: invalid --format "${format}". Use: text, json, stream-json`);
@@ -485,7 +551,7 @@ async function main() {
   // renderer can't start (no prebuilt binary for the platform).
   const uiEngine = (opts.ui ?? process.env.KIMIFLARE_UI ?? "camouflage").toLowerCase();
   if (uiEngine !== "ink" && cfg) {
-    const model = opts.model ?? cfg.model ?? DEFAULT_MODEL;
+    const model = requireModel(opts.model || cfg.model);
     const { runCamouflageView, CamouflageUnavailable } = await import("./camouflage-view.js");
     const { renderAppWithBridge } = await import("./app.js");
     try {
@@ -504,7 +570,7 @@ async function main() {
   // React Ink UI.
   const { renderApp } = await import("./app.js");
   if (cfg) {
-    const model = opts.model ?? cfg.model ?? DEFAULT_MODEL;
+    const model = requireModel(opts.model || cfg.model);
     await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath);
   } else {
     await renderApp(null, updateResult, lspScope, lspProjectPath);
@@ -516,6 +582,37 @@ async function main() {
 
 
 /** Read a line from the terminal without echoing it (for secrets). */
+/** The model to run, or exit with a hint (local runtimes and custom endpoints have no default). */
+function requireModel(model: string | undefined): string {
+  if (model) return model;
+  console.error("autopilot: no model selected for this provider — pass -m <model-id>, set KIMI_MODEL, or pick one with /model.");
+  process.exit(2);
+}
+
+/** What to do when the active provider has no credentials (print mode, serve). */
+async function noCredentialsMessage(): Promise<string> {
+  const { readFile } = await import("node:fs/promises");
+  const { configPath } = await import("./config.js");
+  const { resolveActiveProvider } = await import("./providers/resolve.js");
+  let persisted: Partial<KimiConfig> = {};
+  try {
+    persisted = JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig>;
+  } catch {
+    /* no file */
+  }
+  const { id, preset } = resolveActiveProvider(persisted);
+  const how =
+    id === "custom"
+      ? "set KIMIFLARE_BASE_URL (and KIMIFLARE_API_KEY if your endpoint needs one)"
+      : `set ${preset.apiKeyEnv[0]}${preset.keysUrl ? ` (create a key at ${preset.keysUrl})` : ""}, or run  autopilot auth ${id}`;
+  return [
+    `no ${preset.name} credentials configured.`,
+    `To use ${preset.name}, ${how}.`,
+    "Other providers: `autopilot auth status` lists them; e.g. OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY,",
+    "or AUTOPILOT_PROVIDER=ollama for a local Ollama.",
+  ].join("\n");
+}
+
 /** Load the active provider's model catalog (see src/models/catalog.ts). */
 async function ensureModelCatalog(cfg: KimiConfig | null): Promise<void> {
   const { llmAuthFromConfig } = await import("./agent/llm-auth.js");
