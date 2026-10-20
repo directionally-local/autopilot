@@ -80,7 +80,10 @@ export type SessionEvent =
   | { type: "context.compacted"; tokensBefore: number; tokensAfter: number; turnsRemoved: number; artifactsArchived: number }
 
   // Status
-  | { type: "status"; status: "idle" | "streaming" | "tool_executing" | "compacting" | "error" };
+  | { type: "status"; status: "idle" | "streaming" | "tool_executing" | "compacting" | "error" }
+
+  // Background subagents (`subagent` with background: true)
+  | { type: "worker.finished"; workerId: string; index: number; task: string; status: string; costUsd?: number };
 
 export interface SessionUsage {
   totalInputTokens: number;

@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import type { KimiConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
+import { assembleTurn, lastUserText, resolveTurnPolicy } from "../agent/session-core.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
 import { toOpenAIToolDefs } from "../tools/registry.js";
@@ -940,9 +941,14 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
   active.lastTurnId = turnId;
   try {
     if (run && runStore) {
-
-      const tools = ALL_TOOLS.filter((tool) => active.allowedTools?.has(tool.name));
-      await runAgentTurn({
+      // SessionCore: same classification, subagent policy and completion check as every host.
+      const policy = await resolveTurnPolicy({
+        cfg: config,
+        prompt: lastUserText(messages),
+        tools: ALL_TOOLS.filter((tool) => active.allowedTools?.has(tool.name)),
+        signal: controller.signal,
+      });
+      await runAgentTurn(assembleTurn({ cfg: config, policy, host: {
         ...llmAuthFromConfig(config),
         model: sessionFile.model,
         reasoningEffort: config.reasoningEffort,
@@ -950,7 +956,6 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         runId: run.id,
         runsDbPath: process.env.AUTOPILOT_RUNS_DB,
         messages,
-        tools,
         executor,
         cwd: sessionFile.cwd,
         signal: controller.signal,
@@ -972,15 +977,15 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
           }
           return updatedMessages;
         },
-      });
+      } }));
     } else {
-      await runAgentTurn({
+      const policy = await resolveTurnPolicy({ cfg: config, prompt: lastUserText(messages), tools: ALL_TOOLS, signal: controller.signal });
+      await runAgentTurn(assembleTurn({ cfg: config, policy, host: {
         ...llmAuthFromConfig(config),
         model: sessionFile.model,
         reasoningEffort: config.reasoningEffort,
         sessionId: sessionFile.id,
         messages,
-        tools: ALL_TOOLS,
         executor,
         cwd: sessionFile.cwd,
         signal: controller.signal,
@@ -991,7 +996,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         callbacks,
         trace: active.trace,
         turnId,
-      });
+      } }));
     }
 
     sessionFile.messages = messages;

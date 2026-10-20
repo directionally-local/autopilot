@@ -23,8 +23,7 @@ import { encodeImageFile, isImagePath } from "./util/image.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
 import { evaluatePermissionRules } from "./permissions-evaluator.js";
-import { classifyIntent } from "./intent/classify.js";
-import { allowsSubagentDispatch, resolveSubagentGuidance } from "./intent/subagent-policy.js";
+import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import type { KimiConfig, PermissionRules, ReasoningEffort } from "./config.js";
 import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
@@ -216,17 +215,17 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     sessionFile.title = opts.title;
   }
 
-  const intent = classifyIntent(opts.prompt);
-  const delegationGuidance = await resolveSubagentGuidance({
+  // SessionCore: classification, subagent guidance (Jev only on OpenRouter)
+  // and the completion check, decided the same way as in every host.
+  const policy = await resolveTurnPolicy({
+    cfg: opts,
     prompt: opts.prompt,
-    tier: intent.tier,
-    policy: opts.subagentPolicy ?? "auto",
-    apiKey: opts.openrouterApiKey,
-    customEndpoint: Boolean(opts.baseUrl),
+    tools: baseWorkerTools,
+    subagentPolicy: opts.subagentPolicy ?? "auto",
+    ...(opts.workerProfile === "research" ? { workerProfile: "research" as const } : {}),
   });
-  const workerTools = baseWorkerTools.filter(
-    (tool) => tool.name !== "subagent" || allowsSubagentDispatch(delegationGuidance.kind),
-  );
+  const delegationGuidance = policy.guidance;
+  const workerTools = policy.tools;
   const executor = new ToolExecutor(workerTools, { hooks });
   // The research worker profile never delegates; only coordinator runs count.
   if (opts.workerProfile !== "research") {
@@ -438,16 +437,12 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   };
 
   try {
-    await runAgentTurn({
+    await runAgentTurn(assembleTurn({ cfg: opts, policy, host: {
       ...auth,
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
-      delegationDirective: delegationGuidance.refinedDirective ?? delegationGuidance.directive,
-      // Research subagents answer one mission; only coordinators are checked.
-      completionCheck: opts.workerProfile === "research" ? undefined : completionCheckFromConfig(opts),
       sessionId: sessionFile.id,
       messages,
-      tools: workerTools,
       executor,
       hooks,
       cwd,
@@ -468,7 +463,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       callbacks,
       trace,
       turnId,
-    });
+    } }));
   } catch (err) {
     if (err instanceof BudgetExhaustedError) {
       const msg = "[Budget exhausted — exiting with code 42]";
