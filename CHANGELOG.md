@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.27.0](https://github.com/sinameraji/autopilot/compare/v1.26.0...v1.27.0) (2026-10-20)
+
+
+### Features
+
+* **client:** log request body size and split upload time from model latency ([#858](https://github.com/sinameraji/autopilot/issues/858)) ([bf30ed9](https://github.com/sinameraji/autopilot/commit/bf30ed97930d49c4faad06c20820cd51bf653671))
+* **edit:** several replacements per edit call, applied atomically ([#859](https://github.com/sinameraji/autopilot/issues/859)) ([f530da7](https://github.com/sinameraji/autopilot/commit/f530da7112a671311b8c524c3bf3e0f93536e807))
+* **images:** downscale and re-encode images when they're attached ([#855](https://github.com/sinameraji/autopilot/issues/855)) ([2f37a18](https://github.com/sinameraji/autopilot/commit/2f37a18c460e238a1b3a27b7491c6abc57f1e843))
+* **providers:** /provider is a step-by-step picker, like /model and onboarding ([#857](https://github.com/sinameraji/autopilot/issues/857)) ([4fd188d](https://github.com/sinameraji/autopilot/commit/4fd188d4b2f6646b58034cfb2c5e937f23450fcc))
+* **runs:** an unattended run whose turn outgrows the context pauses for a decision ([#860](https://github.com/sinameraji/autopilot/issues/860)) ([8f158c0](https://github.com/sinameraji/autopilot/commit/8f158c0dffce11cbfe50e95c290274c73ca3c433))
+* **runs:** concurrency limit, operator kill switch, systemd unit and server guide ([#864](https://github.com/sinameraji/autopilot/issues/864)) ([6d1b623](https://github.com/sinameraji/autopilot/commit/6d1b623b1f582a057f540f8f470eef53246e568d))
+* **runs:** decide a paused run by replying to its email ([#866](https://github.com/sinameraji/autopilot/issues/866)) ([7e65ce2](https://github.com/sinameraji/autopilot/commit/7e65ce2d628b5a88754af315d2581ce01e671c7d))
+* **runs:** email the operator when an unattended run finishes, fails or needs input ([#863](https://github.com/sinameraji/autopilot/issues/863)) ([5766e6a](https://github.com/sinameraji/autopilot/commit/5766e6ac061594b38ea1b00f2fc7c640947d4d0c))
+
+
+### Bug Fixes
+
+* **deps:** camouflage-tui 2.8.0; drop the node_modules symlink committed in [#858](https://github.com/sinameraji/autopilot/issues/858) ([#861](https://github.com/sinameraji/autopilot/issues/861)) ([a085a28](https://github.com/sinameraji/autopilot/commit/a085a287b2d799dcde0684d75d08b243e66386d7))
+
 ## [1.26.0](https://github.com/sinameraji/autopilot/compare/v1.25.1...v1.26.0) (2026-10-20)
 
 
