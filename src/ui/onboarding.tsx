@@ -24,7 +24,7 @@ import { hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type KimiCo
 import { checkOpenRouterKey, OPENROUTER_KEYS_URL, type OpenRouterKeyInfo } from "../models/openrouter.js";
 import type { ModelEntry } from "../models/registry.js";
 import { getPreset, type ProviderId } from "../providers/presets.js";
-import { detectEnvProviders, resolveProviderKey } from "../providers/resolve.js";
+import { detectEnvProviders, resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
@@ -53,6 +53,7 @@ const CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
   { id: "deepinfra", hint: "open models with a DeepInfra key" },
   { id: "vercel", hint: "many vendors with one Vercel AI Gateway key" },
   { id: "cloudflare", hint: "Workers AI with your Cloudflare account" },
+  { id: "azure", hint: "your Azure OpenAI resource and deployments" },
   { id: "deepseek", hint: "DeepSeek API key" },
   { id: "moonshot", hint: "Kimi models with a Moonshot API key" },
   { id: "kimi-code", hint: "Kimi Code subscription" },
@@ -108,6 +109,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
     if (id === "openrouter") return setStep("method");
     if (id === "copilot") return void copilotLogin();
     if (id === "custom") return setStep("baseUrl");
+    if (id === "azure" && !resolveActiveProvider({ provider: "azure" }).baseUrl) return setStep("baseUrl");
     const envKey = resolveProviderKey(id, persisted);
     if (envKey) return void accept(id, envKey, "env");
     if (!p.keyRequired) return void accept(id, undefined, "none");
@@ -179,7 +181,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
       // Env keys stay in the env; only typed or signed-in keys are saved.
       const toSave = keySource === "key" || keySource === "signin" ? key : undefined;
       if (toSave || (provider === "custom" && baseUrl)) {
-        await saveProviderKey(provider, toSave, provider === "custom" || provider === "copilot" ? baseUrl || undefined : undefined);
+        await saveProviderKey(provider, toSave, provider === "custom" || provider === "copilot" || provider === "azure" ? baseUrl || undefined : undefined);
       }
       await switchProvider(null, provider, modelId);
       const cfg = await loadConfig();
@@ -326,15 +328,21 @@ export function Onboarding({ onDone, onCancel }: Props) {
 
       {step === "baseUrl" && (
         <Box marginTop={1} flexDirection="column">
-          <Text>Base URL of your OpenAI-compatible endpoint</Text>
-          <Text {...muted}>e.g. http://localhost:4000/v1 for LiteLLM, http://localhost:8000/v1 for vLLM. Esc to go back.</Text>
+          <Text>{provider === "azure" ? "Your Azure OpenAI resource name (or its endpoint URL)" : "Base URL of your OpenAI-compatible endpoint"}</Text>
+          <Text {...muted}>
+            {provider === "azure"
+              ? "The <name> in https://<name>.openai.azure.com. Esc to go back."
+              : "e.g. http://localhost:4000/v1 for LiteLLM, http://localhost:8000/v1 for vLLM. Esc to go back."}
+          </Text>
           <Box marginTop={1}>
             <Text color={theme.palette.primary}>› </Text>
             <CustomTextInput
               value={baseUrl}
               onChange={setBaseUrl}
               onSubmit={(v) => {
-                const url = v.trim();
+                let url = v.trim();
+                // Azure: a bare resource name is enough.
+                if (provider === "azure" && /^[a-z0-9-]+$/i.test(url)) url = `https://${url}.openai.azure.com/openai/v1`;
                 if (!/^https?:\/\//.test(url)) return setError("Enter a URL starting with http:// or https://");
                 setBaseUrl(url);
                 setError(null);
@@ -367,7 +375,7 @@ export function Onboarding({ onDone, onCancel }: Props) {
               onSubmit={(v) => {
                 const k = v.trim();
                 if (!k && provider !== "custom") return;
-                void accept(provider, k || undefined, "key", provider === "custom" ? baseUrl : undefined);
+                void accept(provider, k || undefined, "key", provider === "custom" || (provider === "azure" && baseUrl) ? baseUrl : undefined);
               }}
             />
           </Box>

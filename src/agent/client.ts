@@ -15,7 +15,7 @@ import {
   type LlmDumpResponse,
 } from "../util/llm-dump.js";
 import { getModelOrInfer, vendorOf } from "../models/registry.js";
-import { getPreset, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
+import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from "../providers/presets.js";
 import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.js";
@@ -619,13 +619,13 @@ function buildKimiRequestTarget(
     const base = customEndpoint.baseUrl.replace(/\/+$/, "");
     if (protocol === "anthropic-messages") return { url: `${base}/messages`, headers: anthropicHeaders(customEndpoint.apiKey) };
     if (protocol === "openai-responses") {
-      return { url: `${base}/responses`, headers: customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {} };
+      return { url: `${base}/responses`, headers: keyHeaders(customEndpoint.providerId, customEndpoint.apiKey) };
     }
     return {
       url: customChatCompletionsUrl(customEndpoint.baseUrl),
       headers: {
         ...(customEndpoint.providerId ? getPreset(customEndpoint.providerId).compat.headers : {}),
-        ...(customEndpoint.apiKey ? { Authorization: `Bearer ${customEndpoint.apiKey}` } : {}),
+        ...keyHeaders(customEndpoint.providerId, customEndpoint.apiKey),
       },
     };
   }

@@ -110,7 +110,9 @@ function fillPlaceholders(url: string | undefined, cfg: ProviderConfigFields | n
   if (!url) return url;
   let missing = false;
   const filled = url.replace(/\$\{([A-Z_]+)\}/g, (_m, name: string) => {
-    const v = nonEmpty(env[name]) ?? (name === "CLOUDFLARE_ACCOUNT_ID" ? nonEmpty(env.CF_ACCOUNT_ID) ?? nonEmpty(cfg?.accountId) : undefined);
+    const v =
+      nonEmpty(env[name]) ??
+      (name === "CLOUDFLARE_ACCOUNT_ID" ? nonEmpty(env.CF_ACCOUNT_ID) ?? nonEmpty(cfg?.accountId) : undefined);
     if (!v) missing = true;
     return v ?? "";
   });
@@ -119,7 +121,8 @@ function fillPlaceholders(url: string | undefined, cfg: ProviderConfigFields | n
 
 /** True when the provider can take requests: it has a key, or needs none (local runtimes, a custom gateway). */
 export function isProviderUsable(p: ActiveProvider): boolean {
-  if (p.id === "custom" || p.id === "cloudflare") return !!p.baseUrl && (p.id === "custom" || !!p.apiKey);
+  // Providers whose URL comes from account details (Cloudflare account id, Azure resource) need it resolved.
+  if (p.id === "custom" || p.id === "cloudflare" || p.id === "azure") return !!p.baseUrl && (p.id === "custom" || !!p.apiKey);
   return !!p.apiKey || !p.preset.keyRequired;
 }
 
