@@ -23,6 +23,7 @@ export const PROVIDER_IDS = [
   "moonshot",
   "kimi-code",
   "anthropic",
+  "gemini",
   "zai",
   "zai-coding",
   "ollama",
@@ -45,6 +46,12 @@ export interface ProviderCompat {
   streamUsage: boolean;
   /** Send `reasoning_effort` for reasoning-capable models. */
   reasoningEffort: boolean;
+  /**
+   * Keep provider-specific `extra_content` on assistant tool calls (Gemini's
+   * thought signatures, which must be sent back with the call they belong
+   * to). Stripped for every other provider.
+   */
+  toolCallExtras?: boolean;
   /**
    * Reasoning fields to echo back on assistant history. DeepSeek and Kimi
    * thinking models require `reasoning_content` during tool loops; strict
@@ -233,6 +240,23 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     modelsDevId: "anthropic",
     // Thinking blocks (reasoning_details) must be replayed with their signatures.
     compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEcho: { content: false, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  gemini: {
+    id: "gemini",
+    name: "Google Gemini",
+    // Gemini's OpenAI-compatible endpoint; thought signatures ride on tool calls as extra_content.
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    apiKeyEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://aistudio.google.com/apikey",
+    statusUrl: "https://aistudio.google.com/status",
+    defaultModel: "gemini-3.8-flash",
+    plumbingModel: "gemini-flash-lite-latest",
+    embedding: { model: "gemini-embedding-001", dim: 3072 },
+    catalog: "models.dev",
+    modelsDevId: "google",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, toolCallExtras: true },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   "kimi-code": {

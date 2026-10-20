@@ -30,7 +30,7 @@ export type KimiEvent =
   | { type: "text"; delta: string }
   | { type: "tool_call_start"; index: number; id: string; name: string }
   | { type: "tool_call_args"; index: number; argsDelta: string }
-  | { type: "tool_call_complete"; index: number; id: string; name: string; arguments: string; finishReason: string | null }
+  | { type: "tool_call_complete"; index: number; id: string; name: string; arguments: string; finishReason: string | null; extra?: Record<string, unknown> }
   | { type: "usage"; usage: Usage }
   | { type: "done"; finishReason: string | null; usage: Usage | null };
 
@@ -120,9 +120,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   );
   const body: Record<string, unknown> = {
     model: opts.model,
-    messages: sanitizeMessagesForApi(
-      customEndpoint || requesty ? stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField) : opts.messages,
-    ),
+    messages: sanitizeMessagesForApi(stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField)),
     stream: true,
   };
   if (customEndpoint || requesty) {
@@ -651,7 +649,7 @@ async function* parseStream(
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   postFirstByteIdleTimeoutMs = DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS,
 ): AsyncGenerator<KimiEvent, void, void> {
-  const toolCalls = new Map<number, { id: string; name: string; args: string }>();
+  const toolCalls = new Map<number, { id: string; name: string; args: string; extra?: Record<string, unknown> }>();
   let lastUsage: Usage | null = null;
   let finishReason: string | null = null;
   let metaSent = false;
@@ -734,6 +732,8 @@ async function* parseStream(
               }
               if (buf.id.startsWith("tc_") && incomingId) buf.id = incomingId;
             }
+            // Gemini's thought signature arrives on the call as extra_content.
+            if (tc.extra_content && typeof tc.extra_content === "object") buf.extra = { ...buf.extra, ...tc.extra_content };
             const argDelta = tc.function?.arguments;
             if (typeof argDelta === "string" && argDelta.length) {
               buf.args += argDelta;
@@ -756,6 +756,7 @@ async function* parseStream(
       name: buf.name,
       arguments: buf.args,
       finishReason,
+      ...(buf.extra ? { extra: buf.extra } : {}),
     };
   }
 
@@ -788,6 +789,7 @@ interface StreamToolCall {
   id?: string | null;
   type?: string | null;
   function?: { name?: string | null; arguments?: string | null };
+  extra_content?: Record<string, unknown>;
 }
 
 /** Effort levels from least to most, as models.dev names them. */
@@ -814,14 +816,17 @@ export function effortFor(level: "low" | "medium" | "high", allowed: string[] | 
 export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderCompat, modelEchoField?: string): ChatMessage[] {
   const keepContent = compat.reasoningEcho.content || modelEchoField === "reasoning_content";
   const keepDetails = compat.reasoningEcho.details;
-  if (keepContent && keepDetails) return messages;
+  const keepExtras = compat.toolCallExtras === true;
   return messages.map((m) => {
-    if (m.role !== "assistant" || (m.reasoning_content === undefined && m.reasoning_details === undefined)) return m;
+    if (m.role !== "assistant") return m;
+    const hasExtras = !keepExtras && (m.tool_calls ?? []).some((tc) => tc.extra_content !== undefined);
+    if (!hasExtras && (keepContent || m.reasoning_content === undefined) && (keepDetails || m.reasoning_details === undefined)) return m;
     const { reasoning_content, reasoning_details, ...rest } = m;
     return {
       ...rest,
       ...(keepContent && reasoning_content !== undefined ? { reasoning_content } : {}),
       ...(keepDetails && reasoning_details !== undefined ? { reasoning_details } : {}),
+      ...(hasExtras ? { tool_calls: m.tool_calls!.map(({ extra_content: _drop, ...tc }) => tc) } : {}),
     };
   });
 }
