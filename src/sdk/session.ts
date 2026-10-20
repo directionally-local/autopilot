@@ -17,10 +17,8 @@ import type { SessionFile } from "../sessions.js";
 import { recordUsage } from "../usage-tracker.js";
 import { calculateCost } from "../pricing.js";
 import type { OpenRouterProviderPrefs } from "../agent/client.js";
-import { llmAuthFromConfig, usesRequesty } from "../agent/llm-auth.js";
-import { ensureOpenRouterCatalog } from "../models/openrouter-catalog.js";
-import { ensureRequestyCatalog } from "../models/requesty-catalog.js";
-import { resolveCustomEndpoint } from "../agent/custom-endpoint.js";
+import { activeOpenRouterKey, llmAuthFromConfig, providerIdOf } from "../agent/llm-auth.js";
+import { ensureCatalogForProvider } from "../models/catalog.js";
 import { logger } from "../util/logger.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
 import { resolveSdkConfig } from "./config.js";
@@ -34,10 +32,9 @@ export async function createAgentSession(
   opts: CreateSessionOptions,
 ): Promise<{ session: KimiFlareSession }> {
   const config = await resolveSdkConfig(opts);
-  // Model capabilities/pricing come from OpenRouter's catalog (cached on disk,
-  // refreshed every 6h; a failed fetch falls back to the cache or seed list).
-  if (usesRequesty(llmAuthFromConfig(config))) await ensureRequestyCatalog();
-  else if (!resolveCustomEndpoint(config)) await ensureOpenRouterCatalog();
+  // Model capabilities/pricing come from the active provider's catalog
+  // (cached on disk; a failed fetch falls back to the cache or seed list).
+  await ensureCatalogForProvider(llmAuthFromConfig(config));
   const cwd = resolve(opts.cwd ?? process.cwd());
   const tools = opts.tools ?? ALL_TOOLS;
   // M6.1: SDK consumers opt in to hooks via `opts.enableHooks` (default
@@ -632,8 +629,10 @@ class InternalSession implements KimiFlareSession {
 
     await runAgentTurn({
       ...llmAuthFromConfig(this.config),
-      ...(this.provider
-        ? { provider: { ...(this.config.openrouterProvider ?? {}), ...this.provider } }
+      // The SDK's `provider` option is OpenRouter routing preferences; it only
+      // applies when OpenRouter is the active provider.
+      ...(this.provider && providerIdOf(llmAuthFromConfig(this.config)) === "openrouter"
+        ? { openrouterRouting: { ...(this.config.openrouterProvider ?? {}), ...this.provider } }
         : {}),
       model: this.model,
       messages: this.messages,
@@ -705,7 +704,8 @@ function costLookup(
   config: InternalSessionOpts["config"],
   meta: import("../agent/client.js").ResponseMeta | undefined,
 ): import("../usage-tracker.js").CostLookup | undefined {
-  // Custom endpoint active: the host's gateway does its own metering.
-  if (!config.openrouterApiKey || !meta?.generationId || resolveCustomEndpoint(config)) return undefined;
-  return { apiKey: config.openrouterApiKey, meta };
+  // Only OpenRouter confirms per-request cost; other providers keep the estimate.
+  const apiKey = activeOpenRouterKey(config);
+  if (!apiKey || !meta?.generationId) return undefined;
+  return { apiKey, meta };
 }

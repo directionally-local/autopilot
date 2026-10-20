@@ -1,4 +1,5 @@
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
+import { activeOpenRouterKey, llmAuthFromConfig, providerPresetOf } from "../agent/llm-auth.js";
 import { loadConfig, resolveWorkerBudgetUsd } from "../config.js";
 import { runHotcellWorker } from "./hotcell-worker.js";
 import { workerRegistry } from "./worker-registry.js";
@@ -84,11 +85,11 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
       : fromLegacySpawnWorkerArgs(rawArgs as unknown as LegacySpawnWorkerArgs);
     if (!args.mission.trim()) throw new Error("subagent needs a mission describing what to investigate.");
     const cfg = await loadConfig().catch(() => null);
-    if (!cfg?.openrouterApiKey) {
-      throw new Error("Subagents need an OpenRouter-backed session (they run through Hotcell's OpenRouter gateway). Configure OpenRouter, then retry.");
-    }
-    if (cfg.baseUrl) {
-      throw new Error("Subagents do not support custom model endpoints yet.");
+    const provider = providerPresetOf(llmAuthFromConfig(cfg));
+    if (!cfg || !provider.capabilities.hotcellGateway || !activeOpenRouterKey(cfg)) {
+      throw new Error(
+        `Subagents run through Hotcell's OpenRouter gateway, so they need OpenRouter as the active provider (current: ${provider.name}). Switch with /provider openrouter, then retry.`,
+      );
     }
 
     // Subagents always use the session's own model (no silent fallback).

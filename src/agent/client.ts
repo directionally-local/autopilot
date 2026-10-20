@@ -18,6 +18,7 @@ import { getModelOrInfer, vendorOf } from "../models/registry.js";
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
 import { resolveCustomEndpoint, customChatCompletionsUrl, type CustomEndpoint } from "./custom-endpoint.js";
+import type { LlmAuth } from "./llm-auth.js";
 
 export type KimiEvent =
   | { type: "response_meta"; meta: ResponseMeta }
@@ -30,20 +31,7 @@ export type KimiEvent =
   | { type: "usage"; usage: Usage }
   | { type: "done"; finishReason: string | null; usage: Usage | null };
 
-export interface RunKimiOpts {
-  /**
-   * The user's OpenRouter API key, sent as `Authorization: Bearer`. Required
-   * unless a custom endpoint is in effect. Build it (with `customEndpoint`
-   * and `provider`) from config via `llmAuthFromConfig()`.
-   */
-  openrouterApiKey?: string;
-  /**
-   * The user's Requesty key. Used only when there is no OpenRouter key and no
-   * custom endpoint: the request then goes to Requesty's OpenAI-compatible API.
-   */
-  requestyApiKey?: string;
-  /** Extra OpenRouter provider-routing preferences (config: openrouterProvider). */
-  provider?: OpenRouterProviderPrefs;
+export interface RunKimiOpts extends LlmAuth {
   model: string;
   messages: ChatMessage[];
   tools?: ToolDef[];
@@ -58,13 +46,6 @@ export interface RunKimiOpts {
   /** Once the first byte arrives, tighten the idle timeout to this value.
    *  Default 30000 — a live stream stalling mid-flight should surface fast. */
   postFirstByteIdleTimeoutMs?: number;
-  /**
-   * Custom OpenAI-compatible endpoint (see src/agent/custom-endpoint.ts).
-   * When set — or when KIMIFLARE_BASE_URL is in the environment — the request
-   * goes to `<baseUrl>/chat/completions` with `Authorization: Bearer <apiKey>`
-   * instead of OpenRouter. Model ids pass through in the body unchanged.
-   */
-  customEndpoint?: CustomEndpoint;
   /** Session trace recorder; `llm_request` / `llm_response` are emitted on it. No-op when absent or disabled. */
   trace?: TraceRecorder;
   /** Turn id stamped on the trace events of this request. */
@@ -177,7 +158,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     // tool calling, and a coding agent is useless there. Tool-calling quality
     // ordering (Auto Exacto) is applied by OpenRouter on top of this. Skipped
     // when the model's parameter list is unknown (we can't guarantee a match).
-    const provider = { ...(known ? { require_parameters: true } : {}), ...(opts.provider ?? {}) };
+    const provider = { ...(known ? { require_parameters: true } : {}), ...(opts.openrouterRouting ?? {}) };
     if (Object.keys(provider).length > 0) body.provider = provider;
     // Anthropic models only cache with explicit breakpoints; the top-level
     // directive makes OpenRouter place them automatically. Everyone else

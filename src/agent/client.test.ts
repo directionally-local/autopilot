@@ -138,7 +138,7 @@ describe("runKimi: OpenRouter request", () => {
     });
 
     it("merges configured provider prefs over require_parameters", async () => {
-      const { body } = await send({ model: LUNA.id, provider: { ignore: ["SlowCo"], quantizations: ["fp8"] } });
+      const { body } = await send({ model: LUNA.id, openrouterRouting: { ignore: ["SlowCo"], quantizations: ["fp8"] } });
       assert.deepStrictEqual(body.provider, { require_parameters: true, ignore: ["SlowCo"], quantizations: ["fp8"] });
     });
   });

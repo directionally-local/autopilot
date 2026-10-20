@@ -10,6 +10,7 @@ import type { SessionUsage, UsageLog } from "../usage-tracker.js";
 import { buildReport } from "./report.js";
 import { renderTerminal, renderJson } from "./renderer.js";
 import { reconcileWithOpenRouter } from "./reconcile.js";
+import { activeOpenRouterKey } from "../agent/llm-auth.js";
 import { classifyFromSessionFile } from "./classify-from-session.js";
 import type { TaskCategory } from "./types.js";
 
@@ -117,7 +118,7 @@ export async function runCostCommand(opts: CostCommandOptions): Promise<void> {
     : await reconcileWithOpenRouter({
         localCost,
         sessions,
-        apiKey: opts.config.openrouterApiKey,
+        apiKey: activeOpenRouterKey(opts.config),
       });
 
   const report = buildReport({

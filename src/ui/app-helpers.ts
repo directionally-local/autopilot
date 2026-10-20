@@ -12,7 +12,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ResponseMeta } from "../agent/client.js";
-import { resolveCustomEndpoint } from "../agent/custom-endpoint.js";
+import { activeOpenRouterKey } from "../agent/llm-auth.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { CostLookup } from "../usage-tracker.js";
 import type { Mode } from "../mode.js";
@@ -224,9 +224,9 @@ export function buildFilePickerIgnoreList(cwd: string): string[] {
  *  Undefined on a custom endpoint (the host's gateway meters) or without
  *  a generation id. */
 export function costLookupFromConfig(cfg: Cfg, meta: ResponseMeta | null | undefined): CostLookup | undefined {
-  if (!cfg.openrouterApiKey || !meta?.generationId) return undefined;
-  if (resolveCustomEndpoint(cfg)) return undefined;
-  return { apiKey: cfg.openrouterApiKey, meta };
+  const apiKey = activeOpenRouterKey(cfg);
+  if (!apiKey || !meta?.generationId) return undefined;
+  return { apiKey, meta };
 }
 
 // ── Process / OS helpers ─────────────────────────────────────────────────

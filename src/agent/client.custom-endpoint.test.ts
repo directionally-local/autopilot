@@ -70,7 +70,7 @@ describe("runKimi: custom OpenAI-compatible endpoint", () => {
   it("wins over a configured OpenRouter key and sends no OpenRouter-only fields", async () => {
     for await (const _ of runKimi({
       openrouterApiKey: "sk-or-should-not-leak",
-      provider: { ignore: ["X"] },
+      openrouterRouting: { ignore: ["X"] },
       sessionId: "sess-1",
       model: "anthropic/claude-haiku-4-5",
       messages: [{ role: "user", content: "hi" }],

@@ -14,7 +14,7 @@ import * as client from "./client.js";
 import { hasLlmAuth, llmAuthFromConfig, type LlmAuth } from "./llm-auth.js";
 import type { WorkerResultMessage, ChatMessage } from "./messages.js";
 import { detectRepoInfo, type RepoInfo } from "../util/repo-info.js";
-import { loadConfig, resolveWorkerBudgetUsd, type KimiConfig, DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
+import { loadConfig, resolveWorkerBudgetUsd, type KimiConfig, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
 import type { MemoryManager } from "../memory/manager.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { McpManager } from "../mcp/manager.js";
@@ -431,7 +431,8 @@ export class TurnSupervisor {
     const disableLlm = opts?.disableLlmSynthesis ?? false;
     const hasCreds = !!opts?.auth && hasLlmAuth(opts.auth);
 
-    const useHeuristic = !hasCreds || strategy === "heuristic" || disableLlm;
+    // No model means no provider default to use (custom gateways): skip the LLM.
+    const useHeuristic = !hasCreds || !opts?.model || strategy === "heuristic" || disableLlm;
     if (useHeuristic) {
       return this.synthesizeFindingsHeuristic(results);
     }
@@ -440,7 +441,7 @@ export class TurnSupervisor {
       const llmResult = await this.synthesizeFindingsLlm(results, {
         prompt: opts?.prompt,
         auth: opts.auth!,
-        model: opts?.model ?? DEFAULT_PLUMBING_MODEL,
+        model: opts!.model!,
         signal: opts?.signal,
         onDelta: opts?.onDelta,
       });
@@ -557,7 +558,7 @@ async function decomposeWithLlm(
   fileTree: string,
   cfg: KimiConfig,
 ): Promise<SpawnWorkerOpts[] | null> {
-  const model = cfg.decompositionModel ?? cfg.plumbingModel ?? DEFAULT_PLUMBING_MODEL;
+  const model = cfg.decompositionModel || plumbingModelOf(cfg);
   const auth = llmAuthFromConfig(cfg);
   if (!hasLlmAuth(auth)) {
     logger.warn("decompose:missing_creds", { reason: "no OpenRouter key or custom endpoint" });
