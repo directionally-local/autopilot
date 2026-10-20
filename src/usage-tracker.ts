@@ -605,8 +605,9 @@ export function formatGenerationsSection(recent: GenerationSnapshot[] = []): str
  * report per-request cost), free for local runtimes, or unknown for a custom
  * gateway whose models aren't in any catalog.
  */
-export function costNote(preset: Pick<ProviderPreset, "id" | "name" | "keyRequired" | "capabilities">): string | undefined {
+export function costNote(preset: Pick<ProviderPreset, "id" | "name" | "keyRequired" | "capabilities" | "subscription">): string | undefined {
   if (preset.capabilities.costConfirmation) return undefined;
+  if (preset.subscription) return `${preset.name} is billed by your plan (premium requests), not per token, so costs show as $0.`;
   if (preset.id === "custom") return "Custom endpoint: costs are estimated only for models found in a catalog; your gateway's own metering is authoritative.";
   if (!preset.keyRequired) return `${preset.name} runs locally: no per-token cost.`;
   return `Costs are estimates from ${preset.name}'s published prices (models.dev); ${preset.name} doesn't report per-request cost, so these are final.`;

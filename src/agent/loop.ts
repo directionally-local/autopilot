@@ -896,6 +896,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
             id: ev.id,
             type: "function",
             function: { name: normalizeToolName(ev.name, opts.tools), arguments: callArgs },
+            ...(ev.extra ? { extra_content: ev.extra } : {}),
           };
           toolCalls.push(call);
           tr.toolsUsed.push(call.function.name);
