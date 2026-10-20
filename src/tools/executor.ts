@@ -1,6 +1,7 @@
-import type { ToolSpec, ToolContext, ToolOutput, RunWaitRequest } from "./registry.js";
+import type { ToolSpec, ToolContext, ToolOutput, ToolOutputMeta, RunWaitRequest } from "./registry.js";
 import { wrapAsToolError, type ToolErrorCode } from "./tool-error.js";
 import type { HooksManager } from "../hooks/manager.js";
+import type { PostToolUsePayload } from "../hooks/types.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import { classifyVerification } from "../trace/verification.js";
 import { detectGitRevert } from "../trace/git-delta.js";
@@ -192,6 +193,10 @@ export interface PermissionRequest {
   tool: ToolSpec;
   args: Record<string, unknown>;
   sessionKey: string;
+  /** Set when a PreToolUse hook answered `permissionDecision: "ask"`: the
+   *  prompt is forced (even for tools that skip it) and this is the hook's
+   *  `permissionDecisionReason`, if it gave one. */
+  hookAskReason?: string;
 }
 
 export type PermissionAsker = (req: PermissionRequest) => Promise<PermissionDecision>;
@@ -257,6 +262,17 @@ export interface ToolResult {
  *  Linux, less on macOS) and to keep hooks fast. The full output is
  *  still available via the tool's artifact id if the user needs it. */
 const HOOK_RESULT_CONTENT_CAP_BYTES = 4 * 1024;
+
+/** bash's exit code and separate streams, for the PostToolUse payload. */
+function shellResultForHook(meta: ToolOutputMeta | undefined): Partial<PostToolUsePayload["result"]> {
+  if (!meta || meta.exitCode === undefined) return {};
+  return {
+    exitCode: meta.exitCode,
+    stdout: capContentForHook(meta.stdout ?? ""),
+    stderr: capContentForHook(meta.stderr ?? ""),
+    interrupted: meta.timedOut === true || meta.aborted === true,
+  };
+}
 
 function capContentForHook(s: string): string {
   if (Buffer.byteLength(s, "utf8") <= HOOK_RESULT_CONTENT_CAP_BYTES) return s;
@@ -380,11 +396,14 @@ export class ToolExecutor {
     }
     tr?.call(args, tool.needsPermission);
 
-    // M6.1: PreToolUse hook (veto-able). Fires here — after JSON-args
+    // M6.1: PreToolUse hook (blocking). Fires here — after JSON-args
     // parsing, BEFORE the permission check — so a hook can block a
     // call without the user being asked. Hooks live on the executor
     // so every caller (standard loop, code-mode sandbox, init, SDK,
-    // print mode) gets the same behavior automatically.
+    // print mode) gets the same behavior automatically. Exit 2 or a
+    // `deny` JSON decision blocks; a broken hook fails open (see runHooks).
+    let hookForcesAsk = false;
+    let hookAskReason: string | undefined;
     if (this.hooks?.hasEnabledHooks("PreToolUse")) {
       const preOutcome = await this.hooks.fire(
         "PreToolUse",
@@ -415,13 +434,27 @@ export class ToolExecutor {
         // ran, so "post" is meaningless. Documented behavior.
         return synthetic;
       }
+      // `ask`: route through the host's normal permission prompt even if
+      // the tool or the session cache would skip it. Non-interactive hosts
+      // answer as they do for any prompt (print mode denies unless
+      // --dangerously-allow-all). `allow` does NOT bypass the user's own
+      // permission rules or mode — it only means the hook raised no objection.
+      if (preOutcome.permissionDecision === "ask") {
+        hookForcesAsk = true;
+        hookAskReason = preOutcome.permissionDecisionReason;
+      }
     }
 
-    if (tool.needsPermission) {
+    if (tool.needsPermission || hookForcesAsk) {
       const sessionKey = this.permissionKey(tool, args);
-      if (!this.sessionAllowed.has(sessionKey)) {
+      if (hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
         const askedAt = performance.now();
-        const raw = await askPermission({ tool, args, sessionKey });
+        const raw = await askPermission({
+          tool,
+          args,
+          sessionKey,
+          ...(hookForcesAsk && hookAskReason ? { hookAskReason } : {}),
+        });
         const result = toPermissionResult(raw);
         tr?.permission(tracePermissionDecision(result), Math.round(performance.now() - askedAt), result.feedback);
         if (result.decision === "deny") {
@@ -491,7 +524,7 @@ export class ToolExecutor {
       if (isDiffCommand(cmd)) {
         const artifactId = this.artifactStore.store(normalized.content);
         const bytes = Buffer.byteLength(normalized.content, "utf8");
-        return {
+        const diffResult: ToolResult = {
           tool_call_id: call.id,
           name: call.name,
           content: normalized.content,
@@ -500,6 +533,8 @@ export class ToolExecutor {
           reducedBytes: bytes,
           artifactId,
         };
+        this.firePostToolUse(call, args, diffResult, ctx, normalized.meta);
+        return diffResult;
       }
 
       const reduced = reduceToolOutput(
@@ -519,7 +554,7 @@ export class ToolExecutor {
         artifactId: reduced.artifactId,
         ...(normalized.waitRequest ? { waitRequest: normalized.waitRequest } : {}),
       };
-      this.firePostToolUse(call, args, success, ctx);
+      this.firePostToolUse(call, args, success, ctx, normalized.meta);
       return success;
     } catch (e) {
       if (e instanceof RunToolBudgetExceededError) ctx.onRunBudgetExceeded?.(e.reason);
@@ -563,6 +598,7 @@ export class ToolExecutor {
     args: Record<string, unknown>,
     result: ToolResult,
     ctx: ToolContext,
+    meta?: ToolOutputMeta,
   ): void {
     if (!this.hooks?.hasEnabledHooks("PostToolUse")) return;
     void this.hooks
@@ -580,6 +616,7 @@ export class ToolExecutor {
             ok: result.ok,
             content: capContentForHook(result.content),
             errorCode: result.errorCode,
+            ...shellResultForHook(meta),
           },
         },
         call.name,

@@ -26,6 +26,7 @@
  */
 
 import type { LogEntry } from "./logger.js";
+import { BEACON_HARNESS_ATTR, HARNESS_NAME } from "./harness.js";
 
 const BATCH_MAX = 100;
 const FLUSH_INTERVAL_MS = 5_000;
@@ -108,7 +109,7 @@ export function initOtelSink(opts: {
   config = {
     endpoint: normalizeEndpoint(endpoint),
     headers: parseHeaders(opts.headers ?? process.env.KIMIFLARE_OTEL_HEADERS),
-    serviceName: opts.serviceName ?? "kimiflare",
+    serviceName: opts.serviceName ?? HARNESS_NAME,
     serviceVersion: opts.serviceVersion ?? process.env.npm_package_version ?? "0.0.0",
   };
   return true;
@@ -208,6 +209,20 @@ export async function flushOtelSink(): Promise<void> {
   return inFlightFlush;
 }
 
+/** Drain everything queued, including entries enqueued while a flush was
+ *  in flight (process shutdown). Bounded by the caller's own timeout. */
+export async function shutdownOtelSink(): Promise<void> {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  // A flush in flight leaves later entries queued; loop until both are empty.
+  for (let i = 0; i < 5 && (queue.length > 0 || inFlightFlush); i++) {
+    if (inFlightFlush) await inFlightFlush;
+    else await flushOtelSink();
+  }
+}
+
 // ── OTLP/HTTP JSON payload encoding ──────────────────────────────────────
 
 interface OtlpAttribute {
@@ -247,6 +262,7 @@ export function buildOtlpPayload(
   const resourceAttrs: OtlpAttribute[] = [
     attr("service.name", cfg.serviceName)!,
     attr("service.version", cfg.serviceVersion)!,
+    attr(BEACON_HARNESS_ATTR, HARNESS_NAME)!,
     ...(process.env.HOSTNAME ? [attr("host.name", process.env.HOSTNAME)!] : []),
   ];
 
@@ -275,7 +291,7 @@ export function buildOtlpPayload(
         resource: { attributes: resourceAttrs },
         scopeLogs: [
           {
-            scope: { name: "kimiflare", version: cfg.serviceVersion },
+            scope: { name: HARNESS_NAME, version: cfg.serviceVersion },
             logRecords,
           },
         ],

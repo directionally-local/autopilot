@@ -10,7 +10,9 @@ Set a server password and run the headless server under a service manager. For a
 KIMIFLARE_SERVER_PASSWORD='use-a-secret' autopilot serve
 ```
 
-The server defaults to listening on localhost. If you expose it beyond the machine, use TLS and protect it with the configured Basic Auth password.
+The server defaults to listening on localhost. It refuses to listen on any other address unless `KIMIFLARE_SERVER_PASSWORD` is set; if you expose it beyond the machine, also put TLS in front of it.
+
+Because the API can run tools on the machine, it refuses requests from web pages: a request carrying a browser `Origin` from another site gets 403, and on a localhost listener the `Host` header must be a localhost name (this blocks DNS rebinding). Clients such as curl, the SDK and editor plugins are unaffected. To let a specific web app call the API, list its origins in `KIMIFLARE_SERVER_CORS_ORIGINS` (comma-separated, e.g. `https://dash.example.com`).
 
 Create a task through the authenticated API. For work that does not need an isolated Git worktree, set `worktree` to false. Only tools in `allowedTools` are available to the run; `wait_for` is always added automatically.
 

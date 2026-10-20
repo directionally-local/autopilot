@@ -11,13 +11,14 @@
 
 /** The five lifecycle events a hook can subscribe to. */
 export type HookEvent =
-  /** A tool call is about to run. Veto-able (non-zero exit cancels the
-   *  call and surfaces the hook's stdout as the rejection reason). */
+  /** A tool call is about to run. Blocking: exit 2 (reason on stderr) or a
+   *  `permissionDecision: "deny"` JSON on stdout cancels the call; other
+   *  failures (non-zero exit, timeout, missing command) log and allow. */
   | "PreToolUse"
   /** A tool call just finished. Informational; exit code ignored. */
   | "PostToolUse"
-  /** The user submitted a prompt. Veto-able (non-zero exit cancels the
-   *  turn and surfaces the hook's stdout as feedback). */
+  /** The user submitted a prompt. Blocking, same rules as PreToolUse
+   *  (exit 2 or `decision: "block"` cancels the turn). */
   | "UserPromptSubmit"
   /** A turn ended cleanly. Informational; common use is notification
    *  (terminal bell, desktop notification). */
@@ -54,8 +55,8 @@ export interface HookConfig {
    *  stdin and as `KIMIFLARE_HOOK_*` environment variables. */
   command: string;
   /** Per-hook timeout in milliseconds. Default 30 000. Hung hooks are
-   *  killed; for a `PreToolUse` hook this counts as a non-zero exit
-   *  (i.e. veto), for the others it's logged as a warning. */
+   *  killed and logged as a warning; the action proceeds (fail-open),
+   *  including for `PreToolUse`. */
   timeoutMs?: number;
   /** Bundled "recommended" hooks ship with `enabled: false` so the
    *  user opts in via `/hooks enable <id>`. User-written hooks default
@@ -78,7 +79,8 @@ export interface KimiflareSettings {
 
 // ── Per-event payload shapes ─────────────────────────────────────────────
 // Sent to the hook on stdin as JSON, also exposed as KIMIFLARE_HOOK_*
-// env vars (a few fields per event, for shell-one-liner ergonomics).
+// env vars (a few fields per event, for shell-one-liner ergonomics; the
+// full KIMIFLARE_HOOK_PAYLOAD copy only for payloads up to 32 KiB).
 
 export interface BaseHookPayload {
   event: HookEvent;
@@ -113,6 +115,13 @@ export interface PostToolUsePayload extends BaseHookPayload {
     ok: boolean;
     content: string;
     errorCode?: string;
+    /** bash only: the command's exit code (null when killed). */
+    exitCode?: number | null;
+    /** bash only: stdout and stderr, separately (capped like `content`). */
+    stdout?: string;
+    stderr?: string;
+    /** bash only: the command was killed by its timeout or an abort. */
+    interrupted?: boolean;
   };
 }
 
@@ -124,6 +133,8 @@ export interface UserPromptSubmitPayload extends BaseHookPayload {
 
 export interface StopPayload extends BaseHookPayload {
   event: "Stop";
+  /** The text of the turn's final assistant reply, when it ended on one. */
+  last_assistant_message?: string;
 }
 
 export interface PreCompactPayload extends BaseHookPayload {
@@ -166,15 +177,24 @@ export interface HookOutcome {
   timedOut: boolean;
   /** Wall-clock duration in ms. */
   durationMs: number;
+  /** JSON decision parsed from stdout (exit 0 only), if any. */
+  decision?: "allow" | "deny" | "ask";
+  /** `permissionDecisionReason` / `reason` from that JSON. */
+  decisionReason?: string;
 }
 
 /** Aggregated outcome of all hooks fired for one event. */
 export interface HookEventOutcome {
   outcomes: HookOutcome[];
-  /** True if at least one veto-able hook exited non-zero. Only
-   *  meaningful for `PreToolUse` and `UserPromptSubmit`. */
+  /** True if a hook blocked the action: exit 2, or a deny/block JSON
+   *  decision. Only meaningful for `PreToolUse` and `UserPromptSubmit`. */
   vetoed: boolean;
-  /** Concatenated stdout from vetoing hooks — used as the user-facing
-   *  rejection reason. */
+  /** Why it was blocked (exit 2: stderr, else stdout; JSON: the decision
+   *  reason) — shown to the model / user. */
   vetoReason: string;
+  /** Combined JSON decision across hooks (deny > ask > allow). Absent when
+   *  no hook printed one. `ask` means: run the normal permission prompt
+   *  even if the tool or session would otherwise skip it. */
+  permissionDecision?: "allow" | "deny" | "ask";
+  permissionDecisionReason?: string;
 }

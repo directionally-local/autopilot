@@ -31,6 +31,8 @@ import { buildSystemPrompt } from "./agent/system-prompt.js";
 import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
 import type { ChatMessage } from "./agent/messages.js";
 import { KimiApiError, humanizeApiError } from "./util/errors.js";
+import { endSessions } from "./hooks/session-lifecycle.js";
+import { makeSessionId } from "./sessions.js";
 import type { KimiConfig, ReasoningEffort } from "./config.js";
 
 export interface EmitModeOpts
@@ -181,7 +183,12 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
   }
 
   const cwd = process.cwd();
-  const executor = new ToolExecutor(ALL_TOOLS);
+  // The same hooks as print mode and the TUI, under one session id so
+  // SessionStart/SessionEnd bracket the run (#877).
+  const { HooksManager } = await import("./hooks/manager.js");
+  const hooks = new HooksManager(cwd);
+  const sessionId = makeSessionId(opts.prompt);
+  const executor = new ToolExecutor(ALL_TOOLS, { hooks });
   const messages: ChatMessage[] = [
     {
       role: "system",
@@ -219,6 +226,8 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
         messages,
         executor,
         cwd,
+        sessionId,
+        hooks,
         signal: controller.signal,
         codeMode: opts.codeMode,
         continueOnLimit: opts.continueOnLimit,
@@ -411,6 +420,7 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
     const finalSecs = Math.floor((Date.now() - sessionStartMs) / 1000);
     emit("StatusUpdate", { segments: { phase: "idle", elapsed: formatElapsed(finalSecs) } });
     process.off("SIGINT", sigintHandler);
+    await endSessions("exit");
     emit("SessionEnded", {});
     console.log = origLog;
     if (exitCode !== 0) process.exitCode = exitCode;

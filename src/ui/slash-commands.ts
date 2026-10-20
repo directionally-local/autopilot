@@ -12,7 +12,7 @@ import { workerRegistry } from "../tools/worker-registry.js";
 import { formatSubagentStats, readSubagentStats } from "../tools/subagent-stats.js";
 import { join } from "node:path";
 import { unlink } from "node:fs/promises";
-import QRCode from "qrcode";
+import { renderTerminalQr } from "./terminal-qr.js";
 
 import type { Cfg } from "../app.js";
 import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
@@ -1547,7 +1547,16 @@ const handleHooks: Handler = (ctx, rest, arg) => {
         ]);
         return true;
       }
-      const path = appendHook(scope, cwd, rec.event, { ...rec.hook, enabled: true });
+      let path: string;
+      try {
+        path = appendHook(scope, cwd, rec.event, { ...rec.hook, enabled: true });
+      } catch (e) {
+        setEvents((ev) => [
+          ...ev,
+          { kind: "error", key: mkKey(), text: `could not enable ${rec.id}: ${(e as Error).message}` },
+        ]);
+        return true;
+      }
       ctx.hooksManagerRef.current.reload();
       setEvents((e) => [
         ...e,
@@ -1589,8 +1598,7 @@ const handleHello: Handler = (ctx) => {
   openBrowser(url);
   void (async () => {
     try {
-      const qr = await QRCode.toString(url, { type: "terminal", small: true });
-      const lines = qr.split("\n").map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+      const lines = renderTerminalQr(url);
       setEvents((e) => [
         ...e,
         {

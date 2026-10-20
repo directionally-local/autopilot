@@ -3,6 +3,7 @@ import type { Readable, Writable } from "node:stream";
 import { createAgentSession } from "./session.js";
 import type { KimiFlareSession, SessionEvent, PermissionDecision } from "./types.js";
 import { logger } from "../util/logger.js";
+import { endSessions } from "../hooks/session-lifecycle.js";
 
 interface RpcCommand {
   id?: string;
@@ -213,6 +214,8 @@ export async function startRpcServer(
           // any in-flight or queued prompt settles promptly; flush those
           // responses before acknowledging and exiting.
           await promptChain;
+          // dispose() fires SessionEnd without waiting; finish it before acknowledging (#877).
+          await endSessions("exit");
           send({ id: cmd.id, type: "ok" });
           rl.close();
           return;
@@ -231,4 +234,6 @@ export async function startRpcServer(
   // stdin ended without an explicit dispose — let any in-flight prompt
   // finish so its response is not dropped.
   await promptChain;
+  // The client went away: its session is over (#877).
+  await endSessions("exit");
 }

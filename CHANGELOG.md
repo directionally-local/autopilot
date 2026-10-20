@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.29.0](https://github.com/sinameraji/autopilot/compare/v1.28.0...v1.29.0) (2026-10-20)
+
+
+### Features
+
+* **hooks:** Beacon-compatible tool names, result shapes, Stop reply and OTel harness name ([#881](https://github.com/sinameraji/autopilot/issues/881)) ([dfdd4e7](https://github.com/sinameraji/autopilot/commit/dfdd4e78daba27ab668fa1e23c08a1406b99e39e))
+
+
+### Bug Fixes
+
+* **hooks:** fail open on hook errors, honour JSON decisions, send payload on stdin ([#880](https://github.com/sinameraji/autopilot/issues/880)) ([29ad789](https://github.com/sinameraji/autopilot/commit/29ad789b916669e6aa0cb6fd2eb37a9d54a0ea15))
+* **hooks:** fire SessionEnd and flush OTel on every exit path ([#883](https://github.com/sinameraji/autopilot/issues/883)) ([c8cf36a](https://github.com/sinameraji/autopilot/commit/c8cf36ad1ac2e373364a57aaaaeb660d5f524bb0))
+* **server:** refuse cross-origin and DNS-rebinding requests to the local API ([#878](https://github.com/sinameraji/autopilot/issues/878)) ([89e97c5](https://github.com/sinameraji/autopilot/commit/89e97c5956ba4e5e0cb9472f2a77c0ee2ddc6d83))
+
 ## [1.28.0](https://github.com/sinameraji/autopilot/compare/v1.27.1...v1.28.0) (2026-10-20)
 
 

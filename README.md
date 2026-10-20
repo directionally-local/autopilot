@@ -19,6 +19,10 @@
   OpenRouter (400+ models, per-turn billed cost), OpenAI, DeepSeek, Kimi, Z.ai, local Ollama / LM Studio, or any OpenAI-compatible endpoint.
 </p>
 
+<p align="center">
+  Part of <a href="https://directionallylocal.com">Directionally Local</a>, an open-source stack for running coding agents on your own hardware, alongside <a href="https://directionallylocal.com/hotcell/">Hotcell</a> and <a href="https://directionallylocal.com/serverless-objects/">Serverless Objects</a>. Product page: <a href="https://directionallylocal.com/autopilot/">directionallylocal.com/autopilot</a>.
+</p>
+
 ## How it works
 
 autopilot sends every model call to **the provider you choose** using **your own key** — bring-your-own-key, nothing proxied, nothing marked up. On first run you pick a provider, connect it once (the key is checked before it's saved) and pick a model. That's the whole setup. [OpenRouter](https://openrouter.ai) is the recommended default; see [Providers](#providers) for the rest.
@@ -483,13 +487,44 @@ per-project (`.kimiflare/settings.json`) or globally
 | `SessionEnd`       | autopilot exits, or `/clear` (`reason`)         | No    |
 
 Hooks receive the event payload as JSON on stdin **and** as
-`KIMIFLARE_HOOK_*` env vars (for shell-one-liner ergonomics). Payloads
+`KIMIFLARE_HOOK_*` env vars (for shell-one-liner ergonomics). The full
+JSON copy in `KIMIFLARE_HOOK_PAYLOAD` is only set for payloads up to
+32 KiB (OSes cap environment variable size); above that it is omitted,
+`KIMIFLARE_HOOK_PAYLOAD_OMITTED=1` is set, and stdin is the only source —
+prefer reading stdin. Payloads
 also carry Claude Code's field names (`hook_event_name`, `tool_name`,
 `tool_input`, `tool_response`, `tool_call_id`, `transcript_path`), so
 Claude Code hook scripts — and tools built for them, like
 [Agent Beacon](docs/beacon.md) — work unchanged.
-Non-zero exit on a veto event cancels the underlying action and
-surfaces the hook's stdout as the rejection reason.
+#### Blocking and exit codes
+
+Veto events (`PreToolUse`, `UserPromptSubmit`) follow Claude Code's rules:
+
+| Hook result | Effect |
+|-------------|--------|
+| exit `0` | Allowed. Stdout may carry a JSON decision (below). |
+| exit `2` | **Blocked.** Stderr (or stdout if stderr is empty) is the reason shown to the model. |
+| any other non-zero exit, timeout, command not found (127), spawn error | Logged as a warning; the action is **allowed** (fail-open), so a broken or missing hook never wedges every tool call. |
+
+A `PreToolUse` hook that exits `0` can instead print a JSON decision:
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PreToolUse",
+  "permissionDecision": "deny", "permissionDecisionReason": "no writes to prod config" } }
+```
+
+- `deny` blocks, with `permissionDecisionReason` as the reason.
+- `ask` sends the call through the normal permission prompt, even for
+  tools that don't usually ask. Hosts with no one to ask answer as they
+  already do (`--print` denies unless `--dangerously-allow-all`).
+- `allow` means the hook doesn't object; it does **not** bypass your own
+  permission rules or mode.
+
+With several hooks, `deny` wins over `ask`, which wins over `allow`.
+The legacy `{"decision": "block", "reason": "..."}` form also blocks
+(use it for `UserPromptSubmit`). Stdout that isn't JSON is ignored, as
+before. Hooks written for older versions that blocked with `exit 1`
+must switch to `exit 2`.
 
 ### Browse + enable from the TUI
 
@@ -517,7 +552,7 @@ audit log. All ship disabled — `/hooks recommended` lists them.
       {
         "id": "no-secrets",
         "matcher": "^(edit|write)$",
-        "command": "case \"$KIMIFLARE_HOOK_PATH\" in *.env|*.pem) echo 'blocked'; exit 1;; esac"
+        "command": "case \"$KIMIFLARE_HOOK_PATH\" in *.env|*.pem) echo 'blocked' >&2; exit 2;; esac"
       }
     ],
     "PostToolUse": [
@@ -542,7 +577,8 @@ Per-hook fields:
   Auto-derived from `event + command` when omitted.
 - `enabled` (default `true`) — set `false` to keep a hook in config
   but skip it.
-- `timeoutMs` (default `30000`) — hard kill if the hook hangs.
+- `timeoutMs` (default `30000`) — hard kill if the hook hangs (the
+  action then proceeds, with a warning).
 - `description` (optional) — shown by `/hooks list`.
 
 Hooks are always-on infrastructure: they fire whether the TUI is open

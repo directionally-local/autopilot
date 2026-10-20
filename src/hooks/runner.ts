@@ -12,28 +12,96 @@ import type {
 import { logger } from "../util/logger.js";
 import { join } from "node:path";
 import { sessionsDir } from "../sessions.js";
+import { claudeToolFields } from "./claude-compat.js";
+import { BEACON_HARNESS_ATTR, HARNESS_NAME } from "../util/harness.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const STREAM_CAP_BYTES = 4 * 1024;
+/** Raw stdout kept for JSON-decision parsing (before the 4 KB display cap). */
+const DECISION_STDOUT_CAP_BYTES = 64 * 1024;
 
-/** Events whose non-zero exit cancels the underlying action. */
+/**
+ * Largest payload copied into `KIMIFLARE_HOOK_PAYLOAD`. Linux rejects any
+ * single env var over 128 KiB (MAX_ARG_STRLEN) with E2BIG, and every OS caps
+ * the env + argv total, so a big `write` used to make the spawn fail. Above
+ * this the env copy is omitted (`KIMIFLARE_HOOK_PAYLOAD_OMITTED=1`) and the
+ * hook reads the payload from stdin, which has no size limit.
+ */
+export const HOOK_ENV_PAYLOAD_MAX_BYTES = 32 * 1024;
+
+/** Exit code that blocks a blocking event (Claude Code semantics). */
+export const HOOK_BLOCK_EXIT_CODE = 2;
+
+/** Events a hook can block (exit 2, or a deny/block JSON decision). */
 function isVetoEvent(event: HookEvent): boolean {
   return event === "PreToolUse" || event === "UserPromptSubmit";
 }
 
+export type HookPermissionDecision = "allow" | "deny" | "ask";
+
+export interface ParsedHookDecision {
+  decision: HookPermissionDecision;
+  reason?: string;
+}
+
+/**
+ * Read a Claude Code-style JSON decision from a hook's stdout:
+ *   { "hookSpecificOutput": { "permissionDecision": "allow"|"deny"|"ask",
+ *                             "permissionDecisionReason": "..." } }
+ * plus the older top-level `{ "decision": "block"|"approve", "reason" }`
+ * form (still what Claude Code's UserPromptSubmit hooks print). Returns
+ * null for anything else, including non-JSON stdout, so plain-text hooks
+ * keep their old behaviour.
+ */
+export function parseHookDecision(stdout: string): ParsedHookDecision | null {
+  const text = stdout.trim();
+  if (!text.startsWith("{")) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const specific = obj.hookSpecificOutput;
+  if (specific && typeof specific === "object" && !Array.isArray(specific)) {
+    const s = specific as Record<string, unknown>;
+    const d = s.permissionDecision;
+    if (d === "allow" || d === "deny" || d === "ask") {
+      const reason = typeof s.permissionDecisionReason === "string" ? s.permissionDecisionReason : undefined;
+      return { decision: d, ...(reason ? { reason } : {}) };
+    }
+  }
+  const legacy = obj.decision;
+  const reason = typeof obj.reason === "string" ? obj.reason : undefined;
+  if (legacy === "block" || legacy === "deny") return { decision: "deny", ...(reason ? { reason } : {}) };
+  if (legacy === "approve" || legacy === "allow") return { decision: "allow", ...(reason ? { reason } : {}) };
+  if (legacy === "ask") return { decision: "ask", ...(reason ? { reason } : {}) };
+  return null;
+}
+
 /**
  * Extract a few convenient fields from the payload to expose as
- * `KIMIFLARE_HOOK_*` env vars. The full payload is also on stdin
- * (and in `KIMIFLARE_HOOK_PAYLOAD`), but env vars are friendlier in
- * shell one-liners like:
- *   `case "$KIMIFLARE_HOOK_PATH" in *.env) exit 1 ;; esac`
+ * `KIMIFLARE_HOOK_*` env vars. The full payload is always on stdin;
+ * `KIMIFLARE_HOOK_PAYLOAD` carries a copy only when it is at most
+ * HOOK_ENV_PAYLOAD_MAX_BYTES. Env vars are friendlier in shell
+ * one-liners like:
+ *   `case "$KIMIFLARE_HOOK_PATH" in *.env) echo no >&2; exit 2 ;; esac`
  */
-function buildHookEnv(payload: HookPayload): Record<string, string> {
+export function buildHookEnv(payload: HookPayload, payloadJson?: string): Record<string, string> {
+  const json = payloadJson ?? JSON.stringify(hookWirePayload(payload));
   const env: Record<string, string> = {
     KIMIFLARE_HOOK_EVENT: payload.event,
     KIMIFLARE_HOOK_CWD: payload.cwd,
-    KIMIFLARE_HOOK_PAYLOAD: JSON.stringify(hookWirePayload(payload)),
   };
+  const bytes = Buffer.byteLength(json, "utf8");
+  if (bytes <= HOOK_ENV_PAYLOAD_MAX_BYTES) {
+    env.KIMIFLARE_HOOK_PAYLOAD = json;
+  } else {
+    env.KIMIFLARE_HOOK_PAYLOAD_OMITTED = "1";
+    env.KIMIFLARE_HOOK_PAYLOAD_BYTES = String(bytes);
+  }
   if (payload.session_id) env.KIMIFLARE_HOOK_SESSION_ID = payload.session_id;
   if (payload.event === "PreToolUse" || payload.event === "PostToolUse") {
     const p = payload as PreToolUsePayload | PostToolUsePayload;
@@ -64,13 +132,15 @@ function buildHookEnv(payload: HookPayload): Record<string, string> {
  * ever part of a payload.
  */
 export function hookWirePayload(payload: HookPayload): Record<string, unknown> {
-  const wire: Record<string, unknown> = { ...payload, hook_event_name: payload.event, client: "autopilot" };
+  const wire: Record<string, unknown> = {
+    ...payload,
+    hook_event_name: payload.event,
+    client: HARNESS_NAME,
+    [BEACON_HARNESS_ATTR]: HARNESS_NAME,
+  };
   if (payload.session_id) wire.transcript_path = join(sessionsDir(), `${payload.session_id}.json`);
-  if (payload.event === "PreToolUse" || payload.event === "PostToolUse") {
-    wire.tool_name = payload.tool;
-    wire.tool_input = payload.args;
-    if (payload.event === "PostToolUse") wire.tool_response = payload.result;
-  }
+  // Claude Code's tool names and shapes (tool_name, tool_input, tool_response, error): see claude-compat.ts.
+  if (payload.event === "PreToolUse" || payload.event === "PostToolUse") Object.assign(wire, claudeToolFields(payload));
   return wire;
 }
 
@@ -139,8 +209,15 @@ const defaultSpawn: SpawnHookImpl = (command, payloadJson, env, cwd, timeoutMs, 
     child.stderr.on("data", (d: string) => {
       stderr += d;
     });
-    child.on("error", () => finish(null));
+    child.on("error", (err) => {
+      stderr += `${stderr ? "\n" : ""}spawn failed: ${err.message}`;
+      finish(null);
+    });
     child.on("exit", (code) => finish(code));
+    // A hook that exits without reading stdin closes the pipe; writing a
+    // large payload then raises EPIPE on the stream. Swallow it: the exit
+    // code is what matters.
+    child.stdin.on("error", () => {});
     try {
       child.stdin.end(payloadJson);
     } catch {
@@ -163,8 +240,8 @@ export async function runHook(
 ): Promise<HookOutcome> {
   const start = Date.now();
   const timeoutMs = hook.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const env = { ...process.env, ...buildHookEnv(payload) };
   const json = JSON.stringify(hookWirePayload(payload));
+  const env = { ...process.env, ...buildHookEnv(payload, json) };
   const id = hook.id ?? "anonymous";
   let result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
   try {
@@ -179,10 +256,16 @@ export async function runHook(
       durationMs: Date.now() - start,
     };
   }
+  const rawStdout = result.stdout.trim();
+  const decision =
+    result.exitCode === 0 && Buffer.byteLength(rawStdout, "utf8") <= DECISION_STDOUT_CAP_BYTES
+      ? parseHookDecision(rawStdout)
+      : null;
   return {
     id,
     exitCode: result.exitCode,
-    stdout: capStream(result.stdout.trim()),
+    ...(decision ? { decision: decision.decision, ...(decision.reason ? { decisionReason: decision.reason } : {}) } : {}),
+    stdout: capStream(rawStdout),
     stderr: capStream(result.stderr.trim()),
     timedOut: result.timedOut,
     durationMs: Date.now() - start,
@@ -212,7 +295,19 @@ export function filterHooks(
 /**
  * Fire every matching hook for an event, in order. Sequential rather
  * than parallel so users can reason about ordering — and so the first
- * vetoing hook short-circuits the rest for veto-able events.
+ * blocking hook short-circuits the rest for blocking events.
+ *
+ * Blocking semantics (PreToolUse, UserPromptSubmit), as in Claude Code:
+ *   - exit 2 blocks; stderr (else stdout) is the reason given to the model.
+ *   - exit 0 with a JSON decision on stdout: `deny` (or legacy
+ *     `decision: "block"`) blocks with `permissionDecisionReason`; `ask`
+ *     forces the normal permission prompt; `allow` lets the call proceed.
+ *     Precedence across hooks: deny > ask > allow.
+ *   - exit 0 with anything else on stdout: allow.
+ *   - any other exit code, a timeout, or a spawn failure (e.g. 127,
+ *     command not found) logs a warning and ALLOWS — a broken hook must not
+ *     wedge every tool call.
+ *   - an aborted turn (signal) blocks, since the caller is giving up anyway.
  */
 export async function runHooks(
   event: HookEvent,
@@ -224,33 +319,71 @@ export async function runHooks(
   const matched = filterHooks(hooks, toolName);
   const outcomes: HookOutcome[] = [];
   const veto = isVetoEvent(event);
-  const vetoReasons: string[] = [];
   let vetoed = false;
+  let vetoReason = "";
+  let permissionDecision: HookPermissionDecision | undefined;
+  let permissionDecisionReason: string | undefined;
   for (const hook of matched) {
     const outcome = await runHook(hook, payload, signal);
     outcomes.push(outcome);
+    if (veto && signal?.aborted) {
+      vetoed = true;
+      vetoReason = `hook ${outcome.id} interrupted: the turn was aborted`;
+      break;
+    }
     if (outcome.timedOut) {
       logger.warn("hook:timeout", {
         event,
         id: outcome.id,
         timeoutMs: hook.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ...(veto ? { failOpen: true } : {}),
       });
-    } else if (outcome.exitCode !== 0 && outcome.exitCode !== null) {
-      logger.info("hook:nonzero_exit", {
+      continue;
+    }
+    if (outcome.exitCode === null) {
+      logger.warn("hook:spawn_failed", { event, id: outcome.id, error: outcome.stderr, ...(veto ? { failOpen: true } : {}) });
+      continue;
+    }
+    if (veto && outcome.exitCode === HOOK_BLOCK_EXIT_CODE) {
+      vetoed = true;
+      vetoReason = outcome.stderr || outcome.stdout || `hook ${outcome.id} exited ${HOOK_BLOCK_EXIT_CODE}`;
+      // First block wins: don't run e.g. a slow type-check after a fast deny.
+      break;
+    }
+    if (outcome.exitCode !== 0) {
+      (veto ? logger.warn : logger.info)("hook:nonzero_exit", {
         event,
         id: outcome.id,
         exitCode: outcome.exitCode,
+        ...(outcome.stderr ? { stderr: outcome.stderr.slice(0, 500) } : {}),
+        // Only exit 2 blocks; anything else is a hook failure, not a decision.
+        ...(veto ? { failOpen: true } : {}),
       });
+      continue;
     }
-    if (veto && (outcome.exitCode !== 0 || outcome.timedOut)) {
+    if (!veto || !outcome.decision) continue;
+    if (outcome.decision === "deny") {
       vetoed = true;
-      const reason = outcome.stdout || outcome.stderr || `hook ${outcome.id} exited ${outcome.exitCode}`;
-      vetoReasons.push(reason);
-      // Stop firing further hooks once vetoed — preserves the "first
-      // veto wins" semantic and avoids running e.g. a slow type-check
-      // after a fast permission deny.
+      vetoReason = outcome.decisionReason || outcome.stderr || `hook ${outcome.id} denied the call`;
+      permissionDecision = "deny";
+      permissionDecisionReason = outcome.decisionReason;
       break;
     }
+    if (outcome.decision === "ask") {
+      if (permissionDecision !== "ask") {
+        permissionDecision = "ask";
+        permissionDecisionReason = outcome.decisionReason;
+      }
+    } else if (!permissionDecision) {
+      permissionDecision = "allow";
+      permissionDecisionReason = outcome.decisionReason;
+    }
   }
-  return { outcomes, vetoed, vetoReason: vetoReasons.join("\n") };
+  return {
+    outcomes,
+    vetoed,
+    vetoReason,
+    ...(permissionDecision ? { permissionDecision } : {}),
+    ...(permissionDecisionReason ? { permissionDecisionReason } : {}),
+  };
 }

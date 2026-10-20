@@ -65,7 +65,7 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
       ]
     : []),
 
-  // ── PreToolUse guards (veto-able) ────────────────────────────────────
+  // ── PreToolUse guards (blocking: exit 2, reason on stderr) ───────────
   {
     id: "block-env-file-writes",
     event: "PreToolUse",
@@ -74,7 +74,7 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
       matcher: "^(edit|write)$",
       command:
         'case "$KIMIFLARE_HOOK_PATH" in *.env|.env.*|*secrets*|*.pem|*.key) ' +
-        'echo "blocked: paths matching .env / secrets / *.pem are off-limits"; exit 1;; esac',
+        'echo "blocked: paths matching .env / secrets / *.pem are off-limits" >&2; exit 2;; esac',
       enabled: false,
       description:
         "Block edit/write to .env, secrets, *.pem, and *.key files. Vetoes the call; the model sees the rejection reason.",
@@ -88,7 +88,7 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
       matcher: "^(edit|write)$",
       command:
         'case "$KIMIFLARE_HOOK_PATH" in *.git/*|.git/*) ' +
-        'echo "blocked: cannot edit files inside .git/"; exit 1;; esac',
+        'echo "blocked: cannot edit files inside .git/" >&2; exit 2;; esac',
       enabled: false,
       description:
         "Block edit/write to anything inside .git/. Use a real git command instead.",
@@ -135,6 +135,24 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
     },
   },
 ];
+
+/**
+ * Commands that earlier releases wrote for the recommended PreToolUse
+ * guards. They blocked with `exit 1`, which now fails open, so the loader
+ * swaps them for the current `exit 2` command when it finds one verbatim
+ * in a settings file. Keyed by the old command string.
+ */
+export const LEGACY_RECOMMENDED_COMMANDS: ReadonlyMap<string, string> = new Map([
+  [
+    'case "$KIMIFLARE_HOOK_PATH" in *.env|.env.*|*secrets*|*.pem|*.key) ' +
+      'echo "blocked: paths matching .env / secrets / *.pem are off-limits"; exit 1;; esac',
+    getRecommendedHook("block-env-file-writes")!.hook.command,
+  ],
+  [
+    'case "$KIMIFLARE_HOOK_PATH" in *.git/*|.git/*) ' + 'echo "blocked: cannot edit files inside .git/"; exit 1;; esac',
+    getRecommendedHook("block-git-internals")!.hook.command,
+  ],
+]);
 
 /** Look up a recommended hook by id. */
 export function getRecommendedHook(id: string): RecommendedHook | undefined {

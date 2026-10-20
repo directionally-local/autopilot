@@ -287,6 +287,31 @@ function codeModeRedirectMessage(tool: string): string {
   );
 }
 
+/**
+ * The turn's final assistant reply, for the Stop hook's
+ * `last_assistant_message` (Claude Code's field). Looks back no further
+ * than the turn's user message, so a turn that ended on a tool call never
+ * reports an earlier turn's answer.
+ */
+export function lastAssistantMessage(messages: readonly ChatMessage[]): { last_assistant_message?: string } {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === "user") break;
+    if (m.role !== "assistant") continue;
+    const text =
+      typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content
+              .filter((p): p is { type: "text"; text: string } => p.type === "text")
+              .map((p) => p.text)
+              .join("\n")
+          : "";
+    if (text.trim()) return { last_assistant_message: text };
+  }
+  return {};
+}
+
 function extractLastUserText(messages: ChatMessage[]): string {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (!lastUser) return "";
@@ -453,7 +478,12 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     try {
       await opts.hooks.fire(
         "Stop",
-        { event: "Stop", session_id: opts.sessionId ?? null, cwd: opts.cwd },
+        {
+          event: "Stop",
+          session_id: opts.sessionId ?? null,
+          cwd: opts.cwd,
+          ...lastAssistantMessage(opts.messages),
+        },
         null,
       );
     } catch {

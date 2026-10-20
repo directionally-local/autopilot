@@ -25,6 +25,7 @@ import type { Cfg } from "./app.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { CustomCommand, CommandSource } from "./commands/types.js";
 import { loadConfig, type ReasoningEffort } from "./config.js";
+import { gracefulExit, onShutdown } from "./util/exit.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { resolveProviderKey } from "./providers/resolve.js";
 import {
@@ -248,6 +249,8 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     await Promise.race([cam.close().catch(() => undefined), new Promise((r) => setTimeout(r, 1000).unref())]);
     restoreConsole();
   };
+  // A signal or crash mid-session: give the terminal back before exiting (#877).
+  const unregisterShutdown = onShutdown("camouflage-renderer", finish);
   let crashed: { code: number | null; signal: string | null } | null = null;
   cam.on("exit", (info?: { code: number | null; signal: NodeJS.Signals | null }) => {
     if (closing) return;
@@ -257,7 +260,7 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
       // The user quit the renderer (Ctrl+C twice): end the App too.
       void finish().then(() => {
         if (view.actions) view.actions.exit();
-        else process.exit(0);
+        else void gracefulExit(0);
       });
       return;
     }
@@ -286,6 +289,7 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
   try {
     await Promise.race([opts.runApp(view), beforeApp]);
   } finally {
+    unregisterShutdown();
     await finish();
   }
   if (crashed) {
@@ -1027,7 +1031,13 @@ class View implements AppBridge {
       } else {
         const rec = RECOMMENDED_HOOKS.find((x) => x.id === id);
         if (!rec) continue;
-        const path = appendHook("project", cwd, rec.event, { ...rec.hook, enabled: true });
+        let path: string;
+        try {
+          path = appendHook("project", cwd, rec.event, { ...rec.hook, enabled: true });
+        } catch (e) {
+          this.cam.send("RuntimeError", { message: `could not enable ${rec.id}: ${(e as Error).message}`, severity: "error" });
+          continue;
+        }
         refresh();
         cursor = `cfg:${id}`;
         say(`enabled ${rec.id} (${rec.event}) → ${path}`);

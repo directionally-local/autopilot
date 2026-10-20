@@ -6,6 +6,8 @@ import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { endSessions } from "../hooks/session-lifecycle.js";
+import { HooksManager } from "../hooks/manager.js";
+import { SHUTDOWN_TIMEOUT_MS } from "../util/exit.js";
 import { listModels } from "../models/registry.js";
 import { JobManager } from "../jobs/manager.js";
 import { hostname } from "node:os";
@@ -64,6 +66,8 @@ interface ActiveSession {
   sessionFile: SessionFile;
   messages: ChatMessage[];
   executor: ToolExecutor;
+  /** Lifecycle hooks (SessionStart/SessionEnd, Stop) for interactive sessions. */
+  hooks?: HooksManager;
   sseClients: Set<SseClient>;
   runId?: string;
   allowedTools?: Set<string>;
@@ -774,7 +778,10 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
           title,
         };
 
-        const executor = new ToolExecutor(ALL_TOOLS);
+        // The same hooks as print mode and the TUI, so SessionStart/SessionEnd
+        // (and tool hooks) see server sessions too (#877).
+        const hooks = new HooksManager(cwd);
+        const executor = new ToolExecutor(ALL_TOOLS, { hooks });
         const messages: ChatMessage[] = [
           {
             role: "system",
@@ -793,6 +800,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
           sessionFile,
           messages,
           executor,
+          hooks,
           sseClients: new Set(),
           trace,
           nextTurnId: firstTurnId,
@@ -857,8 +865,11 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
     }
   }
 
-  function cleanup(): void {
-    void endSessions("exit");
+  let cleaned: Promise<void> | null = null;
+  /** Stop everything; resolves once open sessions have ended (SessionEnd hooks, bounded). Idempotent. */
+  function cleanup(): Promise<void> {
+    if (cleaned) return cleaned;
+    cleaned = endSessions("exit", SHUTDOWN_TIMEOUT_MS - 1000);
     wakeScheduler.dispose();
     stopNotifications();
     stopDecisions();
@@ -873,6 +884,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
     activeRuns.clear();
     activeSessions.clear();
     asterApi.close();
+    return cleaned;
   }
 
   return { handleRequest, cleanup };
@@ -1096,6 +1108,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         sessionId: sessionFile.id,
         messages,
         executor,
+        ...(active.hooks ? { hooks: active.hooks } : {}),
         cwd: sessionFile.cwd,
         signal: controller.signal,
         codeMode: config.codeMode,
