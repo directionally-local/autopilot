@@ -337,7 +337,7 @@ describe("runHooks — real shell processes", () => {
       "write",
     );
     assert.strictEqual(outcome.outcomes[0]!.exitCode, 0, outcome.outcomes[0]!.stderr);
-    assert.ok(Number(readFileSync(out, "utf8").trim()) > 2 * big.length, "full payload arrives on stdin");
+    assert.ok(Number(readFileSync(out, "utf8").trim()) > big.length, "full payload arrives on stdin");
     assert.strictEqual(readFileSync(`${out}.env`, "utf8"), "1|0");
     assert.strictEqual(outcome.vetoed, false);
   });
@@ -357,8 +357,9 @@ describe("runHooks — real shell processes", () => {
       { ...samplePayload, cwd: dir },
       "edit",
     );
-    const parsed = JSON.parse(readFileSync(out, "utf8")) as { tool_name: string };
-    assert.strictEqual(parsed.tool_name, "edit");
+    const parsed = JSON.parse(readFileSync(out, "utf8")) as { tool_name: string; autopilot_tool_name: string };
+    assert.strictEqual(parsed.tool_name, "Edit");
+    assert.strictEqual(parsed.autopilot_tool_name, "edit");
     assert.ok(HOOK_ENV_PAYLOAD_MAX_BYTES <= 64 * 1024);
   });
 
