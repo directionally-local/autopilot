@@ -185,11 +185,6 @@ export interface KimiConfig {
   githubRepo?: string;
   /** Shell override for the bash tool. "auto" (default) detects the platform, or specify "bash", "cmd", "powershell", or an absolute path. */
   shell?: string;
-  /**
-   * Deprecated/ignored: Camouflage is always used (the hidden `--ui ink`
-   * picks Ink for one run). Kept so existing configs still load.
-   */
-  uiEngine?: "ink" | "camouflage";
   /** Max cost per Hotcell worker in USD (default: 1.0). */
   workerBudgetUsd?: number;
   /** Hard ceiling for workerBudgetUsd. Any configured or programmatic value above this is silently capped. Default: 5.0. */
@@ -431,7 +426,6 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     filePicker: readBooleanEnv("KIMIFLARE_FILE_PICKER") ?? persisted.filePicker ?? true,
     theme: persisted.theme,
     shell: process.env.KIMIFLARE_SHELL ?? persisted.shell,
-    uiEngine: persisted.uiEngine,
     remoteWorkerUrl: persisted.remoteWorkerUrl,
     remoteAuthSecret: persisted.remoteAuthSecret,
     remoteTtlMinutes: persisted.remoteTtlMinutes,

@@ -9,7 +9,7 @@
 import React from "react";
 
 import type { Cfg } from "../app.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { ToolExecutor } from "../tools/executor.js";

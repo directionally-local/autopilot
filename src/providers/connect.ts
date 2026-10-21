@@ -3,8 +3,8 @@
  * one's status, what connecting it needs (a sign-in, a key, a URL, nothing),
  * verifying the credentials and loading its models, and saving the switch.
  *
- * First-run onboarding, `/provider` in the Ink UI and `/provider` in the
- * Camouflage view all run on this, so they offer the same steps.
+ * First-run onboarding and `/provider` in the Camouflage view both run on
+ * this, so they offer the same steps.
  */
 
 import { loadConfig, readPersistedConfig, type KimiConfig } from "../config.js";

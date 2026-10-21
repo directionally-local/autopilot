@@ -2,7 +2,7 @@ import React from "react";
 import type { TurnSupervisor } from "../agent/supervisor.js";
 import type { AbortScope } from "../util/abort-scope.js";
 import type { LspManager } from "../lsp/manager.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import { appendStoppedToolResults, type ChatMessage } from "../agent/messages.js";
 
 // ── Shared dep shape ─────────────────────────────────────────────────────

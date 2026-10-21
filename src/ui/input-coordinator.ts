@@ -13,7 +13,7 @@
 import type { ChatMessage } from "../agent/messages.js";
 import { createQueueBatch, type QueuedPrompt } from "../agent/queue-batch.js";
 import { planTriageAction, steerMessage, type TriageResult } from "../agent/inbox-triage.js";
-import { isImmediateSubagentCommand, isRunNowCommand } from "./subagent-panel.js";
+import { isImmediateSubagentCommand, isRunNowCommand } from "./subagent-list.js";
 import { parseBangCommand } from "./bang-command.js";
 import { replaceQueuedPrompt } from "./app-helpers.js";
 import type { Task } from "../tools/registry.js";

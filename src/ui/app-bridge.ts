@@ -10,7 +10,7 @@
  * actions. Anything added to App later reaches the view without changes here.
  */
 
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import type { Mode } from "../mode.js";
 import type { Usage } from "../agent/messages.js";
 import type { DailyUsage } from "../usage-tracker.js";
@@ -20,15 +20,15 @@ import type { ProviderId } from "../providers/presets.js";
 import type { SessionSummary, Checkpoint } from "../sessions.js";
 import type { PlanOption } from "../tools/registry.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
-import type { PlanCompleteChoice } from "./plan-complete-picker.js";
+import type { PlanCompleteChoice } from "./view-types.js";
 import type { CustomCommand } from "../commands/types.js";
 import type { SaveCustomCommandOptions } from "../commands/save.js";
 import type { LspServerConfig } from "../config.js";
 import type { HookConfig, HookEvent } from "../hooks/types.js";
 import type { RunningWorker } from "../tools/worker-registry.js";
-import type { TurnPhase } from "./status.js";
+import type { TurnPhase } from "./view-types.js";
 import type { IntentTier } from "./narrator.js";
-import type { QueuePlanChoice } from "./queue-plan-picker.js";
+import type { QueuePlanChoice } from "./queue-plan.js";
 
 /** Which Ink dialog App currently wants open. */
 export type AppModal =
@@ -36,7 +36,6 @@ export type AppModal =
   | "provider"
   | "mode"
   | "theme"
-  | "ui"
   | "help"
   | "memory"
   | "skills"

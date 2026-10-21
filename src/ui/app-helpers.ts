@@ -19,7 +19,7 @@ import type { Mode } from "../mode.js";
 import { buildSystemMessages, buildSystemPrompt } from "../agent/system-prompt.js";
 import type { ToolSpec } from "../tools/registry.js";
 import { isImagePath } from "../util/image.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import { createQueueBatch, type QueuedPrompt } from "../agent/queue-batch.js";
 import type { Cfg } from "../app.js";
 

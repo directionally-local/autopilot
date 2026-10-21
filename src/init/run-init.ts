@@ -24,7 +24,7 @@ import type { ToolSpec, ToolRender, Task } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 import { assembleTurn, resolveTurnPolicy } from "../agent/session-core.js";
 import type { ReasoningEffort } from "../config.js";
-import type { TurnPhase } from "../ui/status.js";
+import type { TurnPhase } from "../ui/view-types.js";
 import type { DailyUsage } from "../usage-tracker.js";
 import type { TurnSupervisor } from "../agent/supervisor.js";
 import { KimiApiError, humanizeApiError } from "../util/errors.js";
@@ -34,7 +34,7 @@ import { buildInitPrompt } from "./context-generator.js";
 import type { AbortScope } from "../util/abort-scope.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { MemoryManager } from "../memory/manager.js";
-import type { ChatEvent } from "../ui/chat.js";
+import type { ChatEvent } from "../ui/view-types.js";
 import type { Cfg } from "../app.js";
 import { costLookupFromConfig, mkAssistantId, trackRecentFile } from "../ui/app-helpers.js";
 

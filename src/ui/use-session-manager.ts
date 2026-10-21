@@ -23,7 +23,7 @@ import type { MemoryManager } from "../memory/manager.js";
 import { injectRecalledMemoryOnce } from "../memory/recall-inject.js";
 import { getCostReport } from "../usage-tracker.js";
 import type { DailyUsage } from "../usage-tracker.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import { setLogSessionId } from "../util/log-sink.js";
 import { createNoopRecorder, createRecorder, emitSessionStart, type TraceRecorder } from "../trace/index.js";
 import type { ToolDef } from "../agent/messages.js";

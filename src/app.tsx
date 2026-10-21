@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Box, Text, useApp, useInput, useWindowSize, render } from "ink";
+import { useApp, useInput, useWindowSize, render } from "ink";
 
 import type { ResponseMeta } from "./agent/client.js";
 import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerPresetOf } from "./agent/llm-auth.js";
@@ -27,32 +27,23 @@ import { sanitizeString, appendStoppedToolResults } from "./agent/messages.js";
 import type { ChatMessage, Usage } from "./agent/messages.js";
 import { AbortScope } from "./util/abort-scope.js";
 import { logger } from "./util/logger.js";
-import { ChatView, type ChatEvent } from "./ui/chat.js";
-import { StatusBar } from "./ui/status.js";
-import { PermissionModal } from "./ui/permission.js";
+import type { ChatEvent } from "./ui/view-types.js";
 import { usePermissionController } from "./ui/use-permission-controller.js";
-import { ResumePicker } from "./ui/resume-picker.js";
-import { CheckpointPicker } from "./ui/checkpoint-picker.js";
-import { PlanOptionsPicker } from "./ui/plan-options-picker.js";
-import { QueuePlanPicker, queuePlanPreview } from "./ui/queue-plan-picker.js";
+import { queuePlanPreview } from "./ui/queue-plan.js";
 import { createQueueBatch, canDrainQueue, type QueuedPrompt } from "./agent/queue-batch.js";
-import { SubagentPanel, useSubagentList } from "./ui/subagent-panel.js";
+import { useSubagentList } from "./ui/subagent-list.js";
 import { triageIncoming } from "./agent/inbox-triage.js";
 import { createTriageCoordinator, decideSubmit, describeActivity, pushHistory, type PromptEditTarget } from "./ui/input-coordinator.js";
 import { answerAside } from "./agent/aside.js";
 import { workerRegistry } from "./tools/worker-registry.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
-import { TaskList } from "./ui/task-list.js";
 import type { Task, PlanOption } from "./tools/registry.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { CustomTextInput } from "./ui/text-input.js";
 import { setTerminalTitle } from "./ui/terminal-title.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
-import { Onboarding } from "./ui/onboarding.js";
-import { Welcome } from "./ui/welcome.js";
 import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
@@ -71,24 +62,19 @@ import { renderCommand } from "./commands/renderer.js";
 import type { CustomCommand, SlashItem } from "./commands/types.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { SaveCustomCommandOptions } from "./commands/save.js";
-import { ThemeProvider } from "./ui/theme-context.js";
 import { resolveTheme, themeList, DEFAULT_THEME_NAME } from "./ui/theme.js";
 import { loadAndMergeThemes } from "./ui/theme-loader.js";
 import type { Theme } from "./ui/theme.js";
 import { getModelOrInfer, type ModelEntry } from "./models/registry.js";
 import { maybeLspNudge } from "./util/lsp-nudge.js";
 import { glob } from "./util/glob.js";
-import { FilePicker, type FilePickerItem } from "./ui/file-picker.js";
-import { SlashPicker } from "./ui/slash-picker.js";
+import type { FilePickerItem } from "./ui/view-types.js";
 import { usePickerController } from "./ui/use-picker-controller.js";
 import { useModalHost } from "./ui/use-modal-host.js";
 import type { AppBridge, AppModal } from "./ui/app-bridge.js";
 import type { HookConfig, HookEvent } from "./hooks/types.js";
-import { ModalHost } from "./ui/modal-host.js";
-import { PlanCompletePicker } from "./ui/plan-complete-picker.js";
-import type { PlanCompleteChoice } from "./ui/plan-complete-picker.js";
+import type { PlanCompleteChoice } from "./ui/view-types.js";
 import { useSessionManager } from "./ui/use-session-manager.js";
-import { ResumeProgress } from "./ui/resume-progress.js";
 import { useTurnController } from "./ui/use-turn-controller.js";
 import {
   interruptTurn as runInterruptTurn,
@@ -118,7 +104,6 @@ import {
   formatBangContext,
   isTerminalHandedOff,
   parseBangCommand,
-  registerInkInstance,
   runBangCommand,
 } from "./ui/bang-command.js";
 import {
@@ -166,8 +151,8 @@ function App({
   initialUpdateResult?: UpdateCheckResult;
   initialLspScope: "project" | "global";
   initialLspProjectPath: string | null;
-  /** Render through another view (e.g. Camouflage) instead of Ink. */
-  bridge?: AppBridge;
+  /** The Camouflage view App reports to and takes actions from. */
+  bridge: AppBridge;
   /** Reopen this session on start. */
   initialResumeSessionId?: string;
   /** Why it's reopened: after a renderer crash (#862), or the user asked
@@ -277,7 +262,6 @@ function App({
     showCommandList, setShowCommandList,
     showLspWizard, setShowLspWizard,
     showThemePicker, setShowThemePicker,
-    showUiPicker, setShowUiPicker,
     setShowModelPicker,
     setProviderSetup,
     showModePicker, setShowModePicker,
@@ -1200,28 +1184,6 @@ function App({
     [],
   );
 
-  const handleUiPick = useCallback(
-    (picked: "ink" | null) => {
-      setShowUiPicker(false);
-      if (!picked) return;
-      setCfg((c) => {
-        if (!c) return c;
-        const updated = { ...c, uiEngine: picked };
-        void saveConfig(updated).catch(() => {});
-        return updated;
-      });
-      setEvents((e) => [
-        ...e,
-        {
-          kind: "info",
-          key: mkKey(),
-          text: `UI engine set to "${picked}". React Ink is the only available engine.`,
-        },
-      ]);
-    },
-    [mkKey, setShowUiPicker],
-  );
-
   const handleModelPick = useCallback(
     (picked: ModelEntry | null) => {
       setShowModelPicker(false);
@@ -2033,7 +1995,7 @@ function App({
         { kind: "info", key: mkKey(), text: note },
       ]),
     notice: (text) => setEvents((evts) => [...evts, { kind: "info", key: mkKey(), text }]),
-    transcriptQueueNotes: Boolean(bridge),
+    transcriptQueueNotes: true,
     activity: currentActivity,
     triage: (text, activity) => triageIncoming(text, activity, { apiKey: activeOpenRouterKey(cfg) }),
     answerAside: cfg
@@ -2285,17 +2247,15 @@ function App({
               }
   }
 
-  // ── Alternative view (Camouflage) ─────────────────────────────────────
+  // ── Camouflage view ───────────────────────────────────────────────────
   // Report what's on screen after every render, and keep the view's
   // actions pointing at this render's handlers.
   useEffect(() => {
-    if (!bridge) return;
     const open: AppModal[] = [];
     if (modals.showModelPicker) open.push("model");
     if (modals.providerSetup) open.push("provider");
     if (modals.showModePicker) open.push("mode");
     if (modals.showThemePicker) open.push("theme");
-    if (modals.showUiPicker) open.push("ui");
     if (modals.showHelpMenu) open.push("help");
     if (modals.showMemoryPicker) open.push("memory");
     if (modals.showSkillsPicker) open.push("skills");
@@ -2350,7 +2310,6 @@ function App({
           provider: () => modals.setProviderSetup(null),
           mode: () => setShowModePicker(false),
           theme: () => modals.setShowThemePicker(false),
-          ui: () => modals.setShowUiPicker(false),
           help: () => modals.setShowHelpMenu(false),
           memory: () => modals.setShowMemoryPicker(false),
           skills: () => modals.setShowSkillsPicker(false),
@@ -2443,301 +2402,8 @@ function App({
     });
   });
 
-  if (bridge) return null;
-
-  if (!cfg) {
-    return (
-      <ThemeProvider theme={theme}>
-        <Onboarding
-          onCancel={() => exit()}
-          onDone={async (newCfg) => {
-            setCfg(newCfg);
-            setEvents((e) => [
-              ...e,
-              { kind: "info", key: mkKey(), text: "configuration saved — welcome to autopilot (formerly kimiflare)!" },
-            ]);
-          }}
-        />
-      </ThemeProvider>
-    );
-  }
-
-  if (planOptions !== null) {
-    return (
-      <ThemeProvider theme={theme}>
-        <Box flexDirection="column">
-          <PlanOptionsPicker
-            options={planOptions}
-            onPick={handlePlanOptionPick}
-          />
-        </Box>
-      </ThemeProvider>
-    );
-  }
-
-  if (checkpointSession !== null) {
-    return (
-      <ThemeProvider theme={theme}>
-        <Box flexDirection="column">
-          <CheckpointPicker
-            session={checkpointSession}
-            checkpoints={checkpointList}
-            onPick={handleCheckpointPick}
-          />
-        </Box>
-      </ThemeProvider>
-    );
-  }
-
-  if (resumeSessions !== null) {
-    return (
-      <ThemeProvider theme={theme}>
-        <Box flexDirection="column">
-          <ResumePicker sessions={resumeSessions} onPick={handleResumePick} />
-        </Box>
-      </ThemeProvider>
-    );
-  }
-
-  if (resuming) {
-    return (
-      <ThemeProvider theme={theme}>
-        <ResumeProgress progress={resumeProgress} stage={resumeStage} theme={theme} />
-      </ThemeProvider>
-    );
-  }
-
-  if (hasFullscreenModal) {
-    return (
-      <ModalHost
-        modals={modals}
-        theme={theme}
-        customCommands={customCommandsRef.current}
-        builtinNames={BUILTIN_COMMAND_NAMES}
-        onCommandSave={handleCommandSave}
-        onCommandDelete={handleCommandDelete}
-        lspServers={cfg?.lspServers ?? {}}
-        lspScope={lspScope}
-        hasProjectDir={existsSync(join(process.cwd(), ".kimiflare"))}
-        onLspSave={handleLspSave}
-        themes={themeList()}
-        onPickTheme={handleThemePick}
-        currentUiEngine={cfg?.uiEngine === "ink" ? "ink" : "ink"}
-        onPickUi={handleUiPick}
-        currentModel={cfg?.model ?? ""}
-        modelSwitchBusy={busy}
-        onPickModel={handleModelPick}
-        providerConfig={cfg}
-        onProviderSwitched={(next, connection) => void handleProviderSwitched(next, connection.id)}
-        currentMode={mode}
-        onPickMode={(m) => {
-          if (m) {
-            setMode(m);
-            setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `mode: ${m}` }]);
-          }
-          setShowModePicker(false);
-        }}
-        onInboxOpen={openBrowser}
-        getConfiguredHooks={configuredHooks}
-        cwd={process.cwd()}
-        onHooksMutate={() => hooksManagerRef.current.reload()}
-        costAttributionEnabled={cfg?.costAttribution ?? false}
-        onRunCommand={(cmd) => {
-          // Defer so the modal closes before the command runs
-          setTimeout(() => handleSlash(cmd), 0);
-        }}
-        currentShell={cfg?.shell}
-        onPickShell={(shell) => {
-          if (shell) {
-            const next = { ...cfg!, shell: shell === "auto" ? undefined : shell };
-            setCfg(next);
-            void saveConfig(next).catch(() => {});
-            setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `shell set to ${shell}` }]);
-          }
-          setShowShellPicker(false);
-        }}
-        memoryEnabled={memoryManagerRef.current !== null}
-        memoryManager={memoryManagerRef.current}
-        onMemoryAction={(action) => {
-          setShowMemoryPicker(false);
-          setTimeout(() => handleSlash(`/memory ${action}`), 0);
-        }}
-        onMemoryDone={() => setShowMemoryPicker(false)}
-        onSkillsAction={(action) => {
-          setShowSkillsPicker(false);
-          if (action === "list") {
-            setTimeout(() => handleSlash("/skills list"), 0);
-            return;
-          }
-          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `Type /skills ${action} <name> to ${action} a skill.` }]);
-        }}
-        onSkillsDone={() => setShowSkillsPicker(false)}
-        changelogImageRepo={changelogImageRepo}
-        onChangelogImageGenerate={handleChangelogImageGenerate}
-        onChangelogImageCancel={() => setShowChangelogImagePicker(false)}
-      />
-    );
-  }
-
-  const hasConversation = events.some((e) => e.kind === "user" || e.kind === "assistant");
-
-  return (
-    <ThemeProvider theme={theme}>
-      <Box flexDirection="column">
-        {!hasConversation && events.length === 0 ? (
-          <Welcome />
-        ) : (
-          <ChatView events={events} showReasoning={showReasoning} verbose={verbose} intentTier={intentTier ?? undefined} />
-        )}
-        {perm ? (
-          <PermissionModal
-            tool={perm.tool}
-            args={perm.args}
-            onDecide={decidePermission}
-            onFeedback={(text) => {
-              denyFeedbackRef.current = true;
-              submitRef.current(text);
-            }}
-          />
-        ) : showPlanCompletePicker ? (
-          <PlanCompletePicker onPick={handlePlanCompletePick} />
-        ) : queuePlanDraft !== null ? (
-          <QueuePlanPicker prompts={queuePlanDraft} onPick={handleQueuePlanPick} />
-        ) : (
-          <Box flexDirection="column" marginTop={1}>
-            {tasks.length > 0 && (
-              <TaskList
-                tasks={tasks}
-                startedAt={tasksStartedAt}
-                tokensDelta={Math.max(0, (usage?.prompt_tokens ?? 0) - tasksStartTokens)}
-              />
-            )}
-            <SubagentPanel />
-            {queue.length > 0 && (
-              <Box flexDirection="column" marginBottom={1}>
-                {queue.map((q, i) => (
-                  <Text key={`queue_${i}`} color={theme.info.color} dimColor={theme.info.dim}>
-                    ⏳ {q.display}
-                    {busy && q.triage ? (
-                      <Text>
-                        {"  · "}
-                        {q.triage.source === "pending" ? "deciding…" : q.triage.source === "default" ? "queued (unsure)" : "queued"}
-                        {" · "}
-                        <Text bold>Ctrl+G</Text> or <Text bold>/now</Text> run this now
-                      </Text>
-                    ) : null}
-                  </Text>
-                ))}
-                {queue.length > 1 && (
-                  <Text color={theme.info.color}>
-                    Type <Text bold>/queue plan</Text> to review and coordinate these follow-ups together.
-                  </Text>
-                )}
-              </Box>
-            )}
-            <StatusBar
-              usage={usage}
-              sessionUsage={sessionUsage}
-              thinking={busy}
-              turnStartedAt={turnStartedAt}
-              mode={mode}
-              modesEnabled={modesEnabled}
-              contextLimit={modelContextLimit}
-              model={cfg.model}
-              responseMeta={responseMeta}
-              codeMode={codeMode}
-              skillsActive={skillsActive}
-              memoryRecalled={memoryRecalled}
-              phase={turnPhase}
-              currentTool={currentToolName}
-              lastActivityAt={lastActivityAt}
-              kimiMdStale={kimiMdStale}
-              gitBranch={gitBranch}
-              intentTier={intentTier ?? undefined}
-            />
-            {picker.active?.kind === "file" && (
-              <FilePicker
-                items={picker.fileItems}
-                selectedIndex={picker.active.selected}
-                query={picker.query}
-                recentFiles={new Set(recentFilesRef.current.keys())}
-              />
-            )}
-            {picker.active?.kind === "slash" && (
-              <SlashPicker
-                items={picker.slashItems}
-                selectedIndex={picker.active.selected}
-                query={picker.query}
-              />
-            )}
-          {parseBangCommand(input) !== null && (
-            <Box marginTop={1}>
-              <Text dimColor>! shell command — runs in your terminal (logins and prompts work); output is shared with the agent</Text>
-            </Box>
-          )}
-          {historyIndex === history.length - 1 &&
-            latestPromptRef.current?.historyText === history[history.length - 1] && (
-              <Box marginTop={1}>
-                <Text dimColor>editing last message — Enter replaces it</Text>
-              </Box>
-            )}
-          <Box marginTop={parseBangCommand(input) !== null ? 0 : 1}>
-            <Text color={theme.prompt ?? theme.accent}>› </Text>
-            <CustomTextInput
-              value={input}
-              onChange={setInput}
-              onSubmit={submit}
-              enablePaste
-              width={columns && columns > 2 ? columns - 2 : undefined}
-              cursorOffset={cursorOffset}
-              onCursorChange={setCursorOffset}
-              pickerActive={picker.isActive}
-              onPickerUp={picker.onUp}
-              onPickerDown={picker.onDown}
-              onPickerSelect={picker.onSelect}
-              onPickerCancel={picker.onCancel}
-              onHistoryUp={() => {
-                if (history.length === 0) return;
-                if (historyIndex === -1) {
-                  setDraftInput(input);
-                  const nextIndex = history.length - 1;
-                  setHistoryIndex(nextIndex);
-                  setInput(history[nextIndex]!);
-                } else {
-                  const nextIndex = Math.max(0, historyIndex - 1);
-                  setHistoryIndex(nextIndex);
-                  setInput(history[nextIndex]!);
-                }
-              }}
-              onHistoryDown={() => {
-                if (historyIndex === -1) return;
-                const nextIndex = historyIndex + 1;
-                if (nextIndex >= history.length) {
-                  setHistoryIndex(-1);
-                  setInput(draftInput);
-                } else {
-                  setHistoryIndex(nextIndex);
-                  setInput(history[nextIndex]!);
-                }
-              }}
-              onClearQueueItem={(text) => {
-                setQueue((q) => {
-                  const idx = q.findIndex((item) => item.display === text);
-                  if (idx >= 0) {
-                    const next = [...q];
-                    next.splice(idx, 1);
-                    return next;
-                  }
-                  return q;
-                });
-              }}
-            />
-          </Box>
-        </Box>
-      )}
-    </Box>
-    </ThemeProvider>
-  );
+  // Camouflage draws everything from the bridge snapshot; Ink renders nothing.
+  return null;
 }
 
 /** Why a session is reopened on start (see App's `initialResumeReason`). */
@@ -2798,42 +2464,4 @@ export async function renderAppWithBridge(
   );
   await instance.waitUntilExit();
   await endSessions("exit");
-}
-
-export async function renderApp(
-  cfg: Cfg | null,
-  updateResult?: UpdateCheckResult,
-  lspScope: "project" | "global" = "global",
-  lspProjectPath: string | null = null,
-  opts: RenderAppOpts = {},
-) {
-  // The TUI is the only host that supports `!` commands (see agent/user-shell.ts).
-  enableUserShellCommands();
-  const instance = render(
-    <App
-      initialCfg={cfg}
-      initialUpdateResult={updateResult}
-      initialLspScope={lspScope}
-      initialLspProjectPath={lspProjectPath}
-      initialResumeSessionId={opts.resumeSessionId}
-      initialResumeReason={opts.resumeReason}
-      initialOpenResumePicker={opts.openResumePicker}
-    />,
-    {
-      incrementalRendering: true,
-      // Disable Ink's built-in Ctrl+C → app.exit() handler. We need
-      // Ctrl+C to reach our useInput handler so it can interrupt the
-      // current turn (abort the scope, kill the supervisor, deny
-      // pending modals) without unmounting the React tree. Without
-      // this, Ink consumes Ctrl+C, exits the app mid-cleanup, the
-      // agent loop and LSP servers keep the process alive in the
-      // background, and the terminal is left in cooked mode showing
-      // a frozen last frame with a phantom prompt below — see RF-20.
-      exitOnCtrlC: false,
-    },
-  );
-  registerInkInstance(instance);
-  await instance.waitUntilExit();
-  await endSessions("exit");
-  registerInkInstance(null);
 }

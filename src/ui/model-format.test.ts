@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { filterModels, formatModelPrice } from "./model-picker.js";
+import { filterModels, formatModelPrice } from "./model-format.js";
 import type { ModelEntry } from "../models/registry.js";
 
 const m = (id: string, name?: string): ModelEntry => ({

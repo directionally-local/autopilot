@@ -8,7 +8,7 @@ import {
   insertSlashCommand,
   type ActivePicker,
 } from "./use-picker-controller.js";
-import type { FilePickerItem } from "./file-picker.js";
+import type { FilePickerItem } from "./view-types.js";
 
 describe("filterPickerItems", () => {
   const items: FilePickerItem[] = [

@@ -9,7 +9,7 @@
 import React from "react";
 
 import type { Cfg } from "../app.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import { saveConfig } from "../config.js";
 import { saveProjectLspConfig } from "../util/lsp-config.js";
 import {

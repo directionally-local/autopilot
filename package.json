@@ -72,7 +72,6 @@
     "commander": "^12.1.0",
     "imapflow": "2.2.5",
     "ink": "^7.1.1",
-    "ink-select-input": "^6.2.0",
     "jpeg-js": "^0.4.4",
     "pngjs": "^7.0.0",
     "postal-mime": "4.0.4",

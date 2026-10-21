@@ -15,7 +15,6 @@ export default defineConfig({
   external: [
     // keep runtime deps out of the bundle so they resolve from node_modules
     "ink",
-    "ink-select-input",
     "react",
     "commander",
     "turndown",

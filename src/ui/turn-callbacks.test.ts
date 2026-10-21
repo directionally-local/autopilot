@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents, toolResultPatch, type TurnCallbackDeps } from "./turn-callbacks.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import { KimiApiError } from "../util/errors.js";
 
 function harness() {

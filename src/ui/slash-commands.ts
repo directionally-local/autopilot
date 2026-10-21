@@ -16,7 +16,7 @@ import { renderTerminalQr } from "./terminal-qr.js";
 
 import type { Cfg } from "../app.js";
 import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
 import { activeOpenRouterKey, llmAuthFromConfig, providerPresetOf, usesRequesty } from "../agent/llm-auth.js";
