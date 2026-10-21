@@ -1,7 +1,7 @@
 import type { ToolSpec, ToolContext, ToolOutput, ToolOutputMeta, RunWaitRequest } from "./registry.js";
 import { wrapAsToolError, type ToolErrorCode } from "./tool-error.js";
 import type { HooksManager } from "../hooks/manager.js";
-import type { PostToolUsePayload } from "../hooks/types.js";
+import type { FileChangeForHook, PostToolUsePayload } from "../hooks/types.js";
 import { claudeError, toolCallFailed } from "../hooks/claude-compat.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import { classifyVerification } from "../trace/verification.js";
@@ -29,7 +29,8 @@ import { makeExpandArtifactTool } from "./expand-artifact.js";
 import { jobStartTool, jobStatusTool, jobLogsTool, jobCancelTool } from "./jobs.js";
 import { waitForTool } from "./wait-for.js";
 import { workerResultTool, workerStatusTool } from "./workers.js";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { resolvePath } from "../util/paths.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
 
@@ -292,6 +293,23 @@ export interface ToolResult {
  *  still available via the tool's artifact id if the user needs it. */
 const HOOK_RESULT_CONTENT_CAP_BYTES = 4 * 1024;
 
+/** write / edit hook payloads carry the file's before/after content (for
+ *  `structuredPatch` / `originalFile`) only for files up to this size. */
+export const HOOK_FILE_SNAPSHOT_MAX_BYTES = 1024 * 1024;
+
+/** The file as it is before a write / edit: whether it exists, and its
+ *  content when it is small enough to diff. */
+async function snapshotForHook(abs: string): Promise<{ existed: boolean; content: string | null }> {
+  try {
+    const st = await stat(abs);
+    if (!st.isFile()) return { existed: true, content: null };
+    if (st.size > HOOK_FILE_SNAPSHOT_MAX_BYTES) return { existed: true, content: null };
+    return { existed: true, content: await readFile(abs, "utf8") };
+  } catch {
+    return { existed: false, content: null };
+  }
+}
+
 /** bash's exit code and separate streams, for the PostToolUse payload. */
 function shellResultForHook(meta: ToolOutputMeta | undefined): Partial<PostToolUsePayload["result"]> {
   if (!meta || meta.exitCode === undefined) return {};
@@ -310,6 +328,22 @@ function capContentForHook(s: string): string {
     cut = cut.slice(0, Math.floor(cut.length * 0.9));
   }
   return `${cut}\n[…truncated for hook payload]`;
+}
+
+/** The file after a successful write / edit, next to how it was before. */
+async function fileChangeAfter(
+  tool: string,
+  args: Record<string, unknown>,
+  cwd: string,
+  before: { existed: boolean; content: string | null },
+): Promise<FileChangeForHook> {
+  let updated: string | null = null;
+  if (tool === "write" && typeof args.content === "string") {
+    updated = Buffer.byteLength(args.content, "utf8") <= HOOK_FILE_SNAPSHOT_MAX_BYTES ? args.content : null;
+  } else {
+    updated = (await snapshotForHook(resolvePath(cwd, args.path as string))).content;
+  }
+  return { existed: before.existed, original: before.content, updated };
 }
 
 export class ToolExecutor {
@@ -542,8 +576,14 @@ export class ToolExecutor {
         runStore.recordToolIntent(ctx.runId, call.id, call.name, args);
         intentRecorded = true;
       }
+      // PostToolUse hooks get a write / edit call's diff (Claude Code's
+      // `structuredPatch`, `originalFile`): keep the file as it was.
+      const before = this.wantsFileChange(call.name, args)
+        ? await snapshotForHook(resolvePath(ctx.cwd, args.path as string))
+        : undefined;
       const result = await tool.run(args as never, ctx);
       toolCompleted = true;
+      const fileChange = before ? await fileChangeAfter(call.name, args, ctx.cwd, before) : undefined;
       const normalized = normalizeToolOutput(result);
       tr?.raw(normalized);
       if (runStore && ctx.runId) {
@@ -605,7 +645,7 @@ export class ToolExecutor {
         artifactId: reduced.artifactId,
         ...(normalized.waitRequest ? { waitRequest: normalized.waitRequest } : {}),
       };
-      this.firePostToolUse(call, args, success, ctx, normalized.meta);
+      this.firePostToolUse(call, args, success, ctx, normalized.meta, fileChange);
       return success;
     } catch (e) {
       if (e instanceof RunToolBudgetExceededError) ctx.onRunBudgetExceeded?.(e.reason);
@@ -691,6 +731,7 @@ export class ToolExecutor {
     result: ToolResult,
     ctx: ToolContext,
     meta?: ToolOutputMeta,
+    fileChange?: FileChangeForHook,
   ): void {
     const hooks = this.hooks;
     if (!hooks) return;
@@ -702,6 +743,7 @@ export class ToolExecutor {
       content: capContentForHook(result.content),
       errorCode: result.errorCode,
       ...shellResultForHook(meta),
+      ...(fileChange ? { fileChange } : {}),
     };
     const base = {
       session_id: ctx.sessionId ?? null,
@@ -721,6 +763,12 @@ export class ToolExecutor {
         .fire("PostToolUseFailure", { event: "PostToolUseFailure", ...base, error: claudeError(resultFields) }, call.name, ctx.signal)
         .catch(swallow);
     }
+  }
+
+  /** True when a PostToolUse hook would get this write / edit call's diff. */
+  private wantsFileChange(tool: string, args: Record<string, unknown>): boolean {
+    if ((tool !== "write" && tool !== "edit") || typeof args.path !== "string" || !args.path) return false;
+    return !!this.hooks && (this.hooks.hasEnabledHooks("PostToolUse") || this.hooks.hasEnabledHooks("PostToolUseFailure"));
   }
 
   private permissionKey(tool: ToolSpec, args: Record<string, unknown>): string {

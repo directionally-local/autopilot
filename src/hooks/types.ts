@@ -148,7 +148,21 @@ export interface PostToolUsePayload extends BaseHookPayload {
     stderr?: string;
     /** bash only: the command was killed by its timeout or an abort. */
     interrupted?: boolean;
+    /** write / edit only: the file before and after the call, from which
+     *  the Claude Code `tool_response` fields (`type`, `structuredPatch`,
+     *  `originalFile`) are built. Not sent to hooks as is. */
+    fileChange?: FileChangeForHook;
   };
+}
+
+/** A write / edit call's effect on its file, captured by the executor. */
+export interface FileChangeForHook {
+  /** False when the call created the file. */
+  existed: boolean;
+  /** Content before the call (null when it did not exist, or was too large to keep). */
+  original: string | null;
+  /** Content after the call (null when too large to keep). */
+  updated: string | null;
 }
 
 export interface PostToolUseFailurePayload extends BaseHookPayload {
