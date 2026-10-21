@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.0](https://github.com/sinameraji/autopilot/compare/v2.1.0...v2.2.0) (2026-10-21)
+
+
+### Features
+
+* **remote:** run tasks on your own server from the laptop ([#915](https://github.com/sinameraji/autopilot/issues/915)) ([fa21765](https://github.com/sinameraji/autopilot/commit/fa217659a0194b90c7581a9b679b62fec4bd4172))
+
+
+### Bug Fixes
+
+* **hooks:** prompt events in every host, session id first, and file diffs for Beacon ([#916](https://github.com/sinameraji/autopilot/issues/916)) ([9dfb06c](https://github.com/sinameraji/autopilot/commit/9dfb06ca12709ed04e221787c2d001edd5d0ab74))
+
 ## [2.1.0](https://github.com/sinameraji/autopilot/compare/v2.0.0...v2.1.0) (2026-10-21)
 
 
