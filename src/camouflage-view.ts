@@ -24,8 +24,9 @@ import type { ToolEventState } from "./ui/tool-view.js";
 import type { Cfg } from "./app.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { CustomCommand, CommandSource } from "./commands/types.js";
-import { loadConfig, type ReasoningEffort } from "./config.js";
-import { gracefulExit, onShutdown } from "./util/exit.js";
+import { configPath, hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type ReasoningEffort } from "./config.js";
+import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from "./camouflage-onboarding.js";
+import { onShutdown } from "./util/exit.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { resolveProviderKey } from "./providers/resolve.js";
 import {
@@ -63,6 +64,7 @@ import { logger } from "./util/logger.js";
 import { JobManager, type JobRecord } from "./jobs/manager.js";
 import { activityFromJob, activityFromSubagent, diffActivityItems, isActiveJob, type ActivityItem } from "./ui/activity.js";
 import { workerRegistry, type RunningWorker } from "./tools/worker-registry.js";
+import { CamouflageCrashed, CamouflageUnavailable, diagnoseRenderer, mountFailureReason, rendererBlocker } from "./camouflage-launch.js";
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
 
@@ -82,54 +84,46 @@ interface CamouflageSdk {
   resumeTerminal?(cam: CamouflageHandle): void;
 }
 
-/** The renderer couldn't start (not installed, no binary for this
- *  platform); nothing has been drawn, so the caller can fall back to Ink. */
 /** Renderer severity for an info/memory notice: a warning-toned info
  *  event (e.g. a failed hook, #889) shows as a warning. */
 export function noticeSeverity(e: Extract<ChatEvent, { kind: "info" | "memory" }>): "info" | "warn" {
   return e.kind === "info" && e.tone === "warn" ? "warn" : "info";
 }
 
-export class CamouflageUnavailable extends Error {}
+export { CamouflageUnavailable, CamouflageCrashed };
+
+/** CamouflageUnavailable with the on-disk diagnosis attached. */
+function unavailable(reason: string): CamouflageUnavailable {
+  return new CamouflageUnavailable(reason, diagnoseRenderer());
+}
 
 async function loadSdk(): Promise<CamouflageSdk> {
   const sdk = (await import("camouflage-tui").catch((err) => {
-    throw new CamouflageUnavailable(`camouflage-tui is not installed (${(err as Error).message})`);
+    throw unavailable(`camouflage-tui could not be loaded (${(err as Error).message})`);
   })) as unknown as Partial<CamouflageSdk>;
   if (typeof sdk.permission !== "function" || typeof sdk.mount !== "function" || typeof sdk.selectList !== "function") {
-    throw new CamouflageUnavailable("the installed camouflage-tui is too old");
+    throw unavailable("the installed camouflage-tui is too old");
   }
   return sdk as CamouflageSdk;
-}
-
-/** The renderer exited unexpectedly mid-session (not the user quitting). */
-export class CamouflageCrashed extends Error {
-  constructor(
-    message: string,
-    /** The session to reopen in the Ink UI, if the App had started one. */
-    readonly sessionId: string | null,
-  ) {
-    super(message);
-  }
 }
 
 export interface RendererInfo {
   packageVersion: string | null;
   /** The binary mount() runs. */
   binary: string;
-  source: "CAMOUFLAGE_BIN" | "package" | "PATH";
+  source: "CAMOUFLAGE_BIN" | "package";
   /** `<binary> --version`, when the renderer supports it. */
   binaryVersion: string | null;
 }
 
 /**
- * Which renderer will run (#862). The SDK uses the binary its postinstall
- * downloaded and falls back to `camouflage-tui` on PATH, which can be a stale
- * build when that download failed — so log both, and say so when it happens.
+ * Which renderer runs (#862): CAMOUFLAGE_BIN, else the binary camouflage-tui's
+ * postinstall downloaded. (Since camouflage-tui 2.8 the SDK never falls back
+ * to a `camouflage-tui` on PATH; a missing binary is re-downloaded or fails.)
  */
 export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo {
   let packageVersion: string | null = null;
-  let packageBin: string | null = null;
+  let packageBin = "camouflage-tui";
   try {
     // The package's exports don't include package.json: resolve its entry
     // point and walk up to the package root.
@@ -137,7 +131,7 @@ export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo
     while (!existsSync(join(dir, "package.json")) && dirname(dir) !== dir) dir = dirname(dir);
     packageVersion = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { version?: string }).version ?? null;
     const local = join(dir, "bin", process.platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui");
-    if (existsSync(local)) packageBin = local;
+    packageBin = local;
   } catch {
     // not installed: mount() reports that
   }
@@ -146,16 +140,9 @@ export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo
   if (env.CAMOUFLAGE_BIN) {
     binary = env.CAMOUFLAGE_BIN;
     source = "CAMOUFLAGE_BIN";
-  } else if (packageBin) {
+  } else {
     binary = packageBin;
     source = "package";
-  } else {
-    source = "PATH";
-    try {
-      binary = execFileSync(process.platform === "win32" ? "where" : "which", ["camouflage-tui"], { encoding: "utf8", timeout: 2000 }).trim().split("\n")[0] || "camouflage-tui";
-    } catch {
-      binary = "camouflage-tui";
-    }
   }
   let binaryVersion: string | null = null;
   try {
@@ -167,16 +154,40 @@ export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo
 }
 
 export interface CamouflageViewOpts {
-  cfg: Cfg;
+  /** Null on first run (no credentials yet): provider setup runs in the renderer before the App mounts. */
+  cfg: Cfg | null;
   version: string;
-  /** Mount App with this bridge (renderApp with the bridge, Ink drawing nothing). */
-  runApp: (bridge: AppBridge) => Promise<void>;
+  /**
+   * Mount App with this bridge (renderApp with the bridge, Ink drawing
+   * nothing). `cfg` is opts.cfg, or the config first-run setup just saved.
+   */
+  runApp: (bridge: AppBridge, cfg: Cfg) => Promise<void>;
 }
 
-export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void> {
+/** How the session ended: normally, or before it began because first-run setup was cancelled or failed. */
+export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed";
+
+/** The header's two detail lines; first run has no model yet. */
+export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null): string[] {
+  if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run: connect a model provider to start"];
+  return [
+    [shortModel(cfg.model), shortPath(cwd), branch].filter(Boolean).join(" · "),
+    `/ for commands · @ to mention files${cfg.modesEnabled ? " · shift+tab to switch modes" : ""}`,
+  ];
+}
+
+export async function runCamouflageView(opts: CamouflageViewOpts): Promise<CamouflageViewResult> {
   const sdk = await loadSdk();
-  const renderer = rendererInfo();
-  logger.info("camouflage.renderer", { ...renderer });
+  // Fail before mounting when the renderer certainly can't run (a postinstall
+  // that silently left bin/ empty on an unsupported platform, a bad
+  // CAMOUFLAGE_BIN), instead of a spawn error or a doomed download.
+  const diagnosis = diagnoseRenderer();
+  const blocker = rendererBlocker(diagnosis);
+  if (blocker) throw new CamouflageUnavailable(blocker, diagnosis);
+  if (!diagnosis.envBin && !diagnosis.packageBinExists) {
+    // The SDK downloads the missing binary once before giving up.
+    process.stderr.write(`autopilot: the Camouflage renderer is missing (${diagnosis.packageBin}); downloading it…\n`);
+  }
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
   try {
@@ -188,29 +199,22 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     });
   } catch (err) {
     restoreConsole();
-    throw new CamouflageUnavailable((err as Error).message);
+    throw unavailable(mountFailureReason((err as Error).message));
   }
+  const renderer = rendererInfo();
+  logger.info("camouflage.renderer", { ...renderer });
   cam.on("stderr", (chunk: string) => logger.warn("camouflage.stderr", { chunk }));
-  if (renderer.source === "PATH") {
-    // The package's own binary is missing (its install step failed): whatever
-    // is on PATH may be an old build with bugs fixed long ago.
-    logger.warn("camouflage.renderer_from_path", { ...renderer });
-    cam.send("RuntimeError", {
-      message: `camouflage-tui ${renderer.packageVersion ?? ""} has no renderer binary of its own (its install step failed), so ${renderer.binary} from PATH is used and may be outdated. Reinstall autopilot-ai to fix it.`,
-      severity: "warning",
-    });
-  }
 
   const cwd = process.cwd();
-  cam.send("SessionStarted", {
-    title: `autopilot ${opts.version}`,
-    detail: [
-      [shortModel(opts.cfg.model), shortPath(cwd), gitBranch(cwd)].filter(Boolean).join(" · "),
-      `/ for commands · @ to mention files${opts.cfg.modesEnabled ? " · shift+tab to switch modes" : ""}`,
-    ],
-    accent: "orange",
-    assistant_label: "autopilot",
-  });
+  const branch = gitBranch(cwd);
+  const startSession = (cfg: Cfg | null) =>
+    cam.send("SessionStarted", {
+      title: `autopilot ${opts.version}`,
+      detail: sessionHeaderDetail(cfg, cwd, branch),
+      accent: "orange",
+      assistant_label: "autopilot",
+    });
+  startSession(opts.cfg);
   const files = listFiles(cwd);
   if (files.length > 0) {
     cam.send("MentionCandidatesRegistered", { candidates: files.map((token) => ({ token, kind: "file" })) });
@@ -223,6 +227,11 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     resume: () => sdk.resumeTerminal?.(cam),
   });
   cam.on("userInput", (text: string) => {
+    if (!view.actions) {
+      // First-run setup is still running: there is no session to send it to.
+      cam.send("RuntimeError", { message: "Finish connecting a provider first — the session starts right after.", severity: "info" });
+      return;
+    }
     if (view.routeActivityCommand(text)) return;
     view.echoed.push(text.trim());
     view.actions?.submit(text);
@@ -271,14 +280,16 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     if (code === 0 && !signal) {
       // The user quit the renderer (Ctrl+C twice): end the App too.
       void finish().then(() => {
-        if (view.actions) view.actions.exit();
-        else void gracefulExit(0);
+        if (view.actions) return view.actions.exit();
+        // Quit during first-run setup: nothing was saved, say so on the way out.
+        quitBeforeApp = true;
+        endBeforeApp();
       });
       return;
     }
     // The renderer crashed (#862). The session must survive it: say where the
     // crash report is, let the turn in flight finish (it is saved after every
-    // turn), then end the App so the caller reopens it in the Ink UI.
+    // turn), then end the App so the caller reopens it in a fresh renderer.
     crashed = { code, signal };
     logger.error("camouflage.crashed", { code, signal, ...renderer });
     void finish().then(async () => {
@@ -287,19 +298,39 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
       process.stderr.write(
         `\nThe Camouflage renderer stopped unexpectedly (${signal ?? `exit code ${code}`}). ` +
           `Its crash report is in ${join(homedir(), ".camouflage")} (crash-*.txt).\n` +
-          (view.busy ? "Finishing the current turn, then reopening this conversation in the classic UI…\n" : "Reopening this conversation in the classic UI…\n"),
+          (view.busy ? "Finishing the current turn first…\n" : ""),
       );
       await view.settle();
       // Before the App connected there's nothing to end: stop waiting for it.
       if (view.actions) view.actions.exit();
-      else crashedBeforeApp();
+      else endBeforeApp();
     });
   });
 
-  let crashedBeforeApp: () => void = () => {};
-  const beforeApp = new Promise<void>((resolve) => (crashedBeforeApp = resolve));
+  // The renderer went away (quit or crash) before the App connected.
+  let endBeforeApp: () => void = () => {};
+  let quitBeforeApp = false;
+  const beforeApp = new Promise<void>((resolve) => (endBeforeApp = resolve));
+  let setup: FirstRunOutcome | null = null;
   try {
-    await Promise.race([opts.runApp(view), beforeApp]);
+    let cfg = opts.cfg;
+    if (!cfg) {
+      const onboarding = runFirstRun({
+        upgrading: hasLegacyCloudflareConfig,
+        configPath,
+        show: (lines) => view.showLines(lines),
+        setup: (o) => view.firstRunSetup(o),
+        loadConfig,
+      });
+      const outcome = await Promise.race([onboarding, beforeApp.then(() => null)]);
+      if (outcome?.kind === "ready") {
+        cfg = outcome.cfg;
+        startSession(cfg);
+      } else {
+        setup = outcome ?? (quitBeforeApp ? { kind: "cancelled" } : null);
+      }
+    }
+    if (cfg && !crashed) await Promise.race([opts.runApp(view, cfg), beforeApp]);
   } finally {
     unregisterShutdown();
     await finish();
@@ -308,8 +339,18 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     const c = crashed as { code: number | null; signal: string | null };
     throw new CamouflageCrashed(`renderer exited (${c.signal ?? `code ${c.code}`})`, view.sessionId);
   }
+  const outcome = setup as FirstRunOutcome | null;
+  if (outcome?.kind === "cancelled") {
+    process.stdout.write(`${onboardingCancelledMessage()}\n`);
+    return "setup-cancelled";
+  }
+  if (outcome?.kind === "failed") {
+    process.stderr.write(`autopilot: ${outcome.message}\n`);
+    return "setup-failed";
+  }
   const hint = resumeHint(view.sessionId);
   if (hint) process.stdout.write(hint);
+  return "done";
 }
 
 /** Translates App snapshots into renderer events, sending only what changed. Exported for tests. */
@@ -1138,16 +1179,43 @@ export class View implements AppBridge {
    * runtimes — then pick one of its models. Keys never reach the transcript.
    */
   private async providerSetup(initial?: ProviderId): Promise<void> {
-    const a = this.actions!;
-    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
     const cfg = await loadConfig().catch(() => null);
-    let id: ProviderId | undefined = initial;
+    const id = await this.connectAndPickModel({ cfg, initial, firstRun: false });
+    if (id) this.actions?.providerSwitched(id);
+  }
+
+  /**
+   * First-run setup, before the App mounts: the same steps as `/provider`,
+   * seeded from the raw config file (a Cloudflare-era config keeps the
+   * account id/token Workers AI can reuse). True once a provider and model
+   * are saved; false when the user backs out of the provider list.
+   */
+  async firstRunSetup(o: { upgrading: boolean }): Promise<boolean> {
+    const persisted = await readPersistedConfig().catch(() => null);
+    return (await this.connectAndPickModel({ cfg: persisted, firstRun: true, upgrading: o.upgrading })) !== null;
+  }
+
+  /** Lines printed above the prompts (welcome copy, notices). */
+  showLines(lines: string[]): void {
+    this.cam.send("Splash", { text: lines.join("\n") });
+  }
+
+  /** Provider list → connect → model → save. The saved provider, or null if cancelled. */
+  private async connectAndPickModel(o: {
+    cfg: Partial<Cfg> | null;
+    initial?: ProviderId;
+    firstRun: boolean;
+    upgrading?: boolean;
+  }): Promise<ProviderId | null> {
+    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    const { cfg, firstRun } = o;
+    let id: ProviderId | undefined = o.initial;
     for (;;) {
       if (!id) {
-        const rows = providerRows(cfg, { markActive: true });
+        const rows = providerRows(cfg, { markActive: !firstRun, upgrading: o.upgrading });
         const current = rows.find((r) => r.active)?.id;
         const r = await this.select(
-          "Switch provider",
+          firstRun ? "Choose where your models run" : "Switch provider",
           rows.map((row) => ({
             value: row.id,
             label: row.name,
@@ -1156,9 +1224,11 @@ export class View implements AppBridge {
             keywords: `${row.id} ${row.hint}`,
           })),
           current,
-          "Conversation history is kept · type to search · Enter to connect",
+          firstRun
+            ? "Billed to your own account with that provider · type to search · Enter to connect · Esc to quit"
+            : "Conversation history is kept · type to search · Enter to connect",
         );
-        if (r === null) return;
+        if (r === null) return null;
         id = r as ProviderId;
       }
       const connection = await this.connectProvider(id, cfg, say);
@@ -1166,7 +1236,7 @@ export class View implements AppBridge {
         id = undefined;
         continue;
       }
-      if (!connection) return;
+      if (!connection) return null;
       const preset = getPreset(id);
       say(`✓ ${describeConnection(connection)}`);
       if (connection.openRouter?.isFreeTier) {
@@ -1186,17 +1256,20 @@ export class View implements AppBridge {
       try {
         await commitProvider(connection, modelId);
       } catch (e) {
-        return say(`Couldn't save the config: ${(e as Error).message}`, "error");
+        say(`Couldn't save the config: ${(e as Error).message}`, "error");
+        // On first run there is no session to fall back to: try again.
+        if (firstRun) continue;
+        return null;
       }
-      a.providerSwitched(id);
-      return;
+      if (firstRun) say(`✓ Saved to ${configPath()}. Switch provider any time with /provider, model with /model.`);
+      return id;
     }
   }
 
   /** One provider's connect step. Null = cancelled, "back" = return to the list. */
   private async connectProvider(
     id: ProviderId,
-    cfg: Cfg | null,
+    cfg: Partial<Cfg> | null,
     say: (message: string, severity?: "info" | "error") => void,
   ): Promise<Connection | null | "back"> {
     const preset = getPreset(id);

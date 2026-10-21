@@ -536,7 +536,8 @@ function App({
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
 
   // Reopen a session on start: the one a crashed Camouflage renderer was
-  // saving (#862), or the one `autopilot resume` / `autopilot -c` named.
+  // saving (#862) and the restarted view reopens, or the one
+  // `autopilot resume` / `autopilot -c` named.
   const resumedAfterCrashRef = useRef(false);
   useEffect(() => {
     if (!initialResumeSessionId || resumedAfterCrashRef.current || !cfg) return;
@@ -548,7 +549,7 @@ function App({
         if (initialResumeReason === "crash") {
           setEvents((e) => [
             ...e,
-            { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed, so this conversation reopened here in the classic UI. Nothing was lost." },
+            { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed and was restarted; this conversation reopened where it left off." },
           ]);
         }
       } catch (err) {
