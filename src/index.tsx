@@ -661,11 +661,16 @@ program
   .option("--port <n>", "port to listen on", (v) => parseInt(v, 10), 4096)
   .option("--hostname <host>", "hostname to listen on", "127.0.0.1")
   .action(async (cmdOpts) => {
-    const cfg = await loadConfig();
-    if (!cfg) {
+    const { resolveServeConfig } = await import("./server/serve-config.js");
+    const resolved = resolveServeConfig(await loadConfig());
+    if (!resolved) {
       console.error(`autopilot serve: ${await noCredentialsMessage()}`);
       process.exit(2);
     }
+    if (resolved.asterOnly) {
+      console.error("autopilot serve: no provider key on this host; serving the Aster API, whose cells reach the model through Hotcell's gateway.");
+    }
+    const cfg = resolved.config;
     await initOtel();
     await ensureModelCatalog(cfg);
     const { startServer } = await import("./server/index.js");
