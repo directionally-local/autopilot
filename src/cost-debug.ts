@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ChatMessage, Usage } from "./agent/messages.js";
 import type { ToolResult } from "./tools/executor.js";
 import { rotateJsonl, RETENTION } from "./storage-limits.js";
+import { logger } from "./util/logger.js";
 
 const LOG_VERSION = 1;
 
@@ -82,10 +83,6 @@ function debugDir(): string {
   return join(xdg, "kimiflare");
 }
 
-function debugPath(): string {
-  return join(debugDir(), "cost-debug.jsonl");
-}
-
 function now(): string {
   return new Date().toISOString();
 }
@@ -146,9 +143,13 @@ export function buildToolStats(results: ToolResult[]): ToolByteStats[] {
 }
 
 export async function logCostDebug(entry: CostDebugEntry): Promise<void> {
-  await mkdir(debugDir(), { recursive: true });
-  await rotateJsonl(debugPath(), RETENTION.costDebugMaxBytes, RETENTION.costDebugRotations);
-  await appendFile(debugPath(), JSON.stringify(entry) + "\n", "utf8");
+  // Resolve the location once, so a changed XDG_DATA_HOME mid-write can't
+  // send the append to a directory that was never created.
+  const dir = debugDir();
+  const path = join(dir, "cost-debug.jsonl");
+  await mkdir(dir, { recursive: true });
+  await rotateJsonl(path, RETENTION.costDebugMaxBytes, RETENTION.costDebugRotations);
+  await appendFile(path, JSON.stringify(entry) + "\n", "utf8");
 }
 
 export interface ShadowStripMetrics {
@@ -253,7 +254,20 @@ export function comparePromptPrefixes(
   };
 }
 
+/**
+ * Best-effort: callers fire this without awaiting, so it must never reject.
+ * A failed debug write (full disk, read-only home) is logged, not thrown —
+ * an unhandled rejection would end the user's session.
+ */
 export async function logTurnDebug(ctx: TurnDebugContext): Promise<void> {
+  try {
+    await writeTurnDebug(ctx);
+  } catch (err) {
+    logger.debug("cost_debug:write_failed", { error: (err as Error)?.message ?? String(err) });
+  }
+}
+
+async function writeTurnDebug(ctx: TurnDebugContext): Promise<void> {
   const promptSections = analyzePrompt(ctx.messages);
   const promptTotalChars = promptSections.reduce((sum, s) => sum + s.chars, 0);
   const toolStats = buildToolStats(ctx.toolResults);
