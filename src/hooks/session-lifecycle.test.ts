@@ -53,6 +53,16 @@ describe("reliable SessionEnd (#877)", () => {
     assert.deepEqual([...endedAtFlush].sort(), ["a", "b"]);
   });
 
+  it("every quit path ends a session exactly once: host unmount, a signal's shutdown, both", async () => {
+    // The interactive UI ends sessions after the app unmounts (/exit, Ctrl+C
+    // twice) and again through the shutdown tasks of gracefulExit / a signal.
+    const { hooks, ended } = slowHooks(5);
+    await noteSessionStart({ hooks, sessionId: "a", cwd: "/r", resumed: false });
+    await Promise.all([endSessions("exit"), runShutdownTasks(), endSessions("exit")]);
+    await runShutdownTasks();
+    assert.deepEqual(ended, ["a"]);
+  });
+
   it("a hung SessionEnd hook doesn't hold the shutdown past its deadline", async () => {
     const { hooks } = slowHooks(60_000);
     await noteSessionStart({ hooks, sessionId: "a", cwd: "/r", resumed: false });
