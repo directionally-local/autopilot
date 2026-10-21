@@ -774,6 +774,123 @@ describe("Aster model catalog, model switching, and checkpoints", () => {
   });
 });
 
+describe("Aster device pairing and remote runs", () => {
+  it("pairs a client through the owner's browser and issues a client credential once", async () => {
+    const harness = await createHarness("complete");
+    try {
+      const post = (path: string, body: unknown) => fetch(`${harness.baseUrl}${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const started = await post("/api/v1/auth/device", { clientName: "Test laptop" });
+      assert.equal(started.status, 200);
+      const device = await started.json() as { deviceCode: string; userCode: string; verificationUri: string; verificationUriComplete: string; interval: number };
+      assert.equal(device.verificationUri, `${harness.baseUrl}/api/v1/auth/approve`);
+      assert.equal(device.verificationUriComplete, `${device.verificationUri}?code=${device.userCode}`);
+      assert.equal(device.interval, 5);
+      assert.equal((await post("/api/v1/auth/device", { clientName: "<script>" })).status, 400);
+
+      const pending = await post("/api/v1/auth/device/token", { deviceCode: device.deviceCode });
+      assert.equal(pending.status, 400);
+      assert.equal((await pending.json() as { error: { code: string } }).error.code, "authorization_pending");
+
+      const anonymous = await fetch(device.verificationUriComplete);
+      assert.equal(anonymous.status, 401);
+      assert.match(await anonymous.text(), /autopilot aster owner link/);
+
+      const claimStore = new AsterStore();
+      const claim = claimStore.createOwnerClaim(60_000);
+      claimStore.close();
+      const claimPage = await fetch(`${harness.baseUrl}/api/v1/auth/claim?token=${claim.token}`);
+      assert.equal(claimPage.status, 200);
+      assert.equal(claimPage.headers.get("referrer-policy"), "no-referrer");
+      const claimForm = { method: "POST", redirect: "manual" as const, headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: claim.token }).toString() };
+      assert.equal((await fetch(`${harness.baseUrl}/api/v1/auth/claim`, claimForm)).status, 403, "a claim needs a same-origin form post");
+      const claimed = await fetch(`${harness.baseUrl}/api/v1/auth/claim`, { ...claimForm, headers: { ...claimForm.headers, Origin: harness.baseUrl } });
+      assert.equal(claimed.status, 303);
+      const cookie = claimed.headers.get("set-cookie") ?? "";
+      assert.match(cookie, /^aster_owner=aster_[A-Za-z0-9_-]+; Path=\/api\/v1\/auth; .*HttpOnly; Secure; SameSite=Strict$/);
+      const ownerToken = cookie.split(";")[0]!.slice("aster_owner=".length);
+      assert.equal((await fetch(`${harness.baseUrl}/api/v1/auth/claim`, { ...claimForm, headers: { ...claimForm.headers, Origin: harness.baseUrl } })).status, 410, "claim links are single-use");
+
+      const ownerPage = await fetch(device.verificationUriComplete, { headers: { Cookie: `aster_owner=${ownerToken}` } });
+      assert.equal(ownerPage.status, 200);
+      const ownerHtml = await ownerPage.text();
+      assert.match(ownerHtml, new RegExp(device.userCode));
+      assert.match(ownerHtml, /Test laptop/);
+
+      const approveForm = (origin: string) => fetch(`${harness.baseUrl}/api/v1/auth/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: `aster_owner=${ownerToken}`, Origin: origin },
+        body: new URLSearchParams({ code: device.userCode, decision: "approve" }).toString(),
+      });
+      assert.equal((await approveForm("https://evil.example")).status, 403);
+      const approved = await approveForm(harness.baseUrl);
+      assert.equal(approved.status, 200);
+      assert.match(await approved.text(), /Approved/);
+
+      const issued = await post("/api/v1/auth/device/token", { deviceCode: device.deviceCode });
+      assert.equal(issued.status, 200);
+      const credential = await issued.json() as { token: string; name: string; workspaceIds: string[]; scopes: string[] };
+      assert.equal(credential.name, "Test laptop");
+      assert.deepEqual(credential.workspaceIds, ["default"]);
+      assert.ok(!credential.scopes.includes("pairing:approve"));
+      const health = await fetch(`${harness.baseUrl}/api/v1/health`, { headers: { Authorization: `Bearer ${credential.token}` } });
+      assert.equal(health.status, 200);
+      assert.ok((await health.json() as { capabilities: string[] }).capabilities.includes("device-pairing"));
+      const reused = await post("/api/v1/auth/device/token", { deviceCode: device.deviceCode });
+      assert.equal((await reused.json() as { error: { code: string } }).error.code, "expired_token");
+
+      const ownerAsBearer = await fetch(`${harness.baseUrl}/api/v1/conversations`, { headers: { Authorization: `Bearer ${ownerToken}` } });
+      assert.equal(ownerAsBearer.status, 403, "the owner cookie only approves pairings");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("creates code runs from a base commit and patch and lists only the caller's runs", async () => {
+    const harness = await createHarness("complete");
+    try {
+      const baseCommit = "b".repeat(40);
+      const patch = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-starter\n+local edit\n";
+      const run = { workspaceId: "default", model: "test/model", kind: "code", repository: "me/app" };
+
+      const created = await request(harness, "POST", "/api/v1/conversations", { ...run, baseCommit, patch }, "remote-run-1");
+      assert.equal(created.status, 201);
+      const conversation = await created.json() as { conversationId: string; branch: string };
+      assert.deepEqual(harness.provisionedProjects.at(-1), { kind: "code", repository: "me/app", baseBranch: "main", branch: conversation.branch, baseCommit, patch });
+      const conflict = await request(harness, "POST", "/api/v1/conversations", { ...run, baseCommit, patch: `${patch}\n` }, "remote-run-1");
+      assert.equal(conflict.status, 409, "retrying a key with different local changes is a conflict");
+      const replay = await request(harness, "POST", "/api/v1/conversations", { ...run, baseCommit, patch }, "remote-run-1");
+      assert.equal(replay.status, 200);
+
+      const errorCode = async (body: unknown) => {
+        const response = await request(harness, "POST", "/api/v1/conversations", body);
+        return { status: response.status, code: (await response.json() as { error: { code: string } }).error.code };
+      };
+      assert.deepEqual(await errorCode({ ...run, patch }), { status: 400, code: "base_commit_required" });
+      assert.deepEqual(await errorCode({ ...run, baseCommit: "main" }), { status: 400, code: "invalid_base_commit" });
+      assert.deepEqual(await errorCode({ ...run, baseCommit, patch: 42 }), { status: 400, code: "invalid_patch" });
+      assert.deepEqual(await errorCode({ workspaceId: "default", model: "test/model", kind: "chat", baseCommit }), { status: 400, code: "unsupported_field" });
+
+      const listed = await request(harness, "GET", "/api/v1/conversations?limit=10");
+      assert.equal(listed.status, 200);
+      const runs = (await listed.json() as { conversations: Array<{ conversationId: string; repository: string; branch: string; status: string }> }).conversations;
+      assert.deepEqual(runs.map((entry) => entry.conversationId), [conversation.conversationId]);
+      assert.equal(runs[0]!.repository, "me/app");
+      assert.equal(runs[0]!.branch, conversation.branch);
+      assert.equal((await request(harness, "GET", "/api/v1/conversations?limit=0")).status, 400);
+
+      const otherStore = new AsterStore();
+      const other = otherStore.createCredential({ name: "other", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
+      otherStore.close();
+      const otherList = await fetch(`${harness.baseUrl}/api/v1/conversations`, { headers: { Authorization: `Bearer ${other.token}` } });
+      assert.deepEqual((await otherList.json() as { conversations: unknown[] }).conversations, []);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 interface Harness {
   baseUrl: string;
   token: string;

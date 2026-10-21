@@ -597,6 +597,34 @@ describe("Aster Hotcell runtime", () => {
     );
   });
 
+  it("starts a code cell from the client's base commit and commits its uploaded patch first", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells));
+    const base = { sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
+    const baseCommit = "a".repeat(40);
+    const patch = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n";
+
+    await runtime.provisionConversation({
+      ...base,
+      conversationId: crypto.randomUUID(),
+      project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/abcd1234", baseCommit, patch },
+    });
+    const cell = [...cells.values()].at(-1)!;
+    const clone = cell.commands!.find((command) => command.includes("github-git/me/app.git"))!;
+    assert.match(clone, new RegExp(`git fetch -q origin '${baseCommit}'; git checkout -q -b 'aster/abcd1234' FETCH_HEAD`));
+    assert.doesNotMatch(clone, /ls-remote/, "a client base commit never falls back to the branch tip");
+    assert.equal(cell.files.get("/workspace/.aster/local-changes.patch"), patch);
+    const apply = cell.commands!.findIndex((command) => command.includes("git apply --binary --index /workspace/.aster/local-changes.patch"));
+    assert.ok(apply > cell.commands!.indexOf(clone));
+    assert.ok(!cell.commands!.some((command) => command.includes("+new")), "the diff never appears on an exec command line");
+    assert.ok(cell.commands!.indexOf("touch /workspace/.aster/.seeded") > apply, "the cell is marked seeded only after the patch applies");
+
+    await assert.rejects(
+      () => runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/x", baseCommit: "main; rm -rf /" } }),
+      /invalid_project/,
+    );
+  });
+
   it("only reads artifacts by safe relative paths", async () => {
     const cells = new Map<string, FakeCellState>();
     const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });

@@ -181,6 +181,75 @@ describe("AsterStore", () => {
       store.close();
     }
   });
+
+  it("pairs a device: pending until approved, then exactly one client credential", async () => {
+    const root = await fixture();
+    const store = new AsterStore(join(root, "state", "aster.db"));
+    try {
+      const now = Date.now();
+      const started = store.createDeviceAuthorization({ clientName: "Laptop", ttlMs: 600_000, maxPending: 5 }, now)!;
+      assert.match(started.userCode, /^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);
+      assert.equal(store.redeemDeviceAuthorization(started.deviceCode, now).kind, "pending");
+      assert.equal(store.redeemDeviceAuthorization(started.deviceCode, now + 1_000).kind, "slow_down");
+      assert.equal(store.redeemDeviceAuthorization(started.deviceCode, now + 10_000).kind, "pending");
+      assert.deepEqual(store.listPendingDeviceAuthorizations(now).map((entry) => entry.userCode), [started.userCode]);
+
+      // Codes are accepted however they're typed.
+      const typed = started.userCode.toLowerCase().replace("-", " ");
+      assert.equal(store.resolveDeviceAuthorization(typed, "approve", { workspaceIds: ["default"], credentialTtlMs: 60_000 }, now), "approved");
+      assert.equal(store.resolveDeviceAuthorization(started.userCode, "deny", { workspaceIds: ["default"], credentialTtlMs: 60_000 }, now), "already_resolved");
+
+      const issued = store.redeemDeviceAuthorization(started.deviceCode, now + 20_000);
+      assert.ok(issued.kind === "issued");
+      assert.equal(issued.credential.name, "Laptop");
+      assert.deepEqual(issued.credential.workspaceIds, ["default"]);
+      assert.ok(!issued.credential.scopes.includes("pairing:approve"));
+      assert.equal(store.authenticate(`Bearer ${issued.credential.token}`, now + 20_000)?.credentialId, issued.credential.id);
+      assert.equal(store.redeemDeviceAuthorization(started.deviceCode, now + 30_000).kind, "expired", "a device code is single-use");
+
+      const denied = store.createDeviceAuthorization({ clientName: "Stranger", ttlMs: 600_000, maxPending: 5 }, now)!;
+      assert.equal(store.resolveDeviceAuthorization(denied.userCode, "deny", { workspaceIds: ["default"], credentialTtlMs: 60_000 }, now), "denied");
+      assert.equal(store.redeemDeviceAuthorization(denied.deviceCode, now).kind, "denied");
+
+      const stale = store.createDeviceAuthorization({ clientName: "Late", ttlMs: 1_000, maxPending: 5 }, now)!;
+      assert.equal(store.resolveDeviceAuthorization(stale.userCode, "approve", { workspaceIds: ["default"], credentialTtlMs: 60_000 }, now + 2_000), "expired");
+      assert.equal(store.redeemDeviceAuthorization(stale.deviceCode, now + 2_000).kind, "expired");
+      assert.equal(store.resolveDeviceAuthorization("ZZZZ-ZZZZ", "approve", { workspaceIds: ["default"], credentialTtlMs: 60_000 }, now), "not_found");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("caps pending pairings so unauthenticated callers can't fill the table", async () => {
+    const root = await fixture();
+    const store = new AsterStore(join(root, "state", "aster.db"));
+    try {
+      const now = Date.now();
+      assert.ok(store.createDeviceAuthorization({ clientName: "a", ttlMs: 1_000, maxPending: 2 }, now));
+      assert.ok(store.createDeviceAuthorization({ clientName: "b", ttlMs: 1_000, maxPending: 2 }, now));
+      assert.equal(store.createDeviceAuthorization({ clientName: "c", ttlMs: 1_000, maxPending: 2 }, now), undefined);
+      assert.ok(store.createDeviceAuthorization({ clientName: "d", ttlMs: 1_000, maxPending: 2 }, now + 5_000), "expired codes stop counting");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("redeems an owner claim once for a pairing:approve-only credential", async () => {
+    const root = await fixture();
+    const store = new AsterStore(join(root, "state", "aster.db"));
+    try {
+      const claim = store.createOwnerClaim(60_000);
+      assert.match(claim.token, /^aster_claim_/);
+      const owner = store.redeemOwnerClaim(claim.token, { workspaceIds: ["default"], credentialTtlMs: 60_000 });
+      assert.deepEqual(owner?.scopes, ["pairing:approve"]);
+      assert.equal(store.redeemOwnerClaim(claim.token, { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
+      const expired = store.createOwnerClaim(1_000, Date.now() - 10_000);
+      assert.equal(store.redeemOwnerClaim(expired.token, { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
+      assert.equal(store.redeemOwnerClaim("aster_claim_short", { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 async function fixture(): Promise<string> {

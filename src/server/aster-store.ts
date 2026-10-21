@@ -1,10 +1,10 @@
 import Database from "better-sqlite3";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve";
+export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve" | "pairing:approve";
 export type AsterConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "merged";
 export type AsterApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
 
@@ -159,6 +159,37 @@ interface ApprovalRow extends Record<string, unknown> {
   resolved_at: number | null;
 }
 
+export type AsterDeviceStatus = "pending" | "approved" | "denied" | "redeemed";
+
+export interface AsterDeviceAuthorization {
+  userCode: string;
+  clientName: string;
+  status: AsterDeviceStatus;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export type AsterDeviceRedemption =
+  | { kind: "pending" }
+  | { kind: "slow_down" }
+  | { kind: "denied" }
+  | { kind: "expired" }
+  | { kind: "issued"; credential: CreatedAsterCredential };
+
+export type AsterDeviceResolution = "approved" | "denied" | "not_found" | "expired" | "already_resolved";
+
+interface DeviceRow extends Record<string, unknown> {
+  device_code_hash: string;
+  user_code: string;
+  client_name: string;
+  status: AsterDeviceStatus;
+  workspace_ids_json: string | null;
+  credential_ttl_ms: number | null;
+  created_at: number;
+  expires_at: number;
+  last_polled_at: number | null;
+}
+
 export interface CreatedAsterCredential {
   id: string;
   name: string;
@@ -170,8 +201,13 @@ export interface CreatedAsterCredential {
 }
 
 const VALID_SCOPES = new Set<AsterScope>([
-  "workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve",
+  "workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve", "pairing:approve",
 ]);
+/** What a paired client (laptop CLI, desktop app) may do; never pairing:approve. */
+export const ASTER_CLIENT_SCOPES: AsterScope[] = ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"];
+// No vowels or look-alikes, so a code can't spell a word and is easy to read aloud.
+const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
+const DEVICE_POLL_INTERVAL_MS = 5_000;
 const MAX_EVENTS_PER_CONVERSATION = 50_000;
 
 export class AsterStore {
@@ -278,6 +314,26 @@ export class AsterStore {
         created_at INTEGER NOT NULL,
         revoked_at INTEGER
       );
+      CREATE TABLE IF NOT EXISTS aster_device_authorizations (
+        device_code_hash TEXT PRIMARY KEY,
+        user_code TEXT NOT NULL UNIQUE,
+        client_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        workspace_ids_json TEXT,
+        credential_ttl_ms INTEGER,
+        credential_id TEXT,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        last_polled_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS aster_owner_claims (
+        token_hash TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        claimed_at INTEGER,
+        credential_id TEXT
+      );
       CREATE TABLE IF NOT EXISTS aster_conversation_projects (
         conversation_id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
@@ -323,9 +379,15 @@ export class AsterStore {
     idempotencyKey: string;
     kind?: "chat" | "code";
     repository?: string;
+    /** Uploaded working-tree changes: part of the request, so a retry must resend the same ones. */
+    baseCommit?: string;
+    patch?: string;
   }): AsterCellReservation {
     const keyHash = createHash("sha256").update(input.idempotencyKey).digest("hex");
-    const fingerprintInput = [input.workspaceId, input.model, input.kind ?? "chat", input.repository?.toLowerCase() ?? null];
+    const fingerprintInput: unknown[] = [input.workspaceId, input.model, input.kind ?? "chat", input.repository?.toLowerCase() ?? null];
+    if (input.baseCommit !== undefined) {
+      fingerprintInput.push(input.baseCommit, createHash("sha256").update(input.patch ?? "").digest("hex"));
+    }
     const fingerprint = createHash("sha256").update(JSON.stringify(fingerprintInput)).digest("hex");
     const legacyChatFingerprint = createHash("sha256").update(JSON.stringify([input.workspaceId, input.model])).digest("hex");
     const reserve = this.db.transaction((): AsterCellReservation => {
@@ -419,6 +481,132 @@ export class AsterStore {
       scopes: JSON.parse(row.scopes_json) as AsterScope[],
       expiresAt: row.expires_at,
     };
+  }
+
+  /**
+   * Starts a device-code pairing (RFC 8628 shape): the client keeps the device code and
+   * polls; the owner approves the short user code. Returns undefined when too many
+   * pairings are pending, so an unauthenticated caller can't fill the table.
+   */
+  createDeviceAuthorization(input: { clientName: string; ttlMs: number; maxPending: number }, now = Date.now()):
+    { deviceCode: string; userCode: string; expiresAt: number; intervalMs: number } | undefined {
+    const create = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM aster_device_authorizations WHERE expires_at <= ? AND status != 'redeemed'").run(now);
+      const pending = this.db.prepare("SELECT COUNT(*) AS count FROM aster_device_authorizations WHERE status = 'pending'").get() as { count: number };
+      if (pending.count >= input.maxPending) return undefined;
+      const deviceCode = `aster_device_${randomBytes(32).toString("base64url")}`;
+      let userCode = newUserCode();
+      while (this.db.prepare("SELECT 1 FROM aster_device_authorizations WHERE user_code = ?").get(userCode)) userCode = newUserCode();
+      const expiresAt = now + input.ttlMs;
+      this.db.prepare(`INSERT INTO aster_device_authorizations
+        (device_code_hash, user_code, client_name, status, created_at, expires_at)
+        VALUES (?, ?, ?, 'pending', ?, ?)`)
+        .run(hashToken(deviceCode), userCode, input.clientName, now, expiresAt);
+      return { deviceCode, userCode, expiresAt, intervalMs: DEVICE_POLL_INTERVAL_MS };
+    });
+    return create.immediate();
+  }
+
+  getDeviceAuthorization(userCode: string, now = Date.now()): AsterDeviceAuthorization | undefined {
+    const row = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE user_code = ?")
+      .get(normalizeUserCode(userCode)) as DeviceRow | undefined;
+    if (!row || (row.status === "pending" && row.expires_at <= now)) return undefined;
+    return deviceFromRow(row);
+  }
+
+  listPendingDeviceAuthorizations(now = Date.now()): AsterDeviceAuthorization[] {
+    const rows = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE status = 'pending' AND expires_at > ? ORDER BY created_at")
+      .all(now) as DeviceRow[];
+    return rows.map(deviceFromRow);
+  }
+
+  /** The owner's decision on a user code. An approval fixes the credential the client will receive. */
+  resolveDeviceAuthorization(
+    userCode: string,
+    decision: "approve" | "deny",
+    grant: { workspaceIds: string[]; credentialTtlMs: number },
+    now = Date.now(),
+  ): AsterDeviceResolution {
+    const resolve = this.db.transaction((): AsterDeviceResolution => {
+      const row = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE user_code = ?")
+        .get(normalizeUserCode(userCode)) as DeviceRow | undefined;
+      if (!row) return "not_found";
+      if (row.status !== "pending") return "already_resolved";
+      if (row.expires_at <= now) return "expired";
+      if (decision === "deny") {
+        this.db.prepare("UPDATE aster_device_authorizations SET status = 'denied', resolved_at = ? WHERE user_code = ?").run(now, row.user_code);
+        return "denied";
+      }
+      this.db.prepare(`UPDATE aster_device_authorizations
+        SET status = 'approved', workspace_ids_json = ?, credential_ttl_ms = ?, resolved_at = ? WHERE user_code = ?`)
+        .run(JSON.stringify(grant.workspaceIds), grant.credentialTtlMs, now, row.user_code);
+      return "approved";
+    });
+    return resolve.immediate();
+  }
+
+  /** The client's poll. An approved code is exchanged for its credential exactly once. */
+  redeemDeviceAuthorization(deviceCode: string, now = Date.now()): AsterDeviceRedemption {
+    const redeem = this.db.transaction((): AsterDeviceRedemption => {
+      const row = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE device_code_hash = ?")
+        .get(hashToken(deviceCode)) as DeviceRow | undefined;
+      if (!row || row.status === "redeemed") return { kind: "expired" };
+      if (row.status === "denied") return { kind: "denied" };
+      if (row.status === "pending") {
+        if (row.expires_at <= now) return { kind: "expired" };
+        const tooSoon = row.last_polled_at !== null && now - row.last_polled_at < DEVICE_POLL_INTERVAL_MS - 1_000;
+        this.db.prepare("UPDATE aster_device_authorizations SET last_polled_at = ? WHERE device_code_hash = ?").run(now, row.device_code_hash);
+        return tooSoon ? { kind: "slow_down" } : { kind: "pending" };
+      }
+      const credential = this.createCredential({
+        name: row.client_name,
+        workspaceIds: JSON.parse(row.workspace_ids_json ?? "[]") as string[],
+        scopes: ASTER_CLIENT_SCOPES,
+        expiresAt: now + (row.credential_ttl_ms ?? 0),
+      });
+      this.db.prepare("UPDATE aster_device_authorizations SET status = 'redeemed', credential_id = ? WHERE device_code_hash = ?")
+        .run(credential.id, row.device_code_hash);
+      return { kind: "issued", credential };
+    });
+    return redeem.immediate();
+  }
+
+  /** A one-time link that makes the browser opening it an owner able to approve pairings. */
+  createOwnerClaim(ttlMs: number, now = Date.now()): { token: string; expiresAt: number } {
+    const token = `aster_claim_${randomBytes(32).toString("base64url")}`;
+    const expiresAt = now + ttlMs;
+    this.db.prepare("INSERT INTO aster_owner_claims (token_hash, created_at, expires_at) VALUES (?, ?, ?)").run(hashToken(token), now, expiresAt);
+    return { token, expiresAt };
+  }
+
+  /** Consumes an owner claim and issues the owner's pairing:approve credential. */
+  redeemOwnerClaim(token: string, grant: { workspaceIds: string[]; credentialTtlMs: number }, now = Date.now()): CreatedAsterCredential | undefined {
+    if (!/^aster_claim_[A-Za-z0-9_-]{40,}$/.test(token)) return undefined;
+    const redeem = this.db.transaction((): CreatedAsterCredential | undefined => {
+      const row = this.db.prepare("SELECT * FROM aster_owner_claims WHERE token_hash = ?").get(hashToken(token)) as
+        { token_hash: string; expires_at: number; claimed_at: number | null } | undefined;
+      if (!row || row.claimed_at !== null || row.expires_at <= now) return undefined;
+      const credential = this.createCredential({
+        name: "Owner (browser)",
+        workspaceIds: grant.workspaceIds,
+        scopes: ["pairing:approve"],
+        expiresAt: now + grant.credentialTtlMs,
+      });
+      this.db.prepare("UPDATE aster_owner_claims SET claimed_at = ?, credential_id = ? WHERE token_hash = ?").run(now, credential.id, row.token_hash);
+      return credential;
+    });
+    return redeem.immediate();
+  }
+
+  /** Conversations a credential created, newest first. */
+  listCredentialConversations(credentialId: string, limit: number): AsterConversation[] {
+    const rows = this.db.prepare(`SELECT conversation_id FROM aster_cell_mappings
+      WHERE credential_id = ? AND status != 'destroyed' ORDER BY created_at DESC LIMIT ?`)
+      .all(credentialId, limit) as Array<{ conversation_id: string }>;
+    return rows.flatMap(({ conversation_id }) => {
+      const conversation = this.getConversation(conversation_id);
+      return conversation ? [conversation] : [];
+    });
   }
 
   revokeCredential(id: string, now = Date.now()): boolean {
@@ -759,6 +947,21 @@ export function defaultAsterDbPath(): string {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function newUserCode(): string {
+  const chars = Array.from({ length: 8 }, () => USER_CODE_ALPHABET[randomInt(USER_CODE_ALPHABET.length)]!);
+  return `${chars.slice(0, 4).join("")}-${chars.slice(4).join("")}`;
+}
+
+/** Accepts codes typed in any case, with or without the dash. */
+export function normalizeUserCode(code: string): string {
+  const compact = code.toUpperCase().replace(/[^A-Z]/g, "");
+  return compact.length === 8 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
+}
+
+function deviceFromRow(row: DeviceRow): AsterDeviceAuthorization {
+  return { userCode: row.user_code, clientName: row.client_name, status: row.status, createdAt: row.created_at, expiresAt: row.expires_at };
 }
 
 function cellMappingFromRow(row: Record<string, unknown>): AsterCellMapping {

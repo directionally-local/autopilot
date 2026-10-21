@@ -28,6 +28,8 @@ const REPOSITORY_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 // Fixed identity and no signing so commits never depend on cell-local git config.
 const GIT = `git -C ${CELL_WORKSPACE} -c user.name=Autopilot -c user.email=autopilot@aster.invalid -c commit.gpgsign=false`;
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/;
+const FULL_COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
+const LOCAL_CHANGES_PATCH = `${CELL_STATE_DIR}/local-changes.patch`;
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
 const MAX_TOOL_INPUT_CHARS = 2_000;
 const MAX_CHECKPOINTS = 100;
@@ -76,6 +78,10 @@ export interface AsterCellProject {
   branch?: string;
   /** Aster's repository-scoped GitHub proxy (preferred over Hotcell's GitHub gateway). */
   github?: { token: string; gitUrl: string };
+  /** Start from this commit instead of the tip of baseBranch (the client's local base). */
+  baseCommit?: string;
+  /** Uncommitted client changes (a binary git diff against baseCommit), committed first on the branch. */
+  patch?: string;
 }
 
 export interface AsterArtifact {
@@ -606,11 +612,18 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   private async cloneRepository(cell: Sandbox, project: AsterCellProject): Promise<void> {
     const seeded = await cell.exec(`test -f ${CELL_STATE_DIR}/.seeded`);
     if (seeded.exitCode === 0) return;
-    const { repository, baseBranch, branch } = project;
+    const { repository, baseBranch, branch, baseCommit } = project;
     if (!repository || !REPOSITORY_RE.test(repository) || !baseBranch || !BRANCH_RE.test(baseBranch) || !branch || !BRANCH_RE.test(branch)) {
       throw new Error("invalid_project");
     }
+    if (baseCommit !== undefined && !FULL_COMMIT_SHA_RE.test(baseCommit)) throw new Error("invalid_project");
     await cell.mkdir(CELL_STATE_DIR, { parents: true });
+    // A client base commit must exist upstream; never silently start from another one.
+    const checkout = baseCommit
+      ? `git fetch -q origin '${baseCommit}'; git checkout -q -b '${branch}' FETCH_HEAD; `
+      : `if git ls-remote --exit-code --heads origin '${baseBranch}' >/dev/null 2>&1; then ` +
+        `git fetch -q origin '${baseBranch}'; git checkout -q -b '${branch}' FETCH_HEAD; ` +
+        `else git checkout -q -b '${branch}'; fi; `;
     const clone = await cell.exec(
       `set -e; cd ${CELL_WORKSPACE}; ` +
       // Prefer Aster's repository-scoped proxy; fall back to Hotcell's GitHub gateway.
@@ -619,12 +632,19 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
       `git init -q; git remote add origin "$remote" 2>/dev/null || git remote set-url origin "$remote"; ` +
       `git config credential.helper '!f() { echo username=x-access-token; echo "password=\${ASTER_GITHUB_TOKEN:-$GITHUB_API_KEY}"; }; f'; ` +
       `git config user.name "Aster Autopilot"; git config user.email "autopilot@aster.invalid"; ` +
-      `if git ls-remote --exit-code --heads origin '${baseBranch}' >/dev/null 2>&1; then ` +
-      `git fetch -q origin '${baseBranch}'; git checkout -q -b '${branch}' FETCH_HEAD; ` +
-      `else git checkout -q -b '${branch}'; fi; ` +
-      `touch ${CELL_STATE_DIR}/.seeded`,
+      checkout,
     );
-    if (clone.exitCode !== 0) throw new Error("repository_clone_failed");
+    if (clone.exitCode !== 0) throw new Error(baseCommit ? "base_commit_unavailable" : "repository_clone_failed");
+    if (project.patch) {
+      // The diff goes through a 0600 file, never the exec command line.
+      await writeCellFileChunked(cell, LOCAL_CHANGES_PATCH, project.patch);
+      const applied = await cell.exec(
+        `set -e; cd ${CELL_WORKSPACE}; git apply --binary --index ${LOCAL_CHANGES_PATCH}; ` +
+        `git -c commit.gpgsign=false commit -q --no-verify -m 'Apply local changes'; rm -f ${LOCAL_CHANGES_PATCH}`,
+      );
+      if (applied.exitCode !== 0) throw new Error("patch_apply_failed");
+    }
+    await cell.exec(`touch ${CELL_STATE_DIR}/.seeded`);
   }
 
   /** Files under /workspace/artifacts, the folder the agent saves user-facing deliverables in. */

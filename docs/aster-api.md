@@ -113,6 +113,35 @@ ssh -i ~/.ssh/google_compute_engine -N -L 4096:127.0.0.1:4096 root@2.29.49.61
 
 Then use `http://127.0.0.1:4096` with the scoped Bearer token. For a physical iPhone, enroll both VM and phone in the same approved Tailscale tailnet, then use **Tailscale Serve only** to proxy HTTPS to `http://127.0.0.1:4096`. Do not enable Funnel or change Autopilot’s loopback bind. Enrollment requires the operator to complete Tailscale’s interactive device authorization; it is not done by this code change.
 
+## Pair a client without copying keys
+
+A laptop CLI or desktop app pairs itself with a device code, like `gh auth login`, and receives an ordinary Aster credential (the five client scopes, every configured workspace, 90 days). Nothing is copied by hand: the server's provider and GitHub credentials never leave it.
+
+1. **Owner (once per browser).** On the server, print a one-time link valid for 24 hours. The installer runs this for you:
+
+   ```sh
+   autopilot aster owner link --url https://acme.example.com   # or set AUTOPILOT_PUBLIC_URL
+   ```
+
+   Opening it and pressing the button makes that browser the owner: the server issues a `pairing:approve`-only Aster credential (365 days) and stores it in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/auth`. It cannot call any other API. The link is single-use. Revoke an owner browser like any credential (`autopilot aster token revoke <id>`).
+
+2. **Client.** `POST /api/v1/auth/device` (no auth) with an optional `{"clientName":"MacBook"}` returns:
+
+   ```json
+   {"deviceCode":"aster_device_…","userCode":"BCDF-GHJK","verificationUri":"https://acme.example.com/api/v1/auth/approve","verificationUriComplete":"https://acme.example.com/api/v1/auth/approve?code=BCDF-GHJK","expiresIn":600,"interval":5}
+   ```
+
+   The client shows the user code, opens `verificationUriComplete`, and polls `POST /api/v1/auth/device/token` with `{"deviceCode":"…"}` every `interval` seconds. Until a decision, the poll returns `400` with error code `authorization_pending` (or `slow_down` when polling faster than the interval). It also returns `400` with `access_denied` after a denial and with `expired_token` once the code has expired or was already redeemed. After approval it returns `200` once with `{token, credentialId, name, workspaceIds, scopes, expiresAt}`; keep the token in the OS keychain.
+
+3. **Approve.** The owner's browser shows the client name and code with Approve / Deny buttons. Form posts must be same-origin. Without an owner browser, approve on the server instead:
+
+   ```sh
+   autopilot aster pair list
+   autopilot aster pair approve BCDF-GHJK    # or: deny
+   ```
+
+Codes are 8 letters without vowels and expire after 10 minutes. At most 20 can wait at once (`429 too_many_pending`). `verificationUri` uses `AUTOPILOT_PUBLIC_URL` when set; otherwise it uses the request's `X-Forwarded-Host`/`Host` and `X-Forwarded-Proto` (`https` unless the host is loopback). All pairing routes live under `/api/v1`, so a gateway that proxies only the Aster API keeps working.
+
 ## API contract
 
 All paths below require the scoped Bearer credential. Unknown IDs outside the token’s workspace scope are returned as `404` to avoid disclosing their existence. JSON errors use `{ "error": { "code": "...", "message": "..." } }`.
@@ -156,6 +185,14 @@ Returns `201` with an opaque conversation ID and cursor; no filesystem paths or 
 ```json
 {"conversationId":"<uuid>","workspaceId":"default","model":"moonshotai/kimi-k2.6","status":"ready","activeRunId":null,"lastEventId":1,"createdAt":"...","updatedAt":"..."}
 ```
+
+**Uncommitted local work.** A code conversation may also carry `baseCommit` (a full 40-character SHA the repository already has) and `patch` (a `git diff --binary` against it, at most 3 MiB). The cell fetches that exact commit instead of the default branch tip; it never falls back to another commit (provisioning fails with `503` if the commit is unavailable). The patch is written into the cell through a `0600` file and applied with `git apply --index`. It becomes the first commit on the conversation branch ("Apply local changes"), so the pull request contains it. `patch` requires `baseCommit` (`400 base_commit_required`). Patches that look like they contain a provider key are rejected (`400 patch_contains_secret`). Both fields are part of the `Idempotency-Key` fingerprint, so a retry must resend the same changes.
+
+```json
+{"workspaceId":"default","model":"moonshotai/kimi-k2.6","kind":"code","repository":"acme/project","baseCommit":"<40-hex sha>","patch":"diff --git a/…"}
+```
+
+`GET /api/v1/conversations?limit=50` lists the calling credential's conversations, newest first (limit 1-200, destroyed ones omitted), each in the shape `GET /api/v1/conversations/{conversationId}` returns. For code conversations that includes `repository`, `branch`, and, once opened, `pullRequestURL`.
 
 `GET /api/v1/conversations/{conversationId}` resumes metadata by opaque ID. Conversation history remains server-side; Aster does not replay it on later requests.
 
