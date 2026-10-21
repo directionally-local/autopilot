@@ -404,6 +404,7 @@ autopilot
 | `/now` | Run your latest queued message now instead of after the current turn (also `Ctrl+G` in Ink) |
 | `/key` | Show the active provider's key — on OpenRouter with spend and credit (`/key set <key>`, `/key clear`) |
 | `/cost` | Show cost by session, day, month and all time (OpenRouter-confirmed, or estimated from the provider's prices) |
+| `/good` / `/bad` `[note]` | Rate the last turn; recorded in the session trace when [tracing](#session-traces-and-evals) is on |
 | `/update` | Check for updates |
 | `/help` | List all commands |
 
@@ -497,6 +498,33 @@ Each log entry maps to one OTel `LogRecord`. Correlation IDs
 `data.*` fields are flattened to attributes with type-preserving
 encoding, and a `service.name=kimiflare` + `service.version` pair sits
 on the resource.
+
+## Session traces and evals
+
+Autopilot can record its own sessions so you can see how it performs on your work, and compare setups on your own tasks. Everything stays on your machine.
+
+### Session traces
+
+Tracing is off by default. Turn it on for one run with `KIMIFLARE_TRACE=1`, or always with `"trace": { "enabled": true }` in `~/.config/kimiflare/config.json`. Each session then writes a `trace.jsonl` under `~/.local/share/kimiflare/traces/` (`KIMIFLARE_TRACE_DIR` or `trace.root` to change it), one event per line:
+
+- every model request and response, with tokens, cost and latency
+- tool calls and their results, and each permission decision
+- compactions, completion checks, subagents and turn ends
+- **outcome signals:** the git changes a session made, test, lint, typecheck and build commands and whether they passed, your `/good` and `/bad` ratings (with an optional note), and whether your next message corrected the agent or told it to carry on
+
+Large bodies are stored once, by hash, next to the trace. Likely secrets are redacted before anything is written, nothing is uploaded, and old traces are pruned automatically: after 90 days, above 200 MB for one session, or when all traces pass 2 GB.
+
+### Evals
+
+`autopilot eval` runs Autopilot headlessly on a set of tasks and compares two configurations: a model, a setting, or a harness change.
+
+```bash
+autopilot eval run --tasks evals/tasks/autopilot-bench --config evals/configs/baseline.json --model <id> --out /tmp/eval-a
+autopilot eval run --tasks evals/tasks/autopilot-bench --config evals/configs/my-change.json --model <id> --out /tmp/eval-b
+autopilot eval compare /tmp/eval-a/results.jsonl /tmp/eval-b/results.jsonl
+```
+
+Each task is a JSON file naming a repo, a base commit, a prompt and a test command. Every run gets its own git worktree with tracing forced on, and the task passes if the test exits 0. `eval compare` prints success rates with a paired significance test, cost, turns and the tasks that flipped. This repository ships `autopilot-bench`, twenty tasks mined from its own merged pull requests; see [evals/README.md](evals/README.md) for the task format and how to build a set from your own repo.
 
 ## Hooks
 
