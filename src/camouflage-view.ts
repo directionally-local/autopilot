@@ -64,6 +64,7 @@ import { logger } from "./util/logger.js";
 import { JobManager, type JobRecord } from "./jobs/manager.js";
 import { activityFromJob, activityFromSubagent, diffActivityItems, isActiveJob, type ActivityItem } from "./ui/activity.js";
 import { workerRegistry, type RunningWorker } from "./tools/worker-registry.js";
+import { CamouflageCrashed, CamouflageUnavailable, diagnoseRenderer, mountFailureReason, rendererBlocker } from "./camouflage-launch.js";
 
 interface CamouflageHandle {
   send(eventType: string, payload?: Record<string, unknown>): boolean;
@@ -81,54 +82,46 @@ interface CamouflageSdk {
   resumeTerminal?(cam: CamouflageHandle): void;
 }
 
-/** The renderer couldn't start (not installed, no binary for this
- *  platform); nothing has been drawn, so the caller can fall back to Ink. */
 /** Renderer severity for an info/memory notice: a warning-toned info
  *  event (e.g. a failed hook, #889) shows as a warning. */
 export function noticeSeverity(e: Extract<ChatEvent, { kind: "info" | "memory" }>): "info" | "warn" {
   return e.kind === "info" && e.tone === "warn" ? "warn" : "info";
 }
 
-export class CamouflageUnavailable extends Error {}
+export { CamouflageUnavailable, CamouflageCrashed };
+
+/** CamouflageUnavailable with the on-disk diagnosis attached. */
+function unavailable(reason: string): CamouflageUnavailable {
+  return new CamouflageUnavailable(reason, diagnoseRenderer());
+}
 
 async function loadSdk(): Promise<CamouflageSdk> {
   const sdk = (await import("camouflage-tui").catch((err) => {
-    throw new CamouflageUnavailable(`camouflage-tui is not installed (${(err as Error).message})`);
+    throw unavailable(`camouflage-tui could not be loaded (${(err as Error).message})`);
   })) as unknown as Partial<CamouflageSdk>;
   if (typeof sdk.permission !== "function" || typeof sdk.mount !== "function" || typeof sdk.selectList !== "function") {
-    throw new CamouflageUnavailable("the installed camouflage-tui is too old");
+    throw unavailable("the installed camouflage-tui is too old");
   }
   return sdk as CamouflageSdk;
-}
-
-/** The renderer exited unexpectedly mid-session (not the user quitting). */
-export class CamouflageCrashed extends Error {
-  constructor(
-    message: string,
-    /** The session to reopen in the Ink UI, if the App had started one. */
-    readonly sessionId: string | null,
-  ) {
-    super(message);
-  }
 }
 
 export interface RendererInfo {
   packageVersion: string | null;
   /** The binary mount() runs. */
   binary: string;
-  source: "CAMOUFLAGE_BIN" | "package" | "PATH";
+  source: "CAMOUFLAGE_BIN" | "package";
   /** `<binary> --version`, when the renderer supports it. */
   binaryVersion: string | null;
 }
 
 /**
- * Which renderer will run (#862). The SDK uses the binary its postinstall
- * downloaded and falls back to `camouflage-tui` on PATH, which can be a stale
- * build when that download failed — so log both, and say so when it happens.
+ * Which renderer runs (#862): CAMOUFLAGE_BIN, else the binary camouflage-tui's
+ * postinstall downloaded. (Since camouflage-tui 2.8 the SDK never falls back
+ * to a `camouflage-tui` on PATH; a missing binary is re-downloaded or fails.)
  */
 export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo {
   let packageVersion: string | null = null;
-  let packageBin: string | null = null;
+  let packageBin = "camouflage-tui";
   try {
     // The package's exports don't include package.json: resolve its entry
     // point and walk up to the package root.
@@ -136,7 +129,7 @@ export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo
     while (!existsSync(join(dir, "package.json")) && dirname(dir) !== dir) dir = dirname(dir);
     packageVersion = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { version?: string }).version ?? null;
     const local = join(dir, "bin", process.platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui");
-    if (existsSync(local)) packageBin = local;
+    packageBin = local;
   } catch {
     // not installed: mount() reports that
   }
@@ -145,16 +138,9 @@ export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo
   if (env.CAMOUFLAGE_BIN) {
     binary = env.CAMOUFLAGE_BIN;
     source = "CAMOUFLAGE_BIN";
-  } else if (packageBin) {
+  } else {
     binary = packageBin;
     source = "package";
-  } else {
-    source = "PATH";
-    try {
-      binary = execFileSync(process.platform === "win32" ? "where" : "which", ["camouflage-tui"], { encoding: "utf8", timeout: 2000 }).trim().split("\n")[0] || "camouflage-tui";
-    } catch {
-      binary = "camouflage-tui";
-    }
   }
   let binaryVersion: string | null = null;
   try {
@@ -190,8 +176,16 @@ export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | n
 
 export async function runCamouflageView(opts: CamouflageViewOpts): Promise<CamouflageViewResult> {
   const sdk = await loadSdk();
-  const renderer = rendererInfo();
-  logger.info("camouflage.renderer", { ...renderer });
+  // Fail before mounting when the renderer certainly can't run (a postinstall
+  // that silently left bin/ empty on an unsupported platform, a bad
+  // CAMOUFLAGE_BIN), instead of a spawn error or a doomed download.
+  const diagnosis = diagnoseRenderer();
+  const blocker = rendererBlocker(diagnosis);
+  if (blocker) throw new CamouflageUnavailable(blocker, diagnosis);
+  if (!diagnosis.envBin && !diagnosis.packageBinExists) {
+    // The SDK downloads the missing binary once before giving up.
+    process.stderr.write(`autopilot: the Camouflage renderer is missing (${diagnosis.packageBin}); downloading it…\n`);
+  }
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
   try {
@@ -203,18 +197,11 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
     });
   } catch (err) {
     restoreConsole();
-    throw new CamouflageUnavailable((err as Error).message);
+    throw unavailable(mountFailureReason((err as Error).message));
   }
+  const renderer = rendererInfo();
+  logger.info("camouflage.renderer", { ...renderer });
   cam.on("stderr", (chunk: string) => logger.warn("camouflage.stderr", { chunk }));
-  if (renderer.source === "PATH") {
-    // The package's own binary is missing (its install step failed): whatever
-    // is on PATH may be an old build with bugs fixed long ago.
-    logger.warn("camouflage.renderer_from_path", { ...renderer });
-    cam.send("RuntimeError", {
-      message: `camouflage-tui ${renderer.packageVersion ?? ""} has no renderer binary of its own (its install step failed), so ${renderer.binary} from PATH is used and may be outdated. Reinstall autopilot-ai to fix it.`,
-      severity: "warning",
-    });
-  }
 
   const cwd = process.cwd();
   const branch = gitBranch(cwd);
@@ -296,7 +283,7 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
     }
     // The renderer crashed (#862). The session must survive it: say where the
     // crash report is, let the turn in flight finish (it is saved after every
-    // turn), then end the App so the caller reopens it in the Ink UI.
+    // turn), then end the App so the caller reopens it in a fresh renderer.
     crashed = { code, signal };
     logger.error("camouflage.crashed", { code, signal, ...renderer });
     void finish().then(async () => {
@@ -305,7 +292,7 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
       process.stderr.write(
         `\nThe Camouflage renderer stopped unexpectedly (${signal ?? `exit code ${code}`}). ` +
           `Its crash report is in ${join(homedir(), ".camouflage")} (crash-*.txt).\n` +
-          (view.busy ? "Finishing the current turn, then reopening this conversation in the classic UI…\n" : "Reopening this conversation in the classic UI…\n"),
+          (view.busy ? "Finishing the current turn first…\n" : ""),
       );
       await view.settle();
       // Before the App connected there's nothing to end: stop waiting for it.

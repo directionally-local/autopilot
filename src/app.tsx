@@ -528,8 +528,8 @@ function App({
   // Batched streaming delta refs to reduce React re-render frequency
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
 
-  // After a Camouflage renderer crash (#862) the Ink UI reopens the session
-  // the crashed view was saving.
+  // After a Camouflage renderer crash (#862) the restarted view reopens the
+  // session the crashed one was saving.
   const resumedAfterCrashRef = useRef(false);
   useEffect(() => {
     if (!initialResumeSessionId || resumedAfterCrashRef.current || !cfg) return;
@@ -540,7 +540,7 @@ function App({
         await doResumeSession(join(sessionsDir(), `${initialResumeSessionId}.json`));
         setEvents((e) => [
           ...e,
-          { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed, so this conversation reopened here in the classic UI. Nothing was lost." },
+          { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed and was restarted; this conversation reopened where it left off." },
         ]);
       } catch (err) {
         setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `Couldn't reopen the conversation after the renderer crash: ${(err as Error).message}. Use /resume.` }]);
@@ -2713,6 +2713,7 @@ export async function renderAppWithBridge(
   updateResult?: UpdateCheckResult,
   lspScope: "project" | "global" = "global",
   lspProjectPath: string | null = null,
+  opts: { resumeSessionId?: string } = {},
 ) {
   enableUserShellCommands();
   const { PassThrough, Writable } = await import("node:stream");
@@ -2731,6 +2732,7 @@ export async function renderAppWithBridge(
       initialUpdateResult={updateResult}
       initialLspScope={lspScope}
       initialLspProjectPath={lspProjectPath}
+      initialResumeSessionId={opts.resumeSessionId}
       bridge={bridge}
     />,
     {
