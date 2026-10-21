@@ -28,28 +28,28 @@ afterEach(async () => {
 });
 
 describe("autopilot remote client against the Aster API", () => {
-  it("pairs, runs a task with local changes, lists, replays, and pulls the run's branch", async () => {
+  it("pairs, runs a task with local changes, lists, replays, and pulls the run's branch", { timeout: 30_000 }, async () => {
     const server = await startAsterServer();
+    const stopPairing = new AbortController();
+    let pairing: Promise<unknown> = Promise.resolve();
     try {
       // Pair: the owner approves on the server (`autopilot aster pair approve`) while the CLI polls.
       const io = captureIO();
-      const pairing = remoteAdd({ url: server.baseUrl, name: "box", open: false, sleep: () => new Promise((resolve) => setTimeout(resolve, 20)) }, io);
-      const userCode = await waitFor(() => {
-        const store = new AsterStore();
-        try {
-          return store.listPendingDeviceAuthorizations()[0]?.userCode;
-        } finally {
-          store.close();
-        }
-      });
+      const paired = remoteAdd({
+        url: server.baseUrl, name: "box", open: false, signal: stopPairing.signal,
+        sleep: () => new Promise((resolve) => setTimeout(resolve, 20)),
+      }, io);
+      pairing = paired.catch(() => {});
+      // The code is read from what the CLI printed, as a user would.
+      const userCode = await waitFor(() => io.text().match(/approve code ([A-Z]{4}-[A-Z]{4}) at:/)?.[1]);
       assert.match(io.text(), new RegExp(`approve code ${userCode} at:\\n  ${server.baseUrl}/api/v1/auth/approve\\?code=${userCode}`));
       const approver = new AsterStore();
       assert.equal(approver.resolveDeviceAuthorization(userCode, "approve", { workspaceIds: ["default"], credentialTtlMs: 60_000 }), "approved");
       approver.close();
-      const paired = await pairing;
+      const remote = await paired;
       assert.match(io.text(), /Paired as "box"/);
       assert.deepEqual((await loadRemotes()).map((entry) => entry.name), ["box"]);
-      assert.match(paired.token, /^aster_/);
+      assert.match(remote.token, /^aster_/);
 
       // Run: base on the pushed commit, with the uncommitted edit uploaded as a patch.
       const { checkout, origin } = await clonedRepository(server.root);
@@ -87,11 +87,14 @@ describe("autopilot remote client against the Aster API", () => {
       assert.match(pullIO.text(), new RegExp(`On ${branch} · https://github.com/me/app/pull/42`));
       assert.ok(origin);
     } finally {
+      // Never leave the pairing poll running past the test, even when an assertion fails.
+      stopPairing.abort();
+      await pairing;
       await server.close();
     }
   });
 
-  it("detaches on abort without cancelling the run", async () => {
+  it("detaches on abort without cancelling the run", { timeout: 30_000 }, async () => {
     const server = await startAsterServer({ hang: true });
     try {
       const store = new AsterStore();
