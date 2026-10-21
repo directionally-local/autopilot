@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/sinameraji/autopilot/compare/v2.0.0...v2.1.0) (2026-10-21)
+
+
+### Features
+
+* **server:** device-code pairing, run listing, and local-patch upload for the Aster API ([#913](https://github.com/sinameraji/autopilot/issues/913)) ([5c4a25f](https://github.com/sinameraji/autopilot/commit/5c4a25fb9ef74fbb30408ab7cf904ae02b29b301))
+
 ## [2.0.0](https://github.com/sinameraji/autopilot/compare/v1.30.0...v2.0.0) (2026-10-21)
 
 
