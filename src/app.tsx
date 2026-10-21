@@ -34,7 +34,7 @@ import { usePermissionController } from "./ui/use-permission-controller.js";
 import { ResumePicker } from "./ui/resume-picker.js";
 import { CheckpointPicker } from "./ui/checkpoint-picker.js";
 import { PlanOptionsPicker } from "./ui/plan-options-picker.js";
-import { QueuePlanPicker } from "./ui/queue-plan-picker.js";
+import { QueuePlanPicker, queuePlanPreview } from "./ui/queue-plan-picker.js";
 import { createQueueBatch, canDrainQueue, type QueuedPrompt } from "./agent/queue-batch.js";
 import { SubagentPanel, useSubagentList } from "./ui/subagent-panel.js";
 import { triageIncoming } from "./agent/inbox-triage.js";
@@ -159,6 +159,8 @@ function App({
   initialLspProjectPath,
   bridge,
   initialResumeSessionId,
+  initialResumeReason = "crash",
+  initialOpenResumePicker,
 }: {
   initialCfg: Cfg | null;
   initialUpdateResult?: UpdateCheckResult;
@@ -166,8 +168,13 @@ function App({
   initialLspProjectPath: string | null;
   /** Render through another view (e.g. Camouflage) instead of Ink. */
   bridge?: AppBridge;
-  /** Reopen this session on start (after a renderer crash). */
+  /** Reopen this session on start. */
   initialResumeSessionId?: string;
+  /** Why it's reopened: after a renderer crash (#862), or the user asked
+   *  (`autopilot resume`, `autopilot -c`). */
+  initialResumeReason?: ResumeReason;
+  /** Open the /resume picker on start (`autopilot resume` without an id). */
+  initialOpenResumePicker?: boolean;
 }) {
   const { exit } = useApp();
   const { columns } = useWindowSize();
@@ -528,8 +535,9 @@ function App({
   // Batched streaming delta refs to reduce React re-render frequency
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
 
-  // After a Camouflage renderer crash (#862) the restarted view reopens the
-  // session the crashed one was saving.
+  // Reopen a session on start: the one a crashed Camouflage renderer was
+  // saving (#862) and the restarted view reopens, or the one
+  // `autopilot resume` / `autopilot -c` named.
   const resumedAfterCrashRef = useRef(false);
   useEffect(() => {
     if (!initialResumeSessionId || resumedAfterCrashRef.current || !cfg) return;
@@ -538,15 +546,24 @@ function App({
       const { sessionsDir } = await import("./sessions.js");
       try {
         await doResumeSession(join(sessionsDir(), `${initialResumeSessionId}.json`));
-        setEvents((e) => [
-          ...e,
-          { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed and was restarted; this conversation reopened where it left off." },
-        ]);
+        if (initialResumeReason === "crash") {
+          setEvents((e) => [
+            ...e,
+            { kind: "info", key: mkKey(), text: "The Camouflage renderer crashed and was restarted; this conversation reopened where it left off." },
+          ]);
+        }
       } catch (err) {
-        setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `Couldn't reopen the conversation after the renderer crash: ${(err as Error).message}. Use /resume.` }]);
+        const when = initialResumeReason === "crash" ? " after the renderer crash" : "";
+        setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `Couldn't reopen the conversation${when}: ${(err as Error).message}. Use /resume.` }]);
       }
     })();
-  }, [initialResumeSessionId, cfg, doResumeSession]);
+  }, [initialResumeSessionId, initialResumeReason, cfg, doResumeSession]);
+  const openedResumePickerRef = useRef(false);
+  useEffect(() => {
+    if (!initialOpenResumePicker || openedResumePickerRef.current || !cfg) return;
+    openedResumePickerRef.current = true;
+    void openResumePicker();
+  }, [initialOpenResumePicker, cfg, openResumePicker]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customCommandsRef = useRef<CustomCommand[]>([]);
   const recentFilesRef = useRef<Map<string, number>>(new Map());
@@ -2036,7 +2053,10 @@ function App({
       const editTarget = latestPromptRef.current;
       const decision = decideSubmit(trimmedFull, trimmedDisplay, {
         busy: busyNow,
-        queue,
+        // The ref, not this render's `queue`: the Camouflage renderer can
+        // deliver several lines before App re-renders (type-ahead while a
+        // turn starts), and `/queue plan` must see the ones just queued.
+        queue: queueRef.current,
         history,
         historyIndex,
         editTarget,
@@ -2055,7 +2075,7 @@ function App({
           setHistory((h) => pushHistory(h, trimmedDisplay));
           clearInput();
           if (decision.notice) info(decision.notice);
-          else setQueuePlanDraft([...queue]);
+          else setQueuePlanDraft([...queueRef.current]);
           return;
         case "edit-unchanged":
           clearInput();
@@ -2070,7 +2090,7 @@ function App({
           latestPromptRef.current = { ...target, historyText: trimmedDisplay };
           setEvents((events) => replaceUserPromptEvent(events, target.key, trimmedDisplay));
           if (decision.do === "edit-queued") {
-            setQueue(decision.queue);
+            setQueueBoth(() => decision.queue);
             return;
           }
           const edit: PendingPromptEdit = { key: target.key, full: trimmedFull, display: trimmedDisplay, messagesBefore: decision.target.messagesBefore };
@@ -2297,6 +2317,16 @@ function App({
         if (modesEnabled) setMode((m) => nextMode(m));
       },
       decidePermission,
+      denyWithFeedback: (feedback) => {
+        // Same as Ink's PermissionModal "Something else": the feedback rides
+        // on the decision (for the trace) and is sent as the next message.
+        const text = feedback.trim();
+        decidePermission({ decision: "deny", scope: "once", ...(text ? { feedback: text } : {}) });
+        if (text) {
+          denyFeedbackRef.current = true;
+          submitRef.current(text);
+        }
+      },
       pickModel: handleModelPick,
       providerSwitched: (to) => {
         modals.setProviderSetup(null);
@@ -2313,6 +2343,7 @@ function App({
       pickCheckpoint: handleCheckpointPick,
       pickPlanOption: handlePlanOptionPick,
       pickPlanComplete: handlePlanCompletePick,
+      pickQueuePlan: handleQueuePlanPick,
       closeModal: (m) => {
         const close: Record<AppModal, () => void> = {
           model: () => setShowModelPicker(false),
@@ -2380,12 +2411,19 @@ function App({
       model: cfg?.model ?? "",
       usage,
       sessionUsage,
+      contextLimit: modelContextLimit,
+      turnPhase,
+      currentTool: currentToolName,
+      kimiMdStale,
+      codeMode,
+      intentTier,
       tasks,
       permission: perm ? { tool: perm.tool, args: perm.args } : null,
       modals: open,
       resumeSessions,
       checkpoints: checkpointSession ? { session: checkpointSession, list: checkpointList } : null,
       planOptions,
+      queuePlan: queuePlanDraft ? { prompts: queuePlanPreview(queuePlanDraft).map((p) => p.text) } : null,
       customCommands: customCommandsRef.current.map((c) => ({ name: c.name, description: c.description })),
       themes: themeList().map((t) => ({ name: t.name, label: t.label })),
       currentTheme: cfg?.theme ?? DEFAULT_THEME_NAME,
@@ -2702,6 +2740,18 @@ function App({
   );
 }
 
+/** Why a session is reopened on start (see App's `initialResumeReason`). */
+export type ResumeReason = "crash" | "user";
+
+export interface RenderAppOpts {
+  /** Reopen this saved session on start. */
+  resumeSessionId?: string;
+  /** Defaults to "crash" (the renderer-crash fallback, #862). */
+  resumeReason?: ResumeReason;
+  /** Open the /resume picker on start. */
+  openResumePicker?: boolean;
+}
+
 /**
  * Run App headless behind a bridge (e.g. the Camouflage view): App's logic
  * runs as usual but Ink draws nothing and reads no keys; the bridge owns the
@@ -2713,7 +2763,7 @@ export async function renderAppWithBridge(
   updateResult?: UpdateCheckResult,
   lspScope: "project" | "global" = "global",
   lspProjectPath: string | null = null,
-  opts: { resumeSessionId?: string } = {},
+  opts: RenderAppOpts = {},
 ) {
   enableUserShellCommands();
   const { PassThrough, Writable } = await import("node:stream");
@@ -2732,8 +2782,10 @@ export async function renderAppWithBridge(
       initialUpdateResult={updateResult}
       initialLspScope={lspScope}
       initialLspProjectPath={lspProjectPath}
-      initialResumeSessionId={opts.resumeSessionId}
       bridge={bridge}
+      initialResumeSessionId={opts.resumeSessionId}
+      initialResumeReason={opts.resumeReason}
+      initialOpenResumePicker={opts.openResumePicker}
     />,
     {
       stdin: stdin as unknown as NodeJS.ReadStream,
@@ -2753,7 +2805,7 @@ export async function renderApp(
   updateResult?: UpdateCheckResult,
   lspScope: "project" | "global" = "global",
   lspProjectPath: string | null = null,
-  opts: { resumeSessionId?: string } = {},
+  opts: RenderAppOpts = {},
 ) {
   // The TUI is the only host that supports `!` commands (see agent/user-shell.ts).
   enableUserShellCommands();
@@ -2764,6 +2816,8 @@ export async function renderApp(
       initialLspScope={lspScope}
       initialLspProjectPath={lspProjectPath}
       initialResumeSessionId={opts.resumeSessionId}
+      initialResumeReason={opts.resumeReason}
+      initialOpenResumePicker={opts.openResumePicker}
     />,
     {
       incrementalRendering: true,

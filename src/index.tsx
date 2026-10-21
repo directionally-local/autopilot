@@ -10,6 +10,10 @@ import { renderLogo } from "./ui/logo.js";
 import { runPrintMode } from "./print-mode.js";
 import { registerEvalCommand } from "./eval/cli.js";
 import type { PrintFormat } from "./print-mode.js";
+import type { InteractiveResumeRequest } from "./interactive-resume.js";
+
+/** `autopilot resume [id]`: reopen a conversation in the interactive UI. */
+let resumeCommand: InteractiveResumeRequest | null = null;
 
 const program = new Command();
 program
@@ -33,8 +37,8 @@ program
   // Hidden escape hatch: `--ui ink` (or KIMIFLARE_UI=ink) runs the old UI.
   .addOption(new Option("--ui <name>", "interface: camouflage (default) or ink").hideHelp())
   .option("--mode <mode>", "run mode: interactive (default), print, rpc")
-  .option("-c, --continue", "continue the most recent session in the current working directory (print mode only)")
-  .option("-S, --session <id>", "resume a specific session by id (print mode only)")
+  .option("-c, --continue", "continue the most recent session in the current working directory")
+  .option("-S, --session <id>", "resume a specific session by id")
   .option("-f, --file <path>", "attach file(s) to the prompt; repeatable, supports globs (print mode only)", (v, prev: string[] | undefined) => (prev ?? []).concat(v))
   .option("--format <mode>", "output format for print mode: text (default), json, stream-json")
   .option("--dir <path>", "run in the specified directory instead of the current one (print mode only)")
@@ -226,10 +230,13 @@ logsCmd
 
 program
   .command("resume")
-  .description("Resume is temporarily unavailable while Camouflage UI access is disabled.")
-  .action(async () => {
-    console.error("autopilot resume: temporarily unavailable. Camouflage UI access is disabled.");
-    process.exit(2);
+  .description("Reopen a saved conversation: by id, or pick one from this directory")
+  .argument("[id]", "session id (printed when you exit autopilot)")
+  .action(async (id: string | undefined) => {
+    resumeCommand = id ? { sessionId: id } : {};
+    await main();
+    const { runShutdownTasks } = await import("./util/exit.js");
+    await runShutdownTasks();
   });
 
 const authCommand = program
@@ -726,6 +733,8 @@ async function main() {
   // A machine where the renderer can't start gets an explanation and exit
   // code 2, not a different UI.
   const uiEngine = (opts.ui ?? process.env.KIMIFLARE_UI ?? "camouflage").toLowerCase();
+  // `autopilot resume [id]`, `-c` or `-S <id>`: which saved session to open (#906).
+  const startup = await interactiveStartup(cfg);
   if (uiEngine !== "ink") {
     // Null on first run until Camouflage's onboarding saves a provider and model.
     let sessionCfg: KimiConfig | null = cfg ? { ...cfg, model: requireModel(opts.model || cfg.model) } : null;
@@ -754,7 +763,16 @@ async function main() {
                 lspProjectPath = resolved.projectPath;
                 sessionCfg = appCfg;
               }
-              return renderAppWithBridge(appCfg, bridge, updateResult, lspScope, lspProjectPath, resumeSessionId ? { resumeSessionId } : {});
+              // After a crash, reopen the session the crashed renderer was saving;
+              // otherwise honour `autopilot resume` / `-c` / `-S`.
+              return renderAppWithBridge(
+                appCfg,
+                bridge,
+                updateResult,
+                lspScope,
+                lspProjectPath,
+                resumeSessionId ? { resumeSessionId, resumeReason: "crash" } : startup,
+              );
             },
           });
         },
@@ -783,7 +801,7 @@ async function main() {
   const { renderApp } = await import("./app.js");
   if (cfg) {
     const model = requireModel(opts.model || cfg.model);
-    await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath);
+    await renderApp({ ...cfg, model }, updateResult, lspScope, lspProjectPath, startup);
   } else {
     await renderApp(null, updateResult, lspScope, lspProjectPath);
   }
@@ -792,6 +810,22 @@ async function main() {
 
 
 
+
+/** `autopilot resume [id]`, or `-c` / `-S <id>` without `-p`: which
+ *  conversation the interactive UI reopens on start. Exits on a bad id. */
+async function interactiveStartup(cfg: KimiConfig | null): Promise<import("./app.js").RenderAppOpts> {
+  const request: InteractiveResumeRequest | null =
+    resumeCommand ?? (opts.session ? { sessionId: opts.session } : opts.continue ? { latest: true } : null);
+  if (!request) return {};
+  const { resolveInteractiveResume } = await import("./interactive-resume.js");
+  const target = await resolveInteractiveResume(request);
+  if (target.kind === "error") {
+    console.error(`autopilot: ${target.message}`);
+    process.exit(1);
+  }
+  if (!cfg) return {};
+  return target.kind === "picker" ? { openResumePicker: true } : { resumeSessionId: target.sessionId, resumeReason: "user" };
+}
 
 /** Read a line from the terminal without echoing it (for secrets). */
 /** The model to run, or exit with a hint (local runtimes and custom endpoints have no default). */

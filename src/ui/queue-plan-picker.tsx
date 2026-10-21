@@ -16,11 +16,7 @@ export function QueuePlanPicker({ prompts, onPick }: Props) {
     if (input === "q" || key.escape) onPick(null);
   });
 
-  const previewPrompts = prompts.flatMap((prompt) =>
-    prompt.batchPrompts
-      ? prompt.batchPrompts.map((text, index) => ({ key: `${prompt.key}-${index}`, text }))
-      : [{ key: prompt.key, text: prompt.display }],
-  );
+  const previewPrompts = queuePlanPreview(prompts);
   const items = [
     { label: `▸ Group ${previewPrompts.length} follow-ups into one coordinated turn`, value: "group" as const },
     { label: "▸ Keep separate and continue the FIFO queue", value: "separate" as const },
@@ -54,6 +50,16 @@ export function QueuePlanPicker({ prompts, onPick }: Props) {
       </Box>
       <Text color={theme.info.color}>Arrow keys + Enter · q / Esc: cancel</Text>
     </Box>
+  );
+}
+
+/** The individual follow-ups a `/queue plan` covers (a grouped batch counts
+ *  as its parts). Shared with the Camouflage view. */
+export function queuePlanPreview(prompts: QueuedPrompt[]): { key: string; text: string }[] {
+  return prompts.flatMap((prompt) =>
+    prompt.batchPrompts
+      ? prompt.batchPrompts.map((text, index) => ({ key: `${prompt.key}-${index}`, text }))
+      : [{ key: prompt.key, text: prompt.display }],
   );
 }
 
