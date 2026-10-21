@@ -36,7 +36,7 @@ import type { LspManager } from "../lsp/manager.js";
 import type { MemoryManager } from "../memory/manager.js";
 import type { ChatEvent } from "../ui/view-types.js";
 import type { Cfg } from "../app.js";
-import { costLookupFromConfig, mkAssistantId, trackRecentFile } from "../ui/app-helpers.js";
+import { costLookupFromConfig, mkAssistantId } from "../ui/app-helpers.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -51,7 +51,6 @@ export interface RunInitDeps {
   setCodeMode: (v: boolean) => void;
   setTurnPhase: (v: TurnPhase) => void;
   setCurrentToolName: (v: string | null) => void;
-  setLastActivityAt: (v: number) => void;
   setUsage: React.Dispatch<React.SetStateAction<Usage | null>>;
   setSessionUsage: React.Dispatch<React.SetStateAction<DailyUsage | null>>;
   setKimiMdStale: (v: boolean) => void;
@@ -78,7 +77,6 @@ export interface RunInitDeps {
   effortRef: React.MutableRefObject<ReasoningEffort>;
   memoryManagerRef: React.MutableRefObject<MemoryManager | null>;
   pendingToolCallsRef: React.MutableRefObject<Map<string, string>>;
-  recentFilesRef: React.MutableRefObject<Map<string, number>>;
   usageRef: React.MutableRefObject<Usage | null>;
   activeAsstIdRef: React.MutableRefObject<number | null>;
   responseMetaRef: React.MutableRefObject<ResponseMeta | null>;
@@ -93,7 +91,7 @@ export interface RunInitDeps {
 export async function runInit(deps: RunInitDeps): Promise<void> {
   const {
     cfg, busy, mkKey, setEvents,
-    setCodeMode, setTurnPhase, setCurrentToolName, setLastActivityAt,
+    setCodeMode, setTurnPhase, setCurrentToolName,
     setUsage, setSessionUsage,
     setKimiMdStale, onTasks,
     beginTurn, endTurn, ensureSessionId, onIterationEnd,
@@ -101,7 +99,7 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
     askForPermission, clearPermissionResolveRef,
     messagesRef, sessionScopeRef, activeScopeRef,
     mcpToolsRef, lspToolsRef, executorRef, effortRef, memoryManagerRef,
-    pendingToolCallsRef, recentFilesRef, usageRef, activeAsstIdRef,
+    pendingToolCallsRef, usageRef, activeAsstIdRef,
     responseMetaRef, kimiMdStaleNudgedRef, lspManagerRef, modeRef,
     cacheStableRef, lastApiErrorRef,
     supervisorRef,
@@ -205,10 +203,6 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
           } catch {
             /* ignore */
           }
-          // Track file paths from read/edit/write/grep tools for recent-files boost
-          if (typeof args.path === "string") {
-            trackRecentFile(recentFilesRef, args.path);
-          }
           setEvents((e) => [
             ...e,
             {
@@ -226,12 +220,10 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
         onToolWillExecute: (id: string) => {
           setTurnPhase("executing");
           setCurrentToolName(pendingToolCallsRef.current.get(id) ?? null);
-          setLastActivityAt(Date.now());
           updateTool(id, { status: "running", startedAt: Date.now() });
         },
         onToolResult: (r) => {
           pendingToolCallsRef.current.delete(r.tool_call_id);
-          setLastActivityAt(Date.now());
           if (pendingToolCallsRef.current.size === 0) {
             setTurnPhase("waiting");
             setCurrentToolName(null);

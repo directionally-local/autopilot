@@ -30,12 +30,11 @@ import type { TurnPhase } from "./view-types.js";
 import type { IntentTier } from "./narrator.js";
 import type { QueuePlanChoice } from "./queue-plan.js";
 
-/** Which Ink dialog App currently wants open. */
+/** Which dialog App currently wants open (the Camouflage view draws it). */
 export type AppModal =
   | "model"
   | "provider"
   | "mode"
-  | "theme"
   | "help"
   | "memory"
   | "skills"
@@ -91,8 +90,6 @@ export interface AppSnapshot {
   queuePlan: { prompts: string[] } | null;
   /** The user's custom slash commands, for the `/` picker. */
   customCommands: { name: string; description?: string }[];
-  themes: { name: string; label: string }[];
-  currentTheme: string;
   currentShell: string;
   memoryEnabled: boolean;
   /** Full custom command definitions (for editing). */
@@ -129,7 +126,6 @@ export interface AppActions {
   pickPlanComplete: (choice: PlanCompleteChoice | null) => void;
   /** Answer `/queue plan` (null cancels and leaves the queue as it was). */
   pickQueuePlan: (choice: QueuePlanChoice) => void;
-  pickTheme: (name: string | null) => void;
   pickShell: (shell: string | null) => void;
   generateChangelogImage: (owner: string, repo: string, days: number) => void;
   /** Save LSP servers (closes the LSP wizard). */

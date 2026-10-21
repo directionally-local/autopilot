@@ -134,7 +134,7 @@ function baseSnapshot(over: Partial<AppSnapshot> = {}): AppSnapshot {
     events: [], busy: false, turnRunning: false, sessionId: null, workers: [], mode: "auto", modesEnabled: false,
     model: "vendor/model-x", usage: null, sessionUsage: null, contextLimit: 100_000, turnPhase: "waiting", currentTool: null,
     kimiMdStale: false, codeMode: false, intentTier: null, tasks: [], permission: null, modals: [], providerSetup: null,
-    resumeSessions: null, checkpoints: null, planOptions: null, queuePlan: null, customCommands: [], themes: [], currentTheme: "",
+    resumeSessions: null, checkpoints: null, planOptions: null, queuePlan: null, customCommands: [],
     currentShell: "auto", memoryEnabled: false, customCommandDefs: [], commandWizard: null, commandPickerMode: null,
     changelogImageRepo: null, hooks: [], lsp: { servers: {}, scope: "global", hasProjectDir: false },
     ...over,

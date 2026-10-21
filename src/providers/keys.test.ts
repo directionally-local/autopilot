@@ -50,7 +50,7 @@ describe("saving keys and switching providers", () => {
     for (const k of ENV) delete process.env[k];
     process.env.XDG_CONFIG_HOME = home;
     await mkdir(join(home, "kimiflare"), { recursive: true });
-    await writeFile(file(), JSON.stringify({ openrouterApiKey: "sk-or-file", model: "moonshotai/kimi-k3", theme: "nord" }));
+    await writeFile(file(), JSON.stringify({ openrouterApiKey: "sk-or-file", model: "moonshotai/kimi-k3", shell: "/bin/zsh" }));
   });
   after(async () => {
     for (const k of ENV) {
@@ -67,7 +67,7 @@ describe("saving keys and switching providers", () => {
     assert.strictEqual(cfg?.provider, "deepseek");
     assert.strictEqual(cfg?.model, "deepseek-v4-pro");
     assert.strictEqual(cfg?.openrouterApiKey, "sk-or-file", "the OpenRouter key stays for switching back");
-    assert.strictEqual((await read()).theme, "nord");
+    assert.strictEqual((await read()).shell, "/bin/zsh");
 
     await switchProvider(cfg, "openrouter");
     cfg = await loadConfig();

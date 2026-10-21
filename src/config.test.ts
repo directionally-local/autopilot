@@ -71,6 +71,7 @@ describe("loadConfig", () => {
     "OPENAI_API_KEY",
     "DEEPSEEK_API_KEY",
     "KIMIFLARE_PLUMBING_MODEL",
+    "KIMIFLARE_SHELL",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -130,6 +131,15 @@ describe("loadConfig", () => {
     assert.equal("uiEngine" in cfg, false);
     await saveConfig(cfg);
     assert.equal("uiEngine" in (await readConfigFile()), false);
+  });
+
+  it("loads an old config that still names a theme, and drops it on save", async () => {
+    await writeConfigFile({ openrouterApiKey: "sk-or-file", theme: "nord" });
+    const cfg = await loadConfig();
+    assert.ok(cfg);
+    assert.equal("theme" in cfg, false);
+    await saveConfig(cfg);
+    assert.equal("theme" in (await readConfigFile()), false);
   });
 
   it("defaults subagent routing to auto, migrates the old implicit default, and preserves explicit choices", async () => {
@@ -199,7 +209,7 @@ describe("loadConfig", () => {
       model: "@cf/moonshotai/kimi-k2.6",
       plumbingModel: "@cf/moonshotai/kimi-k2.5",
       memoryEmbeddingModel: "@cf/baai/bge-base-en-v1.5",
-      theme: "everforest-light",
+      shell: "/bin/bash",
       mcpServers: { fs: { type: "local", command: ["fs-mcp"] } },
     });
     const cfg = await loadConfig();
@@ -207,7 +217,7 @@ describe("loadConfig", () => {
     assert.strictEqual(cfg.model, "moonshotai/kimi-k2.6");
     assert.strictEqual(cfg.plumbingModel, "moonshotai/kimi-k2.5");
     assert.strictEqual(cfg.memoryEmbeddingModel, "baai/bge-base-en-v1.5");
-    assert.strictEqual(cfg.theme, "everforest-light");
+    assert.strictEqual(cfg.shell, "/bin/bash");
     // Commute still deploys with these.
     assert.strictEqual(cfg.accountId, "acct");
     assert.strictEqual(cfg.apiToken, "cf-token");
@@ -226,7 +236,7 @@ describe("loadConfig", () => {
     }
     assert.strictEqual(onDisk.model, "moonshotai/kimi-k2.6");
     assert.strictEqual(onDisk.plumbingModel, "moonshotai/kimi-k2.5");
-    assert.strictEqual(onDisk.theme, "everforest-light");
+    assert.strictEqual(onDisk.shell, "/bin/bash");
     assert.deepStrictEqual(onDisk.mcpServers, { fs: { type: "local", command: ["fs-mcp"] } });
     assert.strictEqual(onDisk.accountId, "acct");
     assert.strictEqual(onDisk.apiToken, "cf-token");
@@ -234,7 +244,7 @@ describe("loadConfig", () => {
   });
 
   it("never writes an env-provided key into the file during migration", async () => {
-    await writeConfigFile({ aiGatewayId: "gw", model: "@cf/moonshotai/kimi-k2.6", theme: "t" });
+    await writeConfigFile({ aiGatewayId: "gw", model: "@cf/moonshotai/kimi-k2.6", shell: "t" });
     process.env.OPENROUTER_API_KEY = "sk-or-env-secret";
     const cfg = await loadConfig();
     assert.strictEqual(cfg?.openrouterApiKey, "sk-or-env-secret");
@@ -245,7 +255,7 @@ describe("loadConfig", () => {
   });
 
   it("leaves an already-clean file untouched", async () => {
-    const clean = { openrouterApiKey: "sk-or-file", model: "moonshotai/kimi-k3", theme: "t" };
+    const clean = { openrouterApiKey: "sk-or-file", model: "moonshotai/kimi-k3", shell: "t" };
     await writeConfigFile(clean);
     await loadConfig();
     assert.deepStrictEqual(await readConfigFile(), clean);
@@ -426,23 +436,23 @@ describe("loadConfig", () => {
     });
 
     it("still loads a config with retired multi-agent settings, and drops them on rewrite", async () => {
-      await writeConfigFile({ openrouterApiKey: "sk-or-file", decompositionStrategy: "llm", workerPreReadFiles: ["a.ts"], synthesisModel: "x/y", theme: "nord" });
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", decompositionStrategy: "llm", workerPreReadFiles: ["a.ts"], synthesisModel: "x/y", shell: "/bin/zsh" });
       const cfg = await loadConfig();
       assert.strictEqual(cfg?.openrouterApiKey, "sk-or-file");
       const onDisk = await readConfigFile();
       assert.strictEqual(onDisk.decompositionStrategy, undefined);
       assert.strictEqual(onDisk.workerPreReadFiles, undefined);
-      assert.strictEqual(onDisk.theme, "nord");
+      assert.strictEqual(onDisk.shell, "/bin/zsh");
     });
 
     it("does not persist preset-derived side-call models", async () => {
       await writeConfigFile({ provider: "deepseek", providers: { deepseek: { apiKey: "sk-ds" } } });
       const cfg = await loadConfig();
-      await saveConfig({ ...cfg!, theme: "nord" });
+      await saveConfig({ ...cfg!, shell: "/bin/zsh" });
       const onDisk = await readConfigFile();
       assert.strictEqual(onDisk.plumbingModel, undefined);
       assert.strictEqual(onDisk.memoryExtractionModel, undefined);
-      assert.strictEqual(onDisk.theme, "nord");
+      assert.strictEqual(onDisk.shell, "/bin/zsh");
     });
   });
 
@@ -463,7 +473,7 @@ describe("loadConfig", () => {
     it("is false once an OpenRouter key is saved, or for an unrelated file", async () => {
       await writeConfigFile({ apiToken: "cf-token", openrouterApiKey: "sk-or-x" });
       assert.strictEqual(await hasLegacyCloudflareConfig(), false);
-      await writeConfigFile({ theme: "t" });
+      await writeConfigFile({ shell: "t" });
       assert.strictEqual(await hasLegacyCloudflareConfig(), false);
     });
   });

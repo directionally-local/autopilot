@@ -165,8 +165,6 @@ export interface KimiConfig {
   costAttribution?: boolean;
   /** Enable @ file mention picker in chat input. Default: false. */
   filePicker?: boolean;
-  /** UI theme name. Default: everforest-dark. */
-  theme?: string;
   /** URL of the remote orchestrator Worker. */
   remoteWorkerUrl?: string;
   /** Shared secret for authenticating with the remote Worker. */
@@ -293,7 +291,7 @@ function resolveTraceConfig(persisted: Partial<TraceConfig> | undefined): TraceC
 
 export async function loadConfig(): Promise<KimiConfig | null> {
   // Always read the file up front, even when env vars provide credentials:
-  // settings-only fields (theme, mcpServers, …) live only in the file and
+  // settings-only fields (mcpServers, lspServers, …) live only in the file and
   // must survive an env-driven launch.
   let persisted: Partial<KimiConfig> & LegacyConfigFields = {};
   let hasFile = false;
@@ -424,7 +422,6 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     lspServers: persisted.lspServers,
     costAttribution: readBooleanEnv("KIMI_COST_ATTRIBUTION") ?? persisted.costAttribution ?? true,
     filePicker: readBooleanEnv("KIMIFLARE_FILE_PICKER") ?? persisted.filePicker ?? true,
-    theme: persisted.theme,
     shell: process.env.KIMIFLARE_SHELL ?? persisted.shell,
     remoteWorkerUrl: persisted.remoteWorkerUrl,
     remoteAuthSecret: persisted.remoteAuthSecret,

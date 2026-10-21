@@ -11,7 +11,6 @@ import type { ResponseMeta } from "../agent/client.js";
 import type { ToolCall, Usage } from "../agent/messages.js";
 import type { PermissionAsker, ToolResult } from "../tools/executor.js";
 import type { PlanOption, Task, ToolRender, ToolSpec } from "../tools/registry.js";
-import type { SemanticSkillRoutingResult } from "../skills/index.js";
 import type { ChatEvent } from "./view-types.js";
 import { KimiApiError, humanizeApiError } from "../util/errors.js";
 
@@ -96,7 +95,6 @@ export interface TurnCallbackDeps {
   endTurn(): void;
   setTurnPhase(phase: "generating" | "waiting" | "executing"): void;
   setCurrentToolName(name: string | null): void;
-  setLastActivityAt(at: number): void;
   activeAsstIdRef: Ref<number | null>;
   /** Tool calls finalized but not yet answered (id → name). */
   pendingToolCallsRef: Ref<Map<string, string>>;
@@ -109,7 +107,6 @@ export interface TurnCallbackDeps {
   askPermission: PermissionAsker;
   /** Project context looks stale (shown once per session). */
   onKimiMdStale(): void;
-  setSkillsActive(count: number): void;
   now?: () => number;
 }
 
@@ -118,7 +115,6 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
   const now = deps.now ?? Date.now;
   const push = (event: ChatEvent) => deps.setEvents((events) => [...events, event]);
   const info = (text: string) => push({ kind: "info", key: deps.mkKey(), text });
-  const touch = () => deps.setLastActivityAt(now());
   const plural = (n: number) => `memor${n === 1 ? "y" : "ies"}`;
 
   return {
@@ -131,18 +127,15 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
       deps.activeAsstIdRef.current = id;
       deps.beginTurn();
       deps.setTurnPhase("generating");
-      touch();
       push({ kind: "assistant", key: `asst_${id}`, id, text: "", reasoning: "", streaming: true });
     },
     onReasoningDelta: (d) => {
       const id = deps.activeAsstIdRef.current;
       if (id !== null) deps.updateAssistant(id, (e) => ({ reasoning: e.reasoning + d }));
-      touch();
     },
     onTextDelta: (d) => {
       const id = deps.activeAsstIdRef.current;
       if (id !== null) deps.updateAssistant(id, (e) => ({ text: e.text + d }));
-      touch();
     },
     onInfo: info,
     onAssistantFinal: () => {
@@ -157,18 +150,15 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
       deps.pendingToolCallsRef.current.set(call.id, call.function.name);
       deps.setTurnPhase("executing");
       deps.setCurrentToolName(call.function.name);
-      touch();
       push(toolCallEvent(call, deps.findTool(call.function.name)));
     },
     onToolWillExecute: (id, name) => {
       deps.setTurnPhase("executing");
       deps.setCurrentToolName(name);
-      touch();
       deps.updateTool(id, { status: "running", startedAt: now() });
     },
     onToolResult: (r) => {
       deps.pendingToolCallsRef.current.delete(r.tool_call_id);
-      touch();
       if (deps.pendingToolCallsRef.current.size === 0) {
         deps.setTurnPhase("waiting");
         deps.setCurrentToolName(null);
@@ -192,7 +182,6 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
     },
     onKimiMdStale: deps.onKimiMdStale,
     onMemoryRecalled: (count) => push({ kind: "memory", key: deps.mkKey(), text: `recalled ${count} ${plural(count)} about this repo` }),
-    onSkillsSelected: (result: SemanticSkillRoutingResult) => deps.setSkillsActive(result.sectionCount),
     onMetaBanner: (m) =>
       push({
         kind: "meta",

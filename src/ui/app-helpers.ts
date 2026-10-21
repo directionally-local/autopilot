@@ -6,10 +6,8 @@
  * depend on the App component's lifecycle. Keeping them out of app.tsx
  * keeps the component file focused on UI wiring.
  */
-import React from "react";
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 
 import type { ResponseMeta } from "../agent/client.js";
 import { activeOpenRouterKey } from "../agent/llm-auth.js";
@@ -25,7 +23,6 @@ import type { Cfg } from "../app.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const MAX_GITIGNORE_SIZE = 1 * 1024 * 1024; // 1 MB
 export const CONTEXT_LIMIT = 262_000;
 export const AUTO_COMPACT_THRESHOLD = 0.8;
 export const MAX_EVENTS = 500;
@@ -92,132 +89,6 @@ export const mkKey = (): string => `evt_${nextKey++}`;
 let nextAssistantId = 1;
 export const mkAssistantId = (): number => nextAssistantId++;
 
-// ── File-picker ignore list ──────────────────────────────────────────────
-
-/**
- * Build a comprehensive ignore list for the @ file mention picker.
- * Combines common noise patterns (dependencies, build output, caches, etc.)
- * with patterns read from the project's .gitignore file.
- *
- * All hardcoded patterns use the `** /` prefix so they match at any depth
- * (e.g. `** /node_modules/ *` catches both root and nested node_modules).
- */
-export function buildFilePickerIgnoreList(cwd: string): string[] {
-  const hardcoded = [
-    // Dependencies
-    "**/node_modules/**",
-    "**/vendor/**",
-    "**/.bundle/**",
-    "**/bower_components/**",
-    // Version control
-    "**/.git/**",
-    "**/.svn/**",
-    "**/.hg/**",
-    // Build / output directories
-    "**/dist/**",
-    "**/build/**",
-    "**/out/**",
-    "**/public/**",
-    "**/.next/**",
-    "**/.nuxt/**",
-    "**/.svelte-kit/**",
-    "**/.vercel/**",
-    "**/.netlify/**",
-    "**/target/**",
-    "**/bin/**",
-    "**/obj/**",
-    "**/Debug/**",
-    "**/Release/**",
-    "**/.gradle/**",
-    // Caches
-    "**/.cache/**",
-    "**/.parcel-cache/**",
-    "**/.turbo/**",
-    "**/.eslintcache",
-    "**/.stylelintcache",
-    "**/.rpt2_cache/**",
-    "**/.rts2_cache/**",
-    // Temporary
-    "**/tmp/**",
-    "**/temp/**",
-    "**/*.tmp",
-    // Coverage
-    "**/coverage/**",
-    "**/.nyc_output/**",
-    // OS files
-    "**/.DS_Store",
-    "**/Thumbs.db",
-    // Logs
-    "**/*.log",
-    "**/logs/**",
-    // Lock files (auto-generated, usually huge)
-    "**/package-lock.json",
-    "**/yarn.lock",
-    "**/pnpm-lock.yaml",
-    "**/bun.lockb",
-    "**/Cargo.lock",
-    "**/Gemfile.lock",
-    "**/composer.lock",
-    "**/Pipfile.lock",
-    "**/poetry.lock",
-    "**/go.sum",
-    // Minified / source maps
-    "**/*.min.js",
-    "**/*.min.css",
-    "**/*.map",
-    // kimiflare internal
-    "**/.kimiflare/**",
-    // IDE (usually not relevant to mention)
-    "**/.idea/**",
-  ];
-
-  // Try to read .gitignore for project-specific ignores.
-  // Gitignore patterns are relative to the repo root and may match at any
-  // depth. We approximate that by prefixing with `** /`. Patterns that
-  // already start with `*` or `/` are handled carefully.
-  const gitignorePatterns: string[] = [];
-  try {
-    const gitignorePath = join(cwd, ".gitignore");
-    const stats = statSync(gitignorePath);
-    if (stats.size > MAX_GITIGNORE_SIZE) {
-      // Guardrail 1.4: skip oversized .gitignore files
-      return hardcoded;
-    }
-    const content = readFileSync(gitignorePath, "utf-8");
-    for (const line of content.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-
-      // Skip negation patterns — fast-glob ignore doesn't support them
-      if (trimmed.startsWith("!")) continue;
-
-      let pattern = trimmed;
-      const isAnchored = pattern.startsWith("/");
-      const isDir = pattern.endsWith("/");
-
-      // Remove leading slash for processing
-      if (isAnchored) pattern = pattern.slice(1);
-      // Remove trailing slash for processing
-      if (isDir) pattern = pattern.slice(0, -1);
-
-      // Skip patterns that are already wildcards or empty
-      if (!pattern) continue;
-
-      if (isAnchored) {
-        // Anchored patterns only match at root, so keep them relative to cwd
-        gitignorePatterns.push(isDir ? pattern + "/**" : pattern);
-      } else {
-        // Unanchored patterns match at any depth — prepend `**/`
-        gitignorePatterns.push(isDir ? "**/" + pattern + "/**" : "**/" + pattern);
-      }
-    }
-  } catch {
-    // No .gitignore found — that's fine
-  }
-
-  return [...hardcoded, ...gitignorePatterns];
-}
-
 // ── Cost confirmation ────────────────────────────────────────────────────
 
 /** What recordUsage needs to confirm a turn's billed cost with OpenRouter.
@@ -254,43 +125,6 @@ export function detectGitHubRepo(cachedRepo?: string): { owner: string; name: st
     // not a git repo or no origin remote
   }
   return null;
-}
-
-export function detectGitBranch(): string | null {
-  try {
-    return execSync("git branch --show-current", { cwd: process.cwd(), encoding: "utf8" }).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-// ── Formatting ───────────────────────────────────────────────────────────
-
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-// ── Recent-files tracking ────────────────────────────────────────────────
-
-export function trackRecentFile(
-  ref: React.MutableRefObject<Map<string, number>>,
-  path: string,
-  max = 10,
-): void {
-  ref.current.set(path, Date.now());
-  if (ref.current.size > max) {
-    let oldest: string | null = null;
-    let oldestTime = Infinity;
-    for (const [p, t] of ref.current) {
-      if (t < oldestTime) {
-        oldestTime = t;
-        oldest = p;
-      }
-    }
-    if (oldest) ref.current.delete(oldest);
-  }
 }
 
 // ── Event cap / compact ──────────────────────────────────────────────────

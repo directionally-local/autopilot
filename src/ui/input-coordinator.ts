@@ -155,7 +155,7 @@ export interface TriageDeps {
   interrupt(): void;
 }
 
-/** Apply triage results to queued prompts; returns the hooks App wires to submit and Ctrl+G. */
+/** Apply triage results to queued prompts; returns the hooks App wires to submit and `/now`. */
 export function createTriageCoordinator(deps: TriageDeps) {
   const remove = (key: string): QueuedPrompt | null => {
     const item = deps.getQueue().find((q) => q.key === key) ?? null;
@@ -209,7 +209,7 @@ export function createTriageCoordinator(deps: TriageDeps) {
       if (!deps.getQueue().some((q) => q.key === item.key)) return; // promoted or already ran
       apply(item, result);
     },
-    /** Ctrl+G / `/now`: deliver the latest triaged prompt to the running turn. */
+    /** `/now`: deliver the latest triaged prompt to the running turn. */
     promoteLatest(): boolean {
       if (!deps.isBusy()) return false;
       const latest = [...deps.getQueue()].reverse().find((q) => q.triage !== undefined);

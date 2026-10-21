@@ -61,7 +61,6 @@ export async function handleCommandSave(
 export interface CommandDeleteDeps {
   setEvents: SetEvents;
   mkKey: () => string;
-  setCommandToDelete: (v: null) => void;
   reloadCustomCommands: () => Promise<void>;
 }
 
@@ -69,8 +68,7 @@ export async function handleCommandDelete(
   deps: CommandDeleteDeps,
   cmd: CustomCommand,
 ): Promise<void> {
-  const { setEvents, mkKey, setCommandToDelete, reloadCustomCommands } = deps;
-  setCommandToDelete(null);
+  const { setEvents, mkKey, reloadCustomCommands } = deps;
   try {
     await deleteCustomCommand(cmd);
     await reloadCustomCommands();
