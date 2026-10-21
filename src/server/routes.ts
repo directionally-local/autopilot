@@ -5,7 +5,8 @@
 import { runStopForError } from "../agent/session-core.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { endSessions } from "../hooks/session-lifecycle.js";
+import { endSession, endSessions } from "../hooks/session-lifecycle.js";
+import { submitUserPrompt } from "../hooks/prompt-submit.js";
 import { HooksManager, hookFailureEvent } from "../hooks/manager.js";
 import { SHUTDOWN_TIMEOUT_MS } from "../util/exit.js";
 import { listModels } from "../models/registry.js";
@@ -160,6 +161,11 @@ function json(res: ServerResponse, status: number, data: unknown): void {
 
 function badRequest(res: ServerResponse, message: string): void {
   json(res, 400, { error: message });
+}
+
+/** A UserPromptSubmit hook blocked the prompt: nothing was sent to the model. */
+function promptBlocked(res: ServerResponse, reason: string): void {
+  json(res, 403, { error: "prompt_blocked", reason, message: `prompt blocked by a UserPromptSubmit hook: ${reason}` });
 }
 
 function notFound(res: ServerResponse, message: string): void {
@@ -784,6 +790,14 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         // The same hooks as print mode and the TUI, so SessionStart/SessionEnd
         // (and tool hooks) see server sessions too (#877).
         const hooks = new HooksManager(cwd);
+        // SessionStart, then UserPromptSubmit (veto-able), as in every host.
+        // A blocked prompt gets 403 and no session is created.
+        const gate = await submitUserPrompt({ hooks, sessionId, cwd, prompt, resumed: false, model, auth: llmAuthFromConfig(config) });
+        if (gate.blocked) {
+          await endSession(sessionId, "exit");
+          promptBlocked(res, gate.reason);
+          return;
+        }
         const executor = new ToolExecutor(ALL_TOOLS, { hooks });
         const messages: ChatMessage[] = [
           {
@@ -846,6 +860,20 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
 
         if (!prompt) {
           badRequest(res, "prompt is required");
+          return;
+        }
+
+        const gate = await submitUserPrompt({
+          ...(active.hooks ? { hooks: active.hooks } : {}),
+          sessionId,
+          cwd: active.sessionFile.cwd,
+          prompt,
+          resumed: active.messages.some((m) => m.role === "assistant"),
+          model: active.sessionFile.model,
+          auth: llmAuthFromConfig(config),
+        });
+        if (gate.blocked) {
+          promptBlocked(res, gate.reason);
           return;
         }
 

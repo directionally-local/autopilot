@@ -39,6 +39,13 @@ import { plumbingModelOf } from "../config.js";
  * no user message has any text content, mirroring the pre-extraction
  * fallback in `app.tsx`.
  */
+/** The text a new session id is made from: the prompt that opens the
+ *  session when the host has it before the history does (UserPromptSubmit
+ *  fires before the message is added), else the first user message. */
+export function sessionNameText(messages: ChatMessage[], firstPrompt?: string): string {
+  return firstPrompt?.trim() || extractFirstUserText(messages);
+}
+
 export function extractFirstUserText(messages: ChatMessage[]): string {
   const firstUser = messages.find((m) => m.role === "user");
   if (!firstUser) return "session";
@@ -119,7 +126,10 @@ export interface SessionManager {
   hasPickerOpen: boolean;
 
   // Operations.
-  ensureSessionId: () => string;
+  /** The session id, created on first use. `firstPrompt` names a new
+   *  session after a prompt not yet in the history (UserPromptSubmit fires
+   *  before the message is added). */
+  ensureSessionId: (firstPrompt?: string) => string;
   saveSessionSafe: () => Promise<void>;
   openResumePicker: () => Promise<void>;
   doResumeSession: (filePath: string, checkpointId?: string) => Promise<void>;
@@ -170,9 +180,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   const depsRef = useRef(deps);
   depsRef.current = deps;
 
-  const ensureSessionId = useCallback(() => {
+  const ensureSessionId = useCallback((firstPrompt?: string) => {
     if (sessionIdRef.current) return sessionIdRef.current;
-    const text = extractFirstUserText(depsRef.current.messagesRef.current);
+    const text = sessionNameText(depsRef.current.messagesRef.current, firstPrompt);
     sessionIdRef.current = makeSessionId(text);
     setLogSessionId(sessionIdRef.current);
     return sessionIdRef.current;

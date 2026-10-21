@@ -1,5 +1,6 @@
 import { encodeImageFile, imageNote, normalizeImageData } from "../util/image.js";
 import { endSession } from "../hooks/session-lifecycle.js";
+import { submitUserPrompt, PromptBlockedError } from "../hooks/prompt-submit.js";
 import { registerSessionForExit } from "./process-exit.js";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
@@ -329,6 +330,20 @@ class InternalSession implements KimiFlareSession {
     }
 
     const mode = options?.mode ?? this.currentMode;
+
+    // SessionStart, then UserPromptSubmit (veto-able), as in every host. A
+    // blocked prompt never reaches the model or the history.
+    const gate = await submitUserPrompt({
+      ...(this.hooks ? { hooks: this.hooks } : {}),
+      sessionId: this.sessionId,
+      cwd: this.cwd,
+      prompt: text,
+      resumed: this.messages.some((m) => m.role === "assistant"),
+      model: this.model,
+      auth: llmAuthFromConfig(this.config),
+    });
+    if (gate.blocked) throw new PromptBlockedError(gate.reason);
+
     const messageId = `msg_${this.nextMessageId++}`;
 
     // Build user message

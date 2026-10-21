@@ -79,6 +79,7 @@ import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
 import { switchedMessage } from "./providers/connect.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
+import { submitUserPrompt } from "./hooks/prompt-submit.js";
 import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
@@ -1254,31 +1255,25 @@ function App({
       // actually configured, so this isn't a duplicate cost.
       const classification = classifyIntent(trimmed);
 
-      // UserPromptSubmit hook (veto-able). Fired after we know the
-      // prompt resolves to actual user-message content (post slash /
-      // custom command expansion). A vetoing hook cancels the turn
-      // before any LLM call.
-      if (hooksManagerRef.current.hasEnabledHooks("UserPromptSubmit")) {
-        const promptOutcome = await hooksManagerRef.current.fire(
-          "UserPromptSubmit",
-          {
-            event: "UserPromptSubmit",
-            session_id: sessionIdRef.current,
-            cwd: process.cwd(),
-            prompt: opts?.userPromptForHooks ?? display,
-            tier: classification.tier,
-          },
-          null,
-        );
-        if (promptOutcome.vetoed) {
-          const reason = promptOutcome.vetoReason || "UserPromptSubmit hook blocked the prompt";
-          setEvents((e) => [
-            ...e,
-            { kind: "info", key: mkKey(), text: `hook blocked the prompt: ${reason}` },
-          ]);
-          endTurn();
-          return;
-        }
+      // SessionStart, then the UserPromptSubmit hook (veto-able), shared with
+      // every host. Fired after we know the prompt resolves to actual
+      // user-message content (post slash / custom command expansion), with
+      // the session id created first so the first prompt carries it. A
+      // vetoing hook cancels the turn before any LLM call.
+      const promptGate = await submitUserPrompt({
+        hooks: hooksManagerRef.current,
+        sessionId: ensureSessionId(trimmed),
+        cwd: process.cwd(),
+        prompt: opts?.userPromptForHooks ?? display,
+        tier: classification.tier,
+        resumed: messagesRef.current.some((m) => m.role === "assistant"),
+        model: overrideModel ?? cfg.model,
+        auth: llmAuthFromConfig(cfg),
+      });
+      if (promptGate.blocked) {
+        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `hook blocked the prompt: ${promptGate.reason}` }]);
+        endTurn();
+        return;
       }
 
       messagesRef.current.push({ role: "user", content });

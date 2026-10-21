@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { extractFirstUserText, buildLocalResumeSummary } from "./use-session-manager.js";
+import { extractFirstUserText, buildLocalResumeSummary, sessionNameText } from "./use-session-manager.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { SessionState } from "../agent/session-state.js";
 import { emptySessionState } from "../agent/session-state.js";
@@ -61,6 +61,19 @@ describe("extractFirstUserText", () => {
       { role: "user", content: "second" },
     ];
     assert.strictEqual(extractFirstUserText(msgs), "first");
+  });
+});
+
+describe("sessionNameText", () => {
+  it("names a new session after the opening prompt before it is in the history", () => {
+    // The TUI creates the id before UserPromptSubmit so the first prompt's
+    // hook payload carries it (it used to be null).
+    assert.strictEqual(sessionNameText([{ role: "system", content: "sys" }], "  fix the login bug "), "fix the login bug");
+  });
+
+  it("falls back to the first user message", () => {
+    assert.strictEqual(sessionNameText([{ role: "user", content: "earlier" }]), "earlier");
+    assert.strictEqual(sessionNameText([], "   "), "session");
   });
 });
 

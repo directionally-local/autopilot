@@ -4,6 +4,7 @@
  */
 
 import type { PrintFormat } from "./print-mode.js";
+import { PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submit.js";
 
 export interface AttachModeOpts {
   attachUrl: string;
@@ -40,7 +41,8 @@ export async function runAttachMode(opts: AttachModeOpts): Promise<void> {
   if (!response.ok) {
     const text = await response.text().catch(() => "unknown error");
     console.error(`kimiflare attach: ${response.status} ${text}`);
-    process.exit(1);
+    // 403 prompt_blocked: a UserPromptSubmit hook on the server blocked it.
+    process.exit(response.status === 403 && text.includes('"prompt_blocked"') ? PROMPT_BLOCKED_EXIT_CODE : 1);
   }
 
   const result = (await response.json()) as { sessionId: string; status: string };
