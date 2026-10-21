@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.0.0](https://github.com/sinameraji/autopilot/compare/v1.30.0...v2.0.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ui:** `--ui ink`, `KIMIFLARE_UI=ink` and `/ui` are gone; the `--ui` option is now rejected as unknown. A saved `uiEngine` is ignored and dropped the next time the config is saved.
+
+### Features
+
+* **camouflage:** first-run onboarding ([#903](https://github.com/sinameraji/autopilot/issues/903)) ([71a6412](https://github.com/sinameraji/autopilot/commit/71a64125e1a03ba2f7c7a15d73a5466b788b84f0))
+* **ui:** no Ink fallback; explain a missing renderer and restart a crashed one ([#904](https://github.com/sinameraji/autopilot/issues/904)) ([f9798e5](https://github.com/sinameraji/autopilot/commit/f9798e54db63fd46de6991b9b15e5856d15c4973))
+
+
+### Bug Fixes
+
+* **camouflage:** queue plan picker, working resume, deny with feedback, richer status line ([#906](https://github.com/sinameraji/autopilot/issues/906)) ([e17dd5d](https://github.com/sinameraji/autopilot/commit/e17dd5dc1e05b00e6b5ae3caa9d0055d8f115956))
+* **cost-debug:** never let a failed debug write end the session ([#905](https://github.com/sinameraji/autopilot/issues/905)) ([a96eab0](https://github.com/sinameraji/autopilot/commit/a96eab063c7fddf6f887e2d2fe9b2bded08e3e15))
+
+
+### Code Refactoring
+
+* **ui:** remove the Ink UI route; Camouflage is the only interface ([#908](https://github.com/sinameraji/autopilot/issues/908)) ([28b55c1](https://github.com/sinameraji/autopilot/commit/28b55c107b25256d29beb76c5e1f745e7854b279))
+
 ## [1.30.0](https://github.com/sinameraji/autopilot/compare/v1.29.0...v1.30.0) (2026-10-20)
 
 
