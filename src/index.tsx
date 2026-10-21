@@ -196,6 +196,80 @@ asterTokenCommand
     }
   });
 
+const asterPairCommand = asterCommand.command("pair").description("Approve devices pairing with this server (run on the server)");
+asterPairCommand
+  .command("list")
+  .description("List pairing codes waiting for approval")
+  .action(async () => {
+    const { AsterStore } = await import("./server/aster-store.js");
+    const store = new AsterStore();
+    try {
+      const pending = store.listPendingDeviceAuthorizations();
+      if (pending.length === 0) console.log("No pairings waiting.");
+      for (const entry of pending) console.log(`${entry.userCode}  ${entry.clientName}  expires ${new Date(entry.expiresAt).toISOString()}`);
+    } finally {
+      store.close();
+    }
+  });
+for (const decision of ["approve", "deny"] as const) {
+  asterPairCommand
+    .command(decision)
+    .description(decision === "approve" ? "Approve the code a device shows; it receives a 90-day credential for every workspace" : "Deny the code a device shows")
+    .argument("<code>")
+    .action(async (code: string) => {
+      const { AsterStore } = await import("./server/aster-store.js");
+      const { CLIENT_CREDENTIAL_TTL_MS, configuredWorkspaceIds } = await import("./server/aster-pairing.js");
+      const workspaceIds = await configuredWorkspaceIds();
+      if (!workspaceIds) {
+        console.error("Aster workspaces are not configured on this server (see autopilot aster setup).");
+        process.exitCode = 2;
+        return;
+      }
+      const store = new AsterStore();
+      try {
+        const outcome = store.resolveDeviceAuthorization(code, decision, { workspaceIds, credentialTtlMs: CLIENT_CREDENTIAL_TTL_MS });
+        const messages = {
+          approved: "Approved. The device finishes signing in on its own.",
+          denied: "Denied.",
+          not_found: "No pairing with that code.",
+          expired: "That code expired; start pairing again on the device.",
+          already_resolved: "That code was already approved or denied.",
+        } as const;
+        if (outcome === "approved" || outcome === "denied") console.log(messages[outcome]);
+        else {
+          console.error(messages[outcome]);
+          process.exitCode = 1;
+        }
+      } finally {
+        store.close();
+      }
+    });
+}
+
+asterCommand
+  .command("owner")
+  .description("Owner access for approving devices in a browser")
+  .command("link")
+  .description("Print a one-time link (valid 24 hours) that makes the browser opening it this server's owner")
+  .option("--url <base>", "Public base URL of this server (default: AUTOPILOT_PUBLIC_URL)")
+  .action(async (options: { url?: string }) => {
+    const base = (options.url ?? process.env.AUTOPILOT_PUBLIC_URL ?? "").trim().replace(/\/+$/, "");
+    if (!/^https?:\/\/[^\s/]+$/.test(base)) {
+      console.error("Pass --url https://your-server (or set AUTOPILOT_PUBLIC_URL).");
+      process.exitCode = 2;
+      return;
+    }
+    const { AsterStore } = await import("./server/aster-store.js");
+    const { OWNER_CLAIM_TTL_MS } = await import("./server/aster-pairing.js");
+    const store = new AsterStore();
+    try {
+      const claim = store.createOwnerClaim(OWNER_CLAIM_TTL_MS);
+      console.log(`${base}/api/v1/auth/claim?token=${claim.token}`);
+    } finally {
+      store.close();
+    }
+  });
+
 const logsCmd = program
   .command("logs")
   .description("Inspect KimiFlare's structured logs (jsonl, one file per day, 7-day retention)");

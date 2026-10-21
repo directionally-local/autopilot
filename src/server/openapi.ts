@@ -314,6 +314,28 @@ export function getOpenApiSpec(): string {
           responses: { "200": { description: "API version and supported capabilities; contains no host paths or secrets" }, "401": { description: "Invalid or expired credential" } },
         },
       },
+      "/api/v1/auth/device": {
+        post: {
+          summary: "Start pairing a client with a device code (no credential required)",
+          requestBody: { content: { "application/json": { schema: { type: "object", properties: { clientName: { type: "string", maxLength: 60 } }, additionalProperties: false } } } },
+          responses: { "200": { description: "deviceCode (keep secret), userCode to show, verificationUri/verificationUriComplete, expiresIn and interval in seconds" }, "400": { description: "Invalid client name" }, "429": { description: "Too many pairings waiting for approval" } },
+        },
+      },
+      "/api/v1/auth/device/token": {
+        post: {
+          summary: "Poll a pairing; returns the client credential once after the owner approves",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["deviceCode"], properties: { deviceCode: { type: "string" } } } } } },
+          responses: { "200": { description: "{token, credentialId, name, workspaceIds, scopes, expiresAt}; the token is shown once" }, "400": { description: "authorization_pending, slow_down, access_denied, or expired_token" } },
+        },
+      },
+      "/api/v1/auth/approve": {
+        get: { summary: "Owner page (HTML) to approve or deny a pairing code; requires the owner cookie", parameters: [{ name: "code", in: "query", schema: { type: "string" } }], responses: { "200": { description: "Approval form" }, "401": { description: "Browser is not the owner" } } },
+        post: { summary: "Same-origin form post: code and decision=approve|deny", responses: { "200": { description: "Decision recorded" }, "403": { description: "Cross-origin request" }, "404": { description: "Unknown code" }, "409": { description: "Already decided" }, "410": { description: "Code expired" } } },
+      },
+      "/api/v1/auth/claim": {
+        get: { summary: "Owner claim page (HTML) for a one-time link from `autopilot aster owner link`", parameters: [{ name: "token", in: "query", required: true, schema: { type: "string" } }], responses: { "200": { description: "Claim form" } } },
+        post: { summary: "Same-origin form post that redeems the claim and sets the owner cookie", responses: { "303": { description: "Claimed; redirects to the approval page" }, "403": { description: "Cross-origin request" }, "410": { description: "Link expired or already used" } } },
+      },
       "/api/v1/github/repositories": {
         get: {
           summary: "List repositories accessible to the server's GitHub token",
@@ -337,6 +359,12 @@ export function getOpenApiSpec(): string {
         },
       },
       "/api/v1/conversations": {
+        get: {
+          summary: "List the calling credential's conversations, newest first",
+          security: [{ asterBearer: [] }],
+          parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } }],
+          responses: { "200": { description: "{conversations: [...]} in the conversation metadata shape" }, "400": { description: "Invalid limit" } },
+        },
         post: {
           summary: "Create a persistent conversation in its own isolated Hotcell microVM",
           security: [{ asterBearer: [] }],
@@ -351,6 +379,8 @@ export function getOpenApiSpec(): string {
                 model: { type: "string" },
                 kind: { type: "string", enum: ["chat", "code"], default: "chat" },
                 repository: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$", description: "Required for kind=code; must be accessible to the server's GitHub token." },
+                baseCommit: { type: "string", pattern: "^[0-9a-f]{40}$", description: "kind=code only: start from this commit instead of the default branch tip." },
+                patch: { type: "string", maxLength: 3145728, description: "kind=code only, requires baseCommit: a binary git diff against it, committed first on the conversation branch." },
               },
               additionalProperties: false,
             }, example: { workspaceId: "default", model: "moonshotai/kimi-k2.6", kind: "code", repository: "acme/project" } } },

@@ -19,6 +19,7 @@ import { AsterGitHub, AsterGitHubError, REPOSITORY_FULL_NAME_RE } from "./aster-
 import { AsterMemory } from "./aster-memory.js";
 import { AsterGitHubProxy, createAsterGitHubGrantToken } from "./aster-github-proxy.js";
 import { AsterPush } from "./aster-push.js";
+import { handleAsterPairing, PairingRequestError } from "./aster-pairing.js";
 import { containsLikelyProviderSecret, createAsterTools, redactLikelySecrets, assertAsterCellPath } from "./aster-tools.js";
 
 const API_PREFIX = "/api/v1";
@@ -30,6 +31,10 @@ const CREATE_IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_APPROVAL_ARG_BYTES = 24 * 1024;
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ALLOWED_ASTER_TOOLS = ["read", "write", "edit"] as const;
+const BASE_COMMIT_RE = /^[0-9a-f]{40}$/;
+// Keeps the whole create request under MAX_BODY_BYTES once JSON-escaped.
+const MAX_PATCH_CHARS = 3 * 1024 * 1024;
+const MAX_LISTED_CONVERSATIONS = 200;
 
 export interface AsterTurnStart {
   runId: string;
@@ -183,6 +188,8 @@ export class AsterApi {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     try {
       const store = this.getStore();
+      // Device pairing and owner claim run before bearer auth: they are how a client gets one.
+      if (await handleAsterPairing(req, res, url, store)) return;
       const principal = store.authenticate(req.headers.authorization);
       if (!principal) {
         sendError(res, 401, "invalid_credential", "A valid Aster bearer credential is required");
@@ -200,7 +207,7 @@ export class AsterApi {
           service: "autopilot",
           apiVersion: "v1",
           serviceVersion: getAppVersion(),
-          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
+          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "patch-upload", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
         });
       }
 
@@ -223,8 +230,8 @@ export class AsterApi {
       if (path === `${API_PREFIX}/conversations` && method === "POST") {
         if (!this.hasScope(principal, "conversations:write")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/write scope");
         const body = await readJsonBody(req);
-        if (Object.keys(body).some((key) => !["workspaceId", "model", "kind", "repository"].includes(key))) {
-          return sendError(res, 400, "unsupported_field", "Conversation creation accepts workspaceId, model, kind, and repository; paths are server-configured");
+        if (Object.keys(body).some((key) => !["workspaceId", "model", "kind", "repository", "baseCommit", "patch"].includes(key))) {
+          return sendError(res, 400, "unsupported_field", "Conversation creation accepts workspaceId, model, kind, repository, baseCommit, and patch; paths are server-configured");
         }
         if (body.kind !== undefined && body.kind !== "chat" && body.kind !== "code") {
           return sendError(res, 400, "invalid_kind", "kind must be \"chat\" or \"code\"");
@@ -232,8 +239,21 @@ export class AsterApi {
         if (body.kind === "code" && (typeof body.repository !== "string" || !REPOSITORY_FULL_NAME_RE.test(body.repository))) {
           return sendError(res, 400, "repository_required", "Code conversations need a repository as owner/name");
         }
-        if (body.kind !== "code" && body.repository !== undefined) {
-          return sendError(res, 400, "unsupported_field", "repository is only accepted for code conversations");
+        if (body.kind !== "code" && (body.repository !== undefined || body.baseCommit !== undefined || body.patch !== undefined)) {
+          return sendError(res, 400, "unsupported_field", "repository, baseCommit, and patch are only accepted for code conversations");
+        }
+        // Uncommitted local work: a binary git diff against a commit the repository already has.
+        if (body.patch !== undefined && body.baseCommit === undefined) {
+          return sendError(res, 400, "base_commit_required", "A patch needs the baseCommit it applies to");
+        }
+        if (body.baseCommit !== undefined && (typeof body.baseCommit !== "string" || !BASE_COMMIT_RE.test(body.baseCommit))) {
+          return sendError(res, 400, "invalid_base_commit", "baseCommit must be a full 40-character commit SHA");
+        }
+        if (body.patch !== undefined && (typeof body.patch !== "string" || body.patch.length > MAX_PATCH_CHARS)) {
+          return sendError(res, 400, "invalid_patch", "patch must be a git diff of at most 3 MiB");
+        }
+        if (typeof body.patch === "string" && containsLikelyProviderSecret(body.patch)) {
+          return sendError(res, 400, "patch_contains_secret", "The patch looks like it contains a provider API key; remove it and retry");
         }
         if (typeof body.workspaceId !== "string" || !principal.workspaceIds.includes(body.workspaceId)) {
           return sendError(res, 403, "workspace_forbidden", "Workspace ID is not in this credential's scope");
@@ -248,7 +268,21 @@ export class AsterApi {
           return sendError(res, 400, "idempotency_key_required", "Conversation creation requires an Idempotency-Key header of 1-128 safe characters");
         }
         const kind = body.kind as "chat" | "code" | undefined;
-        return await this.createConversation(res, store, principal, workspace, body.model, idempotencyKey, kind, body.repository as string | undefined);
+        const changes = typeof body.baseCommit === "string"
+          ? { baseCommit: body.baseCommit, ...(typeof body.patch === "string" && body.patch ? { patch: body.patch } : {}) }
+          : undefined;
+        return await this.createConversation(res, store, principal, workspace, body.model, idempotencyKey, kind, body.repository as string | undefined, changes);
+      }
+
+      if (path === `${API_PREFIX}/conversations` && method === "GET") {
+        if (!this.hasScope(principal, "conversations:read")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/read scope");
+        const limitParam = url.searchParams.get("limit") ?? "50";
+        const limit = /^\d{1,4}$/.test(limitParam) ? Math.min(Number(limitParam), MAX_LISTED_CONVERSATIONS) : 0;
+        if (limit < 1) return sendError(res, 400, "invalid_limit", `limit must be 1-${MAX_LISTED_CONVERSATIONS}`);
+        const conversations = store.listCredentialConversations(principal.credentialId, limit)
+          .filter((conversation) => principal.workspaceIds.includes(conversation.workspaceId))
+          .map((conversation) => publicConversation(conversation, store.getConversationProject(conversation.id)));
+        return json(res, 200, { conversations });
       }
 
       if (path === `${API_PREFIX}/devices` && method === "POST") {
@@ -480,6 +514,7 @@ export class AsterApi {
       return sendError(res, 404, "not_found", "Aster endpoint not found");
     } catch (error) {
       if (isHttpFailure(error)) return sendError(res, error.status, error.code, error.message);
+      if (error instanceof PairingRequestError) return sendError(res, error.status, error.code, error.message);
       if (error instanceof AsterConfigError) return sendError(res, 503, "aster_not_configured", "Aster workspaces/models are not configured");
       return sendError(res, 500, "internal_error", "Aster request could not be completed");
     }
@@ -616,6 +651,7 @@ export class AsterApi {
     idempotencyKey: string,
     kind?: "chat" | "code",
     repository?: string,
+    changes?: { baseCommit: string; patch?: string },
   ): Promise<void> {
     const candidateId = randomUUID();
     const candidateSessionId = randomUUID();
@@ -629,6 +665,7 @@ export class AsterApi {
       idempotencyKey,
       kind,
       ...(repository ? { repository } : {}),
+      ...(changes ? { baseCommit: changes.baseCommit, patch: changes.patch ?? "" } : {}),
     });
     if (reservation.kind === "conflict") return sendError(res, 409, "idempotency_conflict", "Idempotency-Key was already used for different conversation parameters");
 
@@ -672,6 +709,10 @@ export class AsterApi {
         project = stored.kind === "code"
           ? { kind: "code", repository: stored.repository!, baseBranch: (await this.github.getRepository(stored.repository!).catch(() => undefined))?.defaultBranch ?? "main", branch: stored.branch! }
           : { kind: "chat" };
+      }
+      if (project.kind === "code" && changes) {
+        project.baseCommit = changes.baseCommit;
+        if (changes.patch) project.patch = changes.patch;
       }
       if (project.kind === "code" && project.repository && this.githubProxyUrl) {
         const grantToken = createAsterGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", mapping.conversationId, project.repository, project.branch!);
