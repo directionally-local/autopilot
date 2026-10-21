@@ -236,6 +236,20 @@ autopilot -p "..." --dangerously-allow-all          # auto-approve mutating tool
 autopilot -p "..." --reasoning                      # include chain-of-thought in stderr
 ```
 
+### Run tasks on your own server
+
+Send a task to an Autopilot server you run. It works in its own sandbox and opens a pull request, and you can close your laptop while it does.
+
+```sh
+autopilot remote add https://acme.example.com      # approve the code in your browser; no keys copied
+autopilot --on acme "fix the flaky checkout test"  # runs on the server; uncommitted changes go along
+autopilot runs                                     # what's running or done, with PR links
+autopilot runs watch <run>                         # follow a run (Ctrl-C detaches, the run keeps going)
+autopilot pull <run>                               # check out the run's branch here
+```
+
+The run starts from the last commit your branch shares with `origin`. Unpushed commits, staged and unstaged edits, and untracked files that aren't ignored are sent along as a patch, up to 3 MiB. Add `--detach` to return right away and `-m <model>` to pick one of the server's models. Each task gets its own sandbox and branch, so several can run at once. The server keeps the model key and GitHub credentials; your laptop holds only a revocable, 90-day pairing credential in `~/.config/autopilot/remotes.json`. Setting up the server side is covered in [docs/aster-api.md](docs/aster-api.md).
+
 ### Headless SDK
 
 Use autopilot programmatically from your own application — no TUI required.

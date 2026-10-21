@@ -40,7 +40,12 @@ program
   .option("--format <mode>", "output format for print mode: text (default), json, stream-json")
   .option("--dir <path>", "run in the specified directory instead of the current one (print mode only)")
   .option("--title <title>", "override the auto-generated session title (print mode only)")
-  .option("--attach <url>", "attach to a running autopilot serve instance (print mode only)");
+  .option("--attach <url>", "attach to a running autopilot serve instance (print mode only)")
+  .option("--on <server>", "run the task on a paired server (autopilot remote add) instead of this machine")
+  .option("--local", "run on this machine (the default)")
+  .option("--repo <owner/name>", "with --on: GitHub repository (default: this checkout's origin)")
+  .option("--detach", "with --on: start the task and return without streaming its output")
+  .argument("[task...]", "with --on: the task to run on the server");
 
 program
   .command("cost")
@@ -88,15 +93,88 @@ program
     await runCostCommand({ ...cmdOpts, config: cfg });
   });
 
+/** Runs a remote-server command: Ctrl-C aborts it, and errors print as one line. */
+async function runRemoteCommand(fn: (signal: AbortSignal) => Promise<number | void>): Promise<void> {
+  const controller = new AbortController();
+  const onInterrupt = () => controller.abort();
+  process.once("SIGINT", onInterrupt);
+  try {
+    const code = await fn(controller.signal);
+    if (typeof code === "number") process.exitCode = code;
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    const { describeError } = await import("./remote/cli.js");
+    console.error(`autopilot: ${describeError(error)}`);
+    process.exitCode = 1;
+  } finally {
+    process.off("SIGINT", onInterrupt);
+  }
+}
+
+const remoteCommand = program.command("remote").description("Pair this machine with Autopilot servers that run tasks for you");
+remoteCommand
+  .command("add")
+  .description("Pair with a server: approve the code it shows in your browser (no keys copied)")
+  .argument("<url>", "server URL, e.g. https://acme.example.com")
+  .option("-n, --name <name>", "short name for --on (default: the host's first label)")
+  .option("--no-open", "print the approval link instead of opening a browser")
+  .action((url: string, cmdOpts: { name?: string; open: boolean }) => runRemoteCommand(async (signal) => {
+    const { remoteAdd } = await import("./remote/cli.js");
+    await remoteAdd({ url, open: cmdOpts.open, signal, ...(cmdOpts.name ? { name: cmdOpts.name } : {}) });
+  }));
+remoteCommand
+  .command("list")
+  .description("List paired servers")
+  .action(() => runRemoteCommand(async () => {
+    const { remoteList } = await import("./remote/cli.js");
+    await remoteList();
+  }));
+remoteCommand
+  .command("remove")
+  .description("Forget a paired server")
+  .argument("<name>")
+  .action((name: string) => runRemoteCommand(async () => {
+    const { remoteRemove } = await import("./remote/cli.js");
+    return (await remoteRemove(name)) ? 0 : 1;
+  }));
+
+const runsCommand = program
+  .command("runs")
+  .description("List tasks running or finished on your servers")
+  .option("--on <server>", "only this server")
+  .option("--json", "machine-readable output")
+  .action((cmdOpts: { on?: string; json?: boolean }) => runRemoteCommand(async () => {
+    const { listRuns } = await import("./remote/cli.js");
+    await listRuns({ ...(cmdOpts.on ? { remote: cmdOpts.on } : {}), json: !!cmdOpts.json });
+  }));
+runsCommand
+  .command("watch")
+  .description("Show a run's output and follow it until it ends (Ctrl-C detaches)")
+  .argument("<run>", "run ID or prefix")
+  .option("--on <server>", "server the run is on")
+  .action((id: string, cmdOpts: { on?: string }) => runRemoteCommand(async (signal) => {
+    const { watchRun } = await import("./remote/cli.js");
+    return watchRun({ id, signal, ...(cmdOpts.on ? { remote: cmdOpts.on } : {}) });
+  }));
+runsCommand
+  .command("cancel")
+  .description("Stop a running task")
+  .argument("<run>", "run ID or prefix")
+  .option("--on <server>", "server the run is on")
+  .action((id: string, cmdOpts: { on?: string }) => runRemoteCommand(async () => {
+    const { cancelRun } = await import("./remote/cli.js");
+    await cancelRun({ id, ...(cmdOpts.on ? { remote: cmdOpts.on } : {}) });
+  }));
+
 program
-  .command("remote")
-  .description("Retired: remote sessions on Cloudflare")
-  .allowUnknownOption()
-  .argument("[args...]")
-  .action(() => {
-    console.error("autopilot remote was retired. For unattended work use local subagents (/subagents) or a headless run: autopilot -p \"…\".");
-    process.exit(2);
-  });
+  .command("pull")
+  .description("Check out a run's branch in this repository")
+  .argument("<run>", "run ID or prefix")
+  .option("--on <server>", "server the run is on")
+  .action((id: string, cmdOpts: { on?: string }) => runRemoteCommand(async () => {
+    const { pullRun } = await import("./remote/cli.js");
+    await pullRun({ id, cwd: process.cwd(), ...(cmdOpts.on ? { remote: cmdOpts.on } : {}) });
+  }));
 registerEvalCommand(program);
 
 const asterCommand = program.command("aster").description("Manage the Aster mobile API");
@@ -604,7 +682,11 @@ program
     }
   });
 
-program.action(async () => {
+/** Positional words after the options: a task for --on. */
+let positionalTask: string[] = [];
+
+program.action(async (task: string[] = []) => {
+  positionalTask = task;
   await main();
   // Every mode that returns normally (TUI, print, emit, RPC): end open
   // sessions and flush OTel before the event loop drains (#877).
@@ -635,6 +717,10 @@ const opts = program.opts<{
   dir?: string;
   title?: string;
   attach?: string;
+  on?: string;
+  local?: boolean;
+  repo?: string;
+  detach?: boolean;
 }>();
 
 /** Start the OTLP exporter when KIMIFLARE_OTEL_ENDPOINT is set, flushed at exit. */
@@ -647,6 +733,37 @@ async function initOtel(): Promise<void> {
   }
 }
 
+/** `autopilot --on <server> "task"`: the task runs in a sandbox on a paired server. */
+async function runRemoteTask(): Promise<void> {
+  if (opts.on === undefined) {
+    console.error(`autopilot: unknown command "${positionalTask[0]}". To run a task here use -p "…"; on a server, --on <server> "…".`);
+    process.exit(2);
+  }
+  if (opts.local) {
+    console.error("autopilot: --on and --local can't be combined.");
+    process.exit(2);
+  }
+  const task = (positionalTask.join(" ") || opts.print || "").trim();
+  if (!task) {
+    console.error(`autopilot: --on needs a task, e.g. autopilot --on ${opts.on} "fix the flaky checkout test"`);
+    process.exit(2);
+  }
+  const cfg = await loadConfig().catch(() => null);
+  await runRemoteCommand(async (signal) => {
+    const { runOnRemote } = await import("./remote/cli.js");
+    return runOnRemote({
+      remote: opts.on,
+      task,
+      cwd: opts.dir ?? process.cwd(),
+      signal,
+      detach: !!opts.detach,
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(cfg?.model ? { preferredModel: cfg.model } : {}),
+      ...(opts.repo ? { repository: opts.repo } : {}),
+    });
+  });
+}
+
 async function main() {
   // Initialize the OTLP/HTTP log exporter if `KIMIFLARE_OTEL_ENDPOINT`
   // is set. No-op otherwise — the env-var gate keeps this zero-cost for
@@ -657,6 +774,11 @@ async function main() {
   // (#877). SIGINT stays with each mode: it cancels the turn first.
   const { installExitHandlers } = await import("./util/exit.js");
   installExitHandlers({ crashes: true });
+
+  if (opts.on !== undefined || positionalTask.length > 0) {
+    await runRemoteTask();
+    return;
+  }
 
   const globalCfg = await loadConfig();
   const updateResult = await checkForUpdate();
