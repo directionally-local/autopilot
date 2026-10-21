@@ -59,7 +59,7 @@
     "dev": "tsx src/index.tsx",
     "typecheck": "tsc --noEmit",
     "typecheck:fast": "tsrs --noEmit",
-    "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
+    "test": "tsx --test --test-timeout=120000 --test-force-exit \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "record-demos": "vhs demos/*.tape",
     "start": "node bin/autopilot.mjs",
     "prepublishOnly": "npm run build"
