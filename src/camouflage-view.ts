@@ -1,12 +1,12 @@
 /**
- * Camouflage UI (`--ui camouflage`): the same App as the Ink UI, drawn by
- * the Camouflage inline renderer.
+ * Camouflage UI, autopilot's interactive interface: App drawn by the
+ * Camouflage inline renderer.
  *
  * App keeps all of autopilot's interactive logic (turns, slash commands,
  * MCP/LSP/memory/hooks, queueing, sessions). Through an AppBridge it reports
  * what's on screen after each render; this module turns that into renderer
- * events and turns the user's input back into App actions. Ink renders
- * nothing in this mode.
+ * events and turns the user's input back into App actions. App runs headless
+ * inside Ink, which renders nothing.
  *
  * Needs camouflage-tui with the inline SDK. CAMOUFLAGE_BIN overrides the
  * renderer binary.
@@ -19,8 +19,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppActions, AppBridge, AppModal, AppSnapshot } from "./ui/app-bridge.js";
-import type { ChatEvent } from "./ui/chat.js";
-import type { ToolEventState } from "./ui/tool-view.js";
+import type { ChatEvent } from "./ui/view-types.js";
+import type { ToolEventState } from "./ui/view-types.js";
 import type { Cfg } from "./app.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { CustomCommand, CommandSource } from "./commands/types.js";
@@ -48,17 +48,17 @@ import {
 } from "./providers/connect.js";
 import { OPENROUTER_KEYS_URL } from "./models/openrouter.js";
 import { featuredModels, listModels, type ModelEntry } from "./models/registry.js";
-import { formatContext, formatModelPrice } from "./ui/model-picker.js";
-import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-menu.js";
+import { formatContext, formatModelPrice } from "./ui/model-format.js";
+import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
-import { PRESETS as LSP_PRESETS } from "./ui/lsp-wizard.js";
+import { PRESETS as LSP_PRESETS } from "./ui/lsp-presets.js";
 import { getShellCommand } from "./tools/bash.js";
 import type { LspServerConfig } from "./config.js";
 import { TOOL_HOOK_EVENTS, type HookConfig, type HookEvent } from "./hooks/types.js";
 import { RECOMMENDED_HOOKS } from "./hooks/recommended.js";
 import { setHookEnabled, appendHook, deriveHookId } from "./hooks/settings.js";
-import { EVENT_DESCRIPTIONS, EVENT_COMMAND_EXAMPLES, MATCHER_EXAMPLES } from "./ui/hooks-wizard.js";
+import { EVENT_DESCRIPTIONS, EVENT_COMMAND_EXAMPLES, MATCHER_EXAMPLES } from "./ui/hooks-catalog.js";
 import { MODES, type Mode } from "./mode.js";
 import { logger } from "./util/logger.js";
 import { JobManager, type JobRecord } from "./jobs/manager.js";
@@ -767,8 +767,7 @@ export class View implements AppBridge {
     return r.cancelled ? "" : r.values?.feedback?.trim() ?? "";
   }
 
-  /** Map App's pickers to renderer prompts; dialogs without one yet are
-   *  closed with a pointer to the Ink UI. */
+  /** Map App's pickers to renderer prompts. */
   private syncPrompts(s: AppSnapshot): void {
     const a = this.actions;
     if (!a) return;
@@ -860,7 +859,7 @@ export class View implements AppBridge {
             "Theme",
             s.themes.map((t) => ({ value: t.name, label: t.label })),
             s.currentTheme,
-            "Applies to the Ink UI; Camouflage uses your terminal's colors",
+            "Camouflage uses your terminal's colors",
           );
           a.pickTheme(r);
         });
@@ -1738,7 +1737,6 @@ function modalName(m: AppModal): string {
     mode: "The mode picker",
     provider: "/provider",
     theme: "/theme",
-    ui: "/ui",
     help: "/help",
     memory: "The memory picker",
     skills: "The skills picker",

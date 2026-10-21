@@ -125,7 +125,7 @@ describe("rendererInfo (#862)", () => {
   });
 });
 
-// ----- parity with the Ink UI ------------------------------------------------
+// ----- driving App through the bridge ---------------------------------------
 
 type Sent = { type: string; payload: Record<string, unknown> };
 

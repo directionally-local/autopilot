@@ -1,6 +1,6 @@
 import React, { useCallback, useRef, useState } from "react";
 import { TurnSupervisor } from "../agent/supervisor.js";
-import type { TurnPhase } from "./status.js";
+import type { TurnPhase } from "./view-types.js";
 import type { Task } from "../tools/registry.js";
 
 export interface TurnController {

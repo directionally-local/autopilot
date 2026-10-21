@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fuzzyFilter } from "../util/fuzzy.js";
-import type { FilePickerItem } from "./file-picker.js";
+import type { FilePickerItem } from "./view-types.js";
 import type { SlashItem } from "../commands/types.js";
 
 export type PickerKind = "file" | "slash";

@@ -30,8 +30,6 @@ export interface ModalHostController {
   setShowLspWizard: (v: boolean) => void;
   showThemePicker: boolean;
   setShowThemePicker: (v: boolean) => void;
-  showUiPicker: boolean;
-  setShowUiPicker: (v: boolean) => void;
   showModelPicker: boolean;
   setShowModelPicker: (v: boolean) => void;
   /** `/provider`: the connect/switch flow, optionally starting at one provider. */
@@ -86,7 +84,6 @@ export function useModalHost(): ModalHostController {
   const [showCommandList, setShowCommandList] = useState(false);
   const [showLspWizard, setShowLspWizard] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
-  const [showUiPicker, setShowUiPicker] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [providerSetup, setProviderSetup] = useState<ProviderSetupState | null>(null);
   const [showModePicker, setShowModePicker] = useState(false);
@@ -107,7 +104,6 @@ export function useModalHost(): ModalHostController {
       showCommandList ||
       showLspWizard ||
       showThemePicker ||
-      showUiPicker ||
       showModelPicker ||
       providerSetup !== null ||
       showModePicker ||
@@ -136,7 +132,6 @@ export function useModalHost(): ModalHostController {
     showModePicker,
     showInboxModal,
     showHooksDashboard,
-    showUiPicker,
     showHelpMenu,
     showMemoryPicker,
     showSkillsPicker,
@@ -152,7 +147,6 @@ export function useModalHost(): ModalHostController {
     showCommandList, setShowCommandList,
     showLspWizard, setShowLspWizard,
     showThemePicker, setShowThemePicker,
-    showUiPicker, setShowUiPicker,
     showModelPicker, setShowModelPicker,
     providerSetup, setProviderSetup,
     showModePicker, setShowModePicker,
@@ -177,7 +171,6 @@ export interface ModalFlagsInput {
   showCommandList: boolean;
   showLspWizard: boolean;
   showThemePicker: boolean;
-  showUiPicker: boolean;
   showModelPicker: boolean;
   showInboxModal: boolean;
   showHelpMenu: boolean;
@@ -202,7 +195,6 @@ export function computeModalFlags(s: ModalFlagsInput): ModalFlags {
     s.showCommandList ||
     s.showLspWizard ||
     s.showThemePicker ||
-    s.showUiPicker ||
     s.showModelPicker ||
     s.showInboxModal ||
     s.showHelpMenu ||
@@ -225,7 +217,6 @@ export const EMPTY_MODAL_STATE: ModalFlagsInput = {
   showCommandList: false,
   showLspWizard: false,
   showThemePicker: false,
-  showUiPicker: false,
   showModelPicker: false,
   showInboxModal: false,
   showHelpMenu: false,

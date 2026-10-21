@@ -9,14 +9,14 @@ import {
   replaceQueuedPrompt,
   replaceUserPromptEvent,
 } from "./ui/app-helpers.js";
-import type { ChatEvent } from "./ui/chat.js";
+import type { ChatEvent } from "./ui/view-types.js";
 import {
   filterPickerItems,
   shouldOpenMentionPicker,
   shouldOpenSlashPicker,
   insertSlashCommand,
 } from "./ui/use-picker-controller.js";
-import type { FilePickerItem } from "./ui/file-picker.js";
+import type { FilePickerItem } from "./ui/view-types.js";
 
 describe("prompt editing", () => {
   it("replaces a queued prompt instead of adding another item", () => {

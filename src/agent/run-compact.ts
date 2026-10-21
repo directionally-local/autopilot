@@ -9,7 +9,7 @@
 import React from "react";
 
 import type { Cfg } from "../app.js";
-import type { ChatEvent } from "./../ui/chat.js";
+import type { ChatEvent } from "../ui/view-types.js";
 import type { ChatMessage } from "./messages.js";
 import {
   compactMessagesViaArtifacts,

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isImmediateSubagentCommand, isRunNowCommand } from "./subagent-panel.js";
+import { isImmediateSubagentCommand, isRunNowCommand } from "./subagent-list.js";
 import { cancelSubagents, formatElapsed, formatRunningSubagents } from "./slash-commands.js";
 import { workerRegistry } from "../tools/worker-registry.js";
 

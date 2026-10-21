@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Cfg } from "../app.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import type { CustomCommand } from "../commands/types.js";
 import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
 import { loadCustomCommands } from "../commands/loader.js";

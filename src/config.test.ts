@@ -123,6 +123,15 @@ describe("loadConfig", () => {
     assert.strictEqual(cfg.coauthorEmail, "kimiflare@proton.me");
   });
 
+  it("loads an old config that still names a UI engine, and drops it on save", async () => {
+    await writeConfigFile({ openrouterApiKey: "sk-or-file", uiEngine: "ink" });
+    const cfg = await loadConfig();
+    assert.ok(cfg);
+    assert.equal("uiEngine" in cfg, false);
+    await saveConfig(cfg);
+    assert.equal("uiEngine" in (await readConfigFile()), false);
+  });
+
   it("defaults subagent routing to auto, migrates the old implicit default, and preserves explicit choices", async () => {
     process.env.OPENROUTER_API_KEY = "sk-or-env";
     assert.equal((await loadConfig())?.subagentPolicy, "auto");

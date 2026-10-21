@@ -12,7 +12,7 @@ import type { ToolCall, Usage } from "../agent/messages.js";
 import type { PermissionAsker, ToolResult } from "../tools/executor.js";
 import type { PlanOption, Task, ToolRender, ToolSpec } from "../tools/registry.js";
 import type { SemanticSkillRoutingResult } from "../skills/index.js";
-import type { ChatEvent } from "./chat.js";
+import type { ChatEvent } from "./view-types.js";
 import { KimiApiError, humanizeApiError } from "../util/errors.js";
 
 type ToolEvent = Extract<ChatEvent, { kind: "tool" }>;
