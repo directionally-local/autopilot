@@ -24,8 +24,9 @@ import type { ToolEventState } from "./ui/tool-view.js";
 import type { Cfg } from "./app.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { CustomCommand, CommandSource } from "./commands/types.js";
-import { loadConfig, type ReasoningEffort } from "./config.js";
-import { gracefulExit, onShutdown } from "./util/exit.js";
+import { configPath, hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type ReasoningEffort } from "./config.js";
+import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from "./camouflage-onboarding.js";
+import { onShutdown } from "./util/exit.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { resolveProviderKey } from "./providers/resolve.js";
 import {
@@ -165,13 +166,29 @@ export function rendererInfo(env: NodeJS.ProcessEnv = process.env): RendererInfo
 }
 
 export interface CamouflageViewOpts {
-  cfg: Cfg;
+  /** Null on first run (no credentials yet): provider setup runs in the renderer before the App mounts. */
+  cfg: Cfg | null;
   version: string;
-  /** Mount App with this bridge (renderApp with the bridge, Ink drawing nothing). */
-  runApp: (bridge: AppBridge) => Promise<void>;
+  /**
+   * Mount App with this bridge (renderApp with the bridge, Ink drawing
+   * nothing). `cfg` is opts.cfg, or the config first-run setup just saved.
+   */
+  runApp: (bridge: AppBridge, cfg: Cfg) => Promise<void>;
 }
 
-export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void> {
+/** How the session ended: normally, or before it began because first-run setup was cancelled or failed. */
+export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed";
+
+/** The header's two detail lines; first run has no model yet. */
+export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null): string[] {
+  if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run: connect a model provider to start"];
+  return [
+    [shortModel(cfg.model), shortPath(cwd), branch].filter(Boolean).join(" · "),
+    `/ for commands · @ to mention files${cfg.modesEnabled ? " · shift+tab to switch modes" : ""}`,
+  ];
+}
+
+export async function runCamouflageView(opts: CamouflageViewOpts): Promise<CamouflageViewResult> {
   const sdk = await loadSdk();
   const renderer = rendererInfo();
   logger.info("camouflage.renderer", { ...renderer });
@@ -200,15 +217,15 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
   }
 
   const cwd = process.cwd();
-  cam.send("SessionStarted", {
-    title: `autopilot ${opts.version}`,
-    detail: [
-      [shortModel(opts.cfg.model), shortPath(cwd), gitBranch(cwd)].filter(Boolean).join(" · "),
-      `/ for commands · @ to mention files${opts.cfg.modesEnabled ? " · shift+tab to switch modes" : ""}`,
-    ],
-    accent: "orange",
-    assistant_label: "autopilot",
-  });
+  const branch = gitBranch(cwd);
+  const startSession = (cfg: Cfg | null) =>
+    cam.send("SessionStarted", {
+      title: `autopilot ${opts.version}`,
+      detail: sessionHeaderDetail(cfg, cwd, branch),
+      accent: "orange",
+      assistant_label: "autopilot",
+    });
+  startSession(opts.cfg);
   const files = listFiles(cwd);
   if (files.length > 0) {
     cam.send("MentionCandidatesRegistered", { candidates: files.map((token) => ({ token, kind: "file" })) });
@@ -221,6 +238,11 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     resume: () => sdk.resumeTerminal?.(cam),
   });
   cam.on("userInput", (text: string) => {
+    if (!view.actions) {
+      // First-run setup is still running: there is no session to send it to.
+      cam.send("RuntimeError", { message: "Finish connecting a provider first — the session starts right after.", severity: "info" });
+      return;
+    }
     if (view.routeActivityCommand(text)) return;
     view.echoed.push(text.trim());
     view.actions?.submit(text);
@@ -265,8 +287,10 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     if (code === 0 && !signal) {
       // The user quit the renderer (Ctrl+C twice): end the App too.
       void finish().then(() => {
-        if (view.actions) view.actions.exit();
-        else void gracefulExit(0);
+        if (view.actions) return view.actions.exit();
+        // Quit during first-run setup: nothing was saved, say so on the way out.
+        quitBeforeApp = true;
+        endBeforeApp();
       });
       return;
     }
@@ -286,14 +310,34 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
       await view.settle();
       // Before the App connected there's nothing to end: stop waiting for it.
       if (view.actions) view.actions.exit();
-      else crashedBeforeApp();
+      else endBeforeApp();
     });
   });
 
-  let crashedBeforeApp: () => void = () => {};
-  const beforeApp = new Promise<void>((resolve) => (crashedBeforeApp = resolve));
+  // The renderer went away (quit or crash) before the App connected.
+  let endBeforeApp: () => void = () => {};
+  let quitBeforeApp = false;
+  const beforeApp = new Promise<void>((resolve) => (endBeforeApp = resolve));
+  let setup: FirstRunOutcome | null = null;
   try {
-    await Promise.race([opts.runApp(view), beforeApp]);
+    let cfg = opts.cfg;
+    if (!cfg) {
+      const onboarding = runFirstRun({
+        upgrading: hasLegacyCloudflareConfig,
+        configPath,
+        show: (lines) => view.showLines(lines),
+        setup: (o) => view.firstRunSetup(o),
+        loadConfig,
+      });
+      const outcome = await Promise.race([onboarding, beforeApp.then(() => null)]);
+      if (outcome?.kind === "ready") {
+        cfg = outcome.cfg;
+        startSession(cfg);
+      } else {
+        setup = outcome ?? (quitBeforeApp ? { kind: "cancelled" } : null);
+      }
+    }
+    if (cfg && !crashed) await Promise.race([opts.runApp(view, cfg), beforeApp]);
   } finally {
     unregisterShutdown();
     await finish();
@@ -302,7 +346,17 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<void>
     const c = crashed as { code: number | null; signal: string | null };
     throw new CamouflageCrashed(`renderer exited (${c.signal ?? `code ${c.code}`})`, view.sessionId);
   }
+  const outcome = setup as FirstRunOutcome | null;
+  if (outcome?.kind === "cancelled") {
+    process.stdout.write(`${onboardingCancelledMessage()}\n`);
+    return "setup-cancelled";
+  }
+  if (outcome?.kind === "failed") {
+    process.stderr.write(`autopilot: ${outcome.message}\n`);
+    return "setup-failed";
+  }
   if (view.hadConversation) process.stdout.write("Resume this conversation with: autopilot -c\n");
+  return "done";
 }
 
 /** Translates App snapshots into renderer events, sending only what changed. */
@@ -1104,16 +1158,43 @@ class View implements AppBridge {
    * runtimes — then pick one of its models. Keys never reach the transcript.
    */
   private async providerSetup(initial?: ProviderId): Promise<void> {
-    const a = this.actions!;
-    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
     const cfg = await loadConfig().catch(() => null);
-    let id: ProviderId | undefined = initial;
+    const id = await this.connectAndPickModel({ cfg, initial, firstRun: false });
+    if (id) this.actions?.providerSwitched(id);
+  }
+
+  /**
+   * First-run setup, before the App mounts: the same steps as `/provider`,
+   * seeded from the raw config file (a Cloudflare-era config keeps the
+   * account id/token Workers AI can reuse). True once a provider and model
+   * are saved; false when the user backs out of the provider list.
+   */
+  async firstRunSetup(o: { upgrading: boolean }): Promise<boolean> {
+    const persisted = await readPersistedConfig().catch(() => null);
+    return (await this.connectAndPickModel({ cfg: persisted, firstRun: true, upgrading: o.upgrading })) !== null;
+  }
+
+  /** Lines printed above the prompts (welcome copy, notices). */
+  showLines(lines: string[]): void {
+    this.cam.send("Splash", { text: lines.join("\n") });
+  }
+
+  /** Provider list → connect → model → save. The saved provider, or null if cancelled. */
+  private async connectAndPickModel(o: {
+    cfg: Partial<Cfg> | null;
+    initial?: ProviderId;
+    firstRun: boolean;
+    upgrading?: boolean;
+  }): Promise<ProviderId | null> {
+    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    const { cfg, firstRun } = o;
+    let id: ProviderId | undefined = o.initial;
     for (;;) {
       if (!id) {
-        const rows = providerRows(cfg, { markActive: true });
+        const rows = providerRows(cfg, { markActive: !firstRun, upgrading: o.upgrading });
         const current = rows.find((r) => r.active)?.id;
         const r = await this.select(
-          "Switch provider",
+          firstRun ? "Choose where your models run" : "Switch provider",
           rows.map((row) => ({
             value: row.id,
             label: row.name,
@@ -1122,9 +1203,11 @@ class View implements AppBridge {
             keywords: `${row.id} ${row.hint}`,
           })),
           current,
-          "Conversation history is kept · type to search · Enter to connect",
+          firstRun
+            ? "Billed to your own account with that provider · type to search · Enter to connect · Esc to quit"
+            : "Conversation history is kept · type to search · Enter to connect",
         );
-        if (r === null) return;
+        if (r === null) return null;
         id = r as ProviderId;
       }
       const connection = await this.connectProvider(id, cfg, say);
@@ -1132,7 +1215,7 @@ class View implements AppBridge {
         id = undefined;
         continue;
       }
-      if (!connection) return;
+      if (!connection) return null;
       const preset = getPreset(id);
       say(`✓ ${describeConnection(connection)}`);
       if (connection.openRouter?.isFreeTier) {
@@ -1152,17 +1235,20 @@ class View implements AppBridge {
       try {
         await commitProvider(connection, modelId);
       } catch (e) {
-        return say(`Couldn't save the config: ${(e as Error).message}`, "error");
+        say(`Couldn't save the config: ${(e as Error).message}`, "error");
+        // On first run there is no session to fall back to: try again.
+        if (firstRun) continue;
+        return null;
       }
-      a.providerSwitched(id);
-      return;
+      if (firstRun) say(`✓ Saved to ${configPath()}. Switch provider any time with /provider, model with /model.`);
+      return id;
     }
   }
 
   /** One provider's connect step. Null = cancelled, "back" = return to the list. */
   private async connectProvider(
     id: ProviderId,
-    cfg: Cfg | null,
+    cfg: Partial<Cfg> | null,
     say: (message: string, severity?: "info" | "error") => void,
   ): Promise<Connection | null | "back"> {
     const preset = getPreset(id);
