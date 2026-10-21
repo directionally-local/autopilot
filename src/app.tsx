@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { useApp, useInput, useWindowSize, render } from "ink";
+import { useApp, render } from "ink";
 
 import type { ResponseMeta } from "./agent/client.js";
 import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerPresetOf } from "./agent/llm-auth.js";
@@ -39,8 +39,7 @@ import { workerRegistry } from "./tools/worker-registry.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
 import type { Task, PlanOption } from "./tools/registry.js";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { join } from "node:path";
 import { setTerminalTitle } from "./ui/terminal-title.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
@@ -59,17 +58,11 @@ import type { DailyUsage } from "./usage-tracker.js";
 import { MemoryManager } from "./memory/manager.js";
 import { loadCustomCommands } from "./commands/loader.js";
 import { renderCommand } from "./commands/renderer.js";
-import type { CustomCommand, SlashItem } from "./commands/types.js";
-import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
+import type { CustomCommand } from "./commands/types.js";
+import { BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { SaveCustomCommandOptions } from "./commands/save.js";
-import { resolveTheme, themeList, DEFAULT_THEME_NAME } from "./ui/theme.js";
-import { loadAndMergeThemes } from "./ui/theme-loader.js";
-import type { Theme } from "./ui/theme.js";
 import { getModelOrInfer, type ModelEntry } from "./models/registry.js";
 import { maybeLspNudge } from "./util/lsp-nudge.js";
-import { glob } from "./util/glob.js";
-import type { FilePickerItem } from "./ui/view-types.js";
-import { usePickerController } from "./ui/use-picker-controller.js";
 import { useModalHost } from "./ui/use-modal-host.js";
 import type { AppBridge, AppModal } from "./ui/app-bridge.js";
 import type { HookConfig, HookEvent } from "./hooks/types.js";
@@ -113,17 +106,13 @@ import {
 } from "./ui/command-handlers.js";
 import {
   AUTO_COMPACT_THRESHOLD,
-  buildFilePickerIgnoreList,
   capEvents,
   CONTEXT_LIMIT,
   DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
-  detectGitBranch,
   costLookupFromConfig,
   makePrefixMessages,
   mkAssistantId,
   mkKey,
-  openBrowser,
-  trackRecentFile,
   replaceUserPromptEvent,
 } from "./ui/app-helpers.js";
 
@@ -162,7 +151,6 @@ function App({
   initialOpenResumePicker?: boolean;
 }) {
   const { exit } = useApp();
-  const { columns } = useWindowSize();
   const [cfg, setCfg] = useState<Cfg | null>(initialCfg);
   const modelContextLimit = useMemo(
     () => (cfg ? getModelOrInfer(cfg.model).contextWindow : CONTEXT_LIMIT),
@@ -180,7 +168,6 @@ function App({
     },
     [],
   );
-  const [input, setInput] = useState("");
   const [usage, setUsage] = useState<Usage | null>(null);
   const [sessionUsage, setSessionUsage] = useState<DailyUsage | null>(null);
 
@@ -215,21 +202,15 @@ function App({
       usageEvents.off("update", handler);
     };
   }, []);
-  const [responseMeta, setResponseMeta] = useState<ResponseMeta | null>(null);
   const turn = useTurnController();
   const {
     busy, busyRef,
-    isAbortingRef, lastEscapeAtRef,
+    isAbortingRef,
     supervisorRef,
     turnPhase, setTurnPhase,
-    turnStartedAt,
     currentToolName, setCurrentToolName,
-    lastActivityAt, setLastActivityAt,
     turnCounterRef,
-    showReasoning,
     tasks, setTasks, tasksRef,
-    tasksStartedAt, setTasksStartedAt,
-    tasksStartTokens, setTasksStartTokens,
     beginTurn, endTurn, clearTaskTracking,
   } = turn;
   const [planOptions, setPlanOptions] = useState<PlanOption[] | null>(null);
@@ -257,23 +238,19 @@ function App({
   const modals = useModalHost();
   const {
     commandWizard, setCommandWizard,
-    commandPicker, setCommandPicker,
-    commandToDelete, setCommandToDelete,
-    showCommandList, setShowCommandList,
-    showLspWizard, setShowLspWizard,
-    showThemePicker, setShowThemePicker,
+    setCommandPicker,
+    setShowCommandList,
+    setShowLspWizard,
     setShowModelPicker,
     setProviderSetup,
-    showModePicker, setShowModePicker,
-    showInboxModal, setShowInboxModal,
-    showHelpMenu, setShowHelpMenu,
-    showMemoryPicker, setShowMemoryPicker,
-    showSkillsPicker, setShowSkillsPicker,
-    showShellPicker, setShowShellPicker,
-    showPlanCompletePicker, setShowPlanCompletePicker,
-    showChangelogImagePicker, setShowChangelogImagePicker,
-    hasFullscreenModal,
-    hasAnyModal,
+    setShowModePicker,
+    setShowInboxModal,
+    setShowHelpMenu,
+    setShowMemoryPicker,
+    setShowSkillsPicker,
+    setShowShellPicker,
+    setShowPlanCompletePicker,
+    setShowChangelogImagePicker,
   } = modals;
   const [queue, setQueue] = useState<QueuedPrompt[]>([]);
   // Completion must wake the drain effect even when busy was cleared earlier
@@ -285,11 +262,9 @@ function App({
   const queueRef = useRef<QueuedPrompt[]>([]);
   queueRef.current = queue;
   const triageRef = useRef<ReturnType<typeof createTriageCoordinator> | null>(null);
-  const promoteQueuedRef = useRef<(() => boolean) | null>(null);
   const [queuePlanDraft, setQueuePlanDraft] = useState<QueuedPrompt[] | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const [draftInput, setDraftInput] = useState("");
   const latestPromptRef = useRef<PromptEditTarget | null>(null);
   const pendingPromptEditRef = useRef<PendingPromptEdit | null>(null);
 
@@ -302,44 +277,13 @@ function App({
     setMode((m) => (modesEnabled ? (m === "auto" ? "edit" : m) : "auto"));
   }, [modesEnabled]);
   const [codeMode, setCodeMode] = useState<boolean>(false);
-  const filePickerEnabled = initialCfg?.filePicker ?? true;
-  const [effort, setEffort] = useState<ReasoningEffort>(
-    initialCfg?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-  );
-  const [verbose, setVerbose] = useState(false);
-  const [hasUpdate, setHasUpdate] = useState(initialUpdateResult?.hasUpdate ?? false);
-  const [latestVersion, setLatestVersion] = useState<string | null>(initialUpdateResult?.latestVersion ?? null);
-  const [theme, setTheme] = useState<Theme>(resolveTheme(initialCfg?.theme));
-  const [originalTheme, setOriginalTheme] = useState<Theme | null>(null);
-  const [skillsActive, setSkillsActive] = useState(0);
-  const [memoryRecalled, setMemoryRecalled] = useState(false);
   const [intentTier, setIntentTier] = useState<"light" | "medium" | "heavy" | null>(null);
   const [kimiMdStale, setKimiMdStale] = useState(false);
-  const [gitBranch, setGitBranch] = useState<string | null>(null);
-  const [lastSessionTopic, setLastSessionTopic] = useState<string | null>(null);
   const [changelogImageRepo, setChangelogImageRepo] = useState<{ owner: string; name: string } | null>(null);
 
-  useEffect(() => {
-    setGitBranch(detectGitBranch());
-  }, []);
-
-  // Fetch last session topic for smart welcome greetings
-  useEffect(() => {
-    void import("./sessions.js").then(({ listSessions }) =>
-      listSessions(1).then((sessions) => {
-        const last = sessions[0];
-        if (last) {
-          setLastSessionTopic(last.firstPrompt);
-        }
-      }),
-    );
-  }, []);
-
-  // Register a SIGINT handler so Ctrl+C still works when the terminal is not
-  // in raw mode (e.g. after a child process modified terminal state). The
-  // handler delegates to the same logic as the useInput Ctrl+C handler.
-  // This is different from the previous attempt (c6e9c1f) which unconditionally
-  // called exit() and caused screen flashing by conflicting with useInput.
+  // A real SIGINT reaching the process interrupts the turn or exits. Ink
+  // reads no keys under the bridge (see renderAppWithBridge); the renderer's
+  // own keys arrive as bridge actions.
   useEffect(() => {
     const onSigint = () => {
       logger.info("sigint:fired", {
@@ -355,33 +299,9 @@ function App({
     };
   }, []);
 
-  // Load user and project themes at startup
-  useEffect(() => {
-    let cancelled = false;
-    loadAndMergeThemes().then(({ errors, wcagWarnings }) => {
-      if (cancelled) return;
-      if (errors.length > 0) {
-        setEvents((e) => [
-          ...e,
-          { kind: "error", key: mkKey(), text: `theme load errors:\n${errors.join("\n")}` },
-        ]);
-      }
-      if (wcagWarnings.length > 0) {
-        setEvents((e) => [
-          ...e,
-          { kind: "info", key: mkKey(), text: `theme WCAG warnings:\n${wcagWarnings.join("\n")}` },
-        ]);
-      }
-      // Re-resolve current theme in case a user/project theme overrides the built-in
-      setTheme(resolveTheme(initialCfg?.theme));
-    });
-    return () => { cancelled = true; };
-  }, []);
-
-  // Cursor offset for the input box. The picker controller owns its own
-  // open/close/selection state — see `usePickerController` below.
-  const [cursorOffset, setCursorOffset] = useState(0);
-  const [customCommandsVersion, setCustomCommandsVersion] = useState(0);
+  // Bumped after every customCommandsRef change so App re-renders and the
+  // bridge snapshot picks up the new commands.
+  const [, setCustomCommandsVersion] = useState(0);
 
   const cacheStableRef = useRef(initialCfg?.cacheStablePrompts !== false);
   const messagesRef = useRef<ChatMessage[]>(
@@ -398,24 +318,13 @@ function App({
    *  boundary or before the final answer (drainPendingInput). */
   const pendingSteersRef = useRef<Array<{ key: string; full: string; display: string; content: string }>>([]);
   const modeRef = useRef<Mode>(mode);
-  const effortRef = useRef<ReasoningEffort>(effort);
+  const effortRef = useRef<ReasoningEffort>(initialCfg?.reasoningEffort ?? DEFAULT_REASONING_EFFORT);
   const usageRef = useRef<Usage | null>(null);
   const responseMetaRef = useRef<ResponseMeta | null>(null);
   const updateTaskTracking = useCallback((nextTasks: Task[]) => {
-    const previousTasks = tasksRef.current;
-    const prevEmpty = previousTasks.length === 0;
-    const prevAllDone = previousTasks.length > 0 && previousTasks.every((task) => task.status === "completed");
     tasksRef.current = nextTasks;
     setTasks(nextTasks);
-    if ((prevEmpty || prevAllDone) && nextTasks.length > 0) {
-      setTasksStartedAt(Date.now());
-      setTasksStartTokens(usageRef.current?.prompt_tokens ?? 0);
-    }
-    if (nextTasks.length === 0) {
-      setTasksStartedAt(null);
-      setTasksStartTokens(0);
-    }
-  }, [tasksRef, setTasks, setTasksStartedAt, setTasksStartTokens]);
+  }, [tasksRef, setTasks]);
   const lastApiErrorRef = useRef<{ httpStatus?: number; code?: number; message: string } | null>(null);
   const updateCheckedRef = useRef(false);
   const sessionStateRef = useRef<SessionState>(emptySessionState());
@@ -492,17 +401,14 @@ function App({
     setHistory,
     setUsage,
     setSessionUsage,
-    setResponseMeta,
     mkKey,
   });
   const {
     sessionIdRef,
-    sessionCreatedAtRef,
     sessionTitleRef,
-    resumeSessions, setResumeSessions,
-    checkpointSession, setCheckpointSession,
+    resumeSessions,
+    checkpointSession,
     checkpointList,
-    resuming, resumingMessage, resumeProgress, resumeStage,
     ensureSessionId,
     saveSessionSafe,
     openResumePicker,
@@ -550,101 +456,6 @@ function App({
   }, [initialOpenResumePicker, cfg, openResumePicker]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customCommandsRef = useRef<CustomCommand[]>([]);
-  const recentFilesRef = useRef<Map<string, number>>(new Map());
-  const MAX_RECENT_FILES = 10;
-
-  // Custom commands that shadow built-ins are warned about and won't run, so
-  // don't surface them in the picker either. customCommandsVersion is bumped
-  // by every customCommandsRef mutation — keep that invariant intact.
-  const allSlashCommands = React.useMemo<SlashItem[]>(() => {
-    const customs: SlashItem[] = customCommandsRef.current
-      .filter((c) => !BUILTIN_COMMAND_NAMES.has(c.name.toLowerCase()))
-      .map((c) => ({
-        name: c.name,
-        description: c.description ?? "",
-        source: c.source,
-      }));
-    // Mode commands only appear in the picker when the modes flag is on.
-    const MODE_COMMANDS = new Set(["mode", "plan", "auto", "edit"]);
-    const builtins = modesEnabled ? BUILTIN_COMMANDS : BUILTIN_COMMANDS.filter((c) => !MODE_COMMANDS.has(c.name));
-    return [...builtins, ...customs];
-  }, [customCommandsVersion, modesEnabled]);
-
-  // Preserves the pre-refactor asymmetry: the picker close-on-modal check
-  // includes showInboxModal but EXCLUDES
-  // showThemePicker. Likely an oversight from when those modals were
-  // added later — kept as-is for this pure refactor; revisit when we
-  // audit modal/keybinding semantics.
-  const modalActive =
-    commandWizard !== null ||
-    commandPicker !== null ||
-    commandToDelete !== null ||
-    showCommandList ||
-    showLspWizard ||
-    resumeSessions !== null ||
-    checkpointSession !== null ||
-    resuming ||
-    perm !== null ||
-    showInboxModal ||
-    showHelpMenu ||
-    showModePicker ||
-    showMemoryPicker ||
-    showSkillsPicker ||
-    showShellPicker;
-
-  const loadFilePickerItems = useCallback(async (query = ""): Promise<FilePickerItem[]> => {
-    const cwd = process.cwd();
-    const pathQuery = query.startsWith("/") || query.startsWith("~") || query.startsWith(".");
-    if (pathQuery) {
-      const slash = query.lastIndexOf("/");
-      const exactDirectory = query === "~" || query === "." || query === ".." || query.endsWith("/..");
-      const prefix = exactDirectory ? `${query.replace(/\/$/, "")}/` : slash >= 0 ? query.slice(0, slash + 1) : "";
-      const directory = exactDirectory ? query : slash >= 0 ? query.slice(0, slash + 1) : query;
-      const expanded = directory.startsWith("~") ? join(homedir(), directory.slice(1)) : directory;
-      const target = resolve(cwd, expanded || ".");
-      const entries = await glob("*", {
-        cwd: target,
-        dot: false,
-        absolute: false,
-        onlyFiles: false,
-        markDirectories: true,
-        suppressErrors: true,
-      });
-      return entries.slice(0, 300).map((entry) => {
-        const isDirectory = entry.endsWith("/");
-        return { name: prefix + (isDirectory ? entry.slice(0, -1) : entry), isDirectory };
-      }).sort((a, b) => {
-        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-    }
-    const entries = await glob("**/*", {
-      cwd,
-      ignore: buildFilePickerIgnoreList(cwd),
-      dot: false,
-      absolute: false,
-      onlyFiles: false,
-      markDirectories: true,
-    });
-    return entries.slice(0, 300).map((entry) => ({
-      name: entry.endsWith("/") ? entry.slice(0, -1) : entry,
-      isDirectory: entry.endsWith("/"),
-    }));
-  }, []);
-
-  const picker = usePickerController({
-    input,
-    cursorOffset,
-    setInput,
-    setCursorOffset,
-    filePickerEnabled,
-    allSlashCommands,
-    modalActive,
-    loadFilePickerItems,
-    onFileSelected: (name) => trackRecentFile(recentFilesRef, name, MAX_RECENT_FILES),
-    onSlashSelected: (value) => submitRef.current(value),
-    getRecentFiles: () => recentFilesRef.current,
-  });
 
   useEffect(() => {
     if (!cfg) return;
@@ -697,8 +508,6 @@ function App({
     if (initialUpdateResult) {
       if (initialUpdateResult.hasUpdate && !updateNudgedRef.current) {
         updateNudgedRef.current = true;
-        setHasUpdate(true);
-        setLatestVersion(initialUpdateResult.latestVersion);
         setEvents((e) => [
           ...e,
           {
@@ -722,8 +531,6 @@ function App({
     void checkForUpdate().then((result) => {
       if (result.hasUpdate && !updateNudgedRef.current) {
         updateNudgedRef.current = true;
-        setHasUpdate(true);
-        setLatestVersion(result.latestVersion);
         setEvents((e) => [
           ...e,
           {
@@ -777,16 +584,10 @@ function App({
   }, [mode, cfg?.model]);
 
   useEffect(() => {
-    effortRef.current = effort;
-  }, [effort]);
-
-  useEffect(() => {
     if (!cfg) return;
     const id = setInterval(() => {
       void checkForUpdate().then((result) => {
         if (result.hasUpdate) {
-          setHasUpdate(true);
-          setLatestVersion(result.latestVersion);
           if (!updateNudgedRef.current) {
             updateNudgedRef.current = true;
             setEvents((e) => [
@@ -931,72 +732,13 @@ function App({
   );
 
   // The deps for interruptTurn / interruptOrExit. Assigned via a ref
-  // below — after updateTool is declared — because useInput, the SIGINT
-  // handler, and Esc all need to share the same object.
+  // below — after updateTool is declared — because the SIGINT handler, the
+  // bridge's interrupt action and mid-turn triage all share the same object.
   const interruptDepsRef = useRef<InterruptDeps | null>(null);
 
-  useInput((inputChar, key) => {
-    if (key.ctrl && inputChar === "c") {
-      logger.info("input:ctrl+c", {
-        busy: busyRef.current,
-        hasActiveScope: activeScopeRef.current !== null,
-        isAborting: isAbortingRef.current,
-        hasPerm: hasPendingPermission(),
-      });
-      // Multi-agent cancel path: abort the dedicated controller so the
-      // polling loop breaks and /cancel fires on each active worker.
-      const outcome = runInterruptOrExit(interruptDepsRef.current!);
-      if (!outcome.didInterruptTurn && !outcome.hadPermission) {
-        logger.info("input:ctrl+c:exiting");
-      }
-      return;
-    }
-    if (key.escape) {
-      const now = Date.now();
-      // Preserves the pre-refactor asymmetry: this Esc-handler check
-      // EXCLUDES commandPicker and showInboxModal
-      // (so Esc still fires the abort-turn path when those are open).
-      // Kept as-is for this pure refactor.
-      const modalOpen =
-        perm !== null ||
-        showLspWizard ||
-        showCommandList ||
-        commandWizard !== null ||
-        commandToDelete !== null ||
-        resumeSessions !== null ||
-        checkpointSession !== null ||
-        planOptions !== null ||
-        queuePlanDraft !== null ||
-        showThemePicker;
-      if (!modalOpen && !isAbortingRef.current && now - lastEscapeAtRef.current > 500) {
-        if ((busyRef.current || supervisorRef.current.isRunning) && activeScopeRef.current) {
-          lastEscapeAtRef.current = now;
-          runInterruptTurn(interruptDepsRef.current!);
-          return;
-        }
-      }
-    }
-    if (key.ctrl && inputChar === "r") {
-      turn.toggleReasoning();
-      return;
-    }
-    if (key.ctrl && inputChar === "g") {
-      promoteQueuedRef.current?.();
-      return;
-    }
-    if (key.shift && key.tab) {
-      if (modesEnabled) setMode((m) => nextMode(m));
-      return;
-    }
-    if (key.ctrl && inputChar === "o") {
-      setVerbose((v) => !v);
-      return;
-    }
-  });
-
   // Keep the SIGINT handler in sync with the latest state/refs so that when
-  // the terminal sends a real SIGINT (bypassing Ink raw mode) we can still
-  // interrupt the turn or exit gracefully.
+  // the terminal sends a real SIGINT we can still interrupt the turn or exit
+  // gracefully.
   sigintHandlerRef.current = () => {
     logger.info("sigint:handler", {
       busy: busyRef.current,
@@ -1004,9 +746,8 @@ function App({
       isAborting: isAbortingRef.current,
       hasPerm: hasPendingPermission(),
     });
-    // SIGINT preserves the pre-refactor asymmetry: it does NOT iterate
-    // pendingToolCalls to mark them cancelled (the Ctrl+C path does).
-    // Pass `skipPendingToolCleanup: true` so interruptTurn matches.
+    // SIGINT does NOT iterate pendingToolCalls to mark them cancelled
+    // (`skipPendingToolCleanup: true`); the onError path settles them.
     const outcome = runInterruptOrExit({
       ...interruptDepsRef.current!,
       skipPendingToolCleanup: true,
@@ -1081,11 +822,10 @@ function App({
 
   const updateResponseMeta = useCallback((meta: ResponseMeta) => {
     responseMetaRef.current = meta;
-    setResponseMeta(meta);
   }, []);
 
   // Keep the interruptDepsRef in sync with the latest refs / state. Read
-  // by the useInput handler (Ctrl+C, Esc) and the SIGINT handler above.
+  // by the SIGINT handler above, the bridge and triage.
   interruptDepsRef.current = {
     busyRef, activeScopeRef, isAbortingRef, supervisorRef,
     hasPendingPermission, denyPendingPermission,
@@ -1130,7 +870,6 @@ function App({
       setCodeMode,
       setTurnPhase,
       setCurrentToolName,
-      setLastActivityAt,
       setUsage,
       setSessionUsage,
       setKimiMdStale,
@@ -1153,7 +892,6 @@ function App({
       effortRef,
       memoryManagerRef,
       pendingToolCallsRef,
-      recentFilesRef,
       usageRef,
       activeAsstIdRef,
       responseMetaRef,
@@ -1165,24 +903,6 @@ function App({
       supervisorRef,
     });
   }, [cfg, busy, updateAssistant, updateTool, updateResponseMeta, updateTaskTracking]);
-
-  const handleThemePick = useCallback(
-    (picked: Theme | null) => {
-      setShowThemePicker(false);
-      if (!picked) return;
-      setCfg((c) => {
-        if (!c) return c;
-        const updated = { ...c, theme: picked.name };
-        void saveConfig(updated).catch(() => {});
-        return updated;
-      });
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: `theme: ${picked.label} — restart to apply` },
-      ]);
-    },
-    [],
-  );
 
   const handleModelPick = useCallback(
     (picked: ModelEntry | null) => {
@@ -1235,10 +955,6 @@ function App({
     setShowReasoning: turn.setShowReasoning,
     setUsage,
     setSessionUsage,
-    setResponseMeta,
-    setHasUpdate,
-    setLatestVersion,
-    setShowThemePicker,
     setShowModelPicker,
     setProviderSetup,
     setShowModePicker,
@@ -1255,7 +971,6 @@ function App({
     setShowChangelogImagePicker,
     setChangelogImageRepo,
     setTasks: turn.setTasks,
-    setTasksStartedAt: turn.setTasksStartedAt,
     lspScope,
     lspProjectPath,
     resetSession,
@@ -1298,14 +1013,14 @@ function App({
     turnHistoryRef,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
-    setCfg, setMode, setEvents, setUsage, setSessionUsage, setResponseMeta,
-    setHasUpdate, setLatestVersion, setShowThemePicker, setShowModelPicker, setProviderSetup, setShowModePicker,
+    setCfg, setMode, setEvents, setUsage, setSessionUsage,
+    setShowModelPicker, setProviderSetup, setShowModePicker,
     setShowInboxModal, setShowHelpMenu,
     setShowMemoryPicker, setShowSkillsPicker, setShowShellPicker,
     setShowChangelogImagePicker, setChangelogImageRepo,
     setShowLspWizard, setShowCommandList,
     setCommandWizard, setCommandPicker,
-    turn.setShowReasoning, turn.setTasks, turn.setTasksStartedAt,
+    turn.setShowReasoning, turn.setTasks,
     resetSession, clearTaskTracking, openResumePicker, runCompact, runInit,
     initMcp, initLsp, ensureSessionId,
   ]);
@@ -1377,10 +1092,10 @@ function App({
   const handleCommandDelete = useCallback(
     (cmd: CustomCommand) =>
       handleCommandDeleteImpl(
-        { setEvents, mkKey, setCommandToDelete, reloadCustomCommands },
+        { setEvents, mkKey, reloadCustomCommands },
         cmd,
       ),
-    [reloadCustomCommands, setEvents, setCommandToDelete],
+    [reloadCustomCommands, setEvents],
   );
 
   const handleLspSave = useCallback(
@@ -1508,13 +1223,6 @@ function App({
         }
       }
 
-      // Track @-mentioned files for recent-files picker boost
-      const mentionMatches = trimmed.matchAll(/@(\S+)/g);
-      for (const m of mentionMatches) {
-        const path = m[1];
-        if (path) trackRecentFile(recentFilesRef, path, MAX_RECENT_FILES);
-      }
-
       const { content, images, errors: imageErrors, notices: imageNotices } = await buildPromptContent(trimmed, (path) =>
         encodeImageFile(path, { maxEdge: cfg.imageMaxEdge, quality: cfg.imageQuality }),
       );
@@ -1612,7 +1320,6 @@ function App({
       }
 
       responseMetaRef.current = null;
-      setResponseMeta(null);
 
       // Classification already computed above for the UserPromptSubmit
       // hook payload (M6.1). Reuse it here to avoid re-running.
@@ -1645,7 +1352,6 @@ function App({
         endTurn,
         setTurnPhase,
         setCurrentToolName,
-        setLastActivityAt,
         activeAsstIdRef,
         pendingToolCallsRef,
         findTool: (name) => executorRef.current.list().find((t) => t.name === name),
@@ -1673,7 +1379,6 @@ function App({
             { kind: "info", key: mkKey(), text: "Project context may be stale. Run /init to refresh AGENTS.md based on recent changes." },
           ]);
         },
-        setSkillsActive,
       });
 
       const cleanupTurn = () => {
@@ -1971,7 +1676,7 @@ function App({
   // --- Mid-turn triage (#725) -------------------------------------------
   // Messages sent while the agent works are queued first; triage may then
   // pull them out to steer the current turn, interrupt it, or answer as an
-  // aside. Unsure → stays queued, and Ctrl+G promotes it.
+  // aside. Unsure → stays queued, and `/now` promotes it.
   /** Update the queue ref and the rendered queue together. */
   const setQueueBoth = (update: (queue: QueuedPrompt[]) => QueuedPrompt[]) => {
     queueRef.current = update(queueRef.current);
@@ -2005,7 +1710,6 @@ function App({
     interrupt: () => runInterruptTurn(interruptDepsRef.current!),
   });
   triageRef.current = triage;
-  promoteQueuedRef.current = triage.promoteLatest;
 
   const submit = useCallback(
     (full: string, display?: string) => {
@@ -2025,7 +1729,6 @@ function App({
         editTargetVisible: editTarget !== null && events.some((event) => event.kind === "user" && event.key === editTarget.key),
       });
       const clearInput = () => {
-        setInput("");
         setHistoryIndex(-1);
       };
       const info = (text: string) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
@@ -2165,7 +1868,6 @@ function App({
             { id: "save", title: "Save PNG file", status: "pending" },
           ];
           turn.setTasks(taskList);
-          turn.setTasksStartedAt(Date.now());
 
           const updateTask = (id: string, status: import("./tools/registry.js").Task["status"]) => {
             turn.setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
@@ -2206,8 +1908,6 @@ function App({
                       : ev,
                   ),
                 );
-              } finally {
-                turn.setTasksStartedAt(null);
               }
             })();
           }, 0);
@@ -2255,7 +1955,6 @@ function App({
     if (modals.showModelPicker) open.push("model");
     if (modals.providerSetup) open.push("provider");
     if (modals.showModePicker) open.push("mode");
-    if (modals.showThemePicker) open.push("theme");
     if (modals.showHelpMenu) open.push("help");
     if (modals.showMemoryPicker) open.push("memory");
     if (modals.showSkillsPicker) open.push("skills");
@@ -2309,7 +2008,6 @@ function App({
           model: () => setShowModelPicker(false),
           provider: () => modals.setProviderSetup(null),
           mode: () => setShowModePicker(false),
-          theme: () => modals.setShowThemePicker(false),
           help: () => modals.setShowHelpMenu(false),
           memory: () => modals.setShowMemoryPicker(false),
           skills: () => modals.setShowSkillsPicker(false),
@@ -2328,7 +2026,6 @@ function App({
       runCommand: (cmd) => {
         void handleSlash(cmd);
       },
-      pickTheme: (name) => handleThemePick(themeList().find((t) => t.name === name) ?? null),
       pickShell: (shell) => {
         if (shell && cfg) {
           const next = { ...cfg, shell: shell === "auto" ? undefined : shell };
@@ -2384,8 +2081,6 @@ function App({
       planOptions,
       queuePlan: queuePlanDraft ? { prompts: queuePlanPreview(queuePlanDraft).map((p) => p.text) } : null,
       customCommands: customCommandsRef.current.map((c) => ({ name: c.name, description: c.description })),
-      themes: themeList().map((t) => ({ name: t.name, label: t.label })),
-      currentTheme: cfg?.theme ?? DEFAULT_THEME_NAME,
       currentShell: cfg?.shell ?? "auto",
       memoryEnabled: !!cfg?.memoryEnabled,
       customCommandDefs: customCommandsRef.current,

@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
-import type { Instance } from "ink";
 import { logger } from "../util/logger.js";
 
 /**
@@ -10,21 +9,17 @@ import { logger } from "../util/logger.js";
  * terminal (so logins, password prompts, and interactive programs work) and
  * capture its output for the transcript and the model.
  *
- * Ink has no suspend API, so while the command runs we (1) erase Ink's frame,
- * (2) swallow Ink's writes to stdout/stderr, and (3) detach Ink's stdin
- * listener and leave raw mode. The child writes straight to the TTY fds, so
- * it is unaffected. Everything is restored when it exits and the next render
- * redraws the UI. Output is captured through `script(1)`, which gives the
- * child a real pty; without it (Windows, missing binary) the command still
- * runs interactively but its output isn't captured.
+ * Under Camouflage the renderer first suspends itself to lend the terminal
+ * (TerminalHandoff below); when it can't, the command runs with its output
+ * captured instead. While the command owns the terminal we swallow our own
+ * writes to stdout/stderr, detach our stdin listeners and leave raw mode. The
+ * child writes straight to the TTY fds, so it is unaffected. Everything is
+ * restored when it exits. Output is captured through `script(1)`, which gives
+ * the child a real pty; without it (Windows, missing binary) the command
+ * still runs interactively but its output isn't captured.
  */
 
-let inkInstance: Instance | null = null;
 let handedOff = false;
-
-export function registerInkInstance(instance: Instance | null): void {
-  inkInstance = instance;
-}
 
 /** True while a `!` command owns the terminal (the app ignores SIGINT then). */
 /**
@@ -216,7 +211,6 @@ export async function runBangCommand(command: string, cwd: string): Promise<Bang
   const viaScript = logPath ? scriptInvocation(command, shell, logPath) : null;
 
   // ── Hand the terminal to the child ──
-  inkInstance?.clear();
   origOut.call(stdout, `\n$ ${command}\n`);
   stdout.write = swallow();
   stderr.write = swallow();

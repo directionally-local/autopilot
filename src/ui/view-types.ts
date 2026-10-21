@@ -54,11 +54,5 @@ export type ChatEvent =
 /** What the agent is doing right now in a turn. */
 export type TurnPhase = "generating" | "executing" | "waiting";
 
-/** A file-path completion candidate for `@` mentions. */
-export interface FilePickerItem {
-  name: string;
-  isDirectory: boolean;
-}
-
 /** The answer to "the plan is ready — what next?". */
 export type PlanCompleteChoice = "auto" | "edit" | "continue";

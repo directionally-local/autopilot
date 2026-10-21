@@ -853,16 +853,6 @@ export class View implements AppBridge {
           const r = await this.select("Help", helpOptions(s.customCommands), undefined, "Pick a command to run · type to search");
           if (r) await this.runWithArgs(r);
         });
-      case "theme":
-        return want("theme", async () => {
-          const r = await this.select(
-            "Theme",
-            s.themes.map((t) => ({ value: t.name, label: t.label })),
-            s.currentTheme,
-            "Camouflage uses your terminal's colors",
-          );
-          a.pickTheme(r);
-        });
       case "shell":
         return want("shell", async () => {
           const r = await this.select(
@@ -1736,7 +1726,6 @@ function modalName(m: AppModal): string {
     model: "The model picker",
     mode: "The mode picker",
     provider: "/provider",
-    theme: "/theme",
     help: "/help",
     memory: "The memory picker",
     skills: "The skills picker",

@@ -20,7 +20,7 @@
 - LSP semantic code intelligence (hover, go-to-definition, references, diagnostics).
 - MCP (Model Context Protocol) extensibility for external tool servers.
 - Explicit, opt-in cross-session memory (SQLite + embeddings).
-- Session persistence with `/resume`, live multi-step task panel, streaming reasoning, extensible JSON themes.
+- Session persistence with `/resume`, live multi-step task panel, streaming reasoning.
 
 ## Docs
 

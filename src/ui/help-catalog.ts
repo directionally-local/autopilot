@@ -37,7 +37,7 @@ export const CATEGORIES: Category[] = [
       { command: "/mode plan", description: "switch to plan mode" },
       { command: "/mode auto", description: "switch to auto mode" },
       { command: "/subagents", description: "list or cancel running subagents; set delegation policy" },
-      { command: "/now", description: "run your latest queued message now (also Ctrl+G)" },
+      { command: "/now", description: "run your latest queued message now" },
       { command: "/subagents auto", description: "let the coordinator assess substantial tasks (default)" },
       { command: "/subagents suggest", description: "use conservative delegation suggestions" },
       { command: "/subagents off", description: "disable automatic delegation suggestions" },

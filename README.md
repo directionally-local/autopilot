@@ -390,7 +390,6 @@ autopilot
 | `/mode edit\|plan\|auto` | Switch permission mode |
 | `/shell auto\|bash\|cmd\|powershell` | Show or set the shell for the bash tool |
 | `/thinking low\|medium\|high` | Reasoning effort (persists) |
-| `/theme` | Interactive theme picker (`Ctrl+T`) |
 | `/resume` | Pick a past conversation to restore |
 | `/compact` | Summarize older turns to free context |
 | `/init` | Scan repo and write `KIMI.md` project context |
@@ -401,7 +400,7 @@ autopilot
 | `/provider` | List providers, or switch with `/provider <id> [key]` (see [Providers](#providers)) |
 | `/jev` | Ask Jev for a typed, scoped one-shot decision |
 | `/subagents` | List running subagents; `/subagents cancel <n>\|all` stops them; `/subagents off\|suggest\|auto` sets the delegation policy (default: `auto`) |
-| `/now` | Run your latest queued message now instead of after the current turn (also `Ctrl+G` in Ink) |
+| `/now` | Run your latest queued message now instead of after the current turn |
 | `/key` | Show the active provider's key — on OpenRouter with spend and credit (`/key set <key>`, `/key clear`) |
 | `/cost` | Show cost by session, day, month and all time (OpenRouter-confirmed, or estimated from the provider's prices) |
 | `/good` / `/bad` `[note]` | Rate the last turn; recorded in the session trace when [tracing](#session-traces-and-evals) is on |
@@ -429,10 +428,8 @@ Type `!` followed by a command (for example `! gh auth login`) to run it in your
 | `Ctrl+C` / `Esc` | Interrupt current turn when busy; exit when idle |
 | `Ctrl+R` | Toggle reasoning display |
 | `Ctrl+O` | Toggle verbose tool output |
-| `Ctrl+T` | Open theme picker |
 | `Shift+Tab` | Cycle mode (edit → plan → auto) |
 | `↑` / `↓` | Walk prompt history |
-| `Ctrl+G` | While the agent works: run your latest queued message now instead of after the turn |
 
 ### Messages sent while the agent is working
 
@@ -440,7 +437,7 @@ A message you send mid-turn is triaged instead of always waiting in line:
 
 - **interrupt** ("stop, that's the wrong file"): the turn stops at the next safe point and your message runs next. Running subagents are never cancelled by an interrupt; while they run, the message is delivered as soon as they finish.
 - **steer** ("also handle the empty case"): folded into the current task at the agent's next step.
-- **queue** ("after this, update the changelog", or anything unclear): runs as its own turn afterwards. The queue shows `Ctrl+G run this now` so you can promote it.
+- **queue** ("after this, update the changelog", or anything unclear): runs as its own turn afterwards. Send `/now` to promote it.
 - **aside** ("how's it going?"): answered from the current state without disturbing the turn.
 
 Clear phrasing is decided instantly; ambiguous messages get a quick model check (OpenRouter only), and anything uncertain is queued. Use `/subagents cancel <n>` to stop a single subagent.

@@ -99,7 +99,6 @@ export interface SessionManagerDeps {
   setHistory: (h: string[]) => void;
   setUsage: (u: Usage | null) => void;
   setSessionUsage: (s: DailyUsage | null) => void;
-  setResponseMeta: (m: ResponseMeta | null) => void;
   /** Stable key generator for event-list items. */
   mkKey: () => string;
 }
@@ -108,7 +107,6 @@ export interface SessionManager {
   // Identity refs (kept here, but returned so other code can keep
   // calling `sessionIdRef.current` unchanged).
   sessionIdRef: React.MutableRefObject<string | null>;
-  sessionCreatedAtRef: React.MutableRefObject<string | null>;
   sessionTitleRef: React.MutableRefObject<string | null>;
 
   // Picker state (powers the resume + checkpoint modals).
@@ -119,12 +117,6 @@ export interface SessionManager {
   checkpointList: Checkpoint[];
   setCheckpointList: (c: Checkpoint[]) => void;
   hasPickerOpen: boolean;
-
-  // Resume loading state.
-  resuming: boolean;
-  resumingMessage: string;
-  resumeProgress: number;
-  resumeStage: string;
 
   // Operations.
   ensureSessionId: () => string;
@@ -173,43 +165,6 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   const [resumeSessions, setResumeSessions] = useState<SessionSummary[] | null>(null);
   const [checkpointSession, setCheckpointSession] = useState<SessionSummary | null>(null);
   const [checkpointList, setCheckpointList] = useState<Checkpoint[]>([]);
-  const [resuming, setResuming] = useState(false);
-  const [resumingMessage, setResumingMessage] = useState("Pulling context…");
-  const [resumeProgress, setResumeProgress] = useState(0);
-  const [resumeStage, setResumeStage] = useState("");
-
-  // Ref for the smooth-progress interval so we can cancel / replace it.
-  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stopSmoothProgress = useCallback(() => {
-    if (progressTimerRef.current) {
-      clearInterval(progressTimerRef.current);
-      progressTimerRef.current = null;
-    }
-  }, []);
-  const startSmoothProgress = useCallback(
-    (from: number, to: number, durationMs: number) => {
-      stopSmoothProgress();
-      const startTime = Date.now();
-      const startVal = from;
-      progressTimerRef.current = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        const t = Math.min(1, elapsed / durationMs);
-        // ease-out cubic — fast start, gentle landing
-        const ease = 1 - Math.pow(1 - t, 3);
-        setResumeProgress(startVal + (to - startVal) * ease);
-        if (t >= 1) stopSmoothProgress();
-      }, 50);
-    },
-    [stopSmoothProgress],
-  );
-
-  // Clean up the smooth-progress timer on unmount.
-  React.useEffect(() => {
-    return () => {
-      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-    };
-  }, []);
-
   // Stash deps in a ref so the public callbacks keep stable identities.
   // Same pattern as M4.1's PermissionController and M4.2's PickerController.
   const depsRef = useRef(deps);
@@ -327,15 +282,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     async (filePath: string, checkpointId?: string) => {
       const d = depsRef.current;
       try {
-        setResumeProgress(0);
-        setResumeStage("Loading session file…");
-        startSmoothProgress(0, 10, 400);
         const loaded = checkpointId ? await loadSessionFromCheckpoint(filePath, checkpointId) : null;
         const file = loaded ? loaded.file : await loadSession(filePath);
 
-        setResumeProgress(10);
-        setResumeStage("Restoring artifact store…");
-        startSmoothProgress(10, 20, 400);
         d.messagesRef.current = file.messages;
         // Restoring a checkpoint of the current session discards the turns
         // that ended after it: a negative signal for those turns.
@@ -359,9 +308,6 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
           d.artifactStoreRef.current = new ArtifactStore();
         }
 
-        setResumeProgress(20);
-        setResumeStage("Recalling memories…");
-        startSmoothProgress(20, 35, 3000);
         const manager = d.memoryManagerRef.current;
         if (manager) {
           try {
@@ -376,9 +322,6 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
           }
         }
 
-        setResumeProgress(35);
-        setResumeStage("Building local summary…");
-        startSmoothProgress(35, 40, 600);
         const nonSystemCount = file.messages.filter((m) => m.role !== "system").length;
         const msg = checkpointId
           ? `resumed session ${file.id} from checkpoint`
@@ -394,11 +337,6 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         }
 
         if (d.cfg && hasLlmAuth(llmAuthFromConfig(d.cfg))) {
-          setResumeProgress(40);
-          setResumeStage("Generating continuation summary…");
-          // Smooth crawl from 40 % → 80 % over 12 s.  If tokens stream fast
-          // the onProgress boosts will pull it ahead of the timer.
-          startSmoothProgress(40, 80, 12000);
           try {
             const summary = await generateContinuationSummary({
               messages: d.messagesRef.current,
@@ -407,12 +345,6 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
               model: plumbingModelOf(d.cfg),
               memoryManager: d.memoryManagerRef.current,
               memoryEnabled: d.cfg.memoryEnabled,
-              onProgress: (charDelta) => {
-                // Each token (~4 chars) boosts ~1 %.  This is visible even
-                // for single-token deltas and keeps the bar ahead of the
-                // fallback timer when the model is fast.
-                setResumeProgress((prev) => Math.min(90, prev + charDelta * 0.008));
-              },
             });
             if (summary) {
               d.setEvents((es) => [
@@ -429,10 +361,6 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
           }
         }
 
-        stopSmoothProgress();
-        setResumeProgress(95);
-        setResumeStage("Finalizing…");
-        startSmoothProgress(95, 100, 400);
 
         // Suggest /fresh for long auto/edit sessions resumed without a checkpoint
         if (!checkpointId) {
@@ -453,7 +381,6 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
           }
         }
 
-        setResumeProgress(100);
         const userMsgs = file.messages
           .filter((m) => m.role === "user" && m.content)
           .map((m) => {
@@ -467,17 +394,15 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         d.setUsage(null);
         d.setSessionUsage(null);
         d.responseMetaRef.current = null;
-        d.setResponseMeta(null);
         void getCostReport(file.id).then((report) => d.setSessionUsage(report.session));
       } catch (e) {
-        stopSmoothProgress();
         d.setEvents((es) => [
           ...es,
           { kind: "error", key: d.mkKey(), text: `failed to load session: ${(e as Error).message}` },
         ]);
       }
     },
-    [startSmoothProgress, stopSmoothProgress],
+    [],
   );
 
   const handleResumePick = useCallback(
@@ -495,27 +420,11 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
             ...es,
             { kind: "error", key: depsRef.current.mkKey(), text: `failed to load checkpoints: ${(e as Error).message}` },
           ]);
-          setResuming(true);
-          setResumingMessage("Pulling context…");
-          setResumeProgress(0);
-          setResumeStage("");
-          try {
-            await doResumeSession(picked.filePath);
-          } finally {
-            setResuming(false);
-          }
+          await doResumeSession(picked.filePath);
         }
         return;
       }
-      setResuming(true);
-      setResumingMessage("Pulling context…");
-      setResumeProgress(0);
-      setResumeStage("");
-      try {
-        await doResumeSession(picked.filePath);
-      } finally {
-        setResuming(false);
-      }
+      await doResumeSession(picked.filePath);
     },
     [doResumeSession],
   );
@@ -532,19 +441,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         }
         return;
       }
-      setResuming(true);
-      setResumingMessage("Pulling context…");
-      setResumeProgress(0);
-      setResumeStage("");
-      try {
-        if (checkpointId === "__start__") {
-          await doResumeSession(session.filePath);
-          return;
-        }
-        await doResumeSession(session.filePath, checkpointId);
-      } finally {
-        setResuming(false);
-      }
+      await doResumeSession(session.filePath, checkpointId === "__start__" ? undefined : checkpointId);
     },
     [checkpointSession, doResumeSession],
   );
@@ -566,16 +463,11 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
 
   return {
     sessionIdRef,
-    sessionCreatedAtRef,
     sessionTitleRef,
     resumeSessions, setResumeSessions,
     checkpointSession, setCheckpointSession,
     checkpointList, setCheckpointList,
     hasPickerOpen: resumeSessions !== null || checkpointSession !== null,
-    resuming,
-    resumingMessage,
-    resumeProgress,
-    resumeStage,
     ensureSessionId,
     saveSessionSafe,
     openResumePicker,

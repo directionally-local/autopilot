@@ -41,7 +41,6 @@ import {
   getCostReport,
   getSessionGenerations,
 } from "../usage-tracker.js";
-import { resolveTheme, themeNames, DEFAULT_THEME_NAME } from "./theme.js";
 import { listModels, getModelOrInfer, migrateLegacyModelId, vendorOf, isFreeModel, type ModelEntry } from "../models/registry.js";
 import { validateModelId } from "../agent/client.js";
 import { getShellCommand } from "../tools/bash.js";
@@ -117,12 +116,8 @@ export interface SlashContext {
   // Misc UI state setters
   setUsage: React.Dispatch<React.SetStateAction<Usage | null>>;
   setSessionUsage: React.Dispatch<React.SetStateAction<DailyUsage | null>>;
-  setResponseMeta: React.Dispatch<React.SetStateAction<ResponseMeta | null>>;
-  setHasUpdate: React.Dispatch<React.SetStateAction<boolean>>;
-  setLatestVersion: React.Dispatch<React.SetStateAction<string | null>>;
 
   // Modal setters
-  setShowThemePicker: (v: boolean) => void;
   setShowModelPicker: (v: boolean) => void;
   /** Open the step-by-step provider flow (`/provider`), optionally at one provider. */
   setProviderSetup: (v: { initial?: ProviderId } | null) => void;
@@ -142,7 +137,6 @@ export interface SlashContext {
 
   // Task tracking (for non-turn UI like changelog-image generation)
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
-  setTasksStartedAt: (n: number | null) => void;
 
   // LSP scope (for /lsp scope)
   lspScope: "project" | "global";
@@ -237,7 +231,6 @@ const handleClear: Handler = (ctx) => {
   ctx.setUsage(null);
   ctx.setSessionUsage(null);
   ctx.responseMetaRef.current = null;
-  ctx.setResponseMeta(null);
   ctx.clearTaskTracking();
   ctx.compactSuggestedRef.current = false;
   ctx.updateNudgedRef.current = false;
@@ -276,7 +269,6 @@ export function executeFreshStart(
   ctx.setUsage(null);
   ctx.setSessionUsage(null);
   ctx.responseMetaRef.current = null;
-  ctx.setResponseMeta(null);
   ctx.clearTaskTracking();
   ctx.compactSuggestedRef.current = false;
   ctx.updateNudgedRef.current = false;
@@ -984,30 +976,6 @@ const handleMode: Handler = (ctx, _rest, arg) => {
   return true;
 };
 
-const handleTheme: Handler = (ctx, _rest, arg) => {
-  const { setEvents, mkKey } = ctx;
-  if (!arg) {
-    ctx.setShowThemePicker(true);
-    return true;
-  }
-  const next = resolveTheme(arg);
-  if (next.name === DEFAULT_THEME_NAME && arg !== DEFAULT_THEME_NAME) {
-    setEvents((e) => [
-      ...e,
-      { kind: "info", key: mkKey(), text: `unknown theme "${arg}" — available: ${themeNames().join(", ")}` },
-    ]);
-    return true;
-  }
-  ctx.setCfg((prev) => {
-    if (!prev) return prev;
-    const updated = { ...prev, theme: next.name };
-    void saveConfig(updated).catch(() => {});
-    return updated;
-  });
-  setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `theme: ${next.label} — restart to apply` }]);
-  return true;
-};
-
 const handlePlan: Handler = (ctx) => {
   if (!modesGate(ctx)) return true;
   ctx.setMode("plan");
@@ -1345,8 +1313,6 @@ const handleUpdate: Handler = (ctx, _rest, arg) => {
   }
   void checkForUpdate(true).then((result) => {
     if (result.hasUpdate) {
-      ctx.setHasUpdate(true);
-      ctx.setLatestVersion(result.latestVersion);
       setEvents((e) => [
         ...e,
         { kind: "info", key: mkKey(), text: `update available: ${result.localVersion} → ${result.latestVersion}` },
@@ -1356,8 +1322,6 @@ const handleUpdate: Handler = (ctx, _rest, arg) => {
         { kind: "info", key: mkKey(), text: "run:  npm i -g autopilot-ai@latest  then restart" },
       ]);
     } else {
-      ctx.setHasUpdate(false);
-      ctx.setLatestVersion(null);
       setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "no update available" }]);
     }
   });
@@ -1709,7 +1673,7 @@ const handleHelp: Handler = (ctx) => {
 };
 
 const handleChangelogImage: Handler = (ctx, rest) => {
-  const { cfg, setEvents, mkKey, setShowChangelogImagePicker, setChangelogImageRepo, setTasks, setTasksStartedAt } = ctx;
+  const { cfg, setEvents, mkKey, setShowChangelogImagePicker, setChangelogImageRepo, setTasks } = ctx;
   if (!cfg) {
     setEvents((e) => [...e, { kind: "error", key: mkKey(), text: "Not configured yet." }]);
     return true;
@@ -1752,7 +1716,6 @@ const handleChangelogImage: Handler = (ctx, rest) => {
       { id: "save", title: "Save PNG file", status: "pending" },
     ];
     setTasks(taskList);
-    setTasksStartedAt(Date.now());
 
     const updateTask = (id: string, status: Task["status"]) => {
       setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
@@ -1793,8 +1756,6 @@ const handleChangelogImage: Handler = (ctx, rest) => {
               : ev,
           ),
         );
-      } finally {
-        setTasksStartedAt(null);
       }
     })();
   };
@@ -1878,7 +1839,6 @@ const handlers: Record<string, Handler> = {
   "/provider": handleProvider,
   "/settings": handleSettings,
   "/mode": handleMode,
-  "/theme": handleTheme,
   "/plan": handlePlan,
   "/auto": handleAuto,
   "/edit": handleEdit,

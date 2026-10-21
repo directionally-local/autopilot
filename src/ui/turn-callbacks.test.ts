@@ -25,7 +25,6 @@ function harness() {
     endTurn: () => log.push("end"),
     setTurnPhase: (p) => log.push(`phase:${p}`),
     setCurrentToolName: (n) => log.push(`tool:${n}`),
-    setLastActivityAt: () => {},
     activeAsstIdRef: { current: null },
     pendingToolCallsRef: { current: new Map() },
     findTool: (name) => (name === "read" ? { render: (args: { path?: string }) => ({ title: `read ${args.path}` }) } : undefined),
@@ -36,7 +35,6 @@ function harness() {
     onPlanOptions: () => {},
     askPermission: async () => "allow" as never,
     onKimiMdStale: () => log.push("stale"),
-    setSkillsActive: (n) => log.push(`skills:${n}`),
     now: () => 42,
   };
   return { deps, log, events: () => events };

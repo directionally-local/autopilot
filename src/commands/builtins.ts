@@ -11,7 +11,6 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "subagents", argHint: "[list|cancel <n>|all|stats|off|suggest|auto]", description: "List or stop running subagents; set the delegation policy", source: "builtin" },
   { name: "now", description: "Run your latest queued message now instead of after the current turn", source: "builtin" },
   { name: "mode", argHint: "[edit|plan|auto]", description: "Switch agent mode", source: "builtin" },
-  { name: "theme", argHint: "[<name>]", description: "Switch color theme", source: "builtin" },
   { name: "memory", argHint: "[on|off|clear|search ...]", description: "Manage memory", source: "builtin" },
   { name: "cost", argHint: "[verify|on|off]", description: "Show cost report or toggle attribution", source: "builtin" },
   { name: "settings", argHint: "[modes on|off]", description: "Show or change feature settings (e.g. plan/edit/auto modes)", source: "builtin" },
