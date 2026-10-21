@@ -32,6 +32,7 @@ import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "./tools/executor.js
 import type { ChatMessage } from "./agent/messages.js";
 import { KimiApiError, humanizeApiError } from "./util/errors.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
+import { submitUserPrompt, PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submit.js";
 import { makeSessionId } from "./sessions.js";
 import type { KimiConfig, ReasoningEffort } from "./config.js";
 
@@ -219,6 +220,29 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
    *  turn session. */
   async function runTurn(text: string): Promise<void> {
     emit("UserMessageCreated", { text });
+
+    // SessionStart, then UserPromptSubmit (veto-able), as in every host. A
+    // blocked prompt never reaches the model; a one-shot run exits with
+    // PROMPT_BLOCKED_EXIT_CODE, a multi-turn session waits for the next one.
+    const gate = await submitUserPrompt({
+      hooks,
+      sessionId,
+      cwd,
+      prompt: text,
+      resumed: messages.some((m) => m.role === "assistant"),
+      model: opts.model,
+      auth: llmAuthFromConfig(opts),
+    });
+    if (gate.blocked) {
+      emit("RuntimeError", {
+        message: `prompt blocked by a UserPromptSubmit hook: ${gate.reason}`,
+        source: "hooks",
+        kind: "generic",
+        severity: "error",
+      });
+      if (!opts.multiTurn) exitCode = PROMPT_BLOCKED_EXIT_CODE;
+      return;
+    }
     messages.push({ role: "user", content: text });
 
     try {

@@ -175,6 +175,11 @@ export function hookWirePayload(payload: HookPayload): Record<string, unknown> {
   // Claude Code's tool names and shapes (tool_name, tool_input, tool_response, error): see claude-compat.ts.
   if (isToolEventPayload(payload)) {
     Object.assign(wire, claudeToolFields(payload));
+    // The file's before/after content only feeds tool_response's diff fields.
+    if ((payload.event === "PostToolUse" || payload.event === "PostToolUseFailure") && payload.result.fileChange) {
+      const { fileChange: _fileChange, ...result } = payload.result;
+      wire.result = result;
+    }
     if (payload.tool_call_id) wire.tool_use_id = payload.tool_call_id;
     if (payload.event === "PermissionRequest") wire.permission_mode = claudePermissionMode(payload.mode);
   }

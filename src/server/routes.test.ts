@@ -320,3 +320,41 @@ function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
+
+describe("UserPromptSubmit hooks on server prompts", () => {
+  it("a blocking hook answers 403 prompt_blocked and starts no session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "autopilot-prompt-hook-"));
+    const oldConfigHome = process.env.XDG_CONFIG_HOME;
+    const oldDataHome = process.env.XDG_DATA_HOME;
+    process.env.XDG_CONFIG_HOME = join(dir, "config");
+    process.env.XDG_DATA_HOME = join(dir, "data");
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(dir, "config", "autopilot"), { recursive: true });
+    await writeFile(
+      join(dir, "config", "autopilot", "settings.json"),
+      JSON.stringify({ hooks: { UserPromptSubmit: [{ id: "no-deploy", command: "echo 'no deploys from here' >&2; exit 2" }] } }),
+    );
+    const routes = setupRoutes({ model: "moonshotai/kimi-k2.6" } as KimiConfig);
+    const server = createServer((req, res) => { void routes.handleRequest(req, res); });
+    try {
+      const { port } = await listen(server);
+      const res = await fetch(`http://127.0.0.1:${port}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "deploy to prod", cwd: dir }),
+      });
+      assert.equal(res.status, 403);
+      const body = (await res.json()) as { error: string; reason: string };
+      assert.equal(body.error, "prompt_blocked");
+      assert.match(body.reason, /no deploys from here/);
+      const list = (await (await fetch(`http://127.0.0.1:${port}/session`)).json()) as unknown;
+      assert.equal(JSON.stringify(list).includes("deploy-to-prod"), false, "no session was started");
+    } finally {
+      await close(server);
+      await routes.cleanup();
+      restoreEnv("XDG_CONFIG_HOME", oldConfigHome);
+      restoreEnv("XDG_DATA_HOME", oldDataHome);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

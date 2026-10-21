@@ -22,6 +22,7 @@ import { recordSubagentEvent } from "./tools/subagent-stats.js";
 import { completionCheckFromConfig } from "./agent/completion-check.js";
 import { isImagePath } from "./util/image.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
+import { submitUserPrompt, PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submit.js";
 import { buildAttachmentMessage } from "./util/attachments.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
@@ -297,6 +298,36 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   // headless runs too. Writes are awaited before exit.
   const usageWrites: Promise<void>[] = [];
   const auth = llmAuthFromConfig(opts);
+
+  // SessionStart, then UserPromptSubmit (veto-able), as in every host. A
+  // block ends the run before any model call, with its own exit code.
+  const gate = await submitUserPrompt({
+    hooks,
+    sessionId: sessionFile.id,
+    cwd,
+    prompt: opts.prompt,
+    tier: policy.classification.tier,
+    resumed: messages.some((m) => m.role === "assistant"),
+    model: opts.model,
+    auth,
+  });
+  if (gate.blocked) {
+    const msg = `prompt blocked by a UserPromptSubmit hook: ${gate.reason}`;
+    if (format === "text") {
+      process.stderr.write(`\x1b[31mautopilot: ${msg}\x1b[0m\n`);
+    } else if (format === "json") {
+      jsonOutput.durationMs = Date.now() - startMs;
+      process.stdout.write(JSON.stringify({ ...jsonOutput, error: msg, blocked: { reason: gate.reason } }, null, 2) + "\n");
+    } else {
+      emitStreamJson("error", { message: msg, code: PROMPT_BLOCKED_EXIT_CODE, reason: "prompt_blocked" });
+    }
+    process.exitCode = PROMPT_BLOCKED_EXIT_CODE;
+    await endSessions("exit");
+    trace.emit("session_end", { reason: "exit" }, null);
+    await trace.flush();
+    return;
+  }
+
   const callbacks: AgentCallbacks = {
     onUsageFinal: (u, meta) => {
       const lookup =

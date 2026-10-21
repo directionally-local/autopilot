@@ -17,6 +17,7 @@ import type {
 } from "./types.js";
 import { editPairs } from "../tools/edit.js";
 import { resolvePath } from "../util/paths.js";
+import { structuredPatch } from "../util/line-diff.js";
 
 /** Autopilot tool → Claude Code tool. Tools not listed keep their own name. */
 export const CLAUDE_TOOL_NAMES: Readonly<Record<string, string>> = {
@@ -149,8 +150,51 @@ export function claudeToolResponse(tool: string, args: Record<string, unknown>, 
   }
   if ((tool === "write" || tool === "edit") && isStr(args.path) && !failed) {
     response.filePath = resolvePath(cwd, args.path);
+    if (result.fileChange) Object.assign(response, claudeFileChangeFields(tool, args, result.fileChange));
   }
   return response;
+}
+
+/** `originalFile` is left out above this size (the diff still has the change). */
+export const ORIGINAL_FILE_CAP_BYTES = 256 * 1024;
+
+/**
+ * Claude Code's file-edit fields of a write / edit `tool_response`:
+ * `structuredPatch` (hunks with real line numbers), `originalFile` (null for
+ * a new file), and for Write `type: "create" | "update"` and `content`; for
+ * Edit `oldString` / `newString` / `replaceAll`, for MultiEdit `edits`.
+ * `originalFile` is omitted for a file over ORIGINAL_FILE_CAP_BYTES, and
+ * `structuredPatch` when either side was too large to keep.
+ */
+export function claudeFileChangeFields(
+  tool: string,
+  args: Record<string, unknown>,
+  change: NonNullable<ToolResultFields["fileChange"]>,
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  if (tool === "write") {
+    fields.type = change.existed ? "update" : "create";
+    if (isStr(args.content)) fields.content = args.content;
+  } else if (Array.isArray(args.edits)) {
+    fields.edits = editPairs(args);
+  } else {
+    fields.oldString = args.old_string;
+    fields.newString = args.new_string;
+    fields.replaceAll = args.replace_all === true;
+  }
+  if (!change.existed) {
+    fields.originalFile = null;
+    // Claude Code sends no hunks for a created file.
+    fields.structuredPatch = [];
+  } else {
+    if (change.original !== null && Buffer.byteLength(change.original, "utf8") <= ORIGINAL_FILE_CAP_BYTES) {
+      fields.originalFile = change.original;
+    }
+    if (change.original !== null && change.updated !== null) {
+      fields.structuredPatch = structuredPatch(change.original, change.updated);
+    }
+  }
+  return fields;
 }
 
 /**

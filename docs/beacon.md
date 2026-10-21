@@ -27,9 +27,25 @@ Until Beacon ships an `autopilot` platform, use its Claude Code mode. Add this t
 }
 ```
 
-With Beacon's endpoint installed, sessions appear as `session.started` / `session.ended` events, with `tool.invoked`, `file.read`, `file.modified` (with a diff for each write and edit), `command.executed` (with the exit code when a command fails) and `agent.message` (the turn's final reply) in between, all keyed by Autopilot's session id. In this mode they're labelled `harness.name: claude_code`.
+With Beacon's endpoint installed, sessions appear as `session.started` / `session.ended` events, with `prompt.submitted`, `tool.invoked`, `file.read`, `file.modified` (with a diff for each write and edit), `command.executed` (with the exit code when a command fails) and `agent.message` (the turn's final reply) in between, all keyed by Autopilot's session id. In this mode they're labelled `harness.name: claude_code`.
 
 Run `/hooks reload` in a running session to pick up the change.
+
+### Session and prompt events
+
+Every host (the interactive UI, `autopilot -p`, `--emit-events`, `autopilot serve` and the SDK, so also RPC) fires the session events in this order: `SessionStart`, then `UserPromptSubmit` for each prompt, then the turn's tool events and `Stop`, and `SessionEnd` when the session ends. Each one carries the session id, the first prompt of a new session included. Steering messages typed during a turn are not separate prompts.
+
+`UserPromptSubmit` can block the prompt (exit 2, or a `deny`/`block` decision); nothing is sent to the model:
+
+| Host | A blocked prompt |
+| --- | --- |
+| Interactive UI | shows `hook blocked the prompt: <reason>` and waits for the next prompt |
+| `autopilot -p` | prints the reason (`json`: an `error` and `blocked.reason`; `stream-json`: an `error` event) and exits with code 44 |
+| `--emit-events` | emits a `RuntimeError` with the reason; one-shot exits 44, `--multi-turn` waits for the next prompt |
+| `autopilot serve` | `POST /prompt` and `/session/:id/prompt` answer `403 {"error": "prompt_blocked", "reason": …}`; `--attach` exits 44 |
+| SDK / RPC | `session.prompt()` rejects with `PromptBlockedError` (`code: "prompt_blocked"`, `reason`); RPC answers the `prompt` command with an error |
+
+`SessionEnd` fires once on every way out: `/exit`, Ctrl+C twice (within the renderer's double-press window), a closed terminal (SIGHUP), SIGINT or SIGTERM, bounded by a 3-second shutdown deadline. A session with no prompt yet has no `SessionStart`, so it has no `SessionEnd` either.
 
 ### Settings location
 
@@ -69,7 +85,12 @@ A hook `matcher` is a case-sensitive regex tried against both the Autopilot name
 
 - `success` and `is_error`: whether the call did what it was asked. A `bash` command that exits non-zero or is killed counts as a failure here, although its `ok` stays `true`.
 - For `bash`: `stdout`, `stderr` (separately, each capped at 4 KB), `exit_code` (`null` when killed) and `interrupted` (timed out or aborted).
-- For a successful `write` or `edit`: `filePath`.
+- For a successful `write` or `edit`: `filePath`, and Claude Code's diff fields (when a `PostToolUse` or `PostToolUseFailure` hook is enabled):
+  - `structuredPatch`: the change as hunks, `[{oldStart, oldLines, newStart, newLines, lines}]`, with real line numbers, 3 lines of context, and each line prefixed by ` `, `-` or `+`. `[]` for a new file. Left out when the file (before or after) is over 1 MiB.
+  - `originalFile`: the file before the call; `null` for a new file. Left out when the file was over 256 KiB (the patch still shows the change).
+  - `write` (`Write`): `type` (`"create"` or `"update"`) and `content`. `edit`: `oldString`, `newString`, `replaceAll` (`Edit`) or `edits` (`MultiEdit`).
+
+  With `structuredPatch`, Beacon's `file.modified` diff has the edit's real line numbers, and a `Write` over an existing file shows as an update rather than a whole-file create.
 
 A failed call also gets Claude Code's failure fields at the top level:
 

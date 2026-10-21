@@ -532,12 +532,12 @@ still read (see [Settings location](#settings-location)):
 
 | Event              | Fires when                                      | Veto? |
 |--------------------|-------------------------------------------------|-------|
-| `SessionStart`     | A session's first turn (`source`: startup/resume) | No  |
+| `SessionStart`     | A session's first prompt, before `UserPromptSubmit` (`source`: startup/resume) | No  |
 | `PreToolUse`       | A tool call is about to run                     | Yes   |
 | `PostToolUse`      | A tool call just finished (success or failure)  | No    |
 | `PostToolUseFailure` | A tool call failed (also fires `PostToolUse`) | No    |
 | `PermissionRequest` | You're about to be asked to approve a call     | Allow / deny |
-| `UserPromptSubmit` | You hit Enter on a prompt                       | Yes   |
+| `UserPromptSubmit` | A prompt is submitted, in every mode (TUI, `-p`, `--emit-events`, `serve`, SDK) | Yes   |
 | `Stop`             | A turn ended cleanly                            | No    |
 | `PreCompact`       | Auto-compaction is about to run                 | No    |
 | `SessionEnd`       | autopilot exits, or `/clear` (`reason`)         | No    |
@@ -553,7 +553,17 @@ prefer reading stdin. Payloads
 also carry Claude Code's field names (`hook_event_name`, `tool_name`,
 `tool_input`, `tool_response`, `tool_call_id`, `transcript_path`), so
 Claude Code hook scripts — and tools built for them, like
-[Agent Beacon](docs/beacon.md) — work unchanged.
+[Agent Beacon](docs/beacon.md) — work unchanged. A successful
+`write`/`edit`'s `tool_response` carries Claude Code's `structuredPatch`
+and `originalFile` (and `type: "create" | "update"` for `Write`); see
+[docs/beacon.md](docs/beacon.md#tool-names-and-result-shapes) for the
+size limits.
+
+A blocked `UserPromptSubmit` never reaches the model: the TUI shows the
+reason, `-p` and one-shot `--emit-events` exit with code **44**,
+`serve` answers `403 prompt_blocked`, and the SDK's `prompt()` rejects
+with `PromptBlockedError` (details in
+[docs/beacon.md](docs/beacon.md#session-and-prompt-events)).
 #### Blocking and exit codes
 
 Veto events (`PreToolUse`, `UserPromptSubmit`) follow Claude Code's rules:
