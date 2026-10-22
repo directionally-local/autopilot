@@ -81,14 +81,14 @@ A hook `matcher` is a case-sensitive regex tried against both the Autopilot name
 
 `file_path` and `path` are absolute, resolved against the session's `cwd`.
 
-`PostToolUse`'s `tool_response` keeps Autopilot's `ok`, `content` and `errorCode`, and adds:
+`PostToolUse`'s `tool_response` keeps Autopilot's `ok`, `content` and `errorCode` (except a successful `write`'s `content`, below), and adds:
 
 - `success` and `is_error`: whether the call did what it was asked. A `bash` command that exits non-zero or is killed counts as a failure here, although its `ok` stays `true`.
 - For `bash`: `stdout`, `stderr` (separately, each capped at 4 KB), `exit_code` (`null` when killed) and `interrupted` (timed out or aborted).
 - For a successful `write` or `edit`: `filePath`, and Claude Code's diff fields (when a `PostToolUse` or `PostToolUseFailure` hook is enabled):
   - `structuredPatch`: the change as hunks, `[{oldStart, oldLines, newStart, newLines, lines}]`, with real line numbers, 3 lines of context, and each line prefixed by ` `, `-` or `+`. `[]` for a new file. Left out when the file (before or after) is over 1 MiB.
   - `originalFile`: the file before the call; `null` for a new file. Left out when the file was over 256 KiB (the patch still shows the change).
-  - `write` (`Write`): `type` (`"create"` or `"update"`) and `content`. `edit`: `oldString`, `newString`, `replaceAll` (`Edit`) or `edits` (`MultiEdit`).
+  - `write` (`Write`): `type` (`"create"` or `"update"`) and `content`, which is the text written to the file, as in Claude Code; this replaces Autopilot's own result line, which stays in `result.content`. `edit`: `oldString`, `newString`, `replaceAll` (`Edit`) or `edits` (`MultiEdit`).
 
   With `structuredPatch`, Beacon's `file.modified` diff has the edit's real line numbers, and a `Write` over an existing file shows as an update rather than a whole-file create.
 
