@@ -18,7 +18,7 @@ import { hasRecalledMemory, injectRecalledMemoryOnce } from "../memory/recall-in
 import { logTurnDebug, analyzePrompt } from "../cost-debug.js";
 import { EXTRACTORS } from "../memory/extractors.js";
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
-import { generateTypeScriptApi, runInSandbox } from "../code-mode/index.js";
+import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
 import { estimatePromptTokens } from "./artifact-compaction.js";
 import { logger } from "../util/logger.js";
 import { selectSkills } from "../skills/router.js";
@@ -55,7 +55,8 @@ export interface AgentCallbacks {
   onToolResult?: (result: ToolResult) => void;
   onTasks?: (tasks: Task[]) => void;
   onPlanOptions?: (options: PlanOption[]) => void;
-  /** Called once per session when the sandbox falls back to node:vm. */
+  /** Sandbox and memory warnings, e.g. Code Mode turned off because the
+   *  isolated-vm sandbox is unavailable (once per session). */
   onWarning?: (message: string) => void;
   /** Called when a tool's content was truncated before being shown to the model.
    *  `artifactId`, when present, points at the full raw bytes in the artifact store. */
@@ -468,7 +469,19 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       ? Math.floor(requestedCeiling)
       : max * 5,
   );
-  const codeMode = opts.codeMode ?? false;
+  // Code Mode runs model-written code, which only the isolated-vm sandbox
+  // can contain. Without it the turn uses direct tools (each permission-
+  // checked as usual) and the user is told once per session why.
+  let codeMode = opts.codeMode ?? false;
+  if (codeMode) {
+    const unavailable = await secureSandboxUnavailableReason();
+    if (unavailable) {
+      codeMode = false;
+      logger.warn("code_mode:sandbox_unavailable", { sessionId: opts.sessionId, error: unavailable });
+      const warning = takeSandboxUnavailableWarning(opts.sessionId, unavailable);
+      if (warning) opts.callbacks.onWarning?.(warning);
+    }
+  }
 
   // M6.1: fire the Stop hook when the agent finishes its turn (normally,
   // stopped at the iteration limit, or after a guardrail's final summary).
@@ -1044,7 +1057,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           shadowStrip: shadowStripMetrics,
           durationMs: Math.round(performance.now() - turnStart),
           intentClassification: opts.intentClassification,
-          codeMode: opts.codeMode,
+          codeMode,
           selectedSkills: opts.selectedSkills,
           userPromptPreview,
           preTurnMs,
@@ -1516,7 +1529,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         shadowStrip: shadowStripMetrics,
         durationMs: Math.round(performance.now() - turnStart),
         intentClassification: opts.intentClassification,
-        codeMode: opts.codeMode,
+        codeMode,
         selectedSkills: opts.selectedSkills,
         userPromptPreview,
         preTurnMs,

@@ -132,7 +132,7 @@ async function transpileOrStrip(code: string, cwd: string): Promise<{ js: string
  * isolated-vm is a CommonJS native module. Under Node ESM (and in the tsup
  * bundle) `import("isolated-vm")` exposes its exports only on `default`, so the
  * previous `const { Isolate } = await import(...)` was always `undefined` and
- * every session silently fell back to node:vm.
+ * every session silently fell back to the old node:vm backend (since removed).
  */
 async function loadIsolatedVm(): Promise<typeof import("isolated-vm")> {
   const mod = (await import("isolated-vm")) as typeof import("isolated-vm") & { default?: typeof import("isolated-vm") };
@@ -145,7 +145,7 @@ async function loadIsolatedVm(): Promise<typeof import("isolated-vm")> {
  * Tool calls from inside a script. Read-only (or explicitly concurrent) tools
  * may overlap, but mutating tools run one at a time in call order — the same
  * rule the standard agent loop applies to direct tool calls. Without this,
- * `Promise.all([api.edit(f, …), api.edit(f, …)])` on the node:vm backend ran
+ * `Promise.all([api.edit(f, …), api.edit(f, …)])` on the old node:vm backend ran
  * both edits concurrently and lost one of them.
  */
 function makeToolBridge(opts: SandboxOptions, toolCalls: SandboxToolCall[]) {
@@ -238,87 +238,34 @@ async function runWithIsolatedVm(opts: SandboxOptions): Promise<SandboxResult> {
   return { output: logs.join("\n"), logs, toolCalls, warnings };
 }
 
-async function runWithNodeVm(opts: SandboxOptions): Promise<SandboxResult> {
-  const { runInNewContext } = await import("node:vm");
-
-  const logs: string[] = [];
-  const toolCalls: SandboxToolCall[] = [];
-
-  const sandbox: Record<string, unknown> = {
-    console: {
-      log: (...args: unknown[]) => {
-        logs.push(args.map(String).join(" "));
-      },
-    },
-    api: {},
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
-    Promise,
-    JSON,
-    Math,
-    Date,
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    RegExp,
-    Error,
-    TypeError,
-    RangeError,
-    SyntaxError,
-    ReferenceError,
-    Map,
-    Set,
-    WeakMap,
-    WeakSet,
-    Symbol,
-    parseInt,
-    parseFloat,
-    isNaN,
-    isFinite,
-    encodeURI,
-    decodeURI,
-    encodeURIComponent,
-    decodeURIComponent,
-    escape,
-    unescape,
-    Infinity,
-    NaN,
-    undefined,
-  };
-
-  // Build API bindings
-  const bridge = makeToolBridge(opts, toolCalls);
-  for (const tool of opts.tools) {
-    const call = bridge(tool);
-    (sandbox.api as Record<string, unknown>)[tool.name] = (input?: unknown): Promise<string> => call(input ?? {});
-  }
-
-  const { js: jsCode, warnings } = await transpileOrStrip(opts.code, opts.ctx.cwd);
-  const wrapped = `"use strict";\n(async function() {\n${jsCode}\n})();`;
-
-  try {
-    const timeout = opts.timeoutMs ?? 30000;
-    await runInNewContext(wrapped, sandbox, { timeout, displayErrors: true });
-    // Wait a tick for pending promises
-    await new Promise((r) => setTimeout(r, 10));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { output: "", logs, error: message, toolCalls, warnings };
-  }
-
-  return { output: logs.join("\n"), logs, toolCalls, warnings };
-}
-
-const fallbackWarningShownSessions = new Set<string>();
+const unavailableWarningShownSessions = new Set<string>();
 const NO_SESSION_KEY = "__no_session__";
 
-/** @internal Reset the fallback warning state for testing. */
+/** @internal Reset the once-per-session warning state for testing. */
 export function resetFallbackWarningFlag(): void {
-  fallbackWarningShownSessions.clear();
+  unavailableWarningShownSessions.clear();
+}
+
+let secureSandboxProbe: Promise<string | null> | null = null;
+
+/**
+ * Null when the isolated-vm sandbox loads; otherwise why it did not.
+ * Probed once per process. Code Mode needs it: Node's built-in `vm` is not
+ * a security boundary (`Promise.constructor("return process")()` reaches the
+ * host process from inside it), so without isolated-vm Code Mode is turned
+ * off and tools are called directly instead.
+ */
+export function secureSandboxUnavailableReason(): Promise<string | null> {
+  secureSandboxProbe ??= loadIsolatedVm().then(
+    () => null,
+    (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  );
+  return secureSandboxProbe;
+}
+
+/** @internal Force the probe result in tests (undefined re-probes). */
+export function setSecureSandboxProbeForTesting(reason: string | null | undefined): void {
+  secureSandboxProbe = reason === undefined ? null : Promise.resolve(reason);
 }
 
 export function buildFallbackWarning(errMessage: string): string {
@@ -327,7 +274,7 @@ export function buildFallbackWarning(errMessage: string): string {
 
   if (errMessage.includes("Cannot find module") || errMessage.includes("isolated-vm")) {
     reason = "The optional dependency `isolated-vm` is not installed.";
-    fix = "Run `npm install isolated-vm` in your project (or `npm install -g isolated-vm` if KimiFlare is installed globally).";
+    fix = "Run `npm install isolated-vm` in your project (or `npm install -g isolated-vm` if Autopilot is installed globally).";
   } else if (errMessage.includes("bindings") || errMessage.includes(".node")) {
     reason = "The `isolated-vm` native bindings are incompatible with this Node version or architecture.";
     fix = "Try `npm rebuild isolated-vm`, or switch to Node 22 LTS if you're on Apple Silicon.";
@@ -336,25 +283,31 @@ export function buildFallbackWarning(errMessage: string): string {
     fix = "Ensure build tools are installed, then run `npm install isolated-vm`.";
   }
 
-  return `Code Mode is using the built-in Node.js sandbox. Tool execution works normally, but without memory limits or full process isolation. ${reason} ${fix}`;
+  return `Code Mode is off: it needs the isolated-vm sandbox, and Node's built-in vm cannot contain model-written code. Tools are called directly instead. ${reason} ${fix}`;
 }
 
+/** The Code Mode unavailable warning, once per session (null after the first). */
+export function takeSandboxUnavailableWarning(sessionId: string | undefined, errMessage: string): string | null {
+  const key = sessionId ?? NO_SESSION_KEY;
+  if (unavailableWarningShownSessions.has(key)) return null;
+  unavailableWarningShownSessions.add(key);
+  return buildFallbackWarning(errMessage);
+}
+
+/**
+ * Run model-written code in the isolated-vm sandbox. There is no fallback:
+ * if the sandbox cannot run, the code does not run.
+ */
 export async function runInSandbox(opts: SandboxOptions): Promise<SandboxResult> {
   try {
     return await runWithIsolatedVm(opts);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const result = await runWithNodeVm(opts);
-
-    // Emit the fallback warning once per session — new sessions in the same
-    // process (common when embedded via SDK) still see it.
-    const sessionKey = opts.ctx.sessionId ?? NO_SESSION_KEY;
-    if (!fallbackWarningShownSessions.has(sessionKey)) {
-      fallbackWarningShownSessions.add(sessionKey);
-      const warning = buildFallbackWarning(message);
-      return { ...result, warnings: [warning, ...(result.warnings ?? [])] };
-    }
-
-    return result;
+    return {
+      output: "",
+      logs: [],
+      error: `The Code Mode sandbox could not run this code: ${message}. Call the tools directly instead.`,
+      toolCalls: [],
+    };
   }
 }
