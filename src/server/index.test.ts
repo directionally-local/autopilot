@@ -67,3 +67,40 @@ describe("startServer without a password", () => {
     }
   });
 });
+
+describe("startServer with a password", () => {
+  const config = { openrouterApiKey: "k", model: "m/m" } as KimiConfig;
+  const basic = "Basic " + Buffer.from("kimiflare:s3cret").toString("base64");
+
+  it("cannot be bypassed by dot segments that resolve out of /api/v1/", async () => {
+    const prev = { ...process.env };
+    process.env.HOME = mkdtempSync(join(tmpdir(), "serve-auth-"));
+    process.env.KIMIFLARE_SERVER_PASSWORD = "s3cret";
+    delete process.env.KIMIFLARE_SERVER_CORS_ORIGINS;
+    let server;
+    try {
+      server = await startServer({ port: 0, hostname: "127.0.0.1", config });
+    } finally {
+      process.env = prev;
+    }
+    const port = (server.address() as { port: number }).port;
+    const get = (path: string, headers: Record<string, string> = {}) =>
+      new Promise<number>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    try {
+      assert.equal(await get("/session"), 401);
+      assert.equal(await get("/session", { Authorization: basic }), 200);
+      for (const path of ["/api/v1/../../session", "/api/v1/%2e%2e/%2e%2e/session", "/api/v1/..\\..\\session", "/api/v1/./../session"]) {
+        assert.equal(await get(path), 400, path);
+      }
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+});
