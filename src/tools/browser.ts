@@ -45,6 +45,9 @@ export const browserFetchTool: ToolSpec<Args> = {
     title: `browser ${args.url ?? ""}${args.screenshot ? " (screenshot)" : ""}`,
   }),
   async run(args, ctx): Promise<ToolOutput> {
+    // Web pages only: a file:// URL would read local files (credentials
+    // included) without the read tool's permission check.
+    assertWebUrl(args.url);
     let playwright: typeof import("playwright") | undefined;
     try {
       playwright = await import("playwright");
@@ -142,4 +145,17 @@ async function autoScroll(page: any): Promise<void> {
       }, 10_000);
     });
   });
+}
+
+/** Throws unless `url` is an http(s) URL. */
+export function assertWebUrl(url: unknown): void {
+  let protocol: string;
+  try {
+    protocol = new URL(String(url)).protocol;
+  } catch {
+    throw new Error(`browser_fetch needs an absolute http(s) URL, got: ${String(url)}`);
+  }
+  if (protocol !== "http:" && protocol !== "https:") {
+    throw new Error(`browser_fetch only opens http(s) URLs, not ${protocol} (use the read tool for local files)`);
+  }
 }

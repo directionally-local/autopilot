@@ -199,6 +199,11 @@ export interface PermissionRequest {
    *  prompt is forced (even for tools that skip it) and this is the hook's
    *  `permissionDecisionReason`, if it gave one. */
   hookAskReason?: string;
+  /** Set when a tool that normally skips the prompt needs it for this call
+   *  (ToolSpec.permissionReason), e.g. reading a credentials file. Hosts
+   *  must not auto-allow such a request on the strength of
+   *  `tool.needsPermission` being false. */
+  sensitiveReason?: string;
   /**
    * Fires the `PermissionRequest` hooks for this call. Hosts call it right
    * before they would prompt the user — after plan mode, `--dangerously-
@@ -508,8 +513,12 @@ export class ToolExecutor {
       }
     }
 
-    if (tool.needsPermission || hookForcesAsk) {
-      const sessionKey = this.permissionKey(tool, args, ctx.cwd);
+    const sensitiveReason = tool.permissionReason?.(args, ctx) ?? null;
+    if (tool.needsPermission || hookForcesAsk || sensitiveReason) {
+      // A sensitive call is approved per target, never for the whole tool.
+      const sessionKey = sensitiveReason
+        ? `${tool.name}:sensitive:${typeof args.path === "string" ? resolvePath(ctx.cwd, args.path) : JSON.stringify(args)}`
+        : this.permissionKey(tool, args, ctx.cwd);
       if (hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
         const askedAt = performance.now();
         // PermissionRequest hooks (#891): the host calls this right before
@@ -527,6 +536,7 @@ export class ToolExecutor {
           args,
           sessionKey,
           ...(hookForcesAsk && hookAskReason ? { hookAskReason } : {}),
+          ...(sensitiveReason ? { sensitiveReason } : {}),
           ...(firePermissionHook ? { firePermissionHook } : {}),
         });
         const result = toPermissionResult(raw);

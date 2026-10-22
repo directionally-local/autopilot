@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import type { ToolSpec, ToolOutput } from "./registry.js";
 import { resolvePath } from "../util/paths.js";
+import { readsCredentials, sensitiveSearchRootReason } from "../util/sensitive-paths.js";
 import { glob } from "../util/glob.js";
 
 const pExecFile = promisify(execFile);
@@ -48,6 +49,8 @@ export const grepTool: ToolSpec<Args> = {
     additionalProperties: false,
   },
   needsPermission: false,
+  permissionReason: (args, ctx) =>
+    readsCredentials(sensitiveSearchRootReason(args.path ? resolvePath(ctx.cwd, args.path) : ctx.cwd)),
   render: (args) => ({ title: `grep ${args.pattern ?? ""}${args.glob ? ` (${args.glob})` : ""}` }),
   async run(args, ctx) {
     if (ctx.signal?.aborted) throw new DOMException("aborted", "AbortError");
