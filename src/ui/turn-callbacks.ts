@@ -174,7 +174,7 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
     onTasks: deps.onTasks,
     onPlanOptions: deps.onPlanOptions,
     askPermission: deps.askPermission,
-    // Sandbox/memory warnings (e.g. Code Mode falling back to node:vm).
+    // Sandbox/memory warnings (e.g. Code Mode off: isolated-vm unavailable).
     onWarning: info,
     onGuardrail: (ev: GuardrailEvent) => {
       if (ev.kind === "loop_recovery" || ev.kind === "loop_stopped") return;

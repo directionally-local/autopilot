@@ -798,6 +798,51 @@ describe("runAgentTurn", () => {
     assert.deepEqual(messages.filter((m) => m.role === "tool").map((m) => m.content), ["findings: auth", "findings: billing"]);
   });
 
+  it("turns Code Mode off, with one warning, when the isolated-vm sandbox is unavailable", async () => {
+    const { setSecureSandboxProbeForTesting, resetFallbackWarningFlag } = await import("../code-mode/sandbox.js");
+    setSecureSandboxProbeForTesting("Cannot find module 'isolated-vm'");
+    resetFallbackWarningFlag();
+    const read: ToolSpec = { name: "read", description: "read", parameters: { type: "object", properties: {} }, needsPermission: false, isReadOnly: true, run: async () => "x" };
+    const bodies: Array<{ tools?: Array<{ function: { name: string } }> }> = [];
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of [{ choices: [{ delta: { content: "done" } }] }, { choices: [{ finish_reason: "stop" }] }]) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          }
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const warnings: string[] = [];
+    const turn = () =>
+      runAgentTurn({
+        openrouterApiKey: "sk-or-test",
+        model: "test/model",
+        messages: [{ role: "system", content: "sys" }, { role: "user", content: "go" }],
+        tools: [read],
+        executor: new RealToolExecutor([read]),
+        cwd: "/tmp",
+        sessionId: "no-sandbox",
+        signal: new AbortController().signal,
+        codeMode: true,
+        callbacks: { askPermission: async () => "allow", onWarning: (w) => warnings.push(w) },
+      });
+    try {
+      await turn();
+      await turn();
+      assert.deepEqual(bodies[0]!.tools!.map((t) => t.function.name), ["read"], "no execute_code without the sandbox");
+      assert.equal(warnings.filter((w) => w.startsWith("Code Mode is off")).length, 1);
+    } finally {
+      setSecureSandboxProbeForTesting(undefined);
+      resetFallbackWarningFlag();
+    }
+  });
+
   it("maps the legacy spawn_worker name onto the subagent tool", async () => {
     const messages: ChatMessage[] = [{ role: "system", content: "sys" }, { role: "user", content: "go" }];
     const seen: string[] = [];

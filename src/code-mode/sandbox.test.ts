@@ -1,6 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { stripTypescript, runInSandbox, buildFallbackWarning, resetFallbackWarningFlag } from "./sandbox.js";
+import {
+  stripTypescript,
+  runInSandbox,
+  buildFallbackWarning,
+  resetFallbackWarningFlag,
+  secureSandboxUnavailableReason,
+  setSecureSandboxProbeForTesting,
+  takeSandboxUnavailableWarning,
+} from "./sandbox.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { PermissionAsker } from "../tools/executor.js";
 import type { ToolContext } from "../tools/registry.js";
@@ -28,6 +36,11 @@ const mockCtx: ToolContext = {
   sessionId: "test",
 };
 
+// Running scripts needs the isolated-vm sandbox (there is no node:vm
+// fallback any more). It is an optional dependency, so those tests skip
+// without it. Resolved before any describe() so every suite registers.
+const NO_SANDBOX = !(await isolatedVmAvailable()) && "isolated-vm is not installed";
+
 describe("stripTypescript", () => {
   it("strips basic type annotations", () => {
     const ts = `const x: string = "hello";`;
@@ -53,7 +66,7 @@ describe("stripTypescript", () => {
   });
 });
 
-describe("runInSandbox", () => {
+describe("runInSandbox", { skip: NO_SANDBOX }, () => {
   it("executes plain JS without types", async () => {
     const result = await runInSandbox({
       code: `console.log("hello");`,
@@ -138,82 +151,52 @@ async function isolatedVmAvailable(): Promise<boolean> {
   }
 }
 
-describe("fallback warning deduplication", () => {
-  it("only emits the fallback warning once per session", async () => {
-    resetFallbackWarningFlag();
-
-    // When isolated-vm is installed no fallback happens and no warning fires.
-    // When it is absent, both calls fall back and the warning must appear
-    // exactly once for the session.
-    const expected = (await isolatedVmAvailable()) ? 0 : 1;
-    const result1 = await runInSandbox({
-      code: `console.log("first");`,
-      tools: mockTools,
-      executor: mockExecutor,
-      askPermission: mockAskPermission,
-      ctx: mockCtx,
-    });
-
-    const result2 = await runInSandbox({
-      code: `console.log("second");`,
-      tools: mockTools,
-      executor: mockExecutor,
-      askPermission: mockAskPermission,
-      ctx: mockCtx,
-    });
-
-    const warningCount =
-      (result1.warnings?.filter((w) => w.includes("Code Mode is using")).length ?? 0) +
-      (result2.warnings?.filter((w) => w.includes("Code Mode is using")).length ?? 0);
-
-    assert.strictEqual(warningCount, expected);
+describe("sandbox unavailable warning", () => {
+  it("says Code Mode is off and never offers node:vm", () => {
+    const msg = buildFallbackWarning("Cannot find module 'isolated-vm'");
+    assert.ok(msg.startsWith("Code Mode is off"));
+    assert.ok(msg.includes("Tools are called directly instead"));
   });
 
-  it("re-emits the fallback warning for a new session in the same process", async () => {
+  it("is shown once per session, and again for a new session", () => {
     resetFallbackWarningFlag();
+    assert.ok(takeSandboxUnavailableWarning("session-a", "x"));
+    assert.strictEqual(takeSandboxUnavailableWarning("session-a", "x"), null);
+    assert.ok(takeSandboxUnavailableWarning("session-b", "x"));
+  });
 
-    const sessionA: ToolContext = { ...mockCtx, sessionId: "session-a" };
-    const sessionB: ToolContext = { ...mockCtx, sessionId: "session-b" };
+  it("probes isolated-vm and reports whether it loads", async () => {
+    setSecureSandboxProbeForTesting(undefined);
+    const reason = await secureSandboxUnavailableReason();
+    assert.strictEqual(reason === null, await isolatedVmAvailable());
+    setSecureSandboxProbeForTesting("Cannot find module 'isolated-vm'");
+    assert.match((await secureSandboxUnavailableReason()) ?? "", /isolated-vm/);
+    setSecureSandboxProbeForTesting(undefined);
+  });
+});
 
-    const a1 = await runInSandbox({
-      code: `console.log("a1");`,
-      tools: mockTools,
-      executor: mockExecutor,
-      askPermission: mockAskPermission,
-      ctx: sessionA,
-    });
-    const a2 = await runInSandbox({
-      code: `console.log("a2");`,
-      tools: mockTools,
-      executor: mockExecutor,
-      askPermission: mockAskPermission,
-      ctx: sessionA,
-    });
-    const b1 = await runInSandbox({
-      code: `console.log("b1");`,
-      tools: mockTools,
-      executor: mockExecutor,
-      askPermission: mockAskPermission,
-      ctx: sessionB,
-    });
-
-    const warningsIn = (r: { warnings?: string[] }) =>
-      r.warnings?.filter((w) => w.includes("Code Mode is using")).length ?? 0;
-
-    // If isolated-vm is unavailable in the test environment (the common case),
-    // session A should see exactly one warning across its two runs, and
-    // session B should also see its own warning.
-    // If isolated-vm IS available, no warnings fire at all; that's fine too —
-    // the assertion below tolerates both worlds.
-    const aWarnings = warningsIn(a1) + warningsIn(a2);
-    const bWarnings = warningsIn(b1);
-
-    if (aWarnings > 0) {
-      assert.strictEqual(aWarnings, 1, "session A should see warning at most once");
-      assert.strictEqual(bWarnings, 1, "session B should also see warning once");
-    } else {
-      // isolated-vm is available; no fallback warnings expected.
-      assert.strictEqual(bWarnings, 0);
+describe("no node:vm fallback", () => {
+  it("never exposes the host process to model code", async () => {
+    // The removed node:vm backend handed host intrinsics to the script, so
+    // this reached the host's process.env. In the isolate the constructor
+    // chain stays inside the sandbox; without isolated-vm the code does not run.
+    process.env.CODE_MODE_ESCAPE_CANARY = "host-secret";
+    try {
+      const result = await runInSandbox({
+        code: `
+          let leaked = "no-process";
+          try { const p = Promise.constructor("return typeof process === 'undefined' ? null : process")(); if (p) leaked = p.env.CODE_MODE_ESCAPE_CANARY; } catch (e) { leaked = "threw"; }
+          console.log(leaked);
+        `,
+        tools: mockTools,
+        executor: mockExecutor,
+        askPermission: mockAskPermission,
+        ctx: { ...mockCtx, sessionId: "escape-check" },
+      });
+      assert.ok(!result.output.includes("host-secret"), result.output);
+      if (!(await isolatedVmAvailable())) assert.match(result.error ?? "", /sandbox could not run/);
+    } finally {
+      delete process.env.CODE_MODE_ESCAPE_CANARY;
     }
   });
 });
@@ -230,13 +213,13 @@ describe("sandbox backend", () => {
       ctx: { ...mockCtx, sessionId: "backend-check" },
     });
     assert.strictEqual(result.error, undefined);
-    assert.deepEqual(result.warnings ?? [], [], "isolated-vm is installed, so the node:vm fallback must not fire");
-    // node:vm exposes the host setTimeout; the isolate does not.
+    assert.deepEqual(result.warnings ?? [], []);
+    // The isolate has no host setTimeout.
     assert.strictEqual(result.output, "undefined");
   });
 });
 
-describe("concurrent tool calls from a script", () => {
+describe("concurrent tool calls from a script", { skip: NO_SANDBOX }, () => {
   const { mkdtemp, readFile, writeFile } = fsPromises;
 
   it("keeps both edits when Promise.all targets the same file", async () => {
