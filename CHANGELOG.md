@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0](https://github.com/sinameraji/autopilot/compare/v2.2.0...v2.3.0) (2026-10-22)
+
+
+### Features
+
+* **serve:** serve the Aster API without a host provider key when Hotcell brings the model ([#918](https://github.com/sinameraji/autopilot/issues/918)) ([84a8bc9](https://github.com/sinameraji/autopilot/commit/84a8bc946414ae4bf7d4550eca863a112a1892fb))
+
+
+### Bug Fixes
+
+* **remote:** detach when Ctrl-C lands before the run starts streaming ([#923](https://github.com/sinameraji/autopilot/issues/923)) ([6bdc4a9](https://github.com/sinameraji/autopilot/commit/6bdc4a9e6c215b547ece5770d0efa7daabb60e9e))
+
 ## [2.2.0](https://github.com/sinameraji/autopilot/compare/v2.1.0...v2.2.0) (2026-10-21)
 
 
