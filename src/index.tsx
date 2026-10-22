@@ -378,6 +378,41 @@ logsCmd
   });
 
 program
+  .command("trust")
+  .description("Review and trust this project's hooks and LSP servers (they do not run until trusted)")
+  .argument("[dir]", "project directory (default: the current directory)")
+  .option("-y, --yes", "trust without asking (after reviewing the listed commands yourself)")
+  .action(async (dir: string | undefined, opts: { yes?: boolean }) => {
+    const { resolve } = await import("node:path");
+    const { formatPendingReview, pendingProjectConfig, trustPendingProjectConfig } = await import("./util/project-config-review.js");
+    const cwd = resolve(dir ?? process.cwd());
+    const pending = pendingProjectConfig(cwd);
+    if (pending.length === 0) {
+      console.log("Nothing to trust: this project has no untrusted hooks or LSP servers.");
+      return;
+    }
+    console.log("These project files run commands on this machine and are not trusted:");
+    console.log(formatPendingReview(pending));
+    if (!opts.yes) {
+      if (!process.stdin.isTTY) {
+        console.error("Not a terminal: re-run with --yes to trust the files above.");
+        process.exitCode = 1;
+        return;
+      }
+      const { createInterface } = await import("node:readline/promises");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = (await rl.question("Trust exactly this content? [y/N] ")).trim().toLowerCase();
+      rl.close();
+      if (answer !== "y" && answer !== "yes") {
+        console.log("Not trusted.");
+        return;
+      }
+    }
+    const trusted = trustPendingProjectConfig(cwd);
+    console.log(`Trusted ${trusted.map((p) => p.path).join(", ")}. Any later change to these files needs review again.`);
+  });
+
+program
   .command("resume")
   .description("Reopen a saved conversation: by id, or pick one from this directory")
   .argument("[id]", "session id (printed when you exit autopilot)")

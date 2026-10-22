@@ -26,17 +26,24 @@ const prePayload = (cwd: string): HookPayload => ({
 
 let root: string;
 let savedXdg: string | undefined;
+let savedTrust: string | undefined;
 
 before(() => {
   root = mkdtempSync(join(tmpdir(), "ap-hook-failures-"));
   savedXdg = process.env.XDG_CONFIG_HOME;
   // Keep the user's real global hooks out of these tests.
   process.env.XDG_CONFIG_HOME = join(root, "xdg");
+  // These tests cover hook behaviour, not project trust (project-trust.test.ts),
+  // so project settings files are trusted the way a CI run opts in.
+  savedTrust = process.env.AUTOPILOT_TRUST_PROJECT;
+  process.env.AUTOPILOT_TRUST_PROJECT = "1";
 });
 
 after(() => {
   if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = savedXdg;
+  if (savedTrust === undefined) delete process.env.AUTOPILOT_TRUST_PROJECT;
+  else process.env.AUTOPILOT_TRUST_PROJECT = savedTrust;
   rmSync(root, { recursive: true, force: true });
 });
 

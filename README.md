@@ -695,6 +695,28 @@ file it lives in. Legacy files are never moved or dropped; if your hooks
 are only in a legacy file, autopilot shows a one-time notice naming the
 new path. `/hooks path` prints all four.
 
+### Project trust
+
+A repository can ship hooks (`.autopilot/settings.json`,
+`.kimiflare/settings.json`) and language servers (`.kimiflare/lsp.json`),
+and both run commands on your machine. Autopilot does not load a
+project's copies until you have trusted them, so cloning a repository and
+starting Autopilot in it runs nothing the repository chose. When a project
+has untrusted settings, Autopilot says so at startup.
+
+- `/trust` (or `autopilot trust` in the project directory) lists every
+  command the files would run. `/trust yes` (or answering `y`) trusts
+  exactly that content.
+- Trust is recorded per file as a SHA-256 of its content in
+  `~/.config/autopilot/trusted-project-files.json`. Any later change,
+  such as a `git pull` or a branch switch, needs review again.
+- Hooks you add with `/hooks`, the wizard or the dashboard, and LSP
+  settings saved by `/lsp config`, stay trusted: they are your own edits.
+- For CI and other headless runs in repositories you control, set
+  `AUTOPILOT_TRUST_PROJECT=1` to trust project files for that process.
+
+Global settings (`~/.config/...`) are always loaded.
+
 ### Matchers
 
 `matcher` is a regex tested against the tool name for `PreToolUse`,

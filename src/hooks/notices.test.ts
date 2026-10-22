@@ -10,6 +10,7 @@ import { getRecommendedHook, LEGACY_RECOMMENDED_COMMANDS } from "./recommended.j
 let xdg: string;
 let proj: string;
 let savedXdg: string | undefined;
+let savedTrust: string | undefined;
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -22,11 +23,17 @@ beforeEach(() => {
   xdg = mkdtempSync(join(tmpdir(), "hooks-notice-xdg-"));
   proj = mkdtempSync(join(tmpdir(), "hooks-notice-proj-"));
   process.env.XDG_CONFIG_HOME = xdg;
+  // These tests cover hook behaviour, not project trust (project-trust.test.ts),
+  // so project settings files are trusted the way a CI run opts in.
+  savedTrust = process.env.AUTOPILOT_TRUST_PROJECT;
+  process.env.AUTOPILOT_TRUST_PROJECT = "1";
 });
 
 afterEach(() => {
   if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = savedXdg;
+  if (savedTrust === undefined) delete process.env.AUTOPILOT_TRUST_PROJECT;
+  else process.env.AUTOPILOT_TRUST_PROJECT = savedTrust;
   rmSync(xdg, { recursive: true, force: true });
   rmSync(proj, { recursive: true, force: true });
 });
