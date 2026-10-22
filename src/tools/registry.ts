@@ -90,6 +90,10 @@ export interface ToolSpec<Args = any> {
   description: string;
   parameters: Record<string, unknown>;
   needsPermission: boolean;
+  /** For a tool that normally runs without a prompt: a reason this
+   *  particular call needs the user's permission (e.g. it reads a
+   *  credentials file), or null. Checked after the arguments are parsed. */
+  permissionReason?: (args: Args, ctx: ToolContext) => string | null;
   /** When true, the tool only reads state and never mutates the workspace.
    *  Read-only tools within a single turn may be executed in parallel. */
   isReadOnly?: boolean;

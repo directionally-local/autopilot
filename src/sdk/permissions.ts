@@ -17,7 +17,10 @@ export function createDefaultPermissionHandler(options: {
       if (isBlockedInPlanMode(req.tool.name)) {
         return "deny";
       }
-      return "allow";
+      if (!req.sensitiveReason) return "allow";
+      // A read of a credentials file needs a decision, as in edit mode.
+      options.onRequest?.(req);
+      return "deny";
     }
 
     // edit mode: emit event and wait for external decision

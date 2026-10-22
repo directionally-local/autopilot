@@ -388,7 +388,9 @@ export class KimiflareAcpAgent implements Agent {
         }
 
         // Edit mode: ask the client for permission
-        if (!req.tool.needsPermission) return "allow";
+        // A normally prompt-free tool can still need permission for one
+        // call (e.g. reading a credentials file): then ask the client.
+        if (!req.tool.needsPermission && !req.sensitiveReason) return "allow";
 
         try {
           const toolCallForPerm = {

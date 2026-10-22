@@ -1068,7 +1068,8 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
       const { tool, args } = req;
       if (active.askAsterPermission) return active.askAsterPermission(req);
       if (active.runId) {
-        if (active.allowedTools?.has(tool.name)) return "allow";
+        // Allowing a tool for a run never extends to credentials files.
+        if (active.allowedTools?.has(tool.name) && !req.sensitiveReason) return "allow";
         return "deny";
       }
       if (allowAll) return "allow";

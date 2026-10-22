@@ -653,10 +653,11 @@ class InternalSession implements KimiFlareSession {
           if (isBlockedInPlanMode(req.tool.name)) {
             return "deny";
           }
-          return "allow";
+          // A read of a credentials file is asked for, as in edit mode.
+          if (!req.sensitiveReason) return "allow";
         }
 
-        // edit mode: a PermissionRequest hook may decide; otherwise emit
+        // edit mode (and sensitive plan-mode reads): a PermissionRequest hook may decide; otherwise emit
         // the event and wait for external resolution.
         const fromHook = await permissionFromHook(req, mode);
         if (fromHook) return fromHook;

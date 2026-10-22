@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import type { ToolSpec } from "./registry.js";
 import { resolvePath, collapsePath } from "../util/paths.js";
+import { readsCredentials, sensitivePathReason } from "../util/sensitive-paths.js";
 
 /**
  * Fast-path size cap. Files at or below this size are read into memory
@@ -100,6 +101,8 @@ export const readTool: ToolSpec<Args> = {
     additionalProperties: false,
   },
   needsPermission: false,
+  permissionReason: (args, ctx) =>
+    typeof args.path === "string" ? readsCredentials(sensitivePathReason(resolvePath(ctx.cwd, args.path))) : null,
   render: ({ path }) => ({ title: `read ${collapsePath(path, process.cwd())}` }),
   async run(args, ctx) {
     if (aborted(ctx.signal)) throw abortError();
