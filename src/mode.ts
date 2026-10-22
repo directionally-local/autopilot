@@ -30,116 +30,214 @@ export function isBlockedInPlanMode(toolName: string): boolean {
 }
 
 // Bash safety for plan mode ---------------------------------------------------
+//
+// Plan mode runs any command this classifier accepts WITHOUT asking, so it
+// must only accept commands bash will run as pure reads. Anything it cannot
+// parse with certainty is rejected (the host then blocks or prompts).
+//
+//  - Shell syntax is refused unless it is a plain pipe or `&&`: redirection,
+//    `;`, `||`, a lone `&`, substitution, expansion, backslash escapes (which
+//    make quoting ambiguous), brace expansion, and every control character
+//    (a newline is a command separator to bash).
+//  - Each segment's command must be allowlisted, and its arguments must not
+//    use an option that runs a program or writes a file.
+//  - A glob that could expand to a word starting with `-` (`*`, `-*`, `?x`)
+//    is refused for commands that have such options: a repository can
+//    contain a file named `--pre=sh`.
 
-const DANGEROUS_PATTERNS = /[<>;`$]|\$\(|\$\{|\|\||\b&\s*$/;
+const DANGEROUS_PATTERNS = /[<>;`$\\{}]|\|\|/;
+// Control characters, except tab (plain whitespace to bash).
+const CONTROL_CHARS = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
 
-const GIT_READONLY_SUBCOMMANDS: Record<string, boolean> = {
-  log: true,
-  diff: true,
-  status: true,
-  show: true,
-  blame: true,
-  describe: true,
-  "rev-parse": true,
-  "ls-files": true,
-  reflog: true,
-  shortlog: true,
-  whatchanged: true,
-  grep: true,
-  branch: false, // needs check: block -d/-D/-m/-M/-c/-C
-  stash: false, // needs check: only allow "list"
-  remote: false, // needs check: only allow -v
-  tag: false, // needs check: only allow -l
-  config: false, // needs check: only allow --list/--get
+/** `--name` or `--name=value`. */
+function isLong(arg: string, ...names: string[]): boolean {
+  return names.some((n) => arg === n || arg.startsWith(`${n}=`));
+}
+
+/** A short-option cluster (`-uo`) containing any of `letters`. */
+function hasShort(arg: string, letters: string): boolean {
+  return /^-[^-]/.test(arg) && [...letters].some((l) => arg.slice(1).includes(l));
+}
+
+/** Non-option arguments, skipping the value of each option in `valueOpts`. */
+function positionals(args: string[], valueOpts: readonly string[] = []): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--") return [...out, ...args.slice(i + 1)];
+    if (valueOpts.includes(a)) {
+      i++;
+      continue;
+    }
+    if (!a.startsWith("-") || a === "-") out.push(a);
+  }
+  return out;
+}
+
+type ArgCheck = (args: string[]) => boolean;
+const anyArgs: ArgCheck = () => true;
+
+/**
+ * Allowlisted commands and the argument check each must pass. Commands
+ * that can execute programs or write files are listed with a check;
+ * `env`, `man`, `less`, `more` and `history` are deliberately absent
+ * (`env cmd` and `man -P cmd` run arbitrary programs; pagers have shell
+ * escapes), as is `printenv` (it prints secrets from the environment).
+ */
+const READONLY_COMMANDS: Record<string, ArgCheck> = {
+  // File system
+  cd: anyArgs, ls: anyArgs, cat: anyArgs, head: anyArgs, tail: anyArgs, pwd: anyArgs, echo: anyArgs,
+  file: (args) => !args.some((a) => isLong(a, "--compile") || hasShort(a, "C")),
+  stat: anyArgs, readlink: anyArgs, realpath: anyArgs, dirname: anyArgs, basename: anyArgs,
+  wc: anyArgs,
+  sort: (args) => !args.some((a) => isLong(a, "--output", "--compress-program") || hasShort(a, "o")),
+  uniq: (args) => positionals(args, ["-f", "-s", "-w"]).length <= 1, // `uniq in out` writes out
+  diff: anyArgs, cmp: anyArgs,
+  // Search
+  grep: anyArgs,
+  rg: (args) => !args.some((a) => isLong(a, "--pre", "--hostname-bin")),
+  ag: (args) => !args.some((a) => isLong(a, "--pager")),
+  fd: (args) => !args.some((a) => isLong(a, "--exec", "--exec-batch") || hasShort(a, "xX")),
+  locate: anyArgs,
+  // System info
+  ps: anyArgs, df: anyArgs, du: anyArgs, which: anyArgs, whereis: anyArgs, uname: anyArgs,
+  hostname: (args) => args.every((a) => HOSTNAME_READ_FLAGS.has(a)), // a name or -F sets it
+  uptime: anyArgs, free: anyArgs,
+  date: (args) => !args.some((a) => isLong(a, "--set") || hasShort(a, "s")),
+  id: anyArgs, whoami: anyArgs, groups: anyArgs,
+  // Utilities
+  jq: anyArgs, cut: anyArgs, tr: anyArgs,
+  base64: anyArgs, sha256sum: anyArgs, md5sum: anyArgs, shasum: anyArgs, hexdump: anyArgs, strings: anyArgs,
+  xxd: (args) => !args.some((a) => hasShort(a, "r")) && positionals(args, ["-c", "-g", "-l", "-s", "-o", "-cols", "-len", "-seek"]).length <= 1,
+  clear: anyArgs,
+  // Archive inspection
+  zipinfo: anyArgs,
+  // Network
+  ping: anyArgs, netstat: anyArgs, lsof: anyArgs,
+  ss: (args) => !args.some((a) => isLong(a, "--kill", "--diag") || hasShort(a, "KD")),
 };
 
-const READONLY_COMMANDS = new Set([
-  // File system
-  "cd", "ls", "cat", "head", "tail", "pwd", "echo",
-  "file", "stat", "readlink", "realpath", "dirname", "basename",
-  "wc", "sort", "uniq", "diff", "cmp",
-  // Search
-  "grep", "rg", "ag", "fd", "locate",
-  // System info
-  "ps", "df", "du", "env", "printenv", "which", "whereis",
-  "uname", "hostname", "uptime", "free", "date", "id", "whoami", "groups",
-  // Utilities
-  "jq", "cut", "tr",
-  "base64", "sha256sum", "md5sum", "shasum", "hexdump", "xxd", "strings",
-  "less", "more", "man", "clear", "history",
-  // Archive inspection
-  "zipinfo",
-  // Network
-  "ping", "netstat", "ss", "lsof",
+const HOSTNAME_READ_FLAGS = new Set([
+  "-f", "-s", "-d", "-i", "-I", "-a", "-A",
+  "--fqdn", "--long", "--short", "--domain", "--ip-address", "--all-ip-addresses", "--alias", "--all-fqdns",
 ]);
 
-function getTokens(s: string): string[] {
-  const toks: string[] = [];
+/** Commands with no option that executes or writes: a glob that expands
+ *  to an option-like file name cannot hurt them. */
+const GLOB_SAFE = new Set([
+  "cd", "ls", "cat", "head", "tail", "echo", "stat", "readlink", "realpath", "dirname", "basename",
+  "wc", "diff", "cmp", "grep", "du", "base64", "sha256sum", "md5sum", "shasum", "hexdump", "strings", "zipinfo",
+]);
+
+/** `git <sub>` options that write a file or run a program. */
+function gitArgIsUnsafe(a: string): boolean {
+  return isLong(a, "--output", "--open-files-in-pager", "--ext-diff") || /^-O/.test(a);
+}
+
+const GIT_BRANCH_WRITE = /^(-[dDmMcCftu]|--(delete|move|copy|force|track|no-track|set-upstream-to|unset-upstream|edit-description|create-reflog))/;
+const GIT_BRANCH_VALUE_OPTS = ["--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format"];
+const GIT_CONFIG_READ = /^(--list|-l|--get|--get-all|--get-regexp|--get-urlmatch|--get-color|--get-colorbool|--global|--local|--system|--worktree|--show-origin|--show-scope|--name-only|-z|--null|--type=\S+|--includes|--no-includes)$/;
+
+const GIT_READONLY_SUBCOMMANDS: Record<string, ArgCheck> = {
+  log: anyArgs, diff: anyArgs, status: anyArgs, show: anyArgs, blame: anyArgs, describe: anyArgs,
+  "rev-parse": anyArgs, "ls-files": anyArgs, shortlog: anyArgs, whatchanged: anyArgs, grep: anyArgs,
+  // `git reflog expire|delete` rewrite the reflog.
+  reflog: (args) => args.length === 0 || args[0] === "show" || args[0]!.startsWith("-"),
+  // `git branch <name>` creates one; only listing forms are read-only.
+  branch: (args) => {
+    if (args.some((a) => GIT_BRANCH_WRITE.test(a))) return false;
+    const listing = args.some((a) => a === "--list" || a === "-l" || a === "-a" || a === "-r" || a === "--all" || a === "--remotes");
+    return listing || positionals(args, GIT_BRANCH_VALUE_OPTS).length === 0;
+  },
+  stash: (args) => args[0] === "list",
+  remote: (args) => args.length === 0 || (args.length === 1 && (args[0] === "-v" || args[0] === "--verbose")),
+  // `git tag <name>` creates one; only `git tag` / `git tag -l [pattern]`.
+  tag: (args) => args.length === 0 || ((args[0] === "-l" || args[0] === "--list") && args.slice(1).every((a) => !a.startsWith("-"))),
+  // Reads only: every option must be a read option, and a lookup needs --get*/--list.
+  config: (args) => {
+    const opts = args.filter((a) => a.startsWith("-"));
+    if (!opts.every((a) => GIT_CONFIG_READ.test(a))) return false;
+    const pos = args.filter((a) => !a.startsWith("-"));
+    return pos.length === 0 || opts.some((a) => a.startsWith("--get") || a === "--list" || a === "-l");
+  },
+};
+
+interface Token {
+  text: string;
+  /** An unquoted glob character appears before any other character that
+   *  could make the expansion start with something other than `-`. */
+  optionGlob: boolean;
+}
+
+/** Split a segment into shell words, or null if quoting is unbalanced. */
+function getTokens(s: string): Token[] | null {
+  const toks: Token[] = [];
   let cur = "";
+  let started = false;
+  let optionGlob = false;
   let q: string | null = null;
+  const flush = () => {
+    if (started) toks.push({ text: cur, optionGlob });
+    cur = "";
+    started = false;
+    optionGlob = false;
+  };
   for (const ch of s) {
     if (q) {
       if (ch === q) q = null;
       else cur += ch;
     } else if (ch === '"' || ch === "'") {
       q = ch;
-    } else if (/\s/.test(ch)) {
-      if (cur) {
-        toks.push(cur);
-        cur = "";
-      }
+      started = true;
+    } else if (ch === " " || ch === "\t") {
+      flush();
     } else {
+      // `*`, `?x`, `[a]x`, `-*`: the expansion may begin with `-`.
+      if ((ch === "*" || ch === "?" || ch === "[") && /^-*$/.test(cur)) optionGlob = true;
       cur += ch;
+      started = true;
     }
   }
-  if (cur) toks.push(cur);
+  if (q) return null;
+  flush();
   return toks;
 }
 
 function isReadOnlySegment(seg: string): boolean {
   const toks = getTokens(seg.trim());
-  if (toks.length === 0) return false;
+  if (!toks || toks.length === 0) return false;
+  const [cmdTok, ...argToks] = toks;
+  const cmd = cmdTok!.text;
+  const args = argToks.map((t) => t.text);
+  if (cmdTok!.optionGlob) return false;
+  if (!GLOB_SAFE.has(cmd) && argToks.some((t) => t.optionGlob)) return false;
 
-  const [cmd, sub, ...rest] = toks;
   if (cmd === "find") {
     // `find` is read-only EXCEPT for the action primaries that mutate or
-    // run arbitrary commands: -delete, -exec, -execdir, -ok, -okdir, -fprint*.
-    // Anything else (-name, -path, -type, -print, -size, …) is safe.
-    const all = [sub ?? "", ...rest];
-    const DENY = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir"]);
-    if (all.some((t) => DENY.has(t) || /^-fprint/.test(t))) return false;
-    return true;
+    // run arbitrary commands: -delete, -exec, -execdir, -ok, -okdir, -fls,
+    // -fprint*. Anything else (-name, -path, -type, -print, -size, …) is safe.
+    const DENY = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls"]);
+    return !args.some((t) => DENY.has(t) || /^-fprint/.test(t));
   }
   if (cmd === "git") {
-    const allowed = GIT_READONLY_SUBCOMMANDS[sub ?? ""];
-    if (allowed === undefined) return false;
-    if (allowed === true) return true;
-
-    switch (sub) {
-      case "branch":
-        return !rest.some((a) => /^-[dDmMcC]/.test(a));
-      case "stash":
-        return rest[0] === "list";
-      case "remote":
-        return rest[0] === "-v" || rest[0] === "--verbose" || rest.length === 0;
-      case "tag":
-        return rest[0] === "-l" || rest[0] === "--list" || rest.length === 0;
-      case "config":
-        return rest[0] === "--list" || rest[0]?.startsWith("--get") === true || rest.length === 0;
-      default:
-        return false;
-    }
+    const [sub, ...rest] = args;
+    const check = GIT_READONLY_SUBCOMMANDS[sub ?? ""];
+    if (!check) return false;
+    if (rest.some(gitArgIsUnsafe)) return false;
+    return check(rest);
   }
 
-  return READONLY_COMMANDS.has(cmd!);
+  const check = Object.hasOwn(READONLY_COMMANDS, cmd) ? READONLY_COMMANDS[cmd] : undefined;
+  return check !== undefined && check(args);
 }
 
 export function isReadOnlyBash(command: string): boolean {
   const trimmed = command.trim();
   if (!trimmed) return false;
 
-  // Reject redirections, background, subshells, variable expansion
-  if (DANGEROUS_PATTERNS.test(trimmed)) return false;
+  // Reject redirections, separators other than | and &&, subshells,
+  // expansion, escapes, and control characters (a newline separates commands).
+  if (DANGEROUS_PATTERNS.test(trimmed) || CONTROL_CHARS.test(trimmed)) return false;
 
   // Split by pipes and && chains, validating each segment independently
   const segs: string[] = [];
@@ -157,6 +255,8 @@ export function isReadOnlyBash(command: string): boolean {
       segs.push(cur);
       cur = "";
       i++;
+    } else if (ch === "&") {
+      return false; // a lone & backgrounds the left side and runs the right
     } else if (ch === "|") {
       segs.push(cur);
       cur = "";
@@ -164,9 +264,10 @@ export function isReadOnlyBash(command: string): boolean {
       cur += ch;
     }
   }
-  if (cur.trim()) segs.push(cur);
-  if (segs.length === 0) return false;
+  if (q) return false;
+  segs.push(cur);
 
+  // An empty segment (`ls |`, `&& ls`) is a syntax error at best.
   for (const seg of segs) {
     if (!isReadOnlySegment(seg.trim())) return false;
   }

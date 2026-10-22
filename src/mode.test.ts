@@ -9,6 +9,51 @@ import {
 } from "./mode.js";
 
 describe("isReadOnlyBash", () => {
+  it("still allows everyday research commands", () => {
+    for (const cmd of [
+      "ls -la", "ls *.ts", "cat src/*.ts", "du -sh *", "wc -l src/*.ts", "head -n 20 README.md",
+      "grep -rn foo src", "rg foo src", "rg foo -g '*.ts'", "rg foo src/*.ts", "find . -name '*.ts' -type f",
+      "git log --oneline -5", "git diff HEAD~1 -- src", "git show HEAD:package.json", "git branch", "git branch -a",
+      "git branch --show-current", "git branch --contains abc123", "git tag", "git tag -l 'v1.*'", "git remote -v",
+      "git config --get user.name", "git config --list", "git stash list", "git reflog -5", "git grep -n foo",
+      "sort file | uniq -c | sort -rn", "date -u", "hostname", "hostname -f", "ps aux | grep node", "jq .name package.json",
+      "xxd package.json | head", "fd -e ts", "ss -tlnp", "git log --format='%h %s' | head",
+    ]) {
+      assert.strictEqual(isReadOnlyBash(cmd), true, cmd);
+    }
+  });
+
+  it("rejects the separators and escapes bash honours but the splitter did not", () => {
+    for (const cmd of [
+      "ls\nrm -rf /tmp/x", "ls\rrm -rf /tmp/x", "ls\u0000", "ls & rm -rf /tmp/x", "ls |& rm x", "ls &",
+      "cat a\\ b", "echo \\$(id)", "echo 'unterminated", "ls |", "&& ls", "cat {a,b}", "ls\u0085rm",
+    ]) {
+      assert.strictEqual(isReadOnlyBash(cmd), false, JSON.stringify(cmd));
+    }
+  });
+
+  it("rejects allowlisted-looking commands that run programs or write files", () => {
+    for (const cmd of [
+      "env rm -rf /tmp/x", "printenv", "man -P 'rm -rf /tmp/x' ls", "less file", "more file", "history",
+      "rg --pre sh x .", "rg --pre=sh x .", "rg --hostname-bin=sh x", "ag --pager=sh x", "fd -x rm", "fd --exec rm", "fd -X rm",
+      "sort -o /tmp/out in", "sort -uo /tmp/out in", "sort --output=/tmp/out in", "sort --compress-program=sh in",
+      "uniq in /tmp/out", "xxd -r in", "xxd in /tmp/out", "file -C -m magic", "date -s 2020-01-01", "date --set=x",
+      "hostname evil", "hostname -F /tmp/name", "ss -K dst 1.2.3.4", "ss -D /tmp/out", "find . -fls /tmp/out",
+      "git log --output=/tmp/pwned", "git diff --output /tmp/pwned", "git grep -Osh foo", "git grep --open-files-in-pager=sh foo",
+      "git diff --ext-diff", "git branch evil", "git branch -D main", "git tag v9", "git tag -l -d v1", "git reflog expire --all",
+      "git reflog delete HEAD@1", "git config core.pager sh", "git config --add a.b c", "git remote add x y", "git -c core.pager=sh log",
+    ]) {
+      assert.strictEqual(isReadOnlyBash(cmd), false, cmd);
+    }
+  });
+
+  it("rejects globs that a hostile file name could turn into an option", () => {
+    // A repository can contain a file named `--pre=sh`.
+    for (const cmd of ["rg x *", "rg x -*", "rg x ?pre=sh", "sort *", "fd . [-]*", "git log *", "find *"]) {
+      assert.strictEqual(isReadOnlyBash(cmd), false, cmd);
+    }
+  });
+
   it("allows simple read commands", () => {
     assert.strictEqual(isReadOnlyBash("ls"), true);
     assert.strictEqual(isReadOnlyBash("cat file.txt"), true);
