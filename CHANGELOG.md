@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.4.0](https://github.com/sinameraji/autopilot/compare/v2.3.0...v2.4.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **hooks,lsp:** require trust before running a project's hooks or LSP servers ([#925](https://github.com/sinameraji/autopilot/issues/925))
+
+### Bug Fixes
+
+* **code-mode:** never run model code in node:vm; turn Code Mode off instead ([#930](https://github.com/sinameraji/autopilot/issues/930)) ([68ea9bc](https://github.com/sinameraji/autopilot/commit/68ea9bc6eb969cd2ad7fd3df098d0318e4efab73))
+* **hooks,lsp:** require trust before running a project's hooks or LSP servers ([#925](https://github.com/sinameraji/autopilot/issues/925)) ([74bb908](https://github.com/sinameraji/autopilot/commit/74bb90878cc8ea91ae9b3d11af6d8dbea0470090))
+* **permissions:** scope "allow for this session" to the exact command or file ([#928](https://github.com/sinameraji/autopilot/issues/928)) ([18a4cdd](https://github.com/sinameraji/autopilot/commit/18a4cdda3f2089dcef4b469dd6ff52dfb83c07a6))
+* **plan-mode:** stop auto-allowing bash that runs programs or writes files ([#927](https://github.com/sinameraji/autopilot/issues/927)) ([543d085](https://github.com/sinameraji/autopilot/commit/543d085c4b7d6c9cb2bac691f4a48c31155ce122))
+* **serve:** gate auth on the normalized request path ([#924](https://github.com/sinameraji/autopilot/issues/924)) ([1f66e15](https://github.com/sinameraji/autopilot/commit/1f66e159471634144c1f1788fdfa0a2de1364db4))
+* **tools:** ask before reading credentials files ([#929](https://github.com/sinameraji/autopilot/issues/929)) ([b1ba529](https://github.com/sinameraji/autopilot/commit/b1ba529b3b0f0015c9e5c38c0dcab19cb89e10f5))
+
 ## [2.3.0](https://github.com/sinameraji/autopilot/compare/v2.2.0...v2.3.0) (2026-10-22)
 
 
