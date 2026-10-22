@@ -509,7 +509,7 @@ export class ToolExecutor {
     }
 
     if (tool.needsPermission || hookForcesAsk) {
-      const sessionKey = this.permissionKey(tool, args);
+      const sessionKey = this.permissionKey(tool, args, ctx.cwd);
       if (hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
         const askedAt = performance.now();
         // PermissionRequest hooks (#891): the host calls this right before
@@ -771,13 +771,26 @@ export class ToolExecutor {
     return !!this.hooks && (this.hooks.hasEnabledHooks("PostToolUse") || this.hooks.hasEnabledHooks("PostToolUseFailure"));
   }
 
-  private permissionKey(tool: ToolSpec, args: Record<string, unknown>): string {
-    if (tool.name === "bash" && typeof args.command === "string") {
-      const firstToken = args.command.trim().split(/\s+/)[0] ?? "";
-      return `bash:${firstToken}`;
-    }
-    return tool.name;
+  /**
+   * What an "allow for this session" answer covers. For bash it is the exact
+   * command and for write/edit the exact resolved file: approving `git status`
+   * must not approve `git status; curl … | sh` or `git push --force`, and
+   * approving an edit to README.md must not approve writing ~/.ssh/authorized_keys.
+   * Other tools are approved per tool, as before.
+   */
+  private permissionKey(tool: ToolSpec, args: Record<string, unknown>, cwd: string): string {
+    return sessionPermissionKey(tool.name, args, cwd);
   }
+}
+
+export function sessionPermissionKey(toolName: string, args: Record<string, unknown>, cwd: string): string {
+  if (toolName === "bash" && typeof args.command === "string") {
+    return `bash:${args.command.trim()}`;
+  }
+  if ((toolName === "write" || toolName === "edit") && typeof args.path === "string" && args.path) {
+    return `${toolName}:${resolvePath(cwd, args.path)}`;
+  }
+  return toolName;
 }
 
 /** Map the asker's typed result onto the trace enum. `pattern` allows come
