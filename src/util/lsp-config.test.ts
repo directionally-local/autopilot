@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import { mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,6 +11,24 @@ import {
   resolveLspConfig,
 } from "./lsp-config.js";
 import type { KimiConfig } from "../config.js";
+
+// saveProjectLspConfig records trust: keep the user's real trust store out
+// of it. Loading is covered with trust on; the gate itself is tested in
+// project-trust.test.ts.
+let savedXdg: string | undefined;
+let savedTrust: string | undefined;
+before(() => {
+  savedXdg = process.env.XDG_CONFIG_HOME;
+  savedTrust = process.env.AUTOPILOT_TRUST_PROJECT;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "lsp-config-xdg-"));
+  process.env.AUTOPILOT_TRUST_PROJECT = "1";
+});
+after(() => {
+  if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = savedXdg;
+  if (savedTrust === undefined) delete process.env.AUTOPILOT_TRUST_PROJECT;
+  else process.env.AUTOPILOT_TRUST_PROJECT = savedTrust;
+});
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "lsp-config-test-"));

@@ -80,15 +80,20 @@ describe("HooksManager.fire uses both names (#890)", () => {
   let dir: string;
   let xdg: string;
   let savedXdg: string | undefined;
+  let savedTrust: string | undefined;
   before(() => {
     savedXdg = process.env.XDG_CONFIG_HOME;
     xdg = mkdtempSync(join(tmpdir(), "hooks-match-xdg-"));
     process.env.XDG_CONFIG_HOME = xdg;
+    savedTrust = process.env.AUTOPILOT_TRUST_PROJECT;
+    process.env.AUTOPILOT_TRUST_PROJECT = "1"; // hook matching, not project trust
     dir = mkdtempSync(join(tmpdir(), "hooks-match-proj-"));
   });
   after(() => {
     if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = savedXdg;
+    if (savedTrust === undefined) delete process.env.AUTOPILOT_TRUST_PROJECT;
+    else process.env.AUTOPILOT_TRUST_PROJECT = savedTrust;
     rmSync(xdg, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   });

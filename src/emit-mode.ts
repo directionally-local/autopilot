@@ -188,6 +188,11 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
   // SessionStart/SessionEnd bracket the run (#877).
   const { HooksManager, formatHookFailureNotice } = await import("./hooks/manager.js");
   const hooks = new HooksManager(cwd);
+  {
+    const { pendingProjectConfig, projectTrustNoticeText } = await import("./util/project-config-review.js");
+    const trustText = projectTrustNoticeText(pendingProjectConfig(cwd));
+    if (trustText) emit("RuntimeError", { message: trustText, source: "hooks", kind: "generic", severity: "warn" });
+  }
   // #889: a failing hook is reported once per hook per session.
   hooks.onFailure((notice) => {
     if (!notice.firstInSession) return;
