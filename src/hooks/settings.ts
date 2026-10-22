@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { logger } from "../util/logger.js";
+import { isProjectFileTrusted, readProjectFile, trustProjectFiles } from "../util/project-trust.js";
 import { LEGACY_RECOMMENDED_COMMANDS } from "./recommended.js";
 import {
   HOOK_EVENTS,
@@ -70,8 +71,18 @@ export function hookSettingsLocations(cwd: string): HookSettingsLocation[] {
 
 function readSettingsFile(path: string): KimiflareSettings | null {
   if (!existsSync(path)) return null;
+  let raw: string;
   try {
-    const raw = readFileSync(path, "utf8");
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    logger.warn("hooks:settings_unreadable", { path, error: e instanceof Error ? e.message : String(e) });
+    return null;
+  }
+  return parseSettings(raw, path);
+}
+
+function parseSettings(raw: string, path: string): KimiflareSettings | null {
+  try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as KimiflareSettings;
     logger.warn("hooks:settings_not_object", { path });
@@ -193,9 +204,43 @@ export function loadHooksSettings(cwd: string): KimiflareSettings {
   };
 
   const merged = mergeHookMaps(
-    ...hookSettingsLocations(cwd).map((loc) => normalized(readSettingsFile(loc.path), loc.scope)),
+    ...hookSettingsLocations(cwd).map((loc) => normalized(readHookSettings(loc), loc.scope)),
   );
   return { hooks: merged };
+}
+
+const warnedUntrusted = new Set<string>();
+
+/**
+ * Global files load as-is. Project files hold shell commands a repository
+ * chose, so they load only when the user trusted their current content
+ * (see src/util/project-trust.ts); otherwise they are skipped.
+ */
+function readHookSettings(loc: HookSettingsLocation): KimiflareSettings | null {
+  if (loc.scope === "global") return readSettingsFile(loc.path);
+  const read = readProjectFile(loc.path);
+  if (!read) return null;
+  if (!read.trusted) {
+    if (!warnedUntrusted.has(loc.path)) {
+      warnedUntrusted.add(loc.path);
+      logger.warn("hooks:project_settings_untrusted", { path: loc.path });
+    }
+    return null;
+  }
+  return parseSettings(read.content, loc.path);
+}
+
+/**
+ * Write a settings file. A project file that was trusted (or did not exist)
+ * before this write stays trusted: the change is the user's own, made
+ * through /hooks. An untrusted file stays untrusted, so a user edit never
+ * vouches for hooks the repository added.
+ */
+function writeSettingsFile(path: string, scope: "global" | "project", settings: KimiflareSettings): void {
+  const keepTrust = scope === "project" && isProjectFileTrusted(path);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(settings, null, 2) + "\n", "utf8");
+  if (keepTrust) trustProjectFiles([path]);
 }
 
 /** True when the settings file at `path` declares at least one hook entry. */
@@ -214,6 +259,8 @@ export function legacyOnlyHookPaths(cwd: string): string[] {
   const out: string[] = [];
   const locs = hookSettingsLocations(cwd);
   for (const legacy of locs.filter((l) => l.legacy)) {
+    // An untrusted project file does not run; the trust notice covers it.
+    if (legacy.scope === "project" && !isProjectFileTrusted(legacy.path)) continue;
     const current = locs.find((l) => !l.legacy && l.scope === legacy.scope)!;
     if (fileHasHooks(legacy.path) && !fileHasHooks(current.path)) out.push(legacy.path);
   }
@@ -280,8 +327,7 @@ export function appendHook(
     return rest as HookConfig;
   });
   existing.hooks = hooks;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(existing, null, 2) + "\n", "utf8");
+  writeSettingsFile(path, scope, existing);
   return path;
 }
 
@@ -293,7 +339,7 @@ export function appendHook(
  * that id exists.
  */
 export function setHookEnabled(cwd: string, id: string, enabled: boolean): string | null {
-  for (const { path } of [...hookSettingsLocations(cwd)].reverse()) {
+  for (const { path, scope } of [...hookSettingsLocations(cwd)].reverse()) {
     const existing = readSettingsFile(path);
     if (!existing?.hooks) continue;
     let changed = false;
@@ -311,8 +357,7 @@ export function setHookEnabled(cwd: string, id: string, enabled: boolean): strin
       }
     }
     if (changed) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, JSON.stringify(existing, null, 2) + "\n", "utf8");
+      writeSettingsFile(path, scope, existing);
       return path;
     }
   }

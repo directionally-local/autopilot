@@ -81,6 +81,8 @@ describe("SDK process-exit handling (child process)", () => {
       ...process.env,
       XDG_CONFIG_HOME: join(home, "config"),
       XDG_DATA_HOME: join(home, "data"),
+      // The SessionEnd hook under test lives in the project's settings.
+      AUTOPILOT_TRUST_PROJECT: "1",
       OPENROUTER_BASE_URL: "http://127.0.0.1:9/api/v1",
       OPENROUTER_API_KEY: "sk-or-test-exit",
       KIMI_MODEL: "moonshotai/kimi-k2.6",

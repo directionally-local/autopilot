@@ -77,6 +77,7 @@ import {
   legacyProjectSettingsPath,
 } from "../hooks/settings.js";
 import { HOOK_EVENTS } from "../hooks/types.js";
+import { formatPendingReview, pendingProjectConfig, trustPendingProjectConfig, type PendingProjectFile } from "../util/project-config-review.js";
 import type { AbortScope } from "../util/abort-scope.js";
 import type { CustomCommand } from "../commands/types.js";
 import { checkForUpdate } from "../util/update-check.js";
@@ -1415,6 +1416,43 @@ const handleLsp: Handler = (ctx, _rest, arg) => {
   return true;
 };
 
+/**
+ * `/trust` lists the project hook and LSP settings that were not loaded
+ * because they are untrusted, with every command they would run.
+ * `/trust yes` trusts exactly those files' current content and reloads hooks.
+ */
+const handleTrust: Handler = (ctx, _rest, arg) => {
+  const { setEvents, mkKey } = ctx;
+  const cwd = process.cwd();
+  const info = (text: string) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
+  const pending = pendingProjectConfig(cwd);
+  if (pending.length === 0) {
+    info("Nothing to trust: this project has no untrusted hooks or LSP servers.");
+    return true;
+  }
+  if (arg === "yes") {
+    let trusted: PendingProjectFile[];
+    try {
+      trusted = trustPendingProjectConfig(cwd);
+    } catch (e) {
+      setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `could not save trust: ${(e as Error).message}` }]);
+      return true;
+    }
+    ctx.hooksManagerRef.current.reload();
+    const lsp = trusted.some((p) => p.kind === "lsp");
+    info(
+      `Trusted ${trusted.map((p) => p.path).join(", ")}. Project hooks are active now` +
+        (lsp ? "; restart autopilot to start the project's LSP servers." : "."),
+    );
+    return true;
+  }
+  info(
+    `These project files run commands on this machine and are not trusted:\n${formatPendingReview(pending)}\n` +
+      "Only trust them if you trust this repository. Type /trust yes to trust exactly this content; any later change needs review again.",
+  );
+  return true;
+};
+
 const handleHooks: Handler = (ctx, rest, arg) => {
   const { setEvents, mkKey } = ctx;
   const cwd = process.cwd();
@@ -1854,6 +1892,7 @@ const handlers: Record<string, Handler> = {
   "/mcp": handleMcp,
   "/lsp": handleLsp,
   "/hooks": handleHooks,
+  "/trust": handleTrust,
   "/hello": handleHello,
   "/inbox": handleInbox,
   "/logout": handleLogout,

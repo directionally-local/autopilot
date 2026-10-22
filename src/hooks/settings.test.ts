@@ -22,6 +22,7 @@ import { getRecommendedHook, LEGACY_RECOMMENDED_COMMANDS } from "./recommended.j
 let projectDir: string;
 let xdgDir: string;
 let originalXdg: string | undefined;
+let savedTrust: string | undefined;
 
 before(() => {
   // Sandbox both global (via XDG_CONFIG_HOME) and project paths so
@@ -29,11 +30,17 @@ before(() => {
   originalXdg = process.env.XDG_CONFIG_HOME;
   xdgDir = mkdtempSync(join(tmpdir(), "hooks-xdg-"));
   process.env.XDG_CONFIG_HOME = xdgDir;
+  // These tests cover hook behaviour, not project trust (project-trust.test.ts),
+  // so project settings files are trusted the way a CI run opts in.
+  savedTrust = process.env.AUTOPILOT_TRUST_PROJECT;
+  process.env.AUTOPILOT_TRUST_PROJECT = "1";
 });
 
 after(() => {
   if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalXdg;
+  if (savedTrust === undefined) delete process.env.AUTOPILOT_TRUST_PROJECT;
+  else process.env.AUTOPILOT_TRUST_PROJECT = savedTrust;
   rmSync(xdgDir, { recursive: true, force: true });
 });
 

@@ -10,6 +10,9 @@
  *     this version) and shown if an enabled custom (not bundled
  *     recommended) hook is registered for a blocking event, naming any
  *     whose command contains `exit 1`.
+ *   - Untrusted project settings: project hooks or LSP servers that were
+ *     not loaded because the user has not trusted them. Shown every start
+ *     while they are pending (src/util/project-config-review.ts).
  */
 import { readState, writeState, type StateFile } from "../util/state.js";
 import { RECOMMENDED_HOOKS } from "./recommended.js";
@@ -79,6 +82,12 @@ export async function takeHookStartupNotices(cwd: string): Promise<string[]> {
     }
 
     if (dirty) await writeState(state);
+
+    // Shown on every start until the user trusts (or removes) the files:
+    // skipped hooks and LSP servers are otherwise invisible.
+    const { pendingProjectConfig, projectTrustNoticeText } = await import("../util/project-config-review.js");
+    const trustText = projectTrustNoticeText(pendingProjectConfig(cwd));
+    if (trustText) notices.push(trustText);
     return notices;
   } catch {
     return [];
