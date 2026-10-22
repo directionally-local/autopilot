@@ -12,6 +12,7 @@ import type { KimiConfig } from "../config.js";
 import { logger } from "../util/logger.js";
 import { installExitHandlers, onShutdown } from "../util/exit.js";
 import { setupRoutes } from "./routes.js";
+import { hasDotSegment, requestPathname } from "./request-path.js";
 import type { AsterApiRuntime } from "./aster-api.js";
 
 export interface ServerOpts {
@@ -32,7 +33,16 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
   const corsOrigins = parseOrigins(process.env.KIMIFLARE_SERVER_CORS_ORIGINS);
 
   const server = createServer((req, res) => {
-    const isAsterApi = req.url?.startsWith("/api/v1/") === true;
+    // Decide the auth path from the same normalized pathname the routers use.
+    // Dot segments are refused outright: no client needs them, and they are how
+    // `/api/v1/../../prompt` once skipped the legacy password and Host checks.
+    const pathname = requestPathname(req);
+    if (pathname === null || hasDotSegment(req.url)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Bad request path" }));
+      return;
+    }
+    const isAsterApi = pathname.startsWith("/api/v1/");
     if (!isAsterApi) {
       const verdict = checkLegacyRequest(req.headers, { listenHost: opts.hostname, corsOrigins });
       if (!verdict.ok) {
