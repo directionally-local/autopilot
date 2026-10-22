@@ -119,6 +119,32 @@ describe("autopilot remote client against the Aster API", () => {
       await server.close();
     }
   });
+
+  it("detaches when aborted before the run starts streaming", { timeout: 30_000 }, async () => {
+    const server = await startAsterServer({ hang: true });
+    try {
+      const store = new AsterStore();
+      const credential = store.createCredential({
+        name: "laptop", workspaceIds: ["default"], expiresAt: Date.now() + 60_000,
+        scopes: ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"],
+      });
+      store.close();
+      await writeFile(process.env.AUTOPILOT_REMOTES_FILE!, JSON.stringify({ version: 1, remotes: [{
+        name: "box", url: server.baseUrl, token: credential.token, credentialId: credential.id, expiresAt: "2099-01-01T00:00:00.000Z", addedAt: "2026-10-01T00:00:00.000Z",
+      }] }));
+      const { checkout } = await clonedRepository(server.root);
+      // Ctrl-C while the run is still being created: the abort lands before the watch listens.
+      const controller = new AbortController();
+      controller.abort();
+      const io = captureIO();
+      assert.equal(await runOnRemote({ task: "Long task", cwd: checkout, repository: "me/app", signal: controller.signal }, io), 0);
+      assert.match(io.text(), /Detached from [0-9a-f]{8}; it keeps running on box/);
+      assert.equal(server.turns.length, 1);
+      assert.equal(server.cancelled.length, 0);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 interface AsterTestServer {

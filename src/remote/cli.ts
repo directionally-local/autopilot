@@ -196,6 +196,8 @@ async function watchConversation(
   const controller = new AbortController();
   const stop = () => controller.abort();
   signal?.addEventListener("abort", stop, { once: true });
+  // Ctrl-C during startup (before this listener existed) still detaches.
+  if (signal?.aborted) stop();
   const renderer = new EventRenderer(io);
   let outcome: string | undefined;
   try {
