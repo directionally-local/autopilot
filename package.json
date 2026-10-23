@@ -65,7 +65,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@hotcell/sdk": "^0.1.23",
+    "@hotcell/sdk": "^0.1.26",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.11.1",
     "camouflage-tui": "^2.8.1",
