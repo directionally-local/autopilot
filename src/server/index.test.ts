@@ -104,3 +104,39 @@ describe("startServer with a password", () => {
     }
   });
 });
+
+describe("startServer with a malformed Host header", () => {
+  const config = { openrouterApiKey: "k", model: "m/m" } as KimiConfig;
+
+  it("answers the request instead of crashing the server", async () => {
+    const prev = { ...process.env };
+    process.env.HOME = mkdtempSync(join(tmpdir(), "serve-host-"));
+    delete process.env.KIMIFLARE_SERVER_PASSWORD;
+    delete process.env.KIMIFLARE_SERVER_CORS_ORIGINS;
+    let server;
+    try {
+      server = await startServer({ port: 0, hostname: "127.0.0.1", config });
+    } finally {
+      process.env = prev;
+    }
+    const port = (server.address() as { port: number }).port;
+    const get = (path: string, headers: Record<string, string> = {}) =>
+      new Promise<number>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    try {
+      // `new URL(path, "http://" + host)` throws for these hosts; it once escaped as an unhandled rejection and exited the process.
+      assert.equal(await get("/api/v1/health", { Host: "[" }), 401);
+      assert.equal(await get("/api/v1/health", { Host: "a b" }), 401);
+      assert.equal(await get("/session", { Host: "localhost:abc" }), 200);
+      assert.equal(await get("/session"), 200);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+});

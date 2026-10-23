@@ -75,7 +75,17 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
       }
     }
 
-    void handleRequest(req, res);
+    // A throw that escapes a handler must fail this request, not reach the
+    // process-wide unhandledRejection handler and shut the server down.
+    handleRequest(req, res).catch((error: unknown) => {
+      logger.error("server: request failed", { error: error instanceof Error ? error.message : String(error) });
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      } else {
+        res.destroy();
+      }
+    });
   });
   server.headersTimeout = 10_000;
   server.requestTimeout = 30_000;

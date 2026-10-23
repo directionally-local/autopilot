@@ -185,7 +185,7 @@ export class AsterApi {
   }
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? "/", "http://localhost");
     try {
       const store = this.getStore();
       // Device pairing and owner claim run before bearer auth: they are how a client gets one.
