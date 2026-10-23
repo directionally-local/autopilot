@@ -3,8 +3,7 @@
     ".": {
       "release-type": "node",
       "changelog-path": "CHANGELOG.md",
-      "include-component-in-tag": false,
-      "release-as": "2.4.0"
+      "include-component-in-tag": false
     }
   }
 }
