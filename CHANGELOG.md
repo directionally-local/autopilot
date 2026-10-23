@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.1](https://github.com/sinameraji/autopilot/compare/v2.4.0...v2.4.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **permissions:** stop bash allow rules matching chained commands ([#934](https://github.com/sinameraji/autopilot/issues/934)) ([3f405df](https://github.com/sinameraji/autopilot/commit/3f405dfca970b6f99668a289eea89889a89a72e9))
+* **tools:** ask before web_fetch/browser_fetch reach private addresses ([#933](https://github.com/sinameraji/autopilot/issues/933)) ([913f3aa](https://github.com/sinameraji/autopilot/commit/913f3aacda86dc378444bad2a88249e9eff658e6))
+
 ## [2.4.0](https://github.com/sinameraji/autopilot/compare/v2.3.0...v2.4.0) (2026-10-22)
 
 
