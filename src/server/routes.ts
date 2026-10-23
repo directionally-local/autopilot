@@ -367,7 +367,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
   void recoverQueuedRuns();
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+    const url = new URL(req.url ?? "/", "http://localhost");
     const method = req.method ?? "GET";
     const pathname = url.pathname;
 
