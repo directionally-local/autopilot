@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.2](https://github.com/sinameraji/autopilot/compare/v2.4.1...v2.4.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **serve:** keep a malformed Host header from crashing the server ([#936](https://github.com/sinameraji/autopilot/issues/936)) ([a613f15](https://github.com/sinameraji/autopilot/commit/a613f15d0f2ee6fdc60106ee59428731585f4c64))
+
 ## [2.4.1](https://github.com/sinameraji/autopilot/compare/v2.4.0...v2.4.1) (2026-10-23)
 
 
