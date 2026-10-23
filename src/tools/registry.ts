@@ -48,6 +48,11 @@ export interface ToolContext {
    *  sandbox: the id of the parent `execute_code` tool call. The executor then
    *  records a `code_mode_call` instead of a top-level tool_call/tool_result. */
   codeModeParentToolCallId?: string;
+  /** Set by the executor when this call's ToolSpec.permissionReason asked
+   *  for permission and the call was approved: the reason approved. Lets a
+   *  tool tell an approved sensitive call from one that only became
+   *  sensitive after the check (e.g. a hostname that re-resolved). */
+  approvedSensitiveReason?: string;
 }
 
 export interface ToolRender {
@@ -92,8 +97,14 @@ export interface ToolSpec<Args = any> {
   needsPermission: boolean;
   /** For a tool that normally runs without a prompt: a reason this
    *  particular call needs the user's permission (e.g. it reads a
-   *  credentials file), or null. Checked after the arguments are parsed. */
-  permissionReason?: (args: Args, ctx: ToolContext) => string | null;
+   *  credentials file, or fetches a private network address), or null.
+   *  Checked after the arguments are parsed; may be async (e.g. to resolve
+   *  a hostname). */
+  permissionReason?: (args: Args, ctx: ToolContext) => string | null | Promise<string | null>;
+  /** What an approval of a permissionReason call covers, e.g. a URL's
+   *  origin. Defaults to the resolved `path` argument, else the whole
+   *  arguments. */
+  permissionTarget?: (args: Args, ctx: ToolContext) => string;
   /** When true, the tool only reads state and never mutates the workspace.
    *  Read-only tools within a single turn may be executed in parallel. */
   isReadOnly?: boolean;

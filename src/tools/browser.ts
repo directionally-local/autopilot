@@ -1,6 +1,13 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import {
+  describeNonPublic,
+  networkPermissionTarget,
+  networkTargetReason,
+  parseWebUrl,
+  resolveNetworkTarget,
+} from "../util/network-target.js";
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
 
 interface Args {
@@ -41,6 +48,10 @@ export const browserFetchTool: ToolSpec<Args> = {
     additionalProperties: false,
   },
   needsPermission: false,
+  // As for web_fetch: a local or private network target needs the user's
+  // permission, approved per origin.
+  permissionReason: (args) => networkTargetReason(args.url, "browser_fetch"),
+  permissionTarget: (args) => networkPermissionTarget(args.url),
   render: (args) => ({
     title: `browser ${args.url ?? ""}${args.screenshot ? " (screenshot)" : ""}`,
   }),
@@ -60,10 +71,45 @@ export const browserFetchTool: ToolSpec<Args> = {
       return { content: msg, rawBytes: bytes, reducedBytes: bytes };
     }
 
+    // Re-check the target (it may resolve differently than at the
+    // permission check), then keep every request the page makes — redirects
+    // and subresources included — off non-public addresses other than the
+    // approved origin. Residual: WebSocket connections are not routed
+    // through page.route, and Chromium resolves names itself, so a DNS
+    // rebinding name (public to this check, private to Chromium) is not
+    // stopped.
+    const approvedOrigin = ctx.approvedSensitiveReason ? networkPermissionTarget(args.url) : null;
+    const checker = createRequestChecker(approvedOrigin);
+    const initial = await checker(args.url);
+    if (initial) {
+      throw new Error(`${args.url} points to ${initial}, which needs the user's approval; it was not approved for this call. Call browser_fetch again to ask the user.`);
+    }
+
     const browser = await playwright.chromium.launch({ headless: true });
     try {
       const page = await browser.newPage();
-      await page.goto(args.url, { waitUntil: "networkidle", timeout: NAV_TIMEOUT_MS });
+      const blocked: string[] = [];
+      await page.route("**/*", async (route) => {
+        const url = route.request().url();
+        const reason = await checker(url).catch(() => "an address that could not be checked");
+        if (reason) {
+          blocked.push(`${url} (${reason})`);
+          await route.abort("blockedbyclient");
+        } else {
+          await route.continue();
+        }
+      });
+      try {
+        await page.goto(args.url, { waitUntil: "networkidle", timeout: NAV_TIMEOUT_MS });
+      } catch (e) {
+        if (blocked.length) {
+          throw new Error(
+            `Navigation was blocked: it led to ${blocked[0]}, which needs the user's approval. ` +
+              "To ask the user, call browser_fetch with that URL directly.",
+          );
+        }
+        throw e;
+      }
 
       if (args.wait_for) {
         await page.waitForSelector(args.wait_for, { timeout: TIMEOUT_MS });
@@ -112,6 +158,9 @@ export const browserFetchTool: ToolSpec<Args> = {
       if (screenshotPath) {
         lines.push(`Screenshot: ${screenshotPath}`);
       }
+      if (blocked.length) {
+        lines.push(`Blocked ${blocked.length} request(s) to local or private network addresses, e.g. ${blocked[0]}`);
+      }
       lines.push("", cleaned);
 
       const content = lines.join("\n");
@@ -149,13 +198,32 @@ async function autoScroll(page: any): Promise<void> {
 
 /** Throws unless `url` is an http(s) URL. */
 export function assertWebUrl(url: unknown): void {
-  let protocol: string;
-  try {
-    protocol = new URL(String(url)).protocol;
-  } catch {
-    throw new Error(`browser_fetch needs an absolute http(s) URL, got: ${String(url)}`);
-  }
-  if (protocol !== "http:" && protocol !== "https:") {
-    throw new Error(`browser_fetch only opens http(s) URLs, not ${protocol} (use the read tool for local files)`);
-  }
+  parseWebUrl(url, "browser_fetch");
+}
+
+/**
+ * Returns a checker for the page's requests: it resolves to a description
+ * of the non-public address an http(s) request would reach, or null when
+ * the request may proceed (public, the approved origin, or not http(s),
+ * e.g. data: and blob: URLs). Results are cached per origin.
+ */
+export function createRequestChecker(approvedOrigin: string | null): (url: string) => Promise<string | null> {
+  const cache = new Map<string, Promise<string | null>>();
+  return (url) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return Promise.resolve(null);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return Promise.resolve(null);
+    const origin = networkPermissionTarget(parsed.href);
+    if (origin === approvedOrigin) return Promise.resolve(null);
+    let pending = cache.get(origin);
+    if (!pending) {
+      pending = resolveNetworkTarget(parsed, "browser_fetch").then(describeNonPublic);
+      cache.set(origin, pending);
+    }
+    return pending;
+  };
 }

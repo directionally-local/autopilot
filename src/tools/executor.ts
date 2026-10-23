@@ -513,11 +513,14 @@ export class ToolExecutor {
       }
     }
 
-    const sensitiveReason = tool.permissionReason?.(args, ctx) ?? null;
+    const sensitiveReason = (await tool.permissionReason?.(args, ctx)) ?? null;
     if (tool.needsPermission || hookForcesAsk || sensitiveReason) {
       // A sensitive call is approved per target, never for the whole tool.
       const sessionKey = sensitiveReason
-        ? `${tool.name}:sensitive:${typeof args.path === "string" ? resolvePath(ctx.cwd, args.path) : JSON.stringify(args)}`
+        ? `${tool.name}:sensitive:${
+            tool.permissionTarget?.(args, ctx) ??
+            (typeof args.path === "string" ? resolvePath(ctx.cwd, args.path) : JSON.stringify(args))
+          }`
         : this.permissionKey(tool, args, ctx.cwd);
       if (hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
         const askedAt = performance.now();
@@ -591,7 +594,8 @@ export class ToolExecutor {
       const before = this.wantsFileChange(call.name, args)
         ? await snapshotForHook(resolvePath(ctx.cwd, args.path as string))
         : undefined;
-      const result = await tool.run(args as never, ctx);
+      const runCtx = sensitiveReason ? { ...ctx, approvedSensitiveReason: sensitiveReason } : ctx;
+      const result = await tool.run(args as never, runCtx);
       toolCompleted = true;
       const fileChange = before ? await fileChangeAfter(call.name, args, ctx.cwd, before) : undefined;
       const normalized = normalizeToolOutput(result);
