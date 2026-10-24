@@ -7,6 +7,9 @@ import { browserFetchTool, createRequestChecker } from "./browser.js";
 import { ToolExecutor, type PermissionAsker, type PermissionRequest } from "./executor.js";
 import { setLookupForTests } from "../util/network-target.js";
 
+// These tests fetch from local servers; the runtime guard is covered in runtime-advisory.test.ts.
+process.env.AUTOPILOT_ALLOW_VULNERABLE_RUNTIME = "1";
+
 const ctx = { cwd: process.cwd() };
 
 function listen(handler: Parameters<typeof createServer>[1]): Promise<{ server: Server; base: string }> {

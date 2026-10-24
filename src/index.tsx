@@ -814,6 +814,9 @@ async function main() {
   // (#877). SIGINT stays with each mode: it cancels the turn first.
   const { installExitHandlers } = await import("./util/exit.js");
   installExitHandlers({ crashes: true });
+  const { brotliRuntimeAdvisory } = await import("./util/runtime-advisory.js");
+  const runtimeAdvisory = brotliRuntimeAdvisory();
+  if (runtimeAdvisory) process.stderr.write(`warning: ${runtimeAdvisory} web_fetch is disabled until then.\n`);
 
   if (opts.on !== undefined || positionalTask.length > 0) {
     await runRemoteTask();
