@@ -9,7 +9,7 @@
   <a href="https://github.com/sinameraji/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat-square&logo=homebrew&logoColor=black" alt="Install with Homebrew"></a>
   <a href="https://www.npmjs.com/package/autopilot-ai"><img src="https://img.shields.io/npm/dm/autopilot-ai?style=flat-square&color=cb3837" alt="npm downloads"></a>
   <a href="https://github.com/sinameraji/autopilot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sinameraji/autopilot?style=flat-square&color=2ea44f" alt="license"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js >= 20">
+  <img src="https://img.shields.io/badge/node-%3E%3D22.23.4-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js >= 22.23.4">
   <img src="https://img.shields.io/badge/typescript-5.7-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/runs%20on-OpenRouter%20·%20OpenAI%20·%20DeepSeek%20·%20Ollama%20·%20…-6566f1?style=flat-square" alt="Runs on OpenRouter, OpenAI, DeepSeek, Ollama and more">
 </p>
@@ -85,7 +85,7 @@ npx autopilot-ai
 
 > **Coming from `kimiflare`?** The package was renamed. Run `npm uninstall -g kimiflare && npm install -g autopilot-ai` and use `autopilot` instead of `kimiflare`. Your settings, sessions, memory and cost history are kept (they stay in `~/.config/kimiflare` and `~/.local/share/kimiflare`), and `KIMIFLARE_*` environment variables still work.
 
-Requires Node.js ≥ 20.
+Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (earlier releases have the Brotli bug CVE-2026-111497, and `web_fetch` refuses to run on them).
 
 To pick up an earlier conversation, run `autopilot resume <id>` (the exact command is printed when you exit), `autopilot resume` to choose one from this directory, or `autopilot -c` for the most recent one. Inside autopilot, `/resume` does the same.
 

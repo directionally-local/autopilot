@@ -7,6 +7,7 @@ import {
   parseWebUrl,
   resolveNetworkTarget,
 } from "../util/network-target.js";
+import { assertSafeRuntimeForUntrustedFetch } from "../util/runtime-advisory.js";
 import type { ToolSpec, ToolOutput, ToolContext } from "./registry.js";
 
 interface Args {
@@ -37,6 +38,8 @@ export const webFetchTool: ToolSpec<Args> = {
   permissionTarget: (args) => networkPermissionTarget(args.url),
   render: (args) => ({ title: `GET ${args.url ?? ""}` }),
   async run(args, ctx): Promise<ToolOutput> {
+    // fetch() decodes a Brotli response from whatever server this URL names.
+    assertSafeRuntimeForUntrustedFetch("web_fetch");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     const onAbort = (): void => controller.abort();
