@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.3](https://github.com/sinameraji/autopilot/compare/v2.4.2...v2.4.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** bump @hotcell/sdk ([#938](https://github.com/sinameraji/autopilot/issues/938)) ([83d830b](https://github.com/sinameraji/autopilot/commit/83d830b55fcca9d6c1d41aabf47e49db0cf05d05))
+* **security:** refuse web_fetch on runtimes with the Brotli RCE (CVE-2026-111497) ([#940](https://github.com/sinameraji/autopilot/issues/940)) ([6e6fd62](https://github.com/sinameraji/autopilot/commit/6e6fd62c8b1976bc7c0a05821c5b8be0144e0cf2))
+
 ## [2.4.2](https://github.com/sinameraji/autopilot/compare/v2.4.1...v2.4.2) (2026-10-23)
 
 
