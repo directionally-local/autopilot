@@ -65,10 +65,10 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@hotcell/sdk": "^0.1.26",
+    "@hotcell/sdk": "^0.1.28",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.11.1",
-    "camouflage-tui": "^2.8.1",
+    "camouflage-tui": "^2.8.3",
     "commander": "^12.1.0",
     "imapflow": "2.2.5",
     "ink": "^7.1.1",
