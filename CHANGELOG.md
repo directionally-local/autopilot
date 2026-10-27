@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.4](https://github.com/sinameraji/autopilot/compare/v2.4.3...v2.4.4) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** bump @hotcell/sdk ([#943](https://github.com/sinameraji/autopilot/issues/943)) ([aff1160](https://github.com/sinameraji/autopilot/commit/aff11602636a549107b92cd97526d23381572201))
+* **deps:** bump the own-packages group with 2 updates ([#941](https://github.com/sinameraji/autopilot/issues/941)) ([83be6c0](https://github.com/sinameraji/autopilot/commit/83be6c092e86b645f047603172fd27540472fd13))
+
 ## [2.4.3](https://github.com/sinameraji/autopilot/compare/v2.4.2...v2.4.3) (2026-10-24)
 
 
