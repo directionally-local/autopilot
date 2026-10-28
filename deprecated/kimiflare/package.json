@@ -3,13 +3,13 @@
   "version": "1.0.0",
   "description": "kimiflare has been renamed to autopilot — install autopilot-ai instead (npm i -g autopilot-ai). This package only forwards to it.",
   "keywords": ["kimiflare", "autopilot", "deprecated"],
-  "homepage": "https://github.com/sinameraji/autopilot#readme",
+  "homepage": "https://github.com/directionally-local/autopilot#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sinameraji/autopilot.git",
+    "url": "git+https://github.com/directionally-local/autopilot.git",
     "directory": "deprecated/kimiflare"
   },
-  "bugs": "https://github.com/sinameraji/autopilot/issues",
+  "bugs": "https://github.com/directionally-local/autopilot/issues",
   "license": "MIT",
   "type": "module",
   "bin": {

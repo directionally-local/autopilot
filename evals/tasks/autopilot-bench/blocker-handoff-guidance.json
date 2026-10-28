@@ -1,6 +1,6 @@
 {
   "id": "blocker-handoff-guidance",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "a76580b16c048479b8ab4777a1c122bba97947a3",
   "prompt": "The agent gives up too easily when it hits a blocker. Change the system prompt (`src/agent/system-prompt.ts`) so the agent is instructed to try safe, materially different recovery paths before stopping at a blocker; when it still cannot finish, it must state one concrete next action for the user, and it must never imply that unverified work succeeded.\n\nThe regression test(s) for this change are already in the worktree: `src/agent/system-prompt.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/agent/system-prompt.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

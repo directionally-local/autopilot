@@ -1,6 +1,6 @@
 {
   "id": "jev-pending-info-visible",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "2d8beeaba4da368c0dc3aae34ecc15b31cde3789",
   "prompt": "In the TUI, Jev's in-progress status is emitted as an info event that is still pending while the async answer is computed, and the chat view drops it from the live Ink tail too early. Keep a pending info event in the live tail until the async answer or error replaces it (`src/ui/chat.tsx`, and the `/jev` handler in `src/ui/slash-commands.ts` that emits and later settles the event).\n\nThe regression test(s) for this change are already in the worktree: `src/ui/chat-idle.test.tsx`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/ui/chat-idle.test.tsx` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

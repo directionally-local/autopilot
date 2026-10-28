@@ -27,7 +27,7 @@ interface ArtifactOptions {
 const ARTIFACT_ROOT = "autopilot-artifacts";
 const ARTIFACT_PREFIX = "artifact-";
 const ARTIFACT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const AUTOPILOT_URL = "https://github.com/sinameraji/autopilot";
+const AUTOPILOT_URL = "https://github.com/directionally-local/autopilot";
 const MAX_ARTIFACT_TITLE_LENGTH = 160;
 const MAX_ARTIFACT_HTML_LENGTH = 1_000_000;
 

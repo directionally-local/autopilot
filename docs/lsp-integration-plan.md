@@ -1,6 +1,6 @@
 # LSP Integration Plan
 
-> Derived from [Issue #181](https://github.com/sinameraji/kimiflare/issues/181)  
+> Derived from [Issue #181](https://github.com/directionally-local/autopilot/issues/181)  
 > Goal: Integrate Language Server Protocol clients to give the agent semantic code intelligence — go-to-definition, find-references, hover types, workspace symbols, diagnostics, and refactoring.
 
 ---

@@ -1,6 +1,6 @@
 {
   "id": "aster-accept-long-messages",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "d112432e2e68cd05c46548203503aa550002ac8f",
   "prompt": "Aster turn text is capped at 20,000 characters, with a 64 KiB request body limit and a 32 KiB cell-bridge limit, so pasted documents are rejected with `invalid_turn`. Raise the limits to 500,000 characters, 4 MiB request bodies, and 8 MiB for the cell bridge (`src/server/aster-api.ts`, `src/sdk/aster-cell.ts`), and make the subagent policy's prompt-length handling in `src/intent/subagent-policy.ts` cope with such long prompts. A ~100k-character turn must be accepted.\n\nThe regression test(s) for this change are already in the worktree: `src/intent/subagent-policy.test.ts`, `src/server/aster-api.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/intent/subagent-policy.test.ts src/server/aster-api.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

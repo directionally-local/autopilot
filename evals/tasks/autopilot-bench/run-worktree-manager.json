@@ -1,6 +1,6 @@
 {
   "id": "run-worktree-manager",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "805ea9e4f15cabf41127d82fbe64b25c83b17f4f",
   "prompt": "Add a `RunWorktreeManager` in `src/runs/worktrees.ts` that creates a dedicated git branch and worktree per unattended run, outside the source repository. `create(runId, sourceCwd)` returns `{ runId, repositoryRoot, sourceCwd, worktreePath, cwd, branch }` where `cwd` preserves the requested subdirectory inside the new worktree and `branch` is `autopilot/run/<runId>`. Reject unsafe run ids, sources that are not inside a git repository, and worktree roots nested inside the source repository. `discard(worktree)` removes the worktree and deletes its branch, refusing paths outside the configured worktree root.\n\nThe regression test(s) for this change are already in the worktree: `src/runs/worktrees.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/runs/worktrees.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

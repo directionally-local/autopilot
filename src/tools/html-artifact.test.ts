@@ -27,7 +27,7 @@ describe("create_artifact", () => {
     assert.match(page, /position: sticky/);
     assert.match(page, /aria-label="Autopilot logo"/);
     assert.match(page, /☆ Star on GitHub/);
-    assert.match(page, /https:\/\/github\.com\/sinameraji\/autopilot/);
+    assert.match(page, /https:\/\/github\.com\/directionally-local\/autopilot/);
     assert.match(page, /sandbox="allow-scripts"/);
     assert.ok(!page.includes("allow-same-origin"));
     assert.ok(page.includes("srcdoc=\"&lt;!doctype html&gt;&lt;h1&gt;Hi&lt;/h1&gt;\""));

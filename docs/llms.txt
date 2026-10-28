@@ -27,7 +27,7 @@
 - [Home / overview](https://kimiflare.com/): what kimiflare is, features, install, architecture.
 - [Claude Code alternative](https://kimiflare.com/claude-code-alternative): why and how kimiflare compares to Claude Code.
 - [FAQ](https://kimiflare.com/faq): common questions about setup, cost, models, and privacy.
-- [GitHub repository](https://github.com/sinameraji/kimiflare): source code, issues, releases.
+- [GitHub repository](https://github.com/directionally-local/autopilot): source code, issues, releases.
 - [npm package](https://www.npmjs.com/package/kimiflare): installation and versions.
 
 ## Comparisons

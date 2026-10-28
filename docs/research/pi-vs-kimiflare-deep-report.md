@@ -2,7 +2,7 @@
 
 **Research Date:** 2026-05-06  
 **Pi Repository:** https://github.com/badlogic/pi-mono  
-**KimiFlare Repository:** https://github.com/sinameraji/kimiflare  
+**KimiFlare Repository:** https://github.com/directionally-local/autopilot  
 **Researcher:** kimiflare (AI agent)  
 **Scope:** Architecture, features, design philosophy, implementation quality, and strategic positioning.
 

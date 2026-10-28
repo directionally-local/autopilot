@@ -258,7 +258,7 @@ export async function runWithCrashRestarts(
 export function crashGiveUpMessage(outcome: { crashes: number; sessionId: string | null }, windowMs = 60_000): string {
   const lines = [
     `autopilot: the Camouflage renderer crashed ${outcome.crashes} times within ${Math.round(windowMs / 1000)} seconds, so autopilot stopped restarting it.`,
-    `Crash reports: ${join(homedir(), ".camouflage")} (crash-*.txt). Please attach one to an issue: https://github.com/sinameraji/autopilot/issues`,
+    `Crash reports: ${join(homedir(), ".camouflage")} (crash-*.txt). Please attach one to an issue: https://github.com/directionally-local/autopilot/issues`,
   ];
   if (outcome.sessionId) {
     lines.push(

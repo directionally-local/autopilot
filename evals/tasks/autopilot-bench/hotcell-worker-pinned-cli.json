@@ -1,6 +1,6 @@
 {
   "id": "hotcell-worker-pinned-cli",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "88988dd4d6b13a09375358a29223321a83276ae1",
   "prompt": "Hotcell research workers (`src/tools/hotcell-worker.ts`) currently run `npm ci` and `node --import tsx src/index.tsx` inside a clone of the user's repository, which only works when that repository is Autopilot itself. Change the worker runtime so each cell installs `autopilot-ai@<coordinator version>` into `/tmp/autopilot-worker` with `--omit=optional` and runs that binary from the repo root; `KIMIFLARE_WORKER_PACKAGE` overrides the npm spec (validated and shell-quoted). Run checkout and install as a separate setup step with its own timeout (`KIMIFLARE_WORKER_SETUP_TIMEOUT_MS`, default 5 minutes) so setup failure or timeout is reported distinctly and research never starts after a failed setup. Require `HEAD` to be on a remote-tracking branch (checked locally, no network) and fail before creating a cell with a message telling the user to `git push` otherwise.\n\nThe regression test(s) for this change are already in the worktree: `src/tools/hotcell-worker.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/tools/hotcell-worker.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

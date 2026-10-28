@@ -25,7 +25,7 @@ isn't settled. Earlier draft of this doc asked A-vs-B; this revision reflects th
 
 ## What this repo is today
 
-KimiFlare (currently at `github.com/sinameraji/autopilot`, `package.json` name still
+KimiFlare (currently at `github.com/directionally-local/autopilot`, `package.json` name still
 `kimiflare`, previously `camouflage` — see `CAMOUFLAGE_MIGRATION.md` for that precedent) is a
 terminal coding agent whose entire identity is built around Cloudflare:
 
