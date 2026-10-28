@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.6.2](https://github.com/directionally-local/autopilot/compare/v2.6.1...v2.6.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **subagents:** avoid delegating trivial tasks ([#977](https://github.com/directionally-local/autopilot/issues/977)) ([078c636](https://github.com/directionally-local/autopilot/commit/078c6369eea8fd8bf91a32ce17b80b38e72745a2)), closes [#961](https://github.com/directionally-local/autopilot/issues/961)
+* **tools:** handle early git ignore pipe closure ([#979](https://github.com/directionally-local/autopilot/issues/979)) ([96df311](https://github.com/directionally-local/autopilot/commit/96df31121c1cbfc3e1d18542391d0b3781e40a36))
+
 ## [2.6.1](https://github.com/directionally-local/autopilot/compare/v2.6.0...v2.6.1) (2026-10-28)
 
 
