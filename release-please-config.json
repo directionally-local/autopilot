@@ -1,4 +1,5 @@
 {
+  "versioning": "always-bump-patch",
   "packages": {
     ".": {
       "release-type": "node",
