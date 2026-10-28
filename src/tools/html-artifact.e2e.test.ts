@@ -9,6 +9,9 @@ import type { ChatMessage } from "../agent/messages.js";
 import { ToolExecutor } from "./executor.js";
 import { createHtmlArtifactFromFile, htmlArtifactTool } from "./html-artifact.js";
 import { writeTool } from "./write.js";
+import { secureSandboxUnavailableReason } from "../code-mode/sandbox.js";
+
+const sandboxUnavailableReason = await secureSandboxUnavailableReason();
 
 describe("artifact workflow end to end", () => {
   let originalFetch: typeof globalThis.fetch;
@@ -26,7 +29,11 @@ describe("artifact workflow end to end", () => {
     else process.env.KIMIFLARE_BASE_URL = originalBaseUrl;
   });
 
-  it("writes a large HTML document, then creates and opens its local artifact", async () => {
+  it("writes a large HTML document, then creates and opens its local artifact", async (t) => {
+    if (sandboxUnavailableReason) {
+      t.skip(`requires secure Code Mode: ${sandboxUnavailableReason}`);
+      return;
+    }
     const workspace = await mkdtemp(join(tmpdir(), "autopilot-artifact-e2e-work-"));
     const outputRoot = await mkdtemp(join(tmpdir(), "autopilot-artifact-e2e-output-"));
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Dashboard</title></head><body><main><h1>Revenue dashboard</h1><p>${"Quarterly revenue data and interactive chart point. ".repeat(320)}</p></main></body></html>`;
