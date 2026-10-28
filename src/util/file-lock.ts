@@ -1,4 +1,5 @@
 import { realpath } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 /**
  * In-process, per-path async mutex for tools that read-modify-write files.
@@ -12,10 +13,24 @@ const tails = new Map<string, Promise<unknown>>();
 
 /** Lock key for a path: its realpath when it exists (so symlinks share a key). */
 export async function lockKeyFor(absPath: string): Promise<string> {
+  const absolute = resolve(absPath);
   try {
-    return await realpath(absPath);
+    return await realpath(absolute);
   } catch {
-    return absPath;
+    // Canonicalize through the nearest existing parent so a missing path
+    // below a symlink gets the same key before and after it is created.
+    const suffix: string[] = [];
+    let cursor = absolute;
+    while (true) {
+      const parent = dirname(cursor);
+      suffix.unshift(basename(cursor));
+      try {
+        return join(await realpath(parent), ...suffix);
+      } catch {
+        if (parent === cursor) return absolute;
+        cursor = parent;
+      }
+    }
   }
 }
 

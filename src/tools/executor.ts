@@ -353,6 +353,7 @@ async function fileChangeAfter(
 
 export class ToolExecutor {
   private sessionAllowed = new Set<string>();
+  private fileReadHashesBySession = new Map<string, Map<string, string>>();
   private tools: Map<string, ToolSpec>;
   private artifactStore: ToolArtifactStore;
   /** M6.1: when set, executor fires PreToolUse/PostToolUse around
@@ -396,6 +397,7 @@ export class ToolExecutor {
 
   clearSessionPermissions(): void {
     this.sessionAllowed.clear();
+    this.fileReadHashesBySession.clear();
   }
 
   clearArtifacts(): void {
@@ -594,7 +596,17 @@ export class ToolExecutor {
       const before = this.wantsFileChange(call.name, args)
         ? await snapshotForHook(resolvePath(ctx.cwd, args.path as string))
         : undefined;
-      const runCtx = sensitiveReason ? { ...ctx, approvedSensitiveReason: sensitiveReason } : ctx;
+      const sessionKey = ctx.sessionId ?? `cwd:${resolve(ctx.cwd)}`;
+      let fileReadHashes = ctx.fileReadHashes ?? this.fileReadHashesBySession.get(sessionKey);
+      if (!fileReadHashes) {
+        fileReadHashes = new Map<string, string>();
+        this.fileReadHashesBySession.set(sessionKey, fileReadHashes);
+      }
+      const runCtx: ToolContext = {
+        ...ctx,
+        fileReadHashes,
+        ...(sensitiveReason ? { approvedSensitiveReason: sensitiveReason } : {}),
+      };
       const result = await tool.run(args as never, runCtx);
       toolCompleted = true;
       const fileChange = before ? await fileChangeAfter(call.name, args, ctx.cwd, before) : undefined;

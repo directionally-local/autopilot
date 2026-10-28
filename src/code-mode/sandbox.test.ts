@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolExecutor } from "../tools/executor.js";
 import { editTool } from "../tools/edit.js";
+import { readTool } from "../tools/read.js";
 
 const mockTools: ToolSpec[] = [];
 
@@ -225,15 +226,16 @@ describe("concurrent tool calls from a script", { skip: NO_SANDBOX }, () => {
   it("keeps both edits when Promise.all targets the same file", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sandbox-edit-"));
     const file = join(dir, "t.rs");
-    const executor = new ToolExecutor([editTool]);
+    const executor = new ToolExecutor([readTool, editTool]);
     for (let i = 0; i < 10; i++) {
       await writeFile(file, "fn a() {\n    ALPHA\n}\nfn b() {\n    BETA\n}\n", "utf8");
       const result = await runInSandbox({
-        code: `console.log(JSON.stringify(await Promise.all([
+        code: `await api.read({ path: ${JSON.stringify(file)} });
+        console.log(JSON.stringify(await Promise.all([
           api.edit({ path: ${JSON.stringify(file)}, old_string: "ALPHA", new_string: "let alpha = 1111111111;" }),
           api.edit({ path: ${JSON.stringify(file)}, old_string: "BETA", new_string: "let b = 2;" }),
         ])));`,
-        tools: [editTool],
+        tools: [readTool, editTool],
         executor,
         askPermission: mockAskPermission,
         ctx: { cwd: dir, sessionId: "concurrent-edits" },
@@ -241,7 +243,7 @@ describe("concurrent tool calls from a script", { skip: NO_SANDBOX }, () => {
       });
       assert.strictEqual(result.error, undefined, `iteration ${i}: ${result.error}`);
       assert.strictEqual(await readFile(file, "utf8"), "fn a() {\n    let alpha = 1111111111;\n}\nfn b() {\n    let b = 2;\n}\n", `iteration ${i}`);
-      assert.deepEqual(result.toolCalls.map((c) => c.ok), [true, true]);
+      assert.deepEqual(result.toolCalls.map((c) => c.ok), [true, true, true]);
     }
   });
 
@@ -280,10 +282,10 @@ describe("concurrent tool calls from a script", { skip: NO_SANDBOX }, () => {
 
   it("marks a failed inner call as not ok instead of reporting success", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sandbox-edit-"));
-    const executor = new ToolExecutor([editTool]);
+    const executor = new ToolExecutor([readTool, editTool]);
     const result = await runInSandbox({
       code: `console.log(await api.edit({ path: "missing.txt", old_string: "a", new_string: "b" }));`,
-      tools: [editTool],
+      tools: [readTool, editTool],
       executor,
       askPermission: mockAskPermission,
       ctx: { cwd: dir, sessionId: "failed-call" },

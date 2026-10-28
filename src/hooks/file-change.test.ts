@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolExecutor, ALL_TOOLS } from "../tools/executor.js";
@@ -18,12 +18,26 @@ function harness() {
       return { outcomes: [], vetoed: false, vetoReason: "", failures: [] };
     },
   };
-  const tools = ALL_TOOLS.filter((t) => t.name === "write" || t.name === "edit");
+  const tools = ALL_TOOLS.filter((t) => t.name === "read" || t.name === "write" || t.name === "edit");
   const exec = new ToolExecutor(tools, { hooks: fake as never });
   const cwd = mkdtempSync(join(tmpdir(), "autopilot-file-change-"));
   mkdirSync(join(cwd, "adir"));
   let n = 0;
   const run = async (name: string, args: Record<string, unknown>) => {
+    if ((name === "edit" || name === "write") && typeof args.path === "string") {
+      try {
+        if (statSync(join(cwd, args.path)).isFile()) {
+          const read = await exec.run(
+            { id: `c${++n}`, name: "read", arguments: JSON.stringify({ path: args.path }) },
+            async () => "allow",
+            { cwd },
+          );
+          assert.equal(read.ok, true, "test setup must read an existing file before editing it");
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
     await exec.run({ id: `c${++n}`, name, arguments: JSON.stringify(args) }, async () => "allow", { cwd });
     return posts.at(-1)!;
   };

@@ -53,6 +53,8 @@ export interface ToolContext {
    *  tool tell an approved sensitive call from one that only became
    *  sensitive after the check (e.g. a hostname that re-resolved). */
   approvedSensitiveReason?: string;
+  /** Per-session sha256 snapshots recorded by read and checked by edit/write. */
+  fileReadHashes?: Map<string, string>;
 }
 
 export interface ToolRender {
