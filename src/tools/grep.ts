@@ -29,6 +29,11 @@ async function ignoredByGit(root: string, files: string[]): Promise<Set<string>>
     const stdout: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.resume();
+    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+      // A non-repository or an early-exiting git process may close stdin before
+      // all paths are written. Treat that like unavailable ignore metadata.
+      if (error.code !== "EPIPE") resolve(new Set());
+    });
     child.on("error", () => resolve(new Set()));
     child.on("close", () => {
       resolve(new Set(Buffer.concat(stdout).toString("utf8").split("\0").filter(Boolean)));
