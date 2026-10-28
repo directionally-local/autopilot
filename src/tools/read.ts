@@ -4,6 +4,8 @@ import { createInterface } from "node:readline";
 import type { ToolSpec } from "./registry.js";
 import { resolvePath, collapsePath } from "../util/paths.js";
 import { readsCredentials, sensitivePathReason } from "../util/sensitive-paths.js";
+import { lockKeyFor, withFileLock } from "../util/file-lock.js";
+import { sha256, sha256File } from "./file-version.js";
 
 /**
  * Fast-path size cap. Files at or below this size are read into memory
@@ -107,32 +109,39 @@ export const readTool: ToolSpec<Args> = {
   async run(args, ctx) {
     if (aborted(ctx.signal)) throw abortError();
     const abs = resolvePath(ctx.cwd, args.path);
-    const st = await stat(abs);
-    if (aborted(ctx.signal)) throw abortError();
+    return withFileLock(abs, async () => {
+      const key = await lockKeyFor(abs);
+      const st = await stat(abs);
+      if (aborted(ctx.signal)) throw abortError();
 
-    if (st.size > MAX_BYTES) {
-      // Large file: require an explicit slice and stream it. Refusing
-      // unbounded full reads protects the model context from a 5MB log
-      // file blowing the prompt budget.
-      if (args.offset === undefined || args.limit === undefined) {
-        throw new Error(
-          `file too large: ${st.size} bytes (max ${MAX_BYTES} for full read; supply offset+limit to stream a slice)`,
-        );
+      if (st.size > MAX_BYTES) {
+        // Large file: require an explicit slice and stream it. Refusing
+        // unbounded full reads protects the model context from a 5MB log
+        // file blowing the prompt budget.
+        if (args.offset === undefined || args.limit === undefined) {
+          throw new Error(
+            `file too large: ${st.size} bytes (max ${MAX_BYTES} for full read; supply offset+limit to stream a slice)`,
+          );
+        }
+        const lines = await readSliceStreaming(abs, args.offset, args.limit, ctx.signal);
+        ctx.fileReadHashes?.set(key, await sha256File(abs, ctx.signal));
+        return formatLines(lines, args.offset);
       }
-      const lines = await readSliceStreaming(abs, args.offset, args.limit, ctx.signal);
-      return formatLines(lines, args.offset);
-    }
 
-    // Fast path: small file, read it all at once.
-    const text = await readFile(abs, { encoding: "utf8", signal: ctx.signal });
-    if (aborted(ctx.signal)) throw abortError();
-    const lines = text.split("\n");
-    const start = Math.max(0, (args.offset ?? 1) - 1);
-    const end = args.limit ? Math.min(lines.length, start + args.limit) : lines.length;
-    const width = String(end).length;
-    return lines
-      .slice(start, end)
-      .map((l, i) => `${String(start + i + 1).padStart(width, " ")}\t${l}`)
-      .join("\n");
+      // Fast path: small file, read it all at once. Hash the same bytes that
+      // produced the text so a concurrent external edit cannot become the
+      // snapshot that authorizes an overwrite.
+      const bytes = await readFile(abs, { signal: ctx.signal });
+      if (aborted(ctx.signal)) throw abortError();
+      ctx.fileReadHashes?.set(key, sha256(bytes));
+      const lines = bytes.toString("utf8").split("\n");
+      const start = Math.max(0, (args.offset ?? 1) - 1);
+      const end = args.limit ? Math.min(lines.length, start + args.limit) : lines.length;
+      const width = String(end).length;
+      return lines
+        .slice(start, end)
+        .map((l, i) => `${String(start + i + 1).padStart(width, " ")}\t${l}`)
+        .join("\n");
+    });
   },
 };

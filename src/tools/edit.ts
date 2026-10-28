@@ -3,6 +3,8 @@ import type { ToolSpec } from "./registry.js";
 import { resolvePath, collapsePath } from "../util/paths.js";
 import { withFileLock } from "../util/file-lock.js";
 import { writeFileVerified } from "../util/safe-write.js";
+import { lockKeyFor } from "../util/file-lock.js";
+import { assertReadVersion, sha256 } from "./file-version.js";
 
 export interface EditPair {
   old_string: string;
@@ -60,7 +62,7 @@ export const editTool: ToolSpec<Args> = {
   description: [
     "Replace exact strings in a file. Either pass old_string/new_string for one replacement, or edits: [{old_string, new_string, replace_all?}] to make several replacements in the same file in one call.",
     "edits are applied in order (each sees the result of the previous ones) and all-or-nothing: if any old_string is missing or ambiguous, nothing is written.",
-    "Without replace_all, each old_string must appear exactly once. Prompts the user for permission first and shows a diff preview.",
+    "Without replace_all, each old_string must appear exactly once. Read the file in this session first; re-read it after any change. Stale or unread files are rejected with a re-read suggestion. Prompts the user for permission first and shows a diff preview.",
   ].join(" "),
   parameters: {
     type: "object",
@@ -108,9 +110,12 @@ export const editTool: ToolSpec<Args> = {
     // Serialize per path: concurrent edits (e.g. Promise.all inside execute_code)
     // must each see the previous edit's result, not a shared stale base image.
     return withFileLock(abs, async () => {
-      const orig = await readFile(abs, "utf8");
-      const { text, replaced } = applyEdits(orig, pairs, args.path);
+      const key = await lockKeyFor(abs);
+      const original = await readFile(abs);
+      assertReadVersion(ctx.fileReadHashes, key, original, args.path, "editing");
+      const { text, replaced } = applyEdits(original.toString("utf8"), pairs, args.path);
       await writeFileVerified(abs, text);
+      ctx.fileReadHashes?.set(key, sha256(Buffer.from(text, "utf8")));
       return pairs.length > 1
         ? `Applied ${pairs.length} edits (${replaced} replacement(s)) in ${args.path}.`
         : `Replaced ${replaced} occurrence(s) in ${args.path}.`;
