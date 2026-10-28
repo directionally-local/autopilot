@@ -50,7 +50,7 @@ function directiveFor(kind: SubagentGuidanceKind): string | undefined {
     return "This task may have independent parts. If you can define two or more specific, self-contained investigations, consider the subagent tool (launch them in the same response so they run in parallel). The tool's permission prompt is the user's confirmation; never assume approval. Keep dependent work in this session.";
   }
   if (kind === "auto-delegate") {
-    return "This is a substantial task. Before diving in, decide whether parts of the investigation are independent — for example separate subsystems, separate questions, or a broad search across the codebase. If so, launch one subagent per part with the subagent tool in the same response (they run in parallel and report cited findings), and keep working on dependent or editing work yourself once their results arrive. Skip delegation for small, tightly coupled, or step-by-step work. If a subagent cannot run, say so plainly and continue yourself.";
+    return "This task may benefit from independent investigation. Delegate only when each part needs its own substantial investigation (rough guide: more than a few file reads), such as separate subsystems or independent research questions. If so, launch one subagent per part with the subagent tool in the same response, then handle dependent and editing work yourself. Never delegate a step whose answer is a single sentence or a small, tightly coupled, or step-by-step task. If a subagent cannot run, say so plainly and continue yourself.";
   }
   return undefined;
 }
@@ -76,9 +76,12 @@ export async function resolveSubagentGuidance(options: ResolveSubagentGuidanceOp
     return result(options.policy === "auto" ? "auto-delegate" : "suggest", "independent work is explicit");
   }
   if (options.tier === "light") return result("none", "routine or sequential task");
-  // In auto mode the coordinator, which sees the full task and can reason about
-  // dependencies, makes the parallelizability decision. Do not require users to
-  // name subagents or match a narrow list of research keywords to enable it.
+  // Auto delegation is offered only when the prompt signals independent work:
+  // an explicit parallel request above, or research/audit/multi-area language.
+  // Task size alone is not evidence that workers will help.
+  if (options.policy === "auto" && !AMBIGUOUS_CANDIDATE.test(prompt)) {
+    return result("none", "no parallel-work signal");
+  }
   if (options.policy === "auto") {
     const base = result("auto-delegate", "substantial task; coordinator assesses independence");
     if (!options.apiKey || options.customEndpoint) return base;

@@ -1,0 +1,14 @@
+{
+  "id": "avoid-trivial-subagent-delegation",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "da61e7d",
+  "prompt": "In `src/intent/subagent-policy.ts`, add a one-line JSDoc comment directly above each of these six functions: `allowsSubagentDispatch`, `directiveFor`, `result`, `resolveSubagentGuidance`, `refineAutoDirective`, and `redactPrompt`. Don't run any commands. Make only these documentation changes.",
+  "setup": "npm ci --no-audit --no-fund",
+  "test": "npm run typecheck",
+  "timeout_s": 900,
+  "tags": [
+    "intent",
+    "subagents",
+    "over-delegation"
+  ]
+}
