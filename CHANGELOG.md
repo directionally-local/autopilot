@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.6.1](https://github.com/directionally-local/autopilot/compare/v2.6.0...v2.6.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **agent:** retry transient network drops ([#973](https://github.com/directionally-local/autopilot/issues/973)) ([eb430b8](https://github.com/directionally-local/autopilot/commit/eb430b845ae5bd54ac5cc44c5b78b7817c9b13e3)), closes [#960](https://github.com/directionally-local/autopilot/issues/960)
+* **tools:** harden grep fallback output handling ([#975](https://github.com/directionally-local/autopilot/issues/975)) ([be6ff3d](https://github.com/directionally-local/autopilot/commit/be6ff3d05c5e36608f547c7b339aa697e5fcf052))
+
 ## [2.6.0](https://github.com/directionally-local/autopilot/compare/v2.5.0...v2.6.0) (2026-10-28)
 
 
