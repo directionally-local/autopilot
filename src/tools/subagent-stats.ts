@@ -48,7 +48,7 @@ export function failureReason(error: string | undefined): string | undefined {
   const e = error.toLowerCase();
   if (/cancel/.test(e)) return "cancelled";
   if (/timed out|timeout/.test(e)) return "timeout";
-  if (/spend cap|402|budget/.test(e)) return "budget";
+  if (/egress spend cap exceeded|budget/.test(e)) return "budget";
   if (/origin|push|clone|credential-free/.test(e)) return "repository";
   if (/openrouter|gateway|provider|custom model endpoint/.test(e)) return "provider";
   if (/hotcell|daemon|sandbox|setup|install|econnrefused|enoent/.test(e)) return "hotcell";

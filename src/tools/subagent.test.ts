@@ -53,7 +53,7 @@ describe("subagent tool", () => {
     const parameters = subagentTool.parameters as { properties: Record<string, unknown>; required: string[] };
     assert.equal(subagentTool.name, "subagent");
     assert.deepEqual(parameters.required, ["mission"]);
-    assert.deepEqual(Object.keys(parameters.properties).sort(), ["background", "context", "maxCostUsd", "mission"]);
+    assert.deepEqual(Object.keys(parameters.properties).sort(), ["background", "context", "mission"]);
     assert.equal(subagentTool.concurrent, true);
     assert.equal(subagentTool.codeModeDirect, true);
     assert.match(subagentTool.description, /IN THE SAME RESPONSE/);
@@ -63,7 +63,7 @@ describe("subagent tool", () => {
   it("accepts arguments recorded under the old spawn_worker name", () => {
     assert.deepEqual(
       fromLegacySpawnWorkerArgs({ mode: "plan", task: "map auth", context: "ctx", budget: { maxCostUsd: 0.5 } }),
-      { mission: "map auth", context: "ctx", maxCostUsd: 0.5 },
+      { mission: "map auth", context: "ctx" },
     );
   });
 

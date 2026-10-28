@@ -5,7 +5,6 @@ import { resolve } from "node:path";
 import type { WorkerFinding, WorkerResultMessage } from "../agent/messages.js";
 import { validateModelId } from "../agent/client.js";
 import { getAppVersion, PACKAGE_NAME, CLI_NAME } from "../util/version.js";
-import { getModelOrInfer } from "../models/registry.js";
 import { chunkPayload, getRepositorySnapshot, getWorkingTreeArchive } from "./hotcell-snapshot.js";
 import { CACHED_WORKER_DIR, ensureWorkerBackup } from "./hotcell-worker-cache.js";
 
@@ -36,15 +35,6 @@ const SNAPSHOT_PREFIX = "/workspace/.autopilot-snapshot-";
 /** Where a streamed working-tree archive is unpacked inside the sandbox. */
 const ARCHIVE_ROOT = "/workspace/repo";
 const MAX_PARALLEL_WORKERS = 3;
-/** Cumulative input-token budget bounds for a research worker. The Hotcell
- *  egress spend cap is the hard money stop; this keeps the worker's own
- *  synthesis-on-exhaustion behavior roughly aligned with it. */
-const MIN_WORKER_INPUT_TOKENS = 60_000;
-const MAX_WORKER_INPUT_TOKENS = 3_000_000;
-/** Used when the model's price is unknown (custom or uncatalogued models). */
-const DEFAULT_WORKER_INPUT_TOKENS = 400_000;
-/** Share of the spend cap assumed available for input tokens; the rest covers output. */
-const INPUT_SHARE_OF_BUDGET = 0.8;
 /** Bounds on the structured report accepted from a worker. */
 const MAX_REPORT_FINDINGS = 12;
 const MAX_REPORT_SUMMARY_CHARS = 2_000;
@@ -56,14 +46,11 @@ export interface HotcellWorkerOptions {
   task: string;
   context?: string;
   model: string;
-  budgetUsd: number;
   timeoutMs?: number;
   /** Timeout for cell setup (checkout + worker CLI install), separate from research. */
   setupTimeoutMs?: number;
   /** npm spec for the worker CLI. Defaults to KIMIFLARE_WORKER_PACKAGE or the coordinator's own version. */
   workerPackage?: string;
-  /** Cumulative input-token budget for the worker. Defaults to resolveWorkerInputBudget(). */
-  maxInputTokens?: number;
   /** Use the locally cached runtime backup (default true; KIMIFLARE_WORKER_CACHE=0 disables). */
   useRuntimeCache?: boolean;
   /** Stream the working tree in rather than cloning origin (default true;
@@ -101,12 +88,8 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
   if (options.task.length + (options.context?.length ?? 0) > MAX_PROMPT_CHARS) {
     throw new Error(`Hotcell worker prompt exceeds the ${MAX_PROMPT_CHARS.toLocaleString()} character limit.`);
   }
-  if (!Number.isFinite(options.budgetUsd) || options.budgetUsd <= 0) {
-    throw new Error("Hotcell worker spend cap must be a positive number.");
-  }
   if (options.signal?.aborted) return terminalResult(workerId, options.task, "cancelled", "Cancelled before worker setup.");
   const workerPackage = resolveWorkerPackage(options.workerPackage);
-  const maxInputTokens = resolveWorkerInputBudget(model, options.budgetUsd, options.maxInputTokens);
 
   await acquireSlot(options.maxParallel ?? MAX_PARALLEL_WORKERS, options.signal);
   let cellId: string | undefined;
@@ -142,7 +125,7 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
     const created = await execute(command, [
       "create", "-n", "1", "--name", cellName,
       ...(repo ? ["--repo", repo.url, "--ref", repo.ref] : []),
-      "--egress", "--egress-spend-cap", String(options.budgetUsd),
+      "--egress",
       "--memory", "1024", "--cpus", "2",
     ], { cwd, signal: options.signal, timeoutMs: 300_000 });
     cellId = parseCellId(created.stdout);
@@ -262,7 +245,7 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
       'cd "$REPO_ROOT"',
       'export OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL%/}/v1"',
       `PROMPT="$(printf '%s' '${encodedPrompt}' | base64 -d)"`,
-      `${WORKER_BIN} --format json --max-input-tokens ${maxInputTokens} --model ${shellQuote(model)} --worker-profile research -p "$PROMPT"`,
+      `${WORKER_BIN} --format json --model ${shellQuote(model)} --worker-profile research -p "$PROMPT"`,
     ].join(" && ");
     const execution = await execute(command, ["exec", cellId, shellCommand, "--cwd", "/workspace"], {
       cwd, signal: options.signal, timeoutMs,
@@ -275,7 +258,7 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
     const budgetExhausted = execution.code === 42;
     const diagnostic = `${execution.stdout}\n${execution.stderr}`.toLowerCase();
     const executionDiagnostic = sanitizeHotcellDiagnostic(execution.stderr);
-    const spendExhausted = /(?:http\s*)?402|spend cap|spending limit/.test(diagnostic);
+    const spendExhausted = execution.code !== 0 && /egress spend cap exceeded/.test(diagnostic);
     const status = execution.timedOut
       ? "timed_out"
       : execution.aborted
@@ -309,7 +292,7 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
         ? {
             error: status === "timed_out" ? "Worker timed out."
               : status === "cancelled" ? "Worker cancelled."
-              : spendExhausted ? "Hotcell per-cell spend cap was reached."
+              : spendExhausted ? "Hotcell gateway egress spend cap exceeded."
               : execution.outputLimitExceeded ? "Worker output exceeded the 1 MB result limit."
               : /unknown model|model.{0,30}(?:not found|invalid|unavailable|unsupported)/i.test(diagnostic) ? "The requested model is unavailable in the Hotcell OpenRouter gateway."
               : /no openrouter api key|openrouter.{0,30}(?:key|gateway).{0,30}(?:missing|not configured)/i.test(diagnostic) ? "Hotcell OpenRouter gateway credentials are not configured. Run `hotcell keys add openrouter` on the daemon host."
@@ -354,19 +337,6 @@ const WORKER_REPORT_INSTRUCTIONS = [
   '{"findings":[{"topic":"short title","summary":"what you found and why it matters","files":["path/to/file.ts:123"],"confidence":"high|medium|low"}],"openQuestions":["what you could not determine"],"filesRead":["path/to/file.ts"]}',
   "Cite repository-relative file paths (with line numbers where useful) for every finding. Use low confidence for anything you did not verify in the code.",
 ].join("\n");
-
-/** Cumulative input-token budget for a research worker: what the per-cell
- *  spend cap buys at the model's input price, bounded, or an explicit
- *  override (option or KIMIFLARE_WORKER_MAX_INPUT_TOKENS). */
-export function resolveWorkerInputBudget(model: string, budgetUsd: number, override?: number): number {
-  const clamp = (n: number) => Math.min(MAX_WORKER_INPUT_TOKENS, Math.max(MIN_WORKER_INPUT_TOKENS, Math.floor(n)));
-  const envOverride = Number(process.env.KIMIFLARE_WORKER_MAX_INPUT_TOKENS);
-  const explicit = override ?? (Number.isFinite(envOverride) && envOverride > 0 ? envOverride : undefined);
-  if (explicit !== undefined && Number.isFinite(explicit) && explicit > 0) return clamp(explicit);
-  const perMillion = getModelOrInfer(model).pricing.inputPerMtok;
-  if (!(perMillion > 0) || !(budgetUsd > 0)) return DEFAULT_WORKER_INPUT_TOKENS;
-  return clamp((budgetUsd * INPUT_SHARE_OF_BUDGET * 1_000_000) / perMillion);
-}
 
 export interface WorkerReport {
   findings: WorkerFinding[];
