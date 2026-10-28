@@ -4,6 +4,9 @@ import { runAgentTurn } from "./loop.js";
 import { ToolExecutor as RealToolExecutor, type ToolExecutor, type PermissionRequest } from "../tools/executor.js";
 import type { ChatMessage } from "./messages.js";
 import type { RunWaitRequest, ToolSpec } from "../tools/registry.js";
+import { secureSandboxUnavailableReason } from "../code-mode/sandbox.js";
+
+const sandboxUnavailableReason = await secureSandboxUnavailableReason();
 
 describe("runAgentTurn", () => {
   let originalFetch: typeof globalThis.fetch;
@@ -390,7 +393,11 @@ describe("runAgentTurn", () => {
     assert.ok(messages.some((message) => message.role === "tool" && message.tool_call_id === "call_wait"));
   });
 
-  it("keeps Code Mode's synthetic execute_code tool available to the loop", async () => {
+  it("keeps Code Mode's synthetic execute_code tool available to the loop", async (t) => {
+    if (sandboxUnavailableReason) {
+      t.skip(`requires secure Code Mode: ${sandboxUnavailableReason}`);
+      return;
+    }
     const messages: ChatMessage[] = [
       { role: "system", content: "test" },
       { role: "user", content: "Print a short result." },
@@ -733,7 +740,11 @@ describe("runAgentTurn", () => {
     assert.equal(messages.at(-1)!.content, "final", "messages appended after the hook reach the caller's array");
   });
 
-  it("keeps subagents as direct tools next to execute_code in Code Mode", async () => {
+  it("keeps subagents as direct tools next to execute_code in Code Mode", async (t) => {
+    if (sandboxUnavailableReason) {
+      t.skip(`requires secure Code Mode: ${sandboxUnavailableReason}`);
+      return;
+    }
     const messages: ChatMessage[] = [
       { role: "system", content: "sys" },
       { role: "user", content: "investigate auth and billing" },
