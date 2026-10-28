@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.0](https://github.com/directionally-local/autopilot/compare/v2.4.4...v2.5.0) (2026-10-28)
+
+
+### Features
+
+* **storage:** stop auto-deleting sessions and traces; add `autopilot history` ([#957](https://github.com/directionally-local/autopilot/issues/957)) ([8b3b2a6](https://github.com/directionally-local/autopilot/commit/8b3b2a68cbeaf351bb1934ed448eab74b6a66e73))
+* **tools:** guard edits with per-session file hashes ([#954](https://github.com/directionally-local/autopilot/issues/954)) ([2f50524](https://github.com/directionally-local/autopilot/commit/2f505245d78c7ad59f19d407fc06a48609fa893d)), closes [#949](https://github.com/directionally-local/autopilot/issues/949)
+
 ## [2.4.4](https://github.com/sinameraji/autopilot/compare/v2.4.3...v2.4.4) (2026-10-27)
 
 
