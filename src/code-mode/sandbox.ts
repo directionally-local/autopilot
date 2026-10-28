@@ -134,11 +134,35 @@ async function transpileOrStrip(code: string, cwd: string): Promise<{ js: string
  * previous `const { Isolate } = await import(...)` was always `undefined` and
  * every session silently fell back to the old node:vm backend (since removed).
  */
-async function loadIsolatedVm(): Promise<typeof import("isolated-vm")> {
-  const mod = (await import("isolated-vm")) as typeof import("isolated-vm") & { default?: typeof import("isolated-vm") };
+interface IsolatedVmContext {
+  global: { set(name: string, value: unknown): Promise<void>; derefInto(): unknown };
+  evalClosure(code: string, references: unknown[], options: { arguments: { copy?: boolean; reference?: boolean } }): Promise<unknown>;
+  eval(code: string): Promise<unknown>;
+}
+
+interface IsolatedVmInstance {
+  createContext(): Promise<IsolatedVmContext>;
+  compileScript(source: string): Promise<{
+    run(context: IsolatedVmContext, options: { timeout: number; release: boolean }): Promise<unknown>;
+  }>;
+  dispose(): void;
+}
+
+interface IsolatedVmModule {
+  Isolate: new (options: { memoryLimit: number }) => IsolatedVmInstance;
+}
+
+async function loadIsolatedVm(): Promise<IsolatedVmModule> {
+  // Keep the specifier non-literal so TypeScript can typecheck builds where
+  // this optional native dependency is not installed for the current runtime.
+  const optionalModuleName: string = "isolated-vm";
+  const mod = (await import(optionalModuleName)) as {
+    Isolate?: IsolatedVmModule["Isolate"];
+    default?: { Isolate?: IsolatedVmModule["Isolate"] };
+  };
   const ivm = mod.default?.Isolate ? mod.default : mod;
   if (typeof ivm.Isolate !== "function") throw new Error("isolated-vm loaded but exposes no Isolate constructor");
-  return ivm;
+  return { Isolate: ivm.Isolate };
 }
 
 /**

@@ -145,7 +145,8 @@ describe("buildFallbackWarning", () => {
 
 async function isolatedVmAvailable(): Promise<boolean> {
   try {
-    const mod = (await import("isolated-vm")) as { Isolate?: unknown; default?: { Isolate?: unknown } };
+    const optionalModuleName: string = "isolated-vm";
+    const mod = (await import(optionalModuleName)) as { Isolate?: unknown; default?: { Isolate?: unknown } };
     return typeof (mod.default?.Isolate ?? mod.Isolate) === "function";
   } catch {
     return false;
