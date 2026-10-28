@@ -1,15 +1,14 @@
 /**
- * Trace retention: delete whole session trace directories, oldest first,
- * until the age and size caps in `RETENTION` hold.
+ * Trace housekeeping: list session trace directories and, on request,
+ * delete the ones older than a cutoff. Nothing here runs automatically.
  *
- * "Oldest" is by last write to the session's trace.jsonl (falling back to
+ * Age is by last write to the session's trace.jsonl (falling back to
  * the directory mtime), so an active session counts as new.
  */
 
 import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { RETENTION } from "../storage-limits.js";
 import { TRACE_FILE_NAME, traceRoot } from "./paths.js";
 
 export interface TraceSessionInfo {
@@ -23,9 +22,8 @@ export interface TraceSessionInfo {
 export interface PruneTracesOptions {
   /** Trace root; defaults to `traceRoot()`. */
   root?: string | null;
-  maxAgeDays?: number;
-  maxTotalBytes?: number;
-  maxSessionBytes?: number;
+  /** Delete sessions whose last write is older than this many days. */
+  olderThanDays: number;
   now?: number;
 }
 
@@ -34,7 +32,7 @@ export interface PruneTracesResult {
   keptBytes: number;
 }
 
-async function dirSize(path: string): Promise<number> {
+export async function dirSize(path: string): Promise<number> {
   let total = 0;
   const entries = await readdir(path, { withFileTypes: true });
   for (const entry of entries) {
@@ -82,16 +80,12 @@ export async function listTraceSessions(root?: string | null): Promise<TraceSess
 }
 
 /**
- * Apply the trace caps: drop sessions older than `maxAgeDays`, sessions
- * larger than `maxSessionBytes`, then the oldest sessions until the total is
- * within `maxTotalBytes`. Never throws.
+ * Delete session trace directories not written to in `olderThanDays`. Only
+ * runs when the user asks (`autopilot history prune`). Never throws.
  */
-export async function pruneTraces(opts: PruneTracesOptions = {}): Promise<PruneTracesResult> {
-  const maxAgeDays = opts.maxAgeDays ?? RETENTION.traceMaxAgeDays;
-  const maxTotalBytes = opts.maxTotalBytes ?? RETENTION.traceMaxTotalBytes;
-  const maxSessionBytes = opts.maxSessionBytes ?? RETENTION.traceMaxSessionBytes;
+export async function pruneTraces(opts: PruneTracesOptions): Promise<PruneTracesResult> {
   const now = opts.now ?? Date.now();
-  const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000;
+  const cutoff = now - opts.olderThanDays * 24 * 60 * 60 * 1000;
 
   const removed: string[] = [];
   let sessions: TraceSessionInfo[];
@@ -101,28 +95,19 @@ export async function pruneTraces(opts: PruneTracesOptions = {}): Promise<PruneT
     return { removed, keptBytes: 0 };
   }
 
-  const remove = async (s: TraceSessionInfo): Promise<void> => {
+  let keptBytes = 0;
+  for (const s of sessions) {
+    if (s.mtime.getTime() >= cutoff) {
+      keptBytes += s.bytes;
+      continue;
+    }
     try {
       await rm(s.path, { recursive: true, force: true });
       removed.push(s.sessionId);
     } catch {
-      /* best effort */
+      keptBytes += s.bytes;
     }
-  };
-
-  const kept: TraceSessionInfo[] = [];
-  for (const s of sessions) {
-    if (s.mtime.getTime() < cutoff || s.bytes > maxSessionBytes) await remove(s);
-    else kept.push(s);
   }
 
-  let total = kept.reduce((sum, s) => sum + s.bytes, 0);
-  // `kept` is newest first; evict from the tail.
-  while (total > maxTotalBytes && kept.length > 0) {
-    const oldest = kept.pop()!;
-    await remove(oldest);
-    total -= oldest.bytes;
-  }
-
-  return { removed, keptBytes: total };
+  return { removed, keptBytes };
 }

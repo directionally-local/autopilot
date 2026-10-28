@@ -377,6 +377,36 @@ logsCmd
     console.log(`pruned ${removed} log files`);
   });
 
+const historyCmd = program
+  .command("history")
+  .description("Show where your local sessions and traces live and how much space they take")
+  .action(async () => {
+    const { formatHistoryUsage, localHistoryUsage } = await import("./local-history.js");
+    const cfg = await loadConfig().catch(() => null);
+    console.log(formatHistoryUsage(await localHistoryUsage(cfg?.trace?.root)));
+  });
+
+historyCmd
+  .command("prune")
+  .description("Delete saved sessions and traces not touched in the given number of days")
+  .requiredOption("--older-than <days>", "age cutoff in days (0 deletes everything)")
+  .action(async (opts: { olderThan: string }) => {
+    const days = Number(opts.olderThan);
+    if (!Number.isFinite(days) || days < 0) {
+      console.error("--older-than must be a number of days, 0 or more");
+      process.exitCode = 1;
+      return;
+    }
+    const { pruneSessions } = await import("./sessions.js");
+    const { pruneTraces } = await import("./trace/retention.js");
+    const { formatHistoryUsage, localHistoryUsage } = await import("./local-history.js");
+    const cfg = await loadConfig().catch(() => null);
+    const sessions = await pruneSessions(days);
+    const traces = await pruneTraces({ root: cfg?.trace?.root, olderThanDays: days });
+    console.log(`deleted ${sessions} session files and ${traces.removed.length} traces older than ${days} days`);
+    console.log(formatHistoryUsage(await localHistoryUsage(cfg?.trace?.root)));
+  });
+
 program
   .command("trust")
   .description("Review and trust this project's hooks and LSP servers (they do not run until trusted)")

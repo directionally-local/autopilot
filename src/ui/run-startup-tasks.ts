@@ -1,6 +1,6 @@
 /**
  * Startup-time bookkeeping previously inlined in the App component's main
- * cfg-driven useEffect: session prune, log retention, creator welcome,
+ * cfg-driven useEffect: local-history size hint, log retention, creator welcome,
  * memory manager init + cleanup + backfill + KIMI.md drift check,
  * skill indexing, and custom-command load.
  *
@@ -46,10 +46,16 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   } = deps;
   const auth = llmAuthFromConfig(cfg);
 
-  // Prune old sessions on startup (silent)
-  void import("../sessions.js").then(({ pruneSessions }) => pruneSessions());
-  // Prune old session traces (silent; nothing to do unless tracing has run).
-  void import("../trace/retention.js").then(({ pruneTraces }) => pruneTraces({ root: cfg.trace?.root }));
+  // Sessions and traces are never deleted automatically; once they get big,
+  // say so and point at `autopilot history`.
+  void import("../local-history.js")
+    .then(async ({ historyHint, localHistoryUsage }) => {
+      const hint = historyHint(await localHistoryUsage(cfg.trace?.root));
+      if (hint) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: hint }]);
+    })
+    .catch(() => {
+      // Non-fatal: the hint is best-effort.
+    });
 
   // Prune old structured logs (M5.1) and surface the current path once.
   void import("../util/log-sink.js").then(({ pruneOldLogs, isLogSinkEnabled }) => {

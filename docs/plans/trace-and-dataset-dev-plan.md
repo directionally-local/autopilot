@@ -91,7 +91,7 @@ Writes are synchronous `appendFileSync` of one line per event (simplicity over t
 
 - `KimiConfig` gains `trace?: { enabled: boolean; root?: string }` in `src/config.ts` with persistence like `compiledContext` (`config.ts:311`). Env override `KIMIFLARE_TRACE=1|0`, `KIMIFLARE_TRACE_DIR=<path>`.
 - Default root: `${XDG_DATA_HOME:-~/.local/share}/kimiflare/traces/`. Session dir: `<root>/<session_id>/`.
-- Retention in `src/storage-limits.ts` `RETENTION`: `traceMaxAgeDays: 90`, `traceMaxTotalBytes: 2 GB`, `traceMaxSessionBytes: 200 MB`. `pruneTraces()` deletes whole session directories, oldest first, and is called from the same startup task that calls `pruneSessions()`.
+- Retention: traces and sessions are never pruned automatically (they are the dataset). `traceMaxSessionBytes: 200 MB` in `src/storage-limits.ts` caps a single session's recording. `autopilot history` reports their size, startup hints once they pass 1 GB, and `autopilot history prune --older-than <days>` (`pruneTraces()` / `pruneSessions()`) deletes on request.
 
 ### 1.5 `redactLight`
 

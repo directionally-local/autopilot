@@ -523,7 +523,16 @@ Tracing is off by default. Turn it on for one run with `KIMIFLARE_TRACE=1`, or a
 - compactions, completion checks, subagents and turn ends
 - **outcome signals:** the git changes a session made, test, lint, typecheck and build commands and whether they passed, your `/good` and `/bad` ratings (with an optional note), and whether your next message corrected the agent or told it to carry on
 
-Large bodies are stored once, by hash, next to the trace. Likely secrets are redacted before anything is written, nothing is uploaded, and old traces are pruned automatically: after 90 days, above 200 MB for one session, or when all traces pass 2 GB.
+Large bodies are stored once, by hash, next to the trace. Likely secrets are redacted before anything is written, nothing is uploaded, and a single session stops recording at 200 MB.
+
+### Local history
+
+Autopilot never deletes your saved sessions or traces on its own; they are yours to analyze. Once they pass 1 GB, a new session mentions how much space they take. To see where they live, or to free space:
+
+```sh
+autopilot history                       # counts, sizes and paths
+autopilot history prune --older-than 30 # delete sessions and traces untouched for 30 days
+```
 
 ### Evals
 
