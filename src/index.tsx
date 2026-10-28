@@ -256,6 +256,33 @@ asterTokenCommand
     }
   });
 asterTokenCommand
+  .command("list")
+  .description("List credentials: paired devices and owner browsers (never the tokens)")
+  .option("--json", "Print as JSON")
+  .action(async (options: { json?: boolean }) => {
+    const { AsterStore } = await import("./server/aster-store.js");
+    const store = new AsterStore();
+    try {
+      const credentials = store.listCredentials();
+      if (options.json) {
+        console.log(JSON.stringify(credentials.map((credential) => ({
+          ...credential,
+          createdAt: new Date(credential.createdAt).toISOString(),
+          expiresAt: new Date(credential.expiresAt).toISOString(),
+          lastUsedAt: credential.lastUsedAt === null ? null : new Date(credential.lastUsedAt).toISOString(),
+        }))));
+        return;
+      }
+      if (credentials.length === 0) console.log("No credentials.");
+      for (const credential of credentials) {
+        const used = credential.lastUsedAt === null ? "never used" : `last used ${new Date(credential.lastUsedAt).toISOString().slice(0, 16)}`;
+        console.log(`${credential.id}  ${credential.status.padEnd(7)}  ${credential.name}  (${used})`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+asterTokenCommand
   .command("revoke")
   .description("Revoke an Aster credential immediately")
   .argument("<credential-id>")
@@ -269,6 +296,40 @@ asterTokenCommand
         return;
       }
       console.log(`Revoked credential ${credentialId}`);
+    } finally {
+      store.close();
+    }
+  });
+
+asterCommand
+  .command("runs")
+  .description("List code runs from every credential, newest first")
+  .option("--limit <n>", "How many (1-500)", (value) => Number.parseInt(value, 10), 50)
+  .option("--json", "Print as JSON")
+  .action(async (options: { limit: number; json?: boolean }) => {
+    const { AsterStore } = await import("./server/aster-store.js");
+    const store = new AsterStore();
+    try {
+      const limit = Number.isInteger(options.limit) ? Math.min(Math.max(options.limit, 1), 500) : 50;
+      const runs = store.listAllConversations(limit).map((run) => ({
+        conversationId: run.id,
+        status: run.status,
+        active: run.activeRunId !== null,
+        repository: run.repository,
+        branch: run.branch,
+        pullRequestURL: run.pullRequestURL,
+        startedBy: run.credentialName,
+        createdAt: new Date(run.createdAt).toISOString(),
+        updatedAt: new Date(run.updatedAt).toISOString(),
+      }));
+      if (options.json) {
+        console.log(JSON.stringify(runs));
+        return;
+      }
+      if (runs.length === 0) console.log("No runs yet.");
+      for (const run of runs) {
+        console.log([run.conversationId.slice(0, 8), run.status.padEnd(12), run.repository ?? "", run.pullRequestURL ?? run.branch ?? "", run.startedBy ?? ""].join("  "));
+      }
     } finally {
       store.close();
     }

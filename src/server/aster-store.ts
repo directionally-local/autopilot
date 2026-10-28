@@ -190,6 +190,17 @@ interface DeviceRow extends Record<string, unknown> {
   last_polled_at: number | null;
 }
 
+export interface AsterCredentialInfo {
+  id: string;
+  name: string;
+  workspaceIds: string[];
+  scopes: AsterScope[];
+  createdAt: number;
+  expiresAt: number;
+  lastUsedAt: number | null;
+  status: "active" | "expired" | "revoked";
+}
+
 export interface CreatedAsterCredential {
   id: string;
   name: string;
@@ -606,6 +617,33 @@ export class AsterStore {
     return rows.flatMap(({ conversation_id }) => {
       const conversation = this.getConversation(conversation_id);
       return conversation ? [conversation] : [];
+    });
+  }
+
+  /** Every credential, newest first, for operators (`autopilot aster token list`). Never the token. */
+  listCredentials(now = Date.now()): AsterCredentialInfo[] {
+    const rows = this.db.prepare("SELECT * FROM aster_credentials ORDER BY created_at DESC").all() as Array<CredentialRow & { last_used_at: number | null }>;
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      workspaceIds: JSON.parse(row.workspace_ids_json) as string[],
+      scopes: JSON.parse(row.scopes_json) as AsterScope[],
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      lastUsedAt: row.last_used_at,
+      status: row.revoked_at !== null ? "revoked" : row.expires_at <= now ? "expired" : "active",
+    }));
+  }
+
+  /** Every credential's conversations, newest first, with who started each (`autopilot aster runs`). */
+  listAllConversations(limit: number): Array<AsterConversation & { credentialId: string; credentialName: string | null }> {
+    const rows = this.db.prepare(`SELECT m.conversation_id, m.credential_id, c.name AS credential_name
+      FROM aster_cell_mappings m LEFT JOIN aster_credentials c ON c.id = m.credential_id
+      WHERE m.status != 'destroyed' ORDER BY m.created_at DESC LIMIT ?`)
+      .all(limit) as Array<{ conversation_id: string; credential_id: string; credential_name: string | null }>;
+    return rows.flatMap((row) => {
+      const conversation = this.getConversation(row.conversation_id);
+      return conversation ? [{ ...conversation, credentialId: row.credential_id, credentialName: row.credential_name }] : [];
     });
   }
 

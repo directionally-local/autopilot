@@ -234,6 +234,42 @@ describe("AsterStore", () => {
     }
   });
 
+  it("lists credentials without tokens, with their status", async () => {
+    const root = await fixture();
+    const store = new AsterStore(join(root, "state", "aster.db"));
+    try {
+      const laptop = store.createCredential({ name: "MacBook", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
+      const old = store.createCredential({ name: "Old phone", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
+      store.revokeCredential(old.id);
+      store.authenticate(`Bearer ${laptop.token}`);
+      const listed = store.listCredentials();
+      assert.deepEqual(listed.map((entry) => [entry.name, entry.status]).sort(), [["MacBook", "active"], ["Old phone", "revoked"]]);
+      assert.ok(listed.find((entry) => entry.name === "MacBook")?.lastUsedAt);
+      assert.ok(!JSON.stringify(listed).includes(laptop.token), "tokens are never listed");
+      assert.equal(store.listCredentials(Date.now() + 120_000).find((entry) => entry.name === "MacBook")?.status, "expired");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("lists every credential's runs, newest first, with who started each", async () => {
+    const root = await fixture();
+    const store = new AsterStore(join(root, "state", "aster.db"));
+    try {
+      const laptop = store.createCredential({ name: "MacBook", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
+      for (const [index, id] of ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"].entries()) {
+        store.reserveCellConversation({ conversationId: id, credentialId: laptop.id, workspaceId: "default", model: "m", sessionId: `s-${index}`, cellName: `aster-${id}`, idempotencyKey: `k-${index}` });
+        store.createConversation({ id, workspaceId: "default", model: "m", sessionId: `s-${index}`, worktreePath: "/workspace", cwd: "/workspace", branch: `aster/${index}`, kind: "code", repository: "me/app", baseBranch: "main" });
+      }
+      const runs = store.listAllConversations(10);
+      assert.equal(runs.length, 2);
+      assert.ok(runs.every((run) => run.credentialName === "MacBook" && run.repository === "me/app"));
+      assert.equal(store.listAllConversations(1).length, 1);
+    } finally {
+      store.close();
+    }
+  });
+
   it("redeems an owner claim once for a pairing:approve-only credential", async () => {
     const root = await fixture();
     const store = new AsterStore(join(root, "state", "aster.db"));
