@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.6.0](https://github.com/directionally-local/autopilot/compare/v2.5.0...v2.6.0) (2026-10-28)
+
+
+### Features
+
+* **aster:** list credentials and runs from the server CLI, and point the pairing page at dl ([#969](https://github.com/directionally-local/autopilot/issues/969)) ([6ba7e36](https://github.com/directionally-local/autopilot/commit/6ba7e363b41561c2a7059b5547c69fea40527c77))
+
+
+### Bug Fixes
+
+* **subagents:** remove automatic worker spend caps ([#971](https://github.com/directionally-local/autopilot/issues/971)) ([ec24889](https://github.com/directionally-local/autopilot/commit/ec248891965e1b87e168a5b9c65234eb8d39a126)), closes [#959](https://github.com/directionally-local/autopilot/issues/959)
+
 ## [2.5.0](https://github.com/directionally-local/autopilot/compare/v2.4.4...v2.5.0) (2026-10-28)
 
 
