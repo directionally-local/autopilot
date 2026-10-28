@@ -189,9 +189,11 @@ function notOwnerBody(code: string | null): string {
   return `
     <h1>Approve a device</h1>
     <p>This browser isn't the server's owner yet. Open the owner link your installer printed, or create one on the server:</p>
-    <pre>autopilot aster owner link</pre>
+    <pre>dl connect-laptop</pre>
+    <p class="muted">Without Directionally Local: <code>autopilot aster owner link</code></p>
     <p>You can also approve from the server directly:</p>
-    <pre>autopilot aster pair approve ${escapeHtml(code ?? "<code>")}</pre>`;
+    <pre>dl connect-laptop ${escapeHtml(code ?? "<code>")}</pre>
+    <p class="muted">Without Directionally Local: <code>autopilot aster pair approve ${escapeHtml(code ?? "<code>")}</code></p>`;
 }
 
 function approvalForm(userCode: string, clientName: string): string {
