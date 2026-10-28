@@ -1,6 +1,6 @@
 # Code Mode Implementation Plan
 
-> Derived from [Issue #146](https://github.com/sinameraji/kimiflare/issues/146)  
+> Derived from [Issue #146](https://github.com/directionally-local/autopilot/issues/146)  
 > Goal: Implement a local TypeScript sandbox that replaces native tool-calling with generated TS APIs, targeting ~80% token reduction.
 
 ---

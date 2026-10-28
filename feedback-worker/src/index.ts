@@ -243,7 +243,7 @@ async function htmlPage(session: string, version: string, pageUrl: string): Prom
 <body>
 <div class="card">
   <div class="header">
-    <img class="logo-icon" src="https://sinameraji.github.io/kimiflare/logo.png" alt="">
+    <img class="logo-icon" src="https://directionally-local.github.io/autopilot/logo.png" alt="">
     <div class="logo-text">kimiflare</div>
   </div>
   <h1>Hey, how do you like v${escapeHtml(version)}?</h1>
@@ -696,7 +696,7 @@ async function inboxPlayerPage(twitter: string, pageUrl: string): Promise<string
 <body>
 <div class="card">
   <div class="header">
-    <img class="logo-icon" src="https://sinameraji.github.io/kimiflare/logo.png" alt="">
+    <img class="logo-icon" src="https://directionally-local.github.io/autopilot/logo.png" alt="">
     <div class="logo-text">kimiflare</div>
   </div>
   <h1>Hey, @${escapeHtml(twitter)}!</h1>

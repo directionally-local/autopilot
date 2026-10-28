@@ -1,6 +1,6 @@
 # What I'm not taking from the coding-agent harness paper, and why
 
-*A note on arXiv:2609.20804, "An Empirical Study of Harness Design for Coding Agents" (Fan et al., Sept 2026), from the perspective of someone who builds and daily-drives a terminal coding agent ([Autopilot](https://github.com/sinameraji/autopilot)).*
+*A note on arXiv:2609.20804, "An Empirical Study of Harness Design for Coding Agents" (Fan et al., Sept 2026), from the perspective of someone who builds and daily-drives a terminal coding agent ([Autopilot](https://github.com/directionally-local/autopilot)).*
 
 This is a good paper. It holds the agent loop fixed and ablates three harness components, one at a time, across 176 matched settings, four models, and context budgets from 32k to 128k, on SWE-Bench Verified and Terminal-Bench 2.1. Its headline results are worth repeating: context management mostly prevents overflow and matters less as windows grow; stubbing stale tool outputs before you ever summarize is the cheapest policy; a "recall the elided output" tool is almost never used; planning helps weak models and only cuts cost for strong ones; and strong models did better and cheaper with bash alone, while weak models needed structured tools.
 

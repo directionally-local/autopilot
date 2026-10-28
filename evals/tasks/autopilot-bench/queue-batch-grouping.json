@@ -1,6 +1,6 @@
 {
   "id": "queue-batch-grouping",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "f3191ecb5eaab9225942eda86863ec2fc314e6d7",
   "prompt": "Users can queue several follow-up prompts while a turn is running. Add `src/agent/queue-batch.ts` with the logic that groups queued chat prompts into one coordinated turn: it must exclude slash commands and `!` shell commands from batching, require at least two chat prompts, and produce a combined prompt that asks the coordinator to identify dependencies between the items and use bounded subagent research where useful. Keep the original queued events and prompt texts available so hooks still see the original user input.\n\nThe regression test(s) for this change are already in the worktree: `src/agent/queue-batch.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/agent/queue-batch.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

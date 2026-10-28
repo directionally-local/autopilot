@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sinameraji/autopilot/main/docs/logo.png" alt="Autopilot logo" width="160">
+  <img src="https://raw.githubusercontent.com/directionally-local/autopilot/main/docs/logo.png" alt="Autopilot logo" width="160">
 </p>
 
 <h1 align="center">autopilot <sub>(formerly kimiflare)</sub></h1>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/autopilot-ai"><img src="https://img.shields.io/npm/v/autopilot-ai?style=flat-square&color=cb3837" alt="npm version"></a>
-  <a href="https://github.com/sinameraji/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat-square&logo=homebrew&logoColor=black" alt="Install with Homebrew"></a>
+  <a href="https://github.com/directionally-local/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat-square&logo=homebrew&logoColor=black" alt="Install with Homebrew"></a>
   <a href="https://www.npmjs.com/package/autopilot-ai"><img src="https://img.shields.io/npm/dm/autopilot-ai?style=flat-square&color=cb3837" alt="npm downloads"></a>
-  <a href="https://github.com/sinameraji/autopilot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sinameraji/autopilot?style=flat-square&color=2ea44f" alt="license"></a>
+  <a href="https://github.com/directionally-local/autopilot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/directionally-local/autopilot?style=flat-square&color=2ea44f" alt="license"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.23.4-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js >= 22.23.4">
   <img src="https://img.shields.io/badge/typescript-5.7-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/runs%20on-OpenRouter%20·%20OpenAI%20·%20DeepSeek%20·%20Ollama%20·%20…-6566f1?style=flat-square" alt="Runs on OpenRouter, OpenAI, DeepSeek, Ollama and more">
@@ -59,7 +59,7 @@ On OpenRouter you also get:
 - **Hard-stop loop guardrail** — Stops token-burning cycles when all tools in a turn are blocked.
 - **Headless SDK** — Programmatic `createAgentSession` API and JSONL-over-stdio RPC mode for building on top of autopilot.
 
-See the full changelog at [github.com/sinameraji/autopilot/releases](https://github.com/sinameraji/autopilot/releases).
+See the full changelog at [github.com/directionally-local/autopilot/releases](https://github.com/directionally-local/autopilot/releases).
 
 ## Quick start
 
@@ -73,7 +73,7 @@ On first run, **Sign in with OpenRouter**: approve autopilot in your browser and
 Or install with Homebrew on macOS or Linux (Homebrew installs Node.js for you):
 
 ```sh
-brew install sinameraji/tap/autopilot
+brew install directionally-local/tap/autopilot
 autopilot
 ```
 
@@ -159,7 +159,7 @@ Earlier kimiflare versions ran on Cloudflare Workers AI / AI Gateway. On the fir
 
 ### Subagents
 
-For substantial tasks, the agent can hand independent investigations to **subagents**: separate Autopilot instances that each explore the repository in their own local [Hotcell](https://github.com/sinameraji/hotcell) sandbox and report back cited findings. Several subagents run in parallel behind a single approval while the main agent keeps the conversation and does the edits. You don't need to ask for them; say "don't use subagents" to opt out, or "use subagents" to insist.
+For substantial tasks, the agent can hand independent investigations to **subagents**: separate Autopilot instances that each explore the repository in their own local [Hotcell](https://github.com/directionally-local/hotcell) sandbox and report back cited findings. Several subagents run in parallel behind a single approval while the main agent keeps the conversation and does the edits. You don't need to ask for them; say "don't use subagents" to opt out, or "use subagents" to insist.
 
 Setup: install and start Hotcell, then add your OpenRouter key to its host key store (`hotcell keys add openrouter`). The real key never enters a sandbox. Subagents are read-only (no edits, shell, PRs, or MCP) and see your current working tree, including uncommitted changes — it is streamed into the sandbox, so private repositories work and nothing needs to be pushed (secrets like `.env` are never copied). The first subagent after an install builds a cached runtime (about two minutes, once per version); later ones start in seconds. See [docs/subagents.md](docs/subagents.md) for limits and troubleshooting.
 
@@ -814,7 +814,7 @@ process exits without it (see [Ending a session](#ending-a-session)).
 ## Development
 
 ```sh
-git clone https://github.com/sinameraji/autopilot
+git clone https://github.com/directionally-local/autopilot
 cd autopilot
 npm install
 npm run build
@@ -838,4 +838,4 @@ Scripts:
 
 ---
 
-Built by [Sina Meraji](https://github.com/sinameraji) and [contributors](https://github.com/sinameraji/autopilot/graphs/contributors) · MIT License
+Built by [Sina Meraji](https://github.com/sinameraji) and [contributors](https://github.com/directionally-local/autopilot/graphs/contributors) · MIT License

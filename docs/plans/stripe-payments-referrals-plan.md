@@ -280,7 +280,7 @@ A **10M-token free trial** lets ~70% of users explore for a week without paying.
 
 ### 7.1 Assumptions about the existing cloud stack
 
-The open-source repo (`sinameraji/kimiflare`) contains:
+The open-source repo (`directionally-local/autopilot`) contains:
 
 - CLI/TUI (`src/index.tsx`, `src/app.tsx`)
 - Agent loop and tool executor

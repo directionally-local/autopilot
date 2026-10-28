@@ -29,5 +29,5 @@ export function getAppVersion(): string {
 }
 
 export function getUserAgent(): string {
-  return `${CLI_NAME}/${getAppVersion()} (+https://github.com/sinameraji/autopilot)`;
+  return `${CLI_NAME}/${getAppVersion()} (+https://github.com/directionally-local/autopilot)`;
 }

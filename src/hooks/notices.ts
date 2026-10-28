@@ -19,7 +19,7 @@ import { RECOMMENDED_HOOKS } from "./recommended.js";
 import { globalSettingsPath, legacyOnlyHookPaths, loadHooksSettings, projectSettingsPath } from "./settings.js";
 import type { HookConfig, KimiflareSettings } from "./types.js";
 
-export const HOOKS_EXIT_CODE_DOCS_URL = "https://github.com/sinameraji/autopilot#blocking-and-exit-codes";
+export const HOOKS_EXIT_CODE_DOCS_URL = "https://github.com/directionally-local/autopilot#blocking-and-exit-codes";
 
 const BLOCKING_EVENTS = ["PreToolUse", "UserPromptSubmit"] as const;
 

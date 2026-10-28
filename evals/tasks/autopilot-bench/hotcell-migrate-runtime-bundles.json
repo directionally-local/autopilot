@@ -1,6 +1,6 @@
 {
   "id": "hotcell-migrate-runtime-bundles",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "3e5a0fa37c3ddfeee69cad561061574433840902",
   "prompt": "Persistent Hotcell cells created before the `.12` runtime rollout fail with `cell_prompt_rejected` because the cell runtime tries to upgrade them by fetching an unpublished prerelease from npm. Change `src/server/aster-cell-runtime.ts` so a pre-existing cell is upgraded from the SDK bundled with the server: transfer the SDK in bounded chunks, stop the old idle bridge, and update the cell's version marker only after a successful refresh. No `npm install` must run in the cell for this path.\n\nThe regression test(s) for this change are already in the worktree: `src/server/aster-cell-runtime.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/server/aster-cell-runtime.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

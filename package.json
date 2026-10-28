@@ -26,10 +26,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sinameraji/autopilot.git"
+    "url": "git+https://github.com/directionally-local/autopilot.git"
   },
   "homepage": "https://directionallylocal.com/autopilot/",
-  "bugs": "https://github.com/sinameraji/autopilot/issues",
+  "bugs": "https://github.com/directionally-local/autopilot/issues",
   "license": "MIT",
   "type": "module",
   "bin": {

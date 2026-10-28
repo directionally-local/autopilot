@@ -1,6 +1,6 @@
 {
   "id": "edit-latest-prompt",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "9410ca34c9d6dd2570bb736416ddc3feb1f30f52",
   "prompt": "Let the user edit their most recently submitted prompt in the TUI. When the user navigates history to the latest submitted prompt and submits an edited version while that prompt is still queued or was the latest turn, the queued entry (or the conversation state before that turn) is replaced with the edited text instead of appending a new prompt, and the visible user event is updated in place. Put the pure helpers (replacing a queued prompt, replacing the user prompt event) in `src/ui/app-helpers.ts` and wire them into `src/app.tsx`.\n\nThe regression test(s) for this change are already in the worktree: `src/app.test.tsx`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/app.test.tsx` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

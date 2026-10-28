@@ -1,6 +1,6 @@
 {
   "id": "bang-command-restore-stdin",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "2085302812dfec5efdb58ed4b7542d968a669cac",
   "prompt": "After a `!` shell command hands the terminal to a child process and the child exits, the TUI input stays frozen. The cause is Node's `ReadableState.reading` latch on stdin: when the stdin TTY handle is stopped for the handoff the latch stays set, so Ink's restored `readable` listener never restarts reads. Fix the terminal handoff in `src/ui/bang-command.ts` so the stream state is reset when stdin is stopped and input works again after restoration.\n\nThe regression test(s) for this change are already in the worktree: `src/ui/bang-command.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/ui/bang-command.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",

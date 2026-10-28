@@ -1,6 +1,6 @@
 {
   "id": "wait-for-yield",
-  "repo": "https://github.com/sinameraji/autopilot.git",
+  "repo": "https://github.com/directionally-local/autopilot.git",
   "base_commit": "898a82102f21a6c3cff63439ef20426be1454a9c",
   "prompt": "Add the first wait/yield behaviour for durable runs. Add a `wait_for` tool (`src/tools/wait-for.ts`) that waits for a future time/duration or for an active managed job; it persists the wait as a timer in the run store and returns a typed yield signal (`waitRequest` on `ToolOutput`, see `src/tools/registry.ts`). The executor records the tool result before transitioning the run to `waiting`. The agent loop (`src/agent/loop.ts`) must end the turn right after appending that tool result: run `onIterationEnd` so state is persisted, emit a new `onRunYield` callback, and fire the Stop hook without issuing another model request.\n\nThe regression test(s) for this change are already in the worktree: `src/agent/loop.test.ts`, `src/runs/executor-journal.test.ts`. Read them to see the exact API and behaviour expected, then implement the change so they pass. Do not modify the test files; they are restored before verification. Run the tests with `npx tsx --test src/agent/loop.test.ts src/runs/executor-journal.test.ts` and `npm run typecheck` before you finish.",
   "setup": "npm ci --no-audit --no-fund",
