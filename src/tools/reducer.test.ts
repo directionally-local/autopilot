@@ -95,6 +95,14 @@ describe("reduceToolOutput — grep", () => {
     assert.ok(result.artifactId);
   });
 
+  it("truncates malformed unparsed lines to the configured line limit", () => {
+    const store = new ToolArtifactStore();
+    const raw = "x".repeat(DEFAULT_REDUCER_CONFIG.grep.maxLineLength + 100);
+    const result = reduceToolOutput("grep", raw, {}, store, DEFAULT_REDUCER_CONFIG);
+    assert.ok(Buffer.byteLength(result.content, "utf8") < raw.length);
+    assert.ok(!result.content.includes("x".repeat(DEFAULT_REDUCER_CONFIG.grep.maxLineLength + 1)));
+  });
+
   it("expansion restores full raw content", () => {
     const store = new ToolArtifactStore();
     const raw = "line1\nline2\nline3\nline4\nline5";

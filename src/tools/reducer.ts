@@ -220,7 +220,7 @@ interface GrepMatch {
   text: string;
 }
 
-function parseGrepLines(raw: string): GrepMatch[] {
+function parseGrepLines(raw: string, maxLineLength: number): GrepMatch[] {
   const matches: GrepMatch[] = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
@@ -231,7 +231,7 @@ function parseGrepLines(raw: string): GrepMatch[] {
       matches.push({ file: m[1]!, line: m[2] ? parseInt(m[2], 10) : 0, text: m[3]! });
     } else {
       // files-only mode or plain path
-      matches.push({ file: trimmed, line: 0, text: "" });
+      matches.push({ file: trimmed.slice(0, maxLineLength), line: 0, text: "" });
     }
   }
   return matches;
@@ -245,7 +245,7 @@ interface ReduceResult {
 
 function reduceGrep(raw: string, args: Record<string, unknown>, cfg: ReducerConfig["grep"]): ReduceResult {
   const isFilesMode = args.output_mode === "files";
-  const matches = parseGrepLines(raw);
+  const matches = parseGrepLines(raw, cfg.maxLineLength);
 
   if (matches.length === 0) {
     return { body: raw, wasReduced: false };
