@@ -66,6 +66,10 @@ export interface RunKimiOpts extends LlmAuth {
   turnId?: string | null;
   /** Called once per session when a request body is large (> 1 MB), naming its biggest parts. */
   onLargeBody?: (warning: string) => void;
+  /** Number of network retries. Defaults to 10; AUTOPILOT_NETWORK_RETRIES overrides the default. */
+  networkRetries?: number;
+  /** Called before a network retry, for visible progress in interactive hosts. */
+  onRetry?: (message: string) => void;
 }
 
 /**
@@ -98,10 +102,24 @@ export interface ResponseMeta {
   provider?: string;
 }
 
-const MAX_ATTEMPTS = 5;
+const DEFAULT_NETWORK_RETRIES = 10;
+const RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 10_000, 15_000, 20_000, 30_000, 30_000, 30_000] as const;
 
-function isRetryable(err: KimiApiError, attempt: number, openrouter = true): boolean {
-  if (attempt >= MAX_ATTEMPTS - 1) return false;
+export function networkRetryCount(override?: number): number {
+  const raw = override ?? Number(process.env.AUTOPILOT_NETWORK_RETRIES ?? DEFAULT_NETWORK_RETRIES);
+  return Number.isFinite(raw) ? Math.max(0, Math.min(20, Math.floor(raw))) : DEFAULT_NETWORK_RETRIES;
+}
+
+export function networkRetryDelay(retryIndex: number, retryAfterMs?: number, random = Math.random()): number {
+  if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    return Math.min(retryAfterMs, 30_000);
+  }
+  const base = RETRY_DELAYS_MS[Math.min(retryIndex, RETRY_DELAYS_MS.length - 1)]!;
+  return Math.round(base * (0.8 + Math.max(0, Math.min(1, random)) * 0.4));
+}
+
+function isRetryable(err: KimiApiError, attempt: number, maxRetries: number, openrouter = true): boolean {
+  if (attempt >= maxRetries) return false;
   // ChatGPT token sharing: usage limits and eligibility don't change on retry (even as a 429).
   if (NON_RETRYABLE_SHARING_CODES.some((c) => err.message.includes(c))) return false;
   if (err.httpStatus === 408 || err.httpStatus === 429) return true;
@@ -386,7 +404,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   if (opts.onLargeBody && shouldWarnLargeBody(opts.sessionId ?? getLogSessionId() ?? "default", bodyBytes)) {
     opts.onLargeBody(largeBodyWarning(bodyBytes, largestBodyParts(body.messages as ChatMessage[])));
   }
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  const maxRetries = networkRetryCount(opts.networkRetries);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let res: Response;
     const attemptStartedAt = performance.now();
     timing.headersMs = undefined;
@@ -412,8 +431,10 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       traceResponse(attemptStartedAt, msg);
       if (isAbortError(fetchErr)) throw fetchErr;
       logger.warn("runKimi:fetch_error", { requestId, attempt, error: msg });
-      if (attempt < MAX_ATTEMPTS - 1) {
-        const delay = Math.random() * (500 * 2 ** attempt);
+      if (attempt < maxRetries) {
+        const delay = networkRetryDelay(attempt);
+        opts.onRetry?.(`Network error, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})`);
+        logger.warn("runKimi:retrying", { requestId, attempt, delay });
         await sleep(delay, opts.signal);
         continue;
       }
@@ -459,16 +480,14 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
         status,
       );
       traceResponse(attemptStartedAt, apiErr.message);
-      if (isRetryable(apiErr, attempt, !customEndpoint && !requesty)) {
-        const isRateLimit = apiErr.httpStatus === 429;
-        const baseDelay = isRateLimit ? 2000 : 500;
-        // OpenRouter sends Retry-After (seconds) on 429/503; honour it, capped
-        // so a long server hint can't wedge an interactive turn.
-        const retryAfterSec = Number(res.headers.get("retry-after"));
-        const delay =
-          Number.isFinite(retryAfterSec) && retryAfterSec > 0
-            ? Math.min(retryAfterSec * 1000, 30_000)
-            : Math.random() * (baseDelay * 2 ** attempt);
+      if (isRetryable(apiErr, attempt, maxRetries, !customEndpoint && !requesty)) {
+        // Retry-After may be a number of seconds or an HTTP date.
+        const retryAfter = res.headers.get("retry-after");
+        const retryAfterMs = retryAfter ? (/^\d+(?:\.\d+)?$/.test(retryAfter)
+          ? Number(retryAfter) * 1000
+          : Date.parse(retryAfter) - Date.now()) : undefined;
+        const delay = networkRetryDelay(attempt, retryAfterMs);
+        opts.onRetry?.(`Network error, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})`);
         logger.warn("runKimi:retrying", { requestId, attempt, code: apiErr.code, httpStatus: apiErr.httpStatus, delay });
         await sleep(delay, opts.signal);
         continue;
@@ -484,6 +503,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
 
     logger.debug("runKimi:stream_start", { requestId });
     let streamError: string | undefined;
+    let emittedAny = false;
     try {
       const events =
         protocol === "anthropic-messages"
@@ -494,6 +514,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
             ? parseResponsesStream(res.body, opts.signal, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, opts.postFirstByteIdleTimeoutMs ?? DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS)
             : parseStream(res.body, opts.signal, opts.idleTimeoutMs, opts.postFirstByteIdleTimeoutMs, customEndpoint ? preset.compat.thinkTags === true : false);
       for await (const ev of events) {
+        emittedAny = true;
         if (timing.firstTokenMs === undefined && ev.type !== "response_meta") {
           timing.firstTokenMs = Math.round(performance.now() - attemptStartedAt);
           logger.debug("runKimi:first_token", { requestId, attempt, first_token_ms: timing.firstTokenMs, headers_ms: timing.headersMs });
@@ -503,6 +524,13 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       }
     } catch (streamErr) {
       streamError = streamErr instanceof Error ? streamErr.message : String(streamErr);
+      if (!emittedAny && attempt < maxRetries && !isAbortError(streamErr)) {
+        const delay = networkRetryDelay(attempt);
+        opts.onRetry?.(`Connection dropped, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})`);
+        logger.warn("runKimi:stream_retry", { requestId, attempt, error: streamError, delay });
+        await sleep(delay, opts.signal);
+        continue;
+      }
       throw streamErr;
     } finally {
       // Write even on abort/error so partial turns are still captured.

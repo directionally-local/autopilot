@@ -6,11 +6,33 @@
 
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert";
-import { runKimi, type RunKimiOpts } from "./client.js";
+import { networkRetryCount, networkRetryDelay, runKimi, type RunKimiOpts } from "./client.js";
 import { registerOpenRouterModels, type ModelEntry } from "../models/registry.js";
 import { KimiApiError } from "../util/errors.js";
 
 const KEY = "sk-or-test-key-123456";
+
+describe("network retry policy", () => {
+  it("defaults to ten retries and clamps overrides", () => {
+    assert.strictEqual(networkRetryCount(10), 10);
+    assert.strictEqual(networkRetryCount(-1), 0);
+    assert.strictEqual(networkRetryCount(99), 20);
+    assert.strictEqual(networkRetryCount(Number.NaN), 10);
+  });
+
+  it("uses stepped delays with plus or minus twenty percent jitter", () => {
+    assert.strictEqual(networkRetryDelay(0, undefined, 0), 800);
+    assert.strictEqual(networkRetryDelay(0, undefined, 0.5), 1_000);
+    assert.strictEqual(networkRetryDelay(1, undefined, 1), 2_400);
+    assert.strictEqual(networkRetryDelay(2, undefined, 0.5), 5_000);
+    assert.strictEqual(networkRetryDelay(9, undefined, 0.5), 30_000);
+  });
+
+  it("honors Retry-After but caps it at thirty seconds", () => {
+    assert.strictEqual(networkRetryDelay(0, 2_500, 0), 2_500);
+    assert.strictEqual(networkRetryDelay(0, 60_000, 0), 30_000);
+  });
+});
 
 // Parameter lists as OpenRouter's catalog reports them (supported_parameters).
 // gpt-5.6-luna is the real list from 2026-09-25: no temperature, no
@@ -88,6 +110,54 @@ describe("runKimi: OpenRouter request", () => {
     assert.strictEqual(req.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.strictEqual(req.method, "POST");
     assert.strictEqual(req.headers.get("Authorization"), `Bearer ${KEY}`);
+  });
+
+  it("retries transient HTTP errors and reports visible retry progress", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    const notices: string[] = [];
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) {
+        return new Response('{"error":{"message":"temporarily unavailable"}}', {
+          status: 503,
+          headers: { "content-type": "application/json", "retry-after": "0.001" },
+        });
+      }
+      return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    };
+    try {
+      for await (const _ of runKimi({ ...base, networkRetries: 1, onRetry: (message) => notices.push(message) })) {
+        /* drain */
+      }
+      assert.strictEqual(calls, 2);
+      assert.match(notices[0] ?? "", /retrying in 1s \(attempt 1\/1\)/);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("retries a stream that drops before its first event", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    const notices: string[] = [];
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) {
+        const body = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("terminated")); } });
+        return new Response(body, { headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    };
+    try {
+      for await (const _ of runKimi({ ...base, networkRetries: 1, onRetry: (message) => notices.push(message) })) {
+        /* drain */
+      }
+      assert.strictEqual(calls, 2);
+      assert.match(notices[0] ?? "", /Connection dropped/);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
   });
 
   it("sends OpenRouter's app-attribution headers", async () => {
