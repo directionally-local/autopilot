@@ -38,6 +38,20 @@ describe("resolveSubagentGuidance", () => {
     assert.equal(calls, 0);
   });
 
+  it("keeps a small multi-function JSDoc edit local even on a heavy turn", async () => {
+    let calls = 0;
+    const result = await resolveSubagentGuidance({
+      prompt: "In lib.ts, add a one-line JSDoc comment directly above each of the six functions. Don't run any commands.",
+      tier: "heavy",
+      policy: "auto",
+      apiKey,
+      ask: async () => { calls++; return choose(0.99); },
+    });
+    assert.equal(result.kind, "none");
+    assert.equal(result.reason, "no parallel-work signal");
+    assert.equal(calls, 0);
+  });
+
   it("does not delegate a broad but sequential migration", async () => {
     let calls = 0;
     const result = await resolveSubagentGuidance({
@@ -122,10 +136,21 @@ describe("resolveSubagentGuidance", () => {
     });
     assert.equal(result.kind, "auto-delegate");
     assert.equal(result.reason, "substantial task; coordinator assesses independence");
-    assert.match(result.directive ?? "", /decide whether parts of the investigation are independent/);
+    assert.match(result.directive ?? "", /substantial investigation/);
     assert.match(result.directive ?? "", /subagent tool in the same response/);
-    assert.match(result.directive ?? "", /Skip delegation for small, tightly coupled/);
+    assert.match(result.directive ?? "", /Never delegate a step whose answer is a single sentence/);
     assert.equal(calls, 0);
+  });
+
+  it("offers auto delegation for clearly independent work", async () => {
+    const result = await resolveSubagentGuidance({
+      prompt: "Audit these three packages independently for security issues.",
+      tier: "heavy",
+      policy: "auto",
+      customEndpoint: true,
+    });
+    assert.equal(result.kind, "auto-delegate");
+    assert.match(result.directive ?? "", /substantial investigation/);
   });
 
   it("short-circuits clear independent research without spending a Jev call", async () => {
