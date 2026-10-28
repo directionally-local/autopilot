@@ -72,6 +72,8 @@ describe("loadConfig", () => {
     "DEEPSEEK_API_KEY",
     "KIMIFLARE_PLUMBING_MODEL",
     "KIMIFLARE_SHELL",
+    "KIMIFLARE_WORKER_BUDGET_USD",
+    "KIMIFLARE_WORKER_BUDGET_MAX_USD",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -140,6 +142,30 @@ describe("loadConfig", () => {
     assert.equal("theme" in cfg, false);
     await saveConfig(cfg);
     assert.equal("theme" in (await readConfigFile()), false);
+  });
+
+  it("ignores and removes legacy worker spend-cap settings", async () => {
+    process.env.KIMIFLARE_WORKER_BUDGET_USD = "0.01";
+    process.env.KIMIFLARE_WORKER_BUDGET_MAX_USD = "0.02";
+    await writeConfigFile({
+      openrouterApiKey: "sk-or-file",
+      workerBudgetUsd: 0.01,
+      workerBudgetMaxUsd: 0.02,
+      workerMaxParallel: 2,
+      workerTimeoutMs: 1234,
+    });
+
+    const cfg = await loadConfig();
+    assert.ok(cfg);
+    assert.equal("workerBudgetUsd" in cfg, false);
+    assert.equal("workerBudgetMaxUsd" in cfg, false);
+    assert.equal(cfg.workerMaxParallel, 2);
+    assert.equal(cfg.workerTimeoutMs, 1234);
+
+    const onDisk = await readConfigFile();
+    assert.equal(onDisk.workerBudgetUsd, undefined);
+    assert.equal(onDisk.workerBudgetMaxUsd, undefined);
+    assert.equal(onDisk.workerMaxParallel, 2);
   });
 
   it("defaults subagent routing to auto, migrates the old implicit default, and preserves explicit choices", async () => {

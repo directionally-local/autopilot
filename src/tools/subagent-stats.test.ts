@@ -60,7 +60,8 @@ describe("subagent stats", () => {
   it("maps errors to content-free reasons", () => {
     assert.equal(failureReason("Subagent could not start: Push a branch (git push -u origin HEAD)"), "repository");
     assert.equal(failureReason("Hotcell setup failed (exit 1)"), "hotcell");
-    assert.equal(failureReason("Hotcell per-cell spend cap was reached."), "budget");
+    assert.equal(failureReason("Hotcell gateway egress spend cap exceeded."), "budget");
+    assert.equal(failureReason("Worker process exited with code 1: HTTP 402: payment required"), "other");
     assert.equal(failureReason("Worker timed out."), "timeout");
     assert.equal(failureReason("cancelled by user"), "cancelled");
     assert.equal(failureReason(undefined), undefined);

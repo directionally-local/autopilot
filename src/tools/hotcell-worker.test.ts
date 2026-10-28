@@ -7,7 +7,6 @@ import { execFileSync } from "node:child_process";
 import { getRepositorySnapshot } from "./hotcell-snapshot.js";
 import {
   parseWorkerReport,
-  resolveWorkerInputBudget,
   resolveWorkerPackage,
   parseCellId,
   parseNamedCellId,
@@ -130,14 +129,13 @@ describe("Hotcell worker helpers", () => {
     }
   });
 
-  it("creates a capped cell at the pinned revision, uses the exact model, and always removes it", async () => {
+  it("creates a cell without a spend cap at the pinned revision and always removes it", async () => {
     const cwd = await makeRepo();
     const calls: Array<{ args: string[]; options: { cwd: string; signal?: AbortSignal; timeoutMs: number } }> = [];
     const result = await runHotcellWorker({
       task: "Inspect the repository",
       context: "Only inspect committed files",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: fakeRunner({ calls }),
     });
@@ -148,8 +146,8 @@ describe("Hotcell worker helpers", () => {
     assert.equal(result.costUsd, 0.01301);
     assert.deepEqual(calls[0]!.args, ["start", "--defaults"]);
     assert.equal(calls[0]!.options.timeoutMs, 30_000);
-    assert.ok(calls[1]!.args.includes("--egress-spend-cap"));
-    assert.ok(calls[1]!.args.includes("0.25"));
+    assert.ok(calls[1]!.args.includes("--egress"));
+    assert.ok(!calls[1]!.args.includes("--egress-spend-cap"));
     assert.ok(calls[1]!.args.includes("--ref"));
     const repo = await getRepositorySnapshot(cwd);
     const createArgs = calls[1]!.args;
@@ -207,7 +205,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: runner,
     });
@@ -237,7 +234,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: runner,
     });
@@ -259,7 +255,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: runner,
     });
@@ -274,7 +269,6 @@ describe("Hotcell worker helpers", () => {
     await assert.rejects(() => runHotcellWorker({
       task: "Research",
       model: "not a model",
-      budgetUsd: 0.25,
       cwd,
       processRunner: async () => {
         processCalls++;
@@ -290,7 +284,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: fakeRunner({ createOutput: `Created ${cellId} (no providers configured)`, calls }),
     });
@@ -305,7 +298,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: fakeRunner({ createTimedOut: true, calls }),
     });
@@ -328,7 +320,7 @@ describe("Hotcell worker helpers", () => {
         if (args[0] === "rm") return { code: 0, stdout: "", stderr: "", aborted: false };
         return { code: 1, stdout: "", stderr: "unexpected command", aborted: false };
       };
-      const result = await runHotcellWorker({ task: "Research", model: "openai/gpt-6-luna", budgetUsd: 0.25, cwd, processRunner: runner });
+      const result = await runHotcellWorker({ task: "Research", model: "openai/gpt-6-luna", cwd, processRunner: runner });
       assert.equal(result.status, status);
       assert.match(result.error ?? "", pattern);
       assert.doesNotMatch(result.error ?? "", /do-not-leak/);
@@ -365,7 +357,6 @@ describe("Hotcell worker helpers", () => {
     const results = await Promise.all([1, 2].map((n) => runHotcellWorker({
       task: `Research task ${n}`,
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       maxParallel: 2,
       cwd,
       processRunner: runner,
@@ -382,7 +373,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: fakeRunner({ workerCode: 42, calls }),
     });
@@ -396,7 +386,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: fakeRunner({ workerCode: 1, workerStderr: "autopilot: command not found OPENROUTER_API_KEY=do-not-leak" }),
     });
@@ -410,15 +399,27 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
-      processRunner: fakeRunner({ workerCode: 1, workerStderr: "HTTP 402: spend cap reached" }),
+      processRunner: fakeRunner({ workerCode: 1, workerStderr: "HTTP 402: egress spend cap exceeded" }),
     });
     assert.equal(result.status, "spend_exhausted");
     assert.equal(result.budgetExceeded, true);
     assert.equal(result.partialResult, true);
     assert.ok(result.findings.length > 0, "findings produced before the cap should be retained");
     assert.match(result.error ?? "", /spend cap/);
+  });
+
+  it("does not classify unrelated HTTP 402 errors as spend-cap exhaustion", async () => {
+    const cwd = await makeRepo();
+    const result = await runHotcellWorker({
+      task: "Research",
+      model: "openai/gpt-6-luna",
+      cwd,
+      processRunner: fakeRunner({ workerCode: 1, workerStderr: "HTTP 402: payment required" }),
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.budgetExceeded, undefined);
+    assert.match(result.error ?? "", /HTTP 402: payment required/);
   });
 
   it("maps cancellation distinctly and still destroys the cell", async () => {
@@ -428,7 +429,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       signal: controller.signal,
       processRunner: fakeRunner({ calls, onExec: () => controller.abort(), workerCode: 130 }),
@@ -442,7 +442,6 @@ describe("Hotcell worker helpers", () => {
     const result = await runHotcellWorker({
       task: "Research",
       model: "openai/gpt-6-luna",
-      budgetUsd: 0.25,
       cwd,
       processRunner: fakeRunner({ cleanupCode: 1 }),
     });
@@ -450,23 +449,6 @@ describe("Hotcell worker helpers", () => {
     assert.match(result.error ?? "", /cleanup failed/);
   });
 
-  it("derives the worker input budget from the spend cap and model price", () => {
-    const previous = process.env.KIMIFLARE_WORKER_MAX_INPUT_TOKENS;
-    delete process.env.KIMIFLARE_WORKER_MAX_INPUT_TOKENS;
-    try {
-      // $1 × 80% at $0.8845 / Mtok ≈ 904k tokens.
-      assert.equal(resolveWorkerInputBudget("moonshotai/kimi-k3", 1), Math.floor(0.8e6 / 0.8845));
-      assert.equal(resolveWorkerInputBudget("moonshotai/kimi-k3", 0.0001), 60_000, "clamped to the floor");
-      assert.equal(resolveWorkerInputBudget("moonshotai/kimi-k3", 100), 3_000_000, "clamped to the ceiling");
-      assert.equal(resolveWorkerInputBudget("unknown/uncatalogued-model", 1), 400_000, "unknown price uses the default");
-      assert.equal(resolveWorkerInputBudget("moonshotai/kimi-k3", 1, 250_000), 250_000);
-      process.env.KIMIFLARE_WORKER_MAX_INPUT_TOKENS = "123456";
-      assert.equal(resolveWorkerInputBudget("moonshotai/kimi-k3", 1), 123_456);
-    } finally {
-      if (previous === undefined) delete process.env.KIMIFLARE_WORKER_MAX_INPUT_TOKENS;
-      else process.env.KIMIFLARE_WORKER_MAX_INPUT_TOKENS = previous;
-    }
-  });
 
   it("parses the worker's trailing JSON report with bounds", () => {
     const text = [
@@ -500,7 +482,7 @@ describe("Hotcell worker helpers", () => {
     assert.equal(parseWorkerReport('```json\n{"findings":[]}\n```'), null);
   });
 
-  it("asks for a structured report, sizes the budget, and returns structured findings", async () => {
+  it("asks for a structured report without token caps and returns structured findings", async () => {
     const cwd = await makeRepo();
     const calls: string[][] = [];
     const report = { findings: [{ topic: "Entry point", summary: "CLI routes in src/index.tsx.", files: ["src/index.tsx:10"], confidence: "high" }], openQuestions: ["Q?"], filesRead: ["src/index.tsx"] };
@@ -512,15 +494,14 @@ describe("Hotcell worker helpers", () => {
       if (args[0] === "stats") return { code: 0, stdout: "Cost: 0.01", stderr: "", aborted: false };
       return { code: 0, stdout: "", stderr: "", aborted: false };
     };
-    const result = await runHotcellWorker({ task: "Map the CLI", model: "openai/gpt-6-luna", budgetUsd: 0.5, maxInputTokens: 200_000, cwd, processRunner: runner });
+    const result = await runHotcellWorker({ task: "Map the CLI", model: "openai/gpt-6-luna", cwd, processRunner: runner });
     assert.equal(result.status, "completed");
     assert.equal(result.structured, true);
     assert.deepEqual(result.findings[0]!.sources, ["src/index.tsx:10"]);
     assert.deepEqual(result.openQuestions, ["Q?"]);
     assert.deepEqual(result.filesRead, ["src/index.tsx"]);
     const research = calls.filter((args) => args[0] === "exec").at(-1)![2]!;
-    assert.match(research, /--max-input-tokens 200000 /);
-    assert.doesNotMatch(research, /--max-input-tokens 14000\b/);
+    assert.doesNotMatch(research, /--max-input-tokens/);
     const prompt = Buffer.from(/printf '%s' '([A-Za-z0-9+/=]+)'/.exec(research)![1]!, "base64").toString("utf8");
     assert.match(prompt, /fenced ```json block/);
   });
@@ -545,7 +526,7 @@ describe("Hotcell worker helpers", () => {
         return ok();
       };
       const result = await runHotcellWorker({
-        task: "Research", model: "openai/gpt-6-luna", budgetUsd: 0.25, cwd, processRunner: runner, useRuntimeCache: true,
+        task: "Research", model: "openai/gpt-6-luna", cwd, processRunner: runner, useRuntimeCache: true,
       });
       assert.equal(result.status, "completed");
       assert.match(result.snapshotNote ?? "", /cloned origin\/main and applied your 1 local change/);
@@ -581,7 +562,7 @@ describe("Hotcell worker helpers", () => {
       return { code: 0, stdout: "", stderr: "", aborted: false };
     };
     const result = await runHotcellWorker({
-      task: "Research", model: "openai/gpt-6-luna", budgetUsd: 0.25, cwd, processRunner: runner, useArchive: true, useRuntimeCache: false,
+      task: "Research", model: "openai/gpt-6-luna", cwd, processRunner: runner, useArchive: true, useRuntimeCache: false,
     });
     assert.equal(result.status, "completed");
     assert.match(result.snapshotNote ?? "", /saw your current working tree \(1 file, uncommitted changes included\)/);

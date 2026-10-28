@@ -22,11 +22,11 @@ Automatic subagents are for research only. Workers cannot edit files, open PRs, 
 - The subagent runtime (the Autopilot CLI matching your version, `autopilot-ai@<version>`) is built once per version in a scratch sandbox (about two minutes, the first time only), saved as a Hotcell backup, and restored into each subagent's sandbox in about a second. The cache record lives in `~/.config/kimiflare/hotcell-worker-cache.json`; set `KIMIFLARE_WORKER_CACHE=0` to install per sandbox instead. Your project's own dependencies and install scripts are never run. `KIMIFLARE_WORKER_PACKAGE` overrides the npm spec (for example a tarball while developing Autopilot), and `KIMIFLARE_WORKER_SETUP_TIMEOUT_MS` changes the setup timeout (default 5 minutes, separate from the research timeout).
 - The same active model ID is passed to the worker. Autopilot does not silently switch models.
 
-Hotcell workers have a narrow read-only tool profile, a per-worker spend cap, and a cleanup lifecycle. The Hotcell daemon owns provider credentials and injects its gateway token; Autopilot does not pass its OpenRouter key to the sandbox.
+Hotcell workers have a narrow read-only tool profile, a wall-clock timeout, a concurrency limit, and a cleanup lifecycle. Autopilot does not impose a dollar spend cap or input-token budget; the Hotcell daemon owns provider credentials and injects its gateway token, and Autopilot does not pass its OpenRouter key to the sandbox.
 
 ## Limits
 
-Workers add model cost and latency. Defaults are $1 per worker, a $5 hard ceiling, a ten-minute research timeout, and at most three concurrent Hotcell cells. Configure limits with the environment variables KIMIFLARE_WORKER_BUDGET_USD, KIMIFLARE_WORKER_BUDGET_MAX_USD, KIMIFLARE_WORKER_TIMEOUT_MS, and KIMIFLARE_WORKER_MAX_PARALLEL. Each worker's cumulative input-token budget is derived from its spend cap and the model's input price (80% of the cap, clamped to 60k–3M tokens; 400k when the price is unknown); override it with KIMIFLARE_WORKER_MAX_INPUT_TOKENS. Workers end with a JSON report of cited findings, open questions, and files read, which the coordinator receives as structured results; an answer without a valid report is passed through and marked unverified. If Hotcell's spend cap stops a worker, Autopilot returns any findings already produced as partial results for review.
+Workers add model cost and latency. The default research timeout is ten minutes, and at most three Hotcell cells run concurrently. Configure those limits with KIMIFLARE_WORKER_TIMEOUT_MS and KIMIFLARE_WORKER_MAX_PARALLEL. Actual cost is read from Hotcell stats, included with the result, and remains visible in `/cost`; no fixed dollar or input-token budget cuts research short. Old `workerBudgetUsd`/`workerBudgetMaxUsd` config keys and `KIMIFLARE_WORKER_BUDGET_*` environment variables are ignored (and legacy config keys are removed on migration). Workers end with a JSON report of cited findings, open questions, and files read, which the coordinator receives as structured results; an answer without a valid report is passed through and marked unverified.
 
 Legacy workerEndpoint, workerApiKey, KIMIFLARE_WORKER_ENDPOINT, and KIMIFLARE_WORKER_BACKEND settings do not enable or route workers.
 
@@ -36,7 +36,7 @@ Legacy workerEndpoint, workerApiKey, KIMIFLARE_WORKER_ENDPOINT, and KIMIFLARE_WO
 
 ## If a worker cannot start
 
-Autopilot reports Hotcell setup, repository, provider, and spend failures as tool errors. It does not silently fall back to a remote service. The coordinator can continue locally, but should not claim a worker ran when it did not.
+Autopilot reports Hotcell setup, repository, provider, and timeout failures as tool errors. It does not silently fall back to a remote service. The coordinator can continue locally, but should not claim a worker ran when it did not.
 
 For upstream design inspiration, see [Anthropic’s guide to when to use subagents](https://claude.com/blog/subagents-in-claude-code) and the [Claude Code subagents documentation](https://code.claude.com/docs/en/sub-agents).
 
@@ -44,4 +44,4 @@ For upstream design inspiration, see [Anthropic’s guide to when to use subagen
 
 `subagent` takes `background: true`: the call returns a worker id at once and the agent keeps working (or answers you) while the subagent runs. When it finishes, its findings are delivered to the agent automatically — at the next tool step if a turn is running, or with your next message — with no polling. The agent can also check early with `worker_status`, fetch one with `worker_result` (optionally `wait=true`), or `wait_for` with `worker_id`.
 
-Background subagents keep every safeguard: the same permission prompt, spend cap, concurrency limit and read-only profile. They are not tied to a turn — interrupting a turn doesn't stop them — so stop one with `/subagents cancel <n>`. They live as long as the Autopilot session (the TUI shows "Background subagent #n …" when one finishes; the SDK emits `worker.finished`); disposing an SDK session cancels its running background subagents.
+Background subagents keep every safeguard: the same permission prompt, timeout, concurrency limit and read-only profile. They are not tied to a turn — interrupting a turn doesn't stop them — so stop one with `/subagents cancel <n>`. They live as long as the Autopilot session (the TUI shows "Background subagent #n …" when one finishes; the SDK emits `worker.finished`); disposing an SDK session cancels its running background subagents.

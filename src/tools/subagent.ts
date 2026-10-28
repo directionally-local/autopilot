@@ -1,6 +1,6 @@
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
 import { activeOpenRouterKey, llmAuthFromConfig, providerPresetOf } from "../agent/llm-auth.js";
-import { loadConfig, resolveWorkerBudgetUsd } from "../config.js";
+import { loadConfig } from "../config.js";
 import { runHotcellWorker } from "./hotcell-worker.js";
 import { workerRegistry, type WorkerHandle } from "./worker-registry.js";
 import { failureReason, recordSubagentEvent } from "./subagent-stats.js";
@@ -9,7 +9,6 @@ import type { WorkerResultMessage } from "../agent/messages.js";
 export interface SubagentArgs {
   mission: string;
   context?: string;
-  maxCostUsd?: number;
   /** Return at once and keep working; the findings arrive in the session inbox. */
   background?: boolean;
 }
@@ -29,7 +28,6 @@ export function fromLegacySpawnWorkerArgs(args: LegacySpawnWorkerArgs): Subagent
   return {
     mission: String(args.task ?? ""),
     ...(args.context ? { context: args.context } : {}),
-    ...(args.budget?.maxCostUsd !== undefined ? { maxCostUsd: args.budget.maxCostUsd } : {}),
   };
 }
 
@@ -55,7 +53,6 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
         type: "string",
         description: "Relevant facts from this conversation the subagent needs (goals, constraints, file paths already known).",
       },
-      maxCostUsd: { type: "number", description: "Spend cap for this subagent in USD. Defaults to the configured subagent budget." },
       background: {
         type: "boolean",
         description:
@@ -107,11 +104,6 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
     const timeoutMs = cfg.workerTimeoutMs
       ?? readNumberEnv("KIMIFLARE_WORKER_TIMEOUT_MS")
       ?? DEFAULT_WORKER_TIMEOUT_MS;
-    const budgetCeiling = resolveWorkerBudgetUsd(cfg);
-    const budgetUsd = Math.min(args.maxCostUsd ?? budgetCeiling, budgetCeiling);
-    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) {
-      throw new Error("Subagent spend cap must be a positive number.");
-    }
 
     // Each subagent gets its own cancel handle (see /subagents cancel), linked
     // to the turn: cancelling one never interrupts the turn or other subagents.
@@ -123,7 +115,7 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
       ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     });
     if (background) {
-      void runWorker(args, ctx, handle, { cfg, model, budgetUsd, timeoutMs })
+      void runWorker(args, ctx, handle, { cfg, model, timeoutMs })
         .then((outcome) => handle.complete(outcome))
         .catch((error: unknown) =>
           handle.complete({ status: "failed", output: `Subagent #${handle.index} failed: ${error instanceof Error ? error.message : String(error)}` }),
@@ -138,7 +130,7 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
       );
     }
     try {
-      const outcome = await runWorker(args, ctx, handle, { cfg, model, budgetUsd, timeoutMs });
+      const outcome = await runWorker(args, ctx, handle, { cfg, model, timeoutMs });
       handle.complete(outcome);
       return textOutput(outcome.output);
     } finally {
@@ -156,9 +148,9 @@ async function runWorker(
   args: SubagentArgs,
   ctx: ToolContext,
   handle: WorkerHandle,
-  run: { cfg: NonNullable<Awaited<ReturnType<typeof loadConfig>>>; model: string; budgetUsd: number; timeoutMs: number },
+  run: { cfg: NonNullable<Awaited<ReturnType<typeof loadConfig>>>; model: string; timeoutMs: number },
 ): Promise<{ status: string; output: string; costUsd?: number }> {
-    const { cfg, model, budgetUsd, timeoutMs } = run;
+    const { cfg, model, timeoutMs } = run;
     const startedAt = Date.now();
     const record = (status: string, extra: { costUsd?: number; error?: string; localChanges?: number } = {}) => {
       void recordSubagentEvent({
@@ -189,7 +181,6 @@ async function runWorker(
         task: args.mission,
         context: args.context,
         model,
-        budgetUsd,
         timeoutMs,
         setupTimeoutMs: readNumberEnv("KIMIFLARE_WORKER_SETUP_TIMEOUT_MS"),
         maxParallel: cfg.workerMaxParallel,

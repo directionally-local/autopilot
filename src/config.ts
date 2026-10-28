@@ -183,10 +183,6 @@ export interface KimiConfig {
   githubRepo?: string;
   /** Shell override for the bash tool. "auto" (default) detects the platform, or specify "bash", "cmd", "powershell", or an absolute path. */
   shell?: string;
-  /** Max cost per Hotcell worker in USD (default: 1.0). */
-  workerBudgetUsd?: number;
-  /** Hard ceiling for workerBudgetUsd. Any configured or programmatic value above this is silently capped. Default: 5.0. */
-  workerBudgetMaxUsd?: number;
   /** Max workers to spawn in parallel (default: 3). */
   workerMaxParallel?: number;
   /** Timeout per worker in milliseconds (default: 600000 = 10 min). */
@@ -431,8 +427,6 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     githubRefreshToken: persisted.githubRefreshToken,
     githubTokenExpiry: persisted.githubTokenExpiry,
     githubRepo: persisted.githubRepo,
-    workerBudgetUsd: readNumberEnv("KIMIFLARE_WORKER_BUDGET_USD") ?? persisted.workerBudgetUsd,
-    workerBudgetMaxUsd: readNumberEnv("KIMIFLARE_WORKER_BUDGET_MAX_USD") ?? persisted.workerBudgetMaxUsd,
     workerMaxParallel: readNumberEnv("KIMIFLARE_WORKER_MAX_PARALLEL") ?? persisted.workerMaxParallel,
     workerTimeoutMs: readNumberEnv("KIMIFLARE_WORKER_TIMEOUT_MS") ?? persisted.workerTimeoutMs,
     autoFreshSuggestionTurns: persisted.autoFreshSuggestionTurns,
@@ -480,7 +474,7 @@ export async function hasLegacyCloudflareConfig(): Promise<boolean> {
   }
 }
 
-/** Fields written by kimiflare ≤0.99 (Cloudflare era) that are no longer read. */
+/** Fields persisted by older config versions that are no longer read. */
 interface LegacyConfigFields {
   cloudflareOAuth?: unknown;
   aiGatewayId?: string;
@@ -501,6 +495,9 @@ interface LegacyConfigFields {
   disableLlmSynthesis?: boolean;
   workerPreReadFiles?: string[];
   workerPreReadMaxChars?: number;
+  /** Retired worker spend-cap settings; accepted so old config files can be cleaned up safely. */
+  workerBudgetUsd?: unknown;
+  workerBudgetMaxUsd?: unknown;
 }
 
 const LEGACY_KEYS: readonly (keyof LegacyConfigFields)[] = [
@@ -522,6 +519,8 @@ const LEGACY_KEYS: readonly (keyof LegacyConfigFields)[] = [
   "disableLlmSynthesis",
   "workerPreReadFiles",
   "workerPreReadMaxChars",
+  "workerBudgetUsd",
+  "workerBudgetMaxUsd",
 ];
 
 const MODEL_ID_KEYS = [
@@ -615,34 +614,6 @@ export async function patchPersistedConfig(patch: Partial<KimiConfig>): Promise<
   await writeFile(p, JSON.stringify(merged, null, 2), "utf8");
   await chmod(p, 0o600);
   return p;
-}
-
-/** Resolve and validate a worker budget, applying the hard ceiling.
- *
- *  - If no budget is configured, returns the default (1.0).
- *  - If the configured budget is ≤ 0, throws.
- *  - If the configured budget exceeds the hard ceiling (default 5.0), it is
- *    silently capped and a warning is logged.
- */
-export function resolveWorkerBudgetUsd(cfg: KimiConfig | null): number {
-  const DEFAULT_WORKER_BUDGET_USD = 1.0;
-  const HARD_CEILING = cfg?.workerBudgetMaxUsd ?? 5.0;
-
-  const raw = cfg?.workerBudgetUsd ?? DEFAULT_WORKER_BUDGET_USD;
-  if (raw <= 0) {
-    throw new Error(
-      `Invalid workerBudgetUsd (${raw}). Must be > 0. Set via KIMIFLARE_WORKER_BUDGET_USD.`,
-    );
-  }
-  if (raw > HARD_CEILING) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `kimiflare: workerBudgetUsd ${raw} exceeds hard ceiling ${HARD_CEILING}; capping to ${HARD_CEILING}. ` +
-        `Raise the ceiling with KIMIFLARE_WORKER_BUDGET_MAX_USD if you really need more.`,
-    );
-    return HARD_CEILING;
-  }
-  return raw;
 }
 
 export async function saveConfig(cfg: KimiConfig): Promise<string> {
