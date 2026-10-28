@@ -1,12 +1,12 @@
 import { readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
-/** Shared retention policy for all on-disk kimiflare data. */
+/**
+ * Shared retention policy for on-disk kimiflare data. Session files and
+ * session traces are deliberately absent: they are the user's history and
+ * are only deleted on request (`autopilot history prune`).
+ */
 export const RETENTION = {
-  /** Session files older than this (days) are pruned. */
-  sessionMaxAgeDays: 30,
-  /** Max number of session files to keep. */
-  sessionMaxCount: 100,
   /** Usage log day entries older than this (days) are pruned. */
   usageDayMaxAgeDays: 90,
   /** Usage log session entries older than this (days) are pruned. */
@@ -21,10 +21,6 @@ export const RETENTION = {
   memoryMaxAgeDays: 90,
   /** Max memories per repo. */
   memoryMaxEntries: 1000,
-  /** Session trace directories older than this (days) are pruned. */
-  traceMaxAgeDays: 90,
-  /** Max total size of all session traces (bytes). Oldest sessions go first. */
-  traceMaxTotalBytes: 2 * 1024 * 1024 * 1024,
   /** Max size of a single session trace (bytes); recording stops at the cap. */
   traceMaxSessionBytes: 200 * 1024 * 1024,
 } as const;

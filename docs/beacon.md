@@ -143,7 +143,7 @@ Every entry also carries `uuid`, `parentUuid` (the previous entry's `uuid`, so t
 - **Images** in a prompt are written as a `[Image]` text block, never as base64.
 - **Not written:** the system prompt and Autopilot's internal nudges (system messages).
 
-**Redaction and size.** The transcript is redacted the same way as the session trace (`KIMIFLARE_TRACE`): OpenRouter keys, GitHub tokens, `Bearer`/`Basic` credentials, private-key blocks, and the values of `api_key=`, `token:`, `secret`, `password` and `authorization` pairs become `<redacted>`. A block over 256 KB is cut and marked `[truncated: N bytes total]`, the way the trace cuts its blobs. A transcript stops growing at the trace's per-session cap (200 MB). Transcripts are pruned with their session files (30 days, 100 sessions).
+**Redaction and size.** The transcript is redacted the same way as the session trace (`KIMIFLARE_TRACE`): OpenRouter keys, GitHub tokens, `Bearer`/`Basic` credentials, private-key blocks, and the values of `api_key=`, `token:`, `secret`, `password` and `authorization` pairs become `<redacted>`. A block over 256 KB is cut and marked `[truncated: N bytes total]`, the way the trace cuts its blobs. A transcript stops growing at the trace's per-session cap (200 MB). Transcripts are kept with their session files and only deleted by `autopilot history prune`.
 
 **Resume.** A resumed session (`--continue`, `--session`, `/resume`) appends to its existing transcript and continues the `parentUuid` chain.
 

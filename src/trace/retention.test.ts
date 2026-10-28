@@ -31,39 +31,28 @@ async function makeSession(base: string, id: string, ageDays: number, bytes: num
 }
 
 describe("pruneTraces", () => {
-  it("removes the oldest sessions until the total byte cap holds", async () => {
-    const base = join(root, "bytes");
-    await makeSession(base, "oldest", 3, 100);
-    await makeSession(base, "middle", 2, 100);
-    await makeSession(base, "newest", 1, 100);
-    const before = await listTraceSessions(base);
-    assert.deepStrictEqual(
-      before.map((s) => s.sessionId),
-      ["newest", "middle", "oldest"],
-    );
-
-    const res = await pruneTraces({ root: base, maxTotalBytes: 250, maxAgeDays: 90, maxSessionBytes: 1000 });
-    assert.deepStrictEqual(res.removed, ["oldest"]);
-    assert.strictEqual(res.keptBytes, 200);
-    assert.deepStrictEqual((await readdir(base)).sort(), ["middle", "newest"]);
-  });
-
-  it("removes sessions past the age cap and sessions over the per-session cap", async () => {
+  it("lists sessions newest first and removes only those past the cutoff", async () => {
     const base = join(root, "age");
     await makeSession(base, "ancient", 120, 50);
     await makeSession(base, "huge", 1, 5000);
-    await makeSession(base, "fine", 1, 50);
-    const res = await pruneTraces({ root: base, maxAgeDays: 90, maxSessionBytes: 1000, maxTotalBytes: 1_000_000 });
-    assert.deepStrictEqual(res.removed.sort(), ["ancient", "huge"]);
-    assert.deepStrictEqual(await readdir(base), ["fine"]);
+    await makeSession(base, "fine", 2, 50);
+    assert.deepStrictEqual(
+      (await listTraceSessions(base)).map((s) => s.sessionId),
+      ["huge", "fine", "ancient"],
+    );
+
+    const res = await pruneTraces({ root: base, olderThanDays: 90 });
+    assert.deepStrictEqual(res.removed, ["ancient"]);
+    assert.strictEqual(res.keptBytes, 5050);
+    assert.deepStrictEqual((await readdir(base)).sort(), ["fine", "huge"]);
   });
 
   it("is a no-op on a missing root and ignores stray files", async () => {
-    const res = await pruneTraces({ root: join(root, "does-not-exist") });
+    const res = await pruneTraces({ root: join(root, "does-not-exist"), olderThanDays: 0 });
     assert.deepStrictEqual(res, { removed: [], keptBytes: 0 });
     const base = join(root, "stray");
     await mkdir(base, { recursive: true });
     await writeFile(join(base, "README"), "x", "utf8");
-    assert.deepStrictEqual(await pruneTraces({ root: base }), { removed: [], keptBytes: 0 });
+    assert.deepStrictEqual(await pruneTraces({ root: base, olderThanDays: 0 }), { removed: [], keptBytes: 0 });
   });
 });

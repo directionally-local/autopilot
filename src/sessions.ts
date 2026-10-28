@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ChatMessage } from "./agent/messages.js";
 import { repairDanglingToolCalls } from "./agent/messages.js";
 import type { SessionState, SerializedArtifact } from "./agent/session-state.js";
-import { listFilesByMtime, pruneFiles, RETENTION } from "./storage-limits.js";
+import { listFilesByMtime, pruneFiles } from "./storage-limits.js";
 
 export interface SessionSummary {
   id: string;
@@ -101,14 +101,17 @@ export async function saveSession(file: SessionFile): Promise<string> {
   return path;
 }
 
-/** Prune old session files (and their JSONL transcripts) to enforce retention policy. */
-export async function pruneSessions(): Promise<number> {
+/**
+ * Delete session files (and their JSONL transcripts) not touched in
+ * `olderThanDays`. Only runs when the user asks (`autopilot history prune`).
+ */
+export async function pruneSessions(olderThanDays: number): Promise<number> {
   const dir = sessionsDir();
   const files = await listFilesByMtime(dir, /\.json$/);
-  const pruned = await pruneFiles(files, RETENTION.sessionMaxAgeDays, RETENTION.sessionMaxCount);
+  const pruned = await pruneFiles(files, olderThanDays, Number.POSITIVE_INFINITY);
   // Claude-style JSONL transcripts (<id>.jsonl, src/transcript/) follow the same policy.
   const transcripts = await listFilesByMtime(dir, /\.jsonl$/);
-  return pruned + (await pruneFiles(transcripts, RETENTION.sessionMaxAgeDays, RETENTION.sessionMaxCount));
+  return pruned + (await pruneFiles(transcripts, olderThanDays, Number.POSITIVE_INFINITY));
 }
 
 export async function listSessions(limit = 30, cwd?: string): Promise<SessionSummary[]> {
