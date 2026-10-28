@@ -6,7 +6,7 @@
 
 **Autopilot** (autopilot-ai, formerly KimiFlare) is a TypeScript terminal coding agent. OpenRouter with the user's own key is the default provider; users can also choose OpenAI, DeepSeek, Moonshot, Kimi Code, Z.ai, Ollama, LM Studio, Requesty or any OpenAI-compatible endpoint (src/providers/). Do not assume the old Cloudflare AI Gateway / Workers AI architecture still applies.
 
-- Node.js 20 or newer; TypeScript 5.7; ESM.
+- Node.js versions supported by `package.json`'s `engines` (`^22.23.4 || ^24.22.1 || >=26.12.1`); TypeScript 5.7; ESM.
 - Interactive terminal UI plus one-shot print and JSON-RPC/SDK modes.
 - Main package: autopilot-ai; license: MIT.
 
@@ -55,7 +55,8 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - Pass and respect AbortSignal for long-running work, especially requests and streams.
 - Keep ink, react, commander, turndown, and camouflage-tui external in the root tsup.config.ts; do not accidentally bundle runtime UI dependencies.
 - isolated-vm is an optional dependency; preserve its graceful fallback: without it, Code Mode turns off and tools are called directly (src/agent/loop.ts). Never run model-written code in node:vm, which cannot contain it. camouflage-tui is a required dependency (the only interactive renderer): when it cannot start, the CLI explains why and exits 2 (src/camouflage-launch.ts) rather than falling back to Ink.
-- Run npm run typecheck before considering a change complete. Add or update tests for behavior changes.
+- Before considering a change complete, run `npm run typecheck`, `npm test`, and `npm run build`; add or update tests for behavior changes.
+- Keep `.github/workflows/ci.yml`'s Node matrix aligned with the supported lines in `package.json`'s `engines`. Do not add an unsupported Node major to CI unless support is intentionally restored and installation, tests, and build pass on it.
 - Mark behaviour changes that can silently break existing users (hook semantics, config paths, CLI flags, API responses) as breaking: `feat!:`/`fix!:` plus a `BREAKING CHANGE:` footer with the migration, so release-please surfaces them.
 - Use Conventional Commits. Do not bump the root package version manually; release-please manages releases. The active workflows publish npm releases and deploy docs/ to GitHub Pages.
 - Never commit secrets or user state. .kimiflare/, ~, .config/, sessions/, and coverage output are ignored; config and historical user data remain under the legacy kimiflare paths for compatibility.

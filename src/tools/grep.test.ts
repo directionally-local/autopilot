@@ -39,6 +39,16 @@ describe("grep JavaScript fallback", () => {
     });
   });
 
+  it("handles git ignore lookup closing stdin outside a repository", async () => {
+    await withTempDir(async (root) => {
+      const files = Array.from({ length: 128 }, (_, index) => `source-${index}.txt`);
+      await Promise.all(files.map((name) => writeFile(join(root, name), `needle ${name}\n`)));
+
+      const result = await runJsFallback({ pattern: "needle" }, root, "files");
+      assert.equal(result.content.split("\n").length, files.length);
+    });
+  });
+
   it("caps returned output at 30 KB", async () => {
     await withTempDir(async (root) => {
       await writeFile(join(root, "many.txt"), ("needle " + "λ".repeat(80) + "\n").repeat(500));
