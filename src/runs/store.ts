@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -187,11 +187,11 @@ function toNotification(r: RunNotificationRow): RunNotification {
 }
 
 export class RunStore {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
 
   constructor(dbPath = defaultRunsDbPath()) {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
-    this.db = new Database(dbPath);
+    this.db = new SqliteDatabase(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");

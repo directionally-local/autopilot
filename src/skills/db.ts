@@ -1,7 +1,7 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import type { ParsedSkill, ParsedSkillSection, SectionResult } from "./types.js";
 
-export function initSkillsSchema(db: Database.Database): void {
+export function initSkillsSchema(db: SqliteDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS skill_index (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +37,7 @@ export function initSkillsSchema(db: Database.Database): void {
 }
 
 export function getSkillByPath(
-  db: Database.Database,
+  db: SqliteDatabase,
   filePath: string
 ): { id: number; contentHash: string; parserVersion: number; embeddingModel: string | null } | null {
   const row = db
@@ -48,11 +48,11 @@ export function getSkillByPath(
 }
 
 /** Record which embedding model a skill's sections were embedded with (null: none). */
-export function setSkillEmbeddingModel(db: Database.Database, skillId: number, model: string | null): void {
+export function setSkillEmbeddingModel(db: SqliteDatabase, skillId: number, model: string | null): void {
   db.prepare("UPDATE skill_index SET embedding_model = ? WHERE id = ?").run(model, skillId);
 }
 
-export function upsertSkill(db: Database.Database, skill: ParsedSkill): number {
+export function upsertSkill(db: SqliteDatabase, skill: ParsedSkill): number {
   const existing = getSkillByPath(db, skill.filePath);
   const now = Date.now();
 
@@ -81,7 +81,7 @@ export function upsertSkill(db: Database.Database, skill: ParsedSkill): number {
 }
 
 export function insertSections(
-  db: Database.Database,
+  db: SqliteDatabase,
   skillId: number,
   sections: ParsedSkillSection[],
   /** One vector per section, or empty when the sections are stored without vectors. */
@@ -98,7 +98,7 @@ export function insertSections(
   }
 }
 
-export function deleteOrphanedSkills(db: Database.Database, existingPaths: string[]): number {
+export function deleteOrphanedSkills(db: SqliteDatabase, existingPaths: string[]): number {
   if (existingPaths.length === 0) {
     const result = db.prepare("DELETE FROM skill_index").run();
     return Number(result.changes);
@@ -111,7 +111,7 @@ export function deleteOrphanedSkills(db: Database.Database, existingPaths: strin
   return Number(result.changes);
 }
 
-export function hasAnySections(db: Database.Database): boolean {
+export function hasAnySections(db: SqliteDatabase): boolean {
   const row = db
     .prepare("SELECT 1 FROM skill_sections LIMIT 1")
     .get() as { 1: number } | undefined;
@@ -119,7 +119,7 @@ export function hasAnySections(db: Database.Database): boolean {
 }
 
 export function listAllSectionRows(
-  db: Database.Database
+  db: SqliteDatabase
 ): Array<{
   id: number;
   heading: string;

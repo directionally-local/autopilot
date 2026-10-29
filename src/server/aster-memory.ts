@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -66,7 +66,7 @@ const BRIEF_RECENT_CARDS = 3;
 const KEY_RE = /^(person|project):[a-z0-9][a-z0-9-]{0,80}$/;
 
 export class AsterMemory {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
   /** Card keys already shown to the agent per conversation, so later turns only add new ones. */
   private readonly shown = new Map<string, Set<string>>();
 
@@ -80,7 +80,7 @@ export class AsterMemory {
     } = {},
   ) {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
-    this.db = new Database(dbPath);
+    this.db = new SqliteDatabase(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("busy_timeout = 5000");
     this.db.exec(`

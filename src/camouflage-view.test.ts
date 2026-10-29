@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName } from "./camouflage-view.js";
+import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View } from "./camouflage-view.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import { listModels } from "./models/registry.js";
 import { bashTool } from "./tools/bash.js";
@@ -310,5 +310,53 @@ describe("statusSegments", () => {
     assert.strictEqual(seg.code, "code mode");
     assert.match(seg.warn!, /stale · run \/init/);
     assert.strictEqual(statusSegments(baseSnapshot()).code, "");
+  });
+});
+
+describe("Camouflage jobs database unavailable", () => {
+  function bareView(openJobs?: () => never) {
+    const sent: Sent[] = [];
+    const cam = { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 };
+    const view = new View(cam as never, {} as never, openJobs ? { openJobs } : {});
+    view.connect(new Proxy({}, { get: () => () => undefined }) as AppActions);
+    return { view, sent };
+  }
+  const offNotices = (sent: Sent[]) => sent.filter((s) => s.type === "RuntimeError" && /Background job activity is off/.test(String(s.payload.message)));
+
+  it("keeps the UI up with one dim notice when the jobs DB can't open", () => {
+    let opens = 0;
+    const { view, sent } = bareView(() => {
+      opens++;
+      throw new Error("Could not locate the bindings file.\nTried: …");
+    });
+    // Constructing the View no longer touches the database.
+    assert.strictEqual(opens, 0);
+    view.sync(baseSnapshot({ sessionId: "s1" }));
+    view.sync(baseSnapshot({ sessionId: "s1" }));
+    view.activityViewChanged({ view: "detail", id: "job-1" });
+    view.stopActivity("job-1");
+    assert.strictEqual(opens, 1);
+    const notices = offNotices(sent);
+    assert.strictEqual(notices.length, 1);
+    assert.strictEqual(notices[0]!.payload.severity, "info");
+    assert.match(String(notices[0]!.payload.message), /\(Could not locate the bindings file\.\)\.$/);
+    view.dispose();
+  });
+
+  it("degrades when the real JobManager fails to open", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cam-view-jobs-"));
+    const blocker = join(dir, "not-a-dir");
+    await writeFile(blocker, "");
+    const previous = process.env.AUTOPILOT_JOBS_DB;
+    process.env.AUTOPILOT_JOBS_DB = join(blocker, "jobs.db");
+    try {
+      const { view, sent } = bareView();
+      assert.doesNotThrow(() => view.sync(baseSnapshot({ sessionId: "s1" })));
+      assert.strictEqual(offNotices(sent).length, 1);
+      view.dispose();
+    } finally {
+      if (previous === undefined) delete process.env.AUTOPILOT_JOBS_DB;
+      else process.env.AUTOPILOT_JOBS_DB = previous;
+    }
   });
 });

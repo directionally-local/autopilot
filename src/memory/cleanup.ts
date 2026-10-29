@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import {
   deleteOldMemories,
   deleteExcessMemories,
@@ -11,7 +11,7 @@ import { cosineSimilarity } from "./embeddings.js";
 import type { Memory } from "./schema.js";
 
 export interface CleanupOpts {
-  db: Database.Database;
+  db: SqliteDatabase;
   repoPath: string;
   maxAgeDays: number;
   maxEntries: number;
@@ -92,7 +92,7 @@ export async function runCleanup(opts: CleanupOpts): Promise<CleanupResult> {
   return result;
 }
 
-export function shouldCleanup(db: Database.Database, intervalMs = 24 * 60 * 60 * 1000): boolean {
+export function shouldCleanup(db: SqliteDatabase, intervalMs = 24 * 60 * 60 * 1000): boolean {
   const row = db.prepare("SELECT value FROM memory_meta WHERE key = 'last_cleanup'").get() as
     | { value: string }
     | undefined;

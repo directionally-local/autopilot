@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import { pickLlmAuth, type LlmAuth } from "../agent/llm-auth.js";
 import { embeddingModelFor, fetchEmbeddings } from "../memory/embeddings.js";
 import { discoverSkills, readSkillFile } from "./discovery.js";
@@ -15,7 +15,7 @@ import {
 
 export interface IndexerOpts extends LlmAuth {
   cwd: string;
-  db: Database.Database;
+  db: SqliteDatabase;
   embeddingModel?: string;
 }
 

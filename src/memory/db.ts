@@ -1,13 +1,13 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { join, dirname } from "node:path";
 import { mkdirSync, statSync } from "node:fs";
 import type { Memory, MemoryInput, MemoryStats, MemoryCategory } from "./schema.js";
 import { vectorFromBlob } from "./embeddings.js";
 
-let dbInstance: Database.Database | null = null;
+let dbInstance: SqliteDatabase | null = null;
 let dbPathInstance: string | null = null;
 
-function initSchema(db: Database.Database): void {
+function initSchema(db: SqliteDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
@@ -61,7 +61,7 @@ function initSchema(db: Database.Database): void {
   `);
 }
 
-function migrateV1(db: Database.Database): void {
+function migrateV1(db: SqliteDatabase): void {
   // Add columns that may be missing from pre-v1 schema
   const columns = db.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
   const names = new Set(columns.map((c) => c.name));
@@ -102,7 +102,7 @@ function migrateV1(db: Database.Database): void {
   `);
 }
 
-export function openMemoryDb(dbPath: string): Database.Database {
+export function openMemoryDb(dbPath: string): SqliteDatabase {
   if (dbInstance && dbPathInstance === dbPath) {
     return dbInstance;
   }
@@ -110,7 +110,7 @@ export function openMemoryDb(dbPath: string): Database.Database {
     dbInstance.close();
   }
   mkdirSync(dirname(dbPath), { recursive: true });
-  dbInstance = new Database(dbPath);
+  dbInstance = new SqliteDatabase(dbPath);
   dbInstance.pragma("journal_mode = WAL");
   dbInstance.pragma("foreign_keys = ON");
   initSchema(dbInstance);
@@ -127,11 +127,11 @@ export function closeMemoryDb(): void {
   }
 }
 
-export function getMemoryDb(): Database.Database | null {
+export function getMemoryDb(): SqliteDatabase | null {
   return dbInstance;
 }
 
-function rowToMemory(row: Database.RunResult & Record<string, unknown>): Memory {
+function rowToMemory(row: Record<string, unknown>): Memory {
   const embedding = vectorFromBlob(row.embedding as Buffer);
   return {
     id: row.id as string,
@@ -164,7 +164,7 @@ export interface VectorInfo {
   pending?: boolean;
 }
 
-export function insertMemory(db: Database.Database, mem: MemoryInput, embedding: Float32Array, vector: VectorInfo = {}): Memory {
+export function insertMemory(db: SqliteDatabase, mem: MemoryInput, embedding: Float32Array, vector: VectorInfo = {}): Memory {
   const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const now = Date.now();
   const memory: Memory = {
@@ -211,7 +211,7 @@ export function insertMemory(db: Database.Database, mem: MemoryInput, embedding:
   return memory;
 }
 
-export function insertMemories(db: Database.Database, items: { input: MemoryInput; embedding: Float32Array; vector?: VectorInfo }[]): Memory[] {
+export function insertMemories(db: SqliteDatabase, items: { input: MemoryInput; embedding: Float32Array; vector?: VectorInfo }[]): Memory[] {
   const insert = db.prepare(
     `INSERT INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role, embedding_model)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -266,7 +266,7 @@ export function insertMemories(db: Database.Database, items: { input: MemoryInpu
   return inserted;
 }
 
-export function updateAccessedAt(db: Database.Database, ids: string[]): void {
+export function updateAccessedAt(db: SqliteDatabase, ids: string[]): void {
   if (ids.length === 0) return;
   const now = Date.now();
   const stmt = db.prepare(`UPDATE memories SET accessed_at = ? WHERE id = ?`);
@@ -291,7 +291,7 @@ function escapeFts5(query: string): string {
 }
 
 export function searchMemoriesFts(
-  db: Database.Database,
+  db: SqliteDatabase,
   query: string,
   repoPath?: string,
   limit = 50,
@@ -318,13 +318,13 @@ export function searchMemoriesFts(
 
   const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
-    memory: rowToMemory(row as Database.RunResult & Record<string, unknown>),
+    memory: rowToMemory(row as Record<string, unknown>),
     rank: row.rank as number,
   }));
 }
 
 export function listMemoriesForVectorSearch(
-  db: Database.Database,
+  db: SqliteDatabase,
   repoPath: string,
   since: number,
   limit = 2000,
@@ -351,11 +351,11 @@ export function listMemoriesForVectorSearch(
        ORDER BY accessed_at DESC
        LIMIT ?`
     )
-    .all(...params, limit) as Array<Database.RunResult & Record<string, unknown>>;
+    .all(...params, limit) as Array<Record<string, unknown>>;
   return rows.map(rowToMemory);
 }
 
-export function getMemoryStats(db: Database.Database): MemoryStats {
+export function getMemoryStats(db: SqliteDatabase): MemoryStats {
   const totalCount = (db.prepare("SELECT COUNT(*) as c FROM memories WHERE forgotten = 0 AND superseded_by IS NULL").get() as { c: number }).c;
   const dbPath = db.name;
   let dbSizeBytes = 0;
@@ -393,20 +393,20 @@ export function getMemoryStats(db: Database.Database): MemoryStats {
   };
 }
 
-export function deleteMemoriesByIds(db: Database.Database, ids: string[]): number {
+export function deleteMemoriesByIds(db: SqliteDatabase, ids: string[]): number {
   if (ids.length === 0) return 0;
   const placeholders = ids.map(() => "?").join(",");
   const result = db.prepare(`DELETE FROM memories WHERE id IN (${placeholders})`).run(...ids);
   return result.changes;
 }
 
-export function deleteOldMemories(db: Database.Database, maxAgeMs: number): number {
+export function deleteOldMemories(db: SqliteDatabase, maxAgeMs: number): number {
   const cutoff = Date.now() - maxAgeMs;
   const result = db.prepare("DELETE FROM memories WHERE created_at < ?").run(cutoff);
   return result.changes;
 }
 
-export function deleteExcessMemories(db: Database.Database, repoPath: string, keep: number): number {
+export function deleteExcessMemories(db: SqliteDatabase, repoPath: string, keep: number): number {
   const result = db
     .prepare(
       `DELETE FROM memories WHERE id IN (
@@ -419,19 +419,19 @@ export function deleteExcessMemories(db: Database.Database, repoPath: string, ke
   return result.changes;
 }
 
-export function setLastCleanup(db: Database.Database): void {
+export function setLastCleanup(db: SqliteDatabase): void {
   db.prepare(
     `INSERT INTO memory_meta (key, value) VALUES ('last_cleanup', ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   ).run(String(Date.now()));
 }
 
-export function clearMemoriesForRepo(db: Database.Database, repoPath: string): number {
+export function clearMemoriesForRepo(db: SqliteDatabase, repoPath: string): number {
   const result = db.prepare("DELETE FROM memories WHERE repo_path = ?").run(repoPath);
   return result.changes;
 }
 
-export function listTopicKeys(db: Database.Database, repoPath: string): string[] {
+export function listTopicKeys(db: SqliteDatabase, repoPath: string): string[] {
   const rows = db
     .prepare(
       `SELECT DISTINCT topic_key FROM memories
@@ -442,7 +442,7 @@ export function listTopicKeys(db: Database.Database, repoPath: string): string[]
 }
 
 export function findMemoriesByTopicKey(
-  db: Database.Database,
+  db: SqliteDatabase,
   repoPath: string,
   topicKey: string
 ): Memory[] {
@@ -452,34 +452,34 @@ export function findMemoriesByTopicKey(
        WHERE repo_path = ? AND topic_key = ? AND forgotten = 0 AND superseded_by IS NULL
        ORDER BY created_at DESC`
     )
-    .all(repoPath, topicKey) as Array<Database.RunResult & Record<string, unknown>>;
+    .all(repoPath, topicKey) as Array<Record<string, unknown>>;
   return rows.map(rowToMemory);
 }
 
-export function supersedeMemory(db: Database.Database, oldId: string, newId: string): void {
+export function supersedeMemory(db: SqliteDatabase, oldId: string, newId: string): void {
   db.prepare(
     `UPDATE memories SET superseded_by = ? WHERE id = ?`
   ).run(newId, oldId);
 }
 
-export function forgetMemory(db: Database.Database, id: string): void {
+export function forgetMemory(db: SqliteDatabase, id: string): void {
   db.prepare(
     `UPDATE memories SET forgotten = 1 WHERE id = ?`
   ).run(id);
 }
 
-export function listUnvectorizedMemories(db: Database.Database, repoPath: string, limit = 100): Memory[] {
+export function listUnvectorizedMemories(db: SqliteDatabase, repoPath: string, limit = 100): Memory[] {
   const rows = db
     .prepare(
       `SELECT * FROM memories
        WHERE repo_path = ? AND vectorized = 0
        LIMIT ?`
     )
-    .all(repoPath, limit) as Array<Database.RunResult & Record<string, unknown>>;
+    .all(repoPath, limit) as Array<Record<string, unknown>>;
   return rows.map(rowToMemory);
 }
 
-export function updateMemoryEmbedding(db: Database.Database, id: string, embedding: Float32Array, embeddingModel: string | null = null): void {
+export function updateMemoryEmbedding(db: SqliteDatabase, id: string, embedding: Float32Array, embeddingModel: string | null = null): void {
   db.prepare(
     `UPDATE memories SET embedding = ?, vectorized = 1, embedding_model = ? WHERE id = ?`
   ).run(Buffer.from(embedding.buffer), embeddingModel, id);
@@ -490,7 +490,7 @@ export function updateMemoryEmbedding(db: Database.Database, id: string, embeddi
  * embedded by a different model (the provider or embedding model changed).
  * Topic-key-only rows (tasks/plans) are left alone.
  */
-export function listMemoriesNeedingEmbedding(db: Database.Database, repoPath: string, embeddingModel: string, limit = 100): Memory[] {
+export function listMemoriesNeedingEmbedding(db: SqliteDatabase, repoPath: string, embeddingModel: string, limit = 100): Memory[] {
   const rows = db
     .prepare(
       `SELECT * FROM memories
@@ -499,12 +499,12 @@ export function listMemoriesNeedingEmbedding(db: Database.Database, repoPath: st
        ORDER BY accessed_at DESC
        LIMIT ?`
     )
-    .all(repoPath, embeddingModel, limit) as Array<Database.RunResult & Record<string, unknown>>;
+    .all(repoPath, embeddingModel, limit) as Array<Record<string, unknown>>;
   return rows.map(rowToMemory);
 }
 
 /** How many live rows are searchable with `embeddingModel` vs. waiting for (re-)embedding. */
-export function countMemoriesByEmbeddingModel(db: Database.Database, repoPath: string, embeddingModel: string | null): { current: number; stale: number } {
+export function countMemoriesByEmbeddingModel(db: SqliteDatabase, repoPath: string, embeddingModel: string | null): { current: number; stale: number } {
   const row = db
     .prepare(
       `SELECT
@@ -517,9 +517,9 @@ export function countMemoriesByEmbeddingModel(db: Database.Database, repoPath: s
   return { current: row.current ?? 0, stale: row.stale ?? 0 };
 }
 
-export function getMemoryById(db: Database.Database, id: string): Memory | null {
+export function getMemoryById(db: SqliteDatabase, id: string): Memory | null {
   const row = db.prepare("SELECT * FROM memories WHERE id = ?").get(id) as
-    | (Database.RunResult & Record<string, unknown>)
+    | (Record<string, unknown>)
     | undefined;
   return row ? rowToMemory(row) : null;
 }
@@ -527,7 +527,7 @@ export function getMemoryById(db: Database.Database, id: string): Memory | null 
 /** Return the most frequently referenced files across memories for a repo.
  *  Scores by frequency × importance, limited to `limit` results. */
 export function getTopRelatedFiles(
-  db: Database.Database,
+  db: SqliteDatabase,
   repoPath: string,
   limit = 10,
 ): string[] {
@@ -555,7 +555,7 @@ export function getTopRelatedFiles(
 }
 
 export function countHighSignalMemoriesSince(
-  db: Database.Database,
+  db: SqliteDatabase,
   repoPath: string,
   since: number,
 ): number {

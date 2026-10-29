@@ -212,8 +212,8 @@ describe("memory DB migration", () => {
   it("tags rows written before embedding models were recorded by their vector size", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "kimiflare-memory-migrate-test-"));
     const dbPath = join(tmpDir, "memory.db");
-    const { default: Database } = await import("better-sqlite3");
-    const legacy = new Database(dbPath);
+    const { SqliteDatabase } = await import("../util/sqlite.js");
+    const legacy = new SqliteDatabase(dbPath);
     legacy.exec(`CREATE TABLE memories (
       id TEXT PRIMARY KEY, content TEXT NOT NULL, embedding BLOB NOT NULL, category TEXT NOT NULL,
       source_session_id TEXT NOT NULL, repo_path TEXT NOT NULL, created_at INTEGER NOT NULL,

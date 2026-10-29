@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { createSign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { connect, type ClientHttp2Session } from "node:http2";
@@ -42,7 +42,7 @@ export interface AsterPushOptions {
 const DEVICE_TOKEN_RE = /^[0-9a-f]{64,200}$/i;
 
 export class AsterPush {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
   private readonly options: Required<Pick<AsterPushOptions, "keyId" | "teamId" | "topic">> & AsterPushOptions;
   private privateKey: string | undefined;
   private jwt: { value: string; issuedAt: number } | undefined;
@@ -56,7 +56,7 @@ export class AsterPush {
       teamId: options.teamId ?? env.AUTOPILOT_ASTER_APNS_TEAM_ID ?? "",
       topic: options.topic ?? env.AUTOPILOT_ASTER_APNS_TOPIC ?? "com.aster.ai",
     };
-    this.db = new Database(dbPath);
+    this.db = new SqliteDatabase(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("busy_timeout = 5000");
     this.db.exec(`

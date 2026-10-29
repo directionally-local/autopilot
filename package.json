@@ -67,7 +67,6 @@
   "dependencies": {
     "@hotcell/sdk": "^0.1.30",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^12.11.1",
     "camouflage-tui": "^2.8.3",
     "commander": "^12.1.0",
     "imapflow": "2.2.5",
@@ -84,7 +83,6 @@
     "isolated-vm": "^6.1.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.9.0",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.0",

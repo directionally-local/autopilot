@@ -3,7 +3,7 @@
  * Quick script to check what skills are indexed in the local DB.
  * Run: node scripts/check-skills.mjs
  */
-import Database from "better-sqlite3";
+import { DatabaseSync as Database } from "node:sqlite";
 import { join } from "node:path";
 
 const dbPath = join(process.cwd(), ".kimiflare", "memory.db");

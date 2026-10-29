@@ -26,7 +26,7 @@ import { estimatePromptTokens } from "./artifact-compaction.js";
 import { logger } from "../util/logger.js";
 import { selectSkills } from "../skills/router.js";
 import type { SemanticSkillRoutingResult } from "../skills/types.js";
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import { buildSystemPrompt, buildSessionPrefix } from "./system-prompt.js";
 import { getModelOrInfer } from "../models/registry.js";
 import { toolOutputCapForContextWindow } from "../tools/reducer.js";
@@ -180,7 +180,7 @@ export interface AgentTurnOpts extends LlmAuth {
   /** Session-start memory recall promise. If provided, awaited at turn start and injected into messages. */
   sessionStartRecall?: Promise<HybridResult[]>;
   /** Skills DB for semantic skill routing. */
-  skillsDb?: Database.Database;
+  skillsDb?: SqliteDatabase;
   /** Config for skill routing. */
   skillRoutingConfig?: {
     embeddingModel?: string;
