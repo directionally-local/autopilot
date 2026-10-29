@@ -10,6 +10,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readEnv } from "../util/env.js";
 
 export const TRACE_FILE_NAME = "trace.jsonl";
 export const BLOBS_DIR_NAME = "blobs";
@@ -21,7 +22,7 @@ export function defaultTraceRoot(): string {
 
 /** Resolve the trace root, honouring the env override and the config value in that order. */
 export function traceRoot(configRoot?: string | null): string {
-  const env = process.env.KIMIFLARE_TRACE_DIR;
+  const env = readEnv("TRACE_DIR");
   if (env && env.trim()) return env.trim();
   if (configRoot && configRoot.trim()) return configRoot.trim();
   return defaultTraceRoot();

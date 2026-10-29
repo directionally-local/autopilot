@@ -16,6 +16,7 @@
  */
 
 import type { ProviderId } from "../providers/presets.js";
+import { readEnv } from "../util/env.js";
 
 export interface CustomEndpoint {
   /** OpenAI-compatible base URL. `/chat/completions` is appended unless the URL already ends with it. */
@@ -46,9 +47,9 @@ function nonEmpty(value: string | undefined): string | undefined {
 export function resolveCustomEndpoint(
   config?: CustomEndpointConfigFields | null,
 ): CustomEndpoint | null {
-  const baseUrl = nonEmpty(process.env.KIMIFLARE_BASE_URL) ?? nonEmpty(config?.baseUrl);
+  const baseUrl = nonEmpty(readEnv("BASE_URL")) ?? nonEmpty(config?.baseUrl);
   if (!baseUrl) return null;
-  const apiKey = nonEmpty(process.env.KIMIFLARE_API_KEY) ?? nonEmpty(config?.apiKey);
+  const apiKey = nonEmpty(readEnv("API_KEY")) ?? nonEmpty(config?.apiKey);
   return { baseUrl, ...(apiKey ? { apiKey } : {}) };
 }
 

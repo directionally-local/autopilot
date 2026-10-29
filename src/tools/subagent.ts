@@ -5,6 +5,7 @@ import { runHotcellWorker } from "./hotcell-worker.js";
 import { workerRegistry, type WorkerHandle } from "./worker-registry.js";
 import { failureReason, recordSubagentEvent } from "./subagent-stats.js";
 import type { WorkerResultMessage } from "../agent/messages.js";
+import { readEnv } from "../util/env.js";
 
 export interface SubagentArgs {
   mission: string;
@@ -102,7 +103,7 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
       throw new Error("Subagent requires the session's active model ID; refusing to choose a different model.");
     }
     const timeoutMs = cfg.workerTimeoutMs
-      ?? readNumberEnv("KIMIFLARE_WORKER_TIMEOUT_MS")
+      ?? readNumberEnv("WORKER_TIMEOUT_MS")
       ?? DEFAULT_WORKER_TIMEOUT_MS;
 
     // Each subagent gets its own cancel handle (see /subagents cancel), linked
@@ -182,7 +183,7 @@ async function runWorker(
         context: args.context,
         model,
         timeoutMs,
-        setupTimeoutMs: readNumberEnv("KIMIFLARE_WORKER_SETUP_TIMEOUT_MS"),
+        setupTimeoutMs: readNumberEnv("WORKER_SETUP_TIMEOUT_MS"),
         maxParallel: cfg.workerMaxParallel,
         cwd: ctx.cwd,
         signal: handle.signal,
@@ -255,8 +256,8 @@ function textOutput(content: string): ToolOutput {
   return { content, rawBytes: bytes, reducedBytes: bytes };
 }
 
-function readNumberEnv(name: string): number | undefined {
-  const raw = process.env[name];
+function readNumberEnv(suffix: string): number | undefined {
+  const raw = readEnv(suffix);
   if (!raw) return undefined;
   const parsed = parseInt(raw, 10);
   return Number.isNaN(parsed) ? undefined : parsed;

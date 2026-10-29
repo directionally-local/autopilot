@@ -40,6 +40,7 @@ import { beginGitDelta } from "../trace/git-delta.js";
 import { sessionTranscript } from "../transcript/claude-jsonl.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnEndReason } from "../trace/types.js";
+import { readEnv } from "../util/env.js";
 
 export interface AgentCallbacks {
   onAssistantStart?: () => void;
@@ -850,9 +851,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     tr.partialText = "";
     opts.callbacks.onAssistantStart?.();
 
-    const stripReasoning = process.env.KIMIFLARE_STRIP_REASONING === "1";
-    const shadowStrip = process.env.KIMIFLARE_SHADOW_STRIP === "1";
-    const keepLastRaw = process.env.KIMIFLARE_REASONING_KEEP_LAST;
+    const stripReasoning = readEnv("STRIP_REASONING") === "1";
+    const shadowStrip = readEnv("SHADOW_STRIP") === "1";
+    const keepLastRaw = readEnv("REASONING_KEEP_LAST");
     const keepLast = keepLastRaw ? parseInt(keepLastRaw, 10) : 1;
 
     let shadowStripMetrics:

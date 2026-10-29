@@ -6,6 +6,7 @@ import { logger } from "../util/logger.js";
 import { previewCommand } from "../util/command-preview.js";
 import { getUserAgent } from "../util/version.js";
 import { interactiveCommandHint, userShellCommandsEnabled } from "../agent/user-shell.js";
+import { readEnv } from "../util/env.js";
 
 interface Args {
   command: string;
@@ -142,7 +143,7 @@ export async function guardGitPush(command: string, ctx: ToolContext): Promise<T
   const trimmed = command.trim();
   if (!/\bgit\s+push\b/.test(trimmed)) return undefined;
 
-  const allowed = ctx.allowDirectPush === true || process.env.KIMIFLARE_ALLOW_DIRECT_PUSH === "1";
+  const allowed = ctx.allowDirectPush === true || readEnv("ALLOW_DIRECT_PUSH") === "1";
   if (allowed) return undefined;
 
   const defaultBranch = await getDefaultBranch(ctx.cwd);
@@ -193,7 +194,7 @@ export async function guardGitCommit(command: string, ctx: ToolContext): Promise
 
   // `preferPullRequests` defaults to true; allowDirectPush is the explicit opt-out.
   if (ctx.preferPullRequests === false) return undefined;
-  const allowed = ctx.allowDirectPush === true || process.env.KIMIFLARE_ALLOW_DIRECT_PUSH === "1";
+  const allowed = ctx.allowDirectPush === true || readEnv("ALLOW_DIRECT_PUSH") === "1";
   if (allowed) return undefined;
 
   // `git merge --abort`, `git rebase --continue`, ... do not create commits.

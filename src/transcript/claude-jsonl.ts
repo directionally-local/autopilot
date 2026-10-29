@@ -46,6 +46,7 @@ import { RETENTION } from "../storage-limits.js";
 import { truncateUtf8 } from "../trace/blobs.js";
 import { redactDeep } from "../trace/redact.js";
 import { logger } from "../util/logger.js";
+import { readEnv } from "../util/env.js";
 
 /** `transcript_format` in hook payloads when `transcript_path` is this transcript. */
 export const CLAUDE_TRANSCRIPT_FORMAT = "claude-jsonl";
@@ -65,7 +66,7 @@ export const TRANSCRIPT_MAX_SESSION_BYTES = RETENTION.traceMaxSessionBytes;
 
 /** False when `KIMIFLARE_TRANSCRIPT` is `0`, `false` or `off`. On by default. */
 export function transcriptEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env.KIMIFLARE_TRANSCRIPT?.trim().toLowerCase();
+  const v = readEnv("TRANSCRIPT", env)?.trim().toLowerCase();
   return !(v === "0" || v === "false" || v === "off");
 }
 

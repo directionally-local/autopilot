@@ -103,6 +103,7 @@ import {
   type ListedSessionWorktree,
   type SessionWorktree,
 } from "../runs/session-worktrees.js";
+import { readEnv } from "../util/env.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -939,7 +940,7 @@ const handleProvider: Handler = async (ctx, rest) => {
       return true;
     }
     await saveProviderKey(target, keyArg);
-  } else if (target === "custom" ? !(cfg?.baseUrl || process.env.KIMIFLARE_BASE_URL) : preset.keyRequired && !resolveProviderKey(target, cfg)) {
+  } else if (target === "custom" ? !(cfg?.baseUrl || readEnv("BASE_URL")) : preset.keyRequired && !resolveProviderKey(target, cfg)) {
     info(
       target === "custom"
         ? "set the endpoint first: KIMIFLARE_BASE_URL, or `baseUrl` (and `apiKey`) in config"

@@ -6,6 +6,7 @@ import { isProviderUsable, noteActiveProvider, resolveActiveProvider, resolvePro
 import { migrateLegacyModelId } from "./models/registry.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
+import { readEnv } from "./util/env.js";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 export const EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high"];
@@ -161,9 +162,9 @@ export interface KimiConfig {
   lspEnabled?: boolean;
   /** LSP server configurations. */
   lspServers?: Record<string, LspServerConfig>;
-  /** Enable cost attribution by task type. Default: false. Once stable for 2 releases, consider defaulting to true. */
+  /** Enable cost attribution by task type. Default: true. */
   costAttribution?: boolean;
-  /** Enable @ file mention picker in chat input. Default: false. */
+  /** Enable @ file mention picker in chat input. Default: true. */
   filePicker?: boolean;
   /** URL of the remote orchestrator Worker. */
   remoteWorkerUrl?: string;
@@ -261,20 +262,24 @@ function readReasoningEffortEnv(): ReasoningEffort | undefined {
 }
 
 function readSubagentPolicyEnv(): SubagentPolicy | undefined {
-  const raw = process.env.KIMIFLARE_SUBAGENT_POLICY?.toLowerCase();
+  const raw = readEnv("SUBAGENT_POLICY")?.toLowerCase();
   return raw === "off" || raw === "suggest" || raw === "auto" ? raw : undefined;
 }
 
 function readCoauthorEnv(): { enabled: boolean; name: string; email: string } | undefined {
-  const enabled = process.env.KIMIFLARE_COAUTHOR;
+  const enabled = readEnv("COAUTHOR");
   if (enabled === "0" || enabled === "false") return undefined;
-  const name = process.env.KIMIFLARE_COAUTHOR_NAME || "autopilot";
-  const email = process.env.KIMIFLARE_COAUTHOR_EMAIL || "kimiflare@proton.me";
+  const name = readEnv("COAUTHOR_NAME") || "autopilot";
+  const email = readEnv("COAUTHOR_EMAIL") || "kimiflare@proton.me";
   return { enabled: true, name, email };
 }
 
-function readBooleanEnv(name: string): boolean | undefined {
-  const raw = process.env[name];
+/** Boolean `AUTOPILOT_<suffix>` (or legacy `KIMIFLARE_<suffix>`) setting. */
+function readBooleanEnv(suffix: string): boolean | undefined {
+  return parseBooleanEnv(readEnv(suffix));
+}
+
+function parseBooleanEnv(raw: string | undefined): boolean | undefined {
   if (raw === undefined) return undefined;
   const normalized = raw.toLowerCase();
   if (normalized === "1" || normalized === "true") return true;
@@ -282,8 +287,9 @@ function readBooleanEnv(name: string): boolean | undefined {
   return undefined;
 }
 
-function readNumberEnv(name: string): number | undefined {
-  const raw = process.env[name];
+/** Integer `AUTOPILOT_<suffix>` (or legacy `KIMIFLARE_<suffix>`) setting. */
+function readNumberEnv(suffix: string): number | undefined {
+  const raw = readEnv(suffix);
   if (!raw) return undefined;
   const parsed = parseInt(raw, 10);
   return Number.isNaN(parsed) ? undefined : parsed;
@@ -291,8 +297,8 @@ function readNumberEnv(name: string): number | undefined {
 
 /** Env (KIMIFLARE_TRACE, KIMIFLARE_TRACE_DIR) wins over the file; default off. */
 function resolveTraceConfig(persisted: Partial<TraceConfig> | undefined): TraceConfig | undefined {
-  const envEnabled = readBooleanEnv("KIMIFLARE_TRACE");
-  const envRoot = process.env.KIMIFLARE_TRACE_DIR?.trim() || undefined;
+  const envEnabled = readBooleanEnv("TRACE");
+  const envRoot = readEnv("TRACE_DIR")?.trim() || undefined;
   if (envEnabled === undefined && envRoot === undefined && persisted === undefined) return undefined;
   const trace: TraceConfig = { enabled: envEnabled ?? persisted?.enabled ?? false };
   const root = envRoot ?? persisted?.root;
@@ -320,15 +326,15 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   // providerKeys.openrouter — honoured as a fallback.
   const openrouterApiKey =
     process.env.OPENROUTER_API_KEY ||
-    process.env.KIMIFLARE_OPENROUTER_KEY ||
+    readEnv("OPENROUTER_KEY") ||
     persisted.openrouterApiKey ||
     persisted.providerKeys?.openrouter ||
     undefined;
 
   // Custom OpenAI-compatible endpoint (see src/agent/custom-endpoint.ts): a
   // complete setup on its own, no OpenRouter key needed.
-  const baseUrl = process.env.KIMIFLARE_BASE_URL ?? persisted.baseUrl;
-  const apiKey = process.env.KIMIFLARE_API_KEY ?? persisted.apiKey;
+  const baseUrl = readEnv("BASE_URL") ?? persisted.baseUrl;
+  const apiKey = readEnv("API_KEY") ?? persisted.apiKey;
   const requestyApiKey = process.env.REQUESTY_API_KEY || persisted.requestyApiKey || undefined;
   const providerFields = {
     provider: isProviderId(persisted.provider) ? persisted.provider : undefined,
@@ -354,11 +360,11 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   const envSubagentPolicy = readSubagentPolicyEnv();
   const envCoauthor = readCoauthorEnv();
 
-  const envCacheStable = process.env.KIMIFLARE_CACHE_STABLE_PROMPTS;
+  const envCacheStable = readEnv("CACHE_STABLE_PROMPTS");
   const cacheStablePrompts = envCacheStable === "0" || envCacheStable === "false" ? false : true;
-  const envCompiled = process.env.KIMIFLARE_COMPILED_CONTEXT;
+  const envCompiled = readEnv("COMPILED_CONTEXT");
   const compiledContext = envCompiled === "0" || envCompiled === "false" ? false : true;
-  const envImageTurns = process.env.KIMIFLARE_IMAGE_HISTORY_TURNS;
+  const envImageTurns = readEnv("IMAGE_HISTORY_TURNS");
   const imageHistoryTurns = envImageTurns ? parseInt(envImageTurns, 10) : undefined;
 
 
@@ -414,26 +420,26 @@ export async function loadConfig(): Promise<KimiConfig | null> {
       imageHistoryTurns === undefined || Number.isNaN(imageHistoryTurns)
         ? persisted.imageHistoryTurns
         : imageHistoryTurns,
-    imageMaxEdge: readNumberEnv("KIMIFLARE_IMAGE_MAX_EDGE") ?? persisted.imageMaxEdge,
-    imageQuality: readNumberEnv("KIMIFLARE_IMAGE_QUALITY") ?? persisted.imageQuality,
+    imageMaxEdge: readNumberEnv("IMAGE_MAX_EDGE") ?? persisted.imageMaxEdge,
+    imageQuality: readNumberEnv("IMAGE_QUALITY") ?? persisted.imageQuality,
     maxTotalToolIterations:
-      readNumberEnv("KIMIFLARE_MAX_TOTAL_TOOL_ITERATIONS") ?? persisted.maxTotalToolIterations,
-    memoryEnabled: readBooleanEnv("KIMIFLARE_MEMORY_ENABLED") ?? persisted.memoryEnabled ?? false,
-    memoryDbPath: process.env.KIMIFLARE_MEMORY_DB_PATH ?? persisted.memoryDbPath,
-    memoryMaxAgeDays: readNumberEnv("KIMIFLARE_MEMORY_MAX_AGE_DAYS") ?? persisted.memoryMaxAgeDays,
-    memoryMaxEntries: readNumberEnv("KIMIFLARE_MEMORY_MAX_ENTRIES") ?? persisted.memoryMaxEntries,
-    memoryEmbeddingModel: m(process.env.KIMIFLARE_MEMORY_EMBEDDING_MODEL ?? own(persisted.memoryEmbeddingModel)),
+      readNumberEnv("MAX_TOTAL_TOOL_ITERATIONS") ?? persisted.maxTotalToolIterations,
+    memoryEnabled: readBooleanEnv("MEMORY_ENABLED") ?? persisted.memoryEnabled ?? false,
+    memoryDbPath: readEnv("MEMORY_DB_PATH") ?? persisted.memoryDbPath,
+    memoryMaxAgeDays: readNumberEnv("MEMORY_MAX_AGE_DAYS") ?? persisted.memoryMaxAgeDays,
+    memoryMaxEntries: readNumberEnv("MEMORY_MAX_ENTRIES") ?? persisted.memoryMaxEntries,
+    memoryEmbeddingModel: m(readEnv("MEMORY_EMBEDDING_MODEL") ?? own(persisted.memoryEmbeddingModel)),
     embeddingProvider: isProviderId(persisted.embeddingProvider) ? persisted.embeddingProvider : undefined,
-    plumbingModel: m(process.env.KIMIFLARE_PLUMBING_MODEL ?? own(persisted.plumbingModel)) ?? plumbingDefault,
+    plumbingModel: m(readEnv("PLUMBING_MODEL") ?? own(persisted.plumbingModel)) ?? plumbingDefault,
     memoryExtractionModel:
-      m(process.env.KIMIFLARE_MEMORY_EXTRACTION_MODEL ?? own(persisted.memoryExtractionModel)) ?? plumbingDefault,
-    codeMode: readBooleanEnv("KIMIFLARE_CODE_MODE") ?? persisted.codeMode ?? true,
-    completionCheck: readBooleanEnv("KIMIFLARE_COMPLETION_CHECK") ?? persisted.completionCheck ?? true,
+      m(readEnv("MEMORY_EXTRACTION_MODEL") ?? own(persisted.memoryExtractionModel)) ?? plumbingDefault,
+    codeMode: readBooleanEnv("CODE_MODE") ?? persisted.codeMode ?? true,
+    completionCheck: readBooleanEnv("COMPLETION_CHECK") ?? persisted.completionCheck ?? true,
     lspEnabled: persisted.lspEnabled,
     lspServers: persisted.lspServers,
-    costAttribution: readBooleanEnv("KIMI_COST_ATTRIBUTION") ?? persisted.costAttribution ?? true,
-    filePicker: readBooleanEnv("KIMIFLARE_FILE_PICKER") ?? persisted.filePicker ?? true,
-    shell: process.env.KIMIFLARE_SHELL ?? persisted.shell,
+    costAttribution: parseBooleanEnv(process.env.KIMI_COST_ATTRIBUTION) ?? persisted.costAttribution ?? true,
+    filePicker: readBooleanEnv("FILE_PICKER") ?? persisted.filePicker ?? true,
+    shell: readEnv("SHELL") ?? persisted.shell,
     remoteWorkerUrl: persisted.remoteWorkerUrl,
     remoteAuthSecret: persisted.remoteAuthSecret,
     remoteTtlMinutes: persisted.remoteTtlMinutes,
@@ -442,18 +448,18 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     githubRefreshToken: persisted.githubRefreshToken,
     githubTokenExpiry: persisted.githubTokenExpiry,
     githubRepo: persisted.githubRepo,
-    workerMaxParallel: readNumberEnv("KIMIFLARE_WORKER_MAX_PARALLEL") ?? persisted.workerMaxParallel,
-    workerTimeoutMs: readNumberEnv("KIMIFLARE_WORKER_TIMEOUT_MS") ?? persisted.workerTimeoutMs,
+    workerMaxParallel: readNumberEnv("WORKER_MAX_PARALLEL") ?? persisted.workerMaxParallel,
+    workerTimeoutMs: readNumberEnv("WORKER_TIMEOUT_MS") ?? persisted.workerTimeoutMs,
     autoFreshSuggestionTurns: persisted.autoFreshSuggestionTurns,
     autoFreshEnabled: persisted.autoFreshEnabled,
     autoCompactTokenThreshold: persisted.autoCompactTokenThreshold,
-    autoCompactCapTokens: readNumberEnv("KIMIFLARE_AUTO_COMPACT_CAP_TOKENS") ?? persisted.autoCompactCapTokens,
+    autoCompactCapTokens: readNumberEnv("AUTO_COMPACT_CAP_TOKENS") ?? persisted.autoCompactCapTokens,
     autoFreshTokenThreshold: persisted.autoFreshTokenThreshold,
     permissions: persisted.permissions,
-    preferPullRequests: readBooleanEnv("KIMIFLARE_PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,
-    allowDirectPush: readBooleanEnv("KIMIFLARE_ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
-    postEditDiagnostics: readBooleanEnv("KIMIFLARE_POST_EDIT_DIAGNOSTICS") ?? persisted.postEditDiagnostics ?? true,
-    postEditDiagnosticsWarnings: readBooleanEnv("KIMIFLARE_POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,
+    preferPullRequests: readBooleanEnv("PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,
+    allowDirectPush: readBooleanEnv("ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
+    postEditDiagnostics: readBooleanEnv("POST_EDIT_DIAGNOSTICS") ?? persisted.postEditDiagnostics ?? true,
+    postEditDiagnosticsWarnings: readBooleanEnv("POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,
     sessionWorktrees: persisted.sessionWorktrees ?? true,
     trace: resolveTraceConfig(persisted.trace),
   };
