@@ -764,7 +764,10 @@ export class AsterApi {
       store.setCellStatus(mapping.conversationId, "ready");
       store.appendEvent(mapping.conversationId, null, "conversation.created", { conversationId: mapping.conversationId, workspaceId: workspace.id, model });
       json(res, reservation.kind === "created" ? 201 : 200, publicConversation(conversation, store.getConversationProject(conversation.id)));
-    } catch {
+    } catch (error) {
+      // The client only gets a generic 503; the operator needs the reason (e.g. a missing gateway).
+      const code = error && typeof error === "object" && "code" in error ? ` (${String((error as { code: unknown }).code)})` : "";
+      process.stderr.write(`aster: conversation ${mapping.conversationId} failed to provision${code}: ${redactLikelySecrets(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`);
       const current = store.getCellMapping(mapping.conversationId);
       if (current?.cellId && this.runtime.destroyCell) {
         try {
