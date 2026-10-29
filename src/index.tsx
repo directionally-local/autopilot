@@ -175,6 +175,60 @@ program
     const { pullRun } = await import("./remote/cli.js");
     await pullRun({ id, cwd: process.cwd(), ...(cmdOpts.on ? { remote: cmdOpts.on } : {}) });
   }));
+program
+  .command("attach-remote")
+  .description(
+    "Open the interactive UI on a conversation running on an Aster server. " +
+      "Reads AUTOPILOT_REMOTE_URL and AUTOPILOT_REMOTE_TOKEN from the environment. Quitting detaches; the conversation keeps running.",
+  )
+  .option("--conversation <id>", "reconnect to this conversation (replays its history, then follows it live)")
+  .option("--workspace <id>", "start a new code conversation in this server workspace")
+  .option("--repo <owner/name>", "with --workspace: the GitHub repository to clone")
+  .option("--model <id>", "with --workspace: the model to start with")
+  .option("--base-commit <sha>", "with --workspace: start from this commit (full SHA)")
+  .option("--patch-file <path>", "with --base-commit: a git diff --binary of uncommitted changes to apply first")
+  .option("--state-file <path>", "write {conversationId, branch, repository} here (0600) once the conversation exists")
+  .option("--title <text>", "title shown in the UI header")
+  .action(async (_cmdOpts: unknown, command: Command) => {
+    const { attachRemote } = await import("./remote/attach-cli.js");
+    const { gracefulExit, installExitHandlers } = await import("./util/exit.js");
+    // Closing the terminal (SIGHUP) or a parent's SIGTERM only detaches: give
+    // the terminal back and exit 0; the conversation keeps running on the server.
+    installExitHandlers({ exitCode: () => 0 });
+    // The root command also declares --model, --repo and --title; Commander
+    // may attach those flags there, so read them from the merged globals.
+    const all = command.optsWithGlobals() as Record<string, unknown>;
+    const flags: import("./remote/attach-cli.js").AttachRemoteFlags = {};
+    for (const key of ["conversation", "workspace", "repo", "model", "baseCommit", "patchFile", "stateFile", "title"] as const) {
+      if (typeof all[key] === "string") flags[key] = all[key];
+    }
+    const code = await attachRemote(flags, {
+      mount: async ({ header, commands, run }) => {
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          throw new Error("attach-remote needs a terminal (TTY) for the interactive UI");
+        }
+        const { runCamouflageView } = await import("./camouflage-view.js");
+        const { CamouflageUnavailable, runWithCrashRestarts, crashGiveUpMessage } = await import("./camouflage-launch.js");
+        try {
+          // A renderer crash reopens the UI and replays the conversation again.
+          const outcome = await runWithCrashRestarts(async () => {
+            await runCamouflageView({ version: getAppVersion(), header, commands, run });
+          });
+          if (outcome.gaveUp) process.stderr.write(crashGiveUpMessage({ crashes: outcome.crashes, sessionId: null }));
+        } catch (err) {
+          if (err instanceof CamouflageUnavailable) {
+            process.stderr.write(err.message);
+            await gracefulExit(1);
+          }
+          throw err;
+        }
+      },
+    }).catch((error: unknown) => {
+      process.stderr.write(`autopilot attach-remote: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    });
+    await gracefulExit(code);
+  });
 registerEvalCommand(program);
 
 const asterCommand = program.command("aster").description("Manage the Aster mobile API");

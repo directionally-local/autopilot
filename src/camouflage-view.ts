@@ -164,6 +164,18 @@ export interface CamouflageViewOpts {
   runApp: (bridge: AppBridge, cfg: Cfg) => Promise<void>;
 }
 
+/**
+ * A session that isn't the local App (`autopilot attach-remote`): it brings
+ * its own header and slash commands, and needs no provider setup or local
+ * resume hint. `run` drives the view through the same AppBridge App uses.
+ */
+export interface CamouflageSessionViewOpts {
+  version: string;
+  header: { title: string; detail: string[] };
+  commands: RegisteredSlashCommand[];
+  run: (bridge: AppBridge) => Promise<void>;
+}
+
 /** How the session ended: normally, or before it began because first-run setup was cancelled or failed. */
 export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed";
 
@@ -176,7 +188,9 @@ export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | n
   ];
 }
 
-export async function runCamouflageView(opts: CamouflageViewOpts): Promise<CamouflageViewResult> {
+export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSessionViewOpts): Promise<CamouflageViewResult> {
+  const custom = "run" in input ? input : null;
+  const opts: CamouflageViewOpts = custom ? { cfg: null, version: custom.version, runApp: (bridge) => custom.run(bridge) } : (input as CamouflageViewOpts);
   const sdk = await loadSdk();
   // Fail before mounting when the renderer certainly can't run (a postinstall
   // that silently left bin/ empty on an unsupported platform, a bad
@@ -209,8 +223,8 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
   const branch = gitBranch(cwd);
   const startSession = (cfg: Cfg | null) =>
     cam.send("SessionStarted", {
-      title: `autopilot ${opts.version}`,
-      detail: sessionHeaderDetail(cfg, cwd, branch),
+      title: custom ? custom.header.title : `autopilot ${opts.version}`,
+      detail: custom ? custom.header.detail : sessionHeaderDetail(cfg, cwd, branch),
       accent: "orange",
       assistant_label: "autopilot",
     });
@@ -220,7 +234,7 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
     cam.send("MentionCandidatesRegistered", { candidates: files.map((token) => ({ token, kind: "file" })) });
   }
 
-  const view = new View(cam, sdk);
+  const view = new View(cam, sdk, custom ? { commands: custom.commands } : {});
   // `!` commands borrow the terminal from the renderer while they run.
   registerTerminalHandoff({
     suspend: async () => (sdk.suspendTerminal ? (await sdk.suspendTerminal(cam)).supported : false),
@@ -232,7 +246,8 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
       cam.send("RuntimeError", { message: "Finish connecting a provider first — the session starts right after.", severity: "info" });
       return;
     }
-    if (view.routeActivityCommand(text)) return;
+    // /jobs and /agents browse this machine's background work: not a remote session's.
+    if (!custom && view.routeActivityCommand(text)) return;
     view.echoed.push(text.trim());
     view.actions?.submit(text);
   });
@@ -314,7 +329,9 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
   let setup: FirstRunOutcome | null = null;
   try {
     let cfg = opts.cfg;
-    if (!cfg) {
+    if (custom) {
+      if (!crashed) await Promise.race([custom.run(view), beforeApp]);
+    } else if (!cfg) {
       const onboarding = runFirstRun({
         upgrading: hasLegacyCloudflareConfig,
         configPath,
@@ -330,7 +347,7 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
         setup = outcome ?? (quitBeforeApp ? { kind: "cancelled" } : null);
       }
     }
-    if (cfg && !crashed) await Promise.race([opts.runApp(view, cfg), beforeApp]);
+    if (!custom && cfg && !crashed) await Promise.race([opts.runApp(view, cfg), beforeApp]);
   } finally {
     unregisterShutdown();
     await finish();
@@ -348,7 +365,7 @@ export async function runCamouflageView(opts: CamouflageViewOpts): Promise<Camou
     process.stderr.write(`autopilot: ${outcome.message}\n`);
     return "setup-failed";
   }
-  const hint = resumeHint(view.sessionId);
+  const hint = custom ? null : resumeHint(view.sessionId);
   if (hint) process.stdout.write(hint);
   return "done";
 }
@@ -396,6 +413,8 @@ export class View implements AppBridge {
   constructor(
     private cam: CamouflageHandle,
     private sdk: CamouflageSdk,
+    /** `commands`: a fixed slash-command list (a remote session) instead of the built-ins plus custom ones. */
+    private readonly opts: { commands?: RegisteredSlashCommand[] } = {},
   ) {}
 
   connect(actions: AppActions): void {
@@ -589,6 +608,12 @@ export class View implements AppBridge {
   }
 
   private syncCommands(custom: { name: string; description?: string }[]): void {
+    if (this.opts.commands) {
+      const key = JSON.stringify(this.opts.commands);
+      if (key !== this.commandsKey) this.cam.send("SlashCommandsRegistered", { commands: this.opts.commands });
+      this.commandsKey = key;
+      return;
+    }
     this.commandsKey = syncSlashCommands(custom, this.commandsKey, (commands) => {
       this.cam.send("SlashCommandsRegistered", { commands });
     });
@@ -1590,7 +1615,7 @@ function runShell(command: string): Promise<{ ok: boolean; output: string }> {
 
 type PickOption = { value: string; label: string; description?: string; section?: string; columns?: string[]; state?: "on" | "off"; keywords?: string };
 
-type RegisteredSlashCommand = { name: string; description?: string; args_hint?: string };
+export type RegisteredSlashCommand = { name: string; description?: string; args_hint?: string };
 
 /** Send the complete command list only when the serialized renderer payload changes. */
 export function syncSlashCommands(

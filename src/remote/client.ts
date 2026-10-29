@@ -25,6 +25,17 @@ export interface RemoteEvent {
   data: Record<string, unknown>;
 }
 
+export interface RemoteApproval {
+  approvalId: string;
+  conversationId: string;
+  status: string;
+  tool: string;
+  explanation: string;
+  arguments: Record<string, unknown>;
+  expiresAt: string;
+  decision?: string | null;
+}
+
 export interface DeviceAuthorization {
   deviceCode: string;
   userCode: string;
@@ -114,8 +125,18 @@ export class RemoteClient {
     }));
   }
 
-  submitTurn(conversationId: string, text: string, clientTurnId: string): Promise<{ runId: string; status: string }> {
-    return this.withRetries(() => this.request("POST", `/conversations/${encodeURIComponent(conversationId)}/turns`, { body: { clientTurnId, text } }));
+  /** Keyed by clientTurnId, so retrying after a network failure or 5xx can't start a second turn. */
+  submitTurn(conversationId: string, text: string, clientTurnId: string, model?: string): Promise<{ runId: string; status: string }> {
+    const body = model ? { clientTurnId, text, model } : { clientTurnId, text };
+    return this.withRetries(() => this.request("POST", `/conversations/${encodeURIComponent(conversationId)}/turns`, { body }));
+  }
+
+  getApproval(approvalId: string): Promise<RemoteApproval> {
+    return this.request("GET", `/approvals/${encodeURIComponent(approvalId)}`);
+  }
+
+  decideApproval(approvalId: string, decision: "allow" | "deny"): Promise<unknown> {
+    return this.request("POST", `/approvals/${encodeURIComponent(approvalId)}`, { body: { decision } });
   }
 
   getConversation(conversationId: string): Promise<RemoteConversation> {
@@ -134,7 +155,12 @@ export class RemoteClient {
    * Events after `cursor`, reconnecting with the last seen ID when the stream drops,
    * until the caller stops iterating or the signal aborts.
    */
-  async *events(conversationId: string, cursor: number, signal?: AbortSignal): AsyncGenerator<RemoteEvent> {
+  async *events(
+    conversationId: string,
+    cursor: number,
+    signal?: AbortSignal,
+    options: { onRetry?: (error: unknown, attempt: number) => void } = {},
+  ): AsyncGenerator<RemoteEvent> {
     let last = cursor;
     let failures = 0;
     while (!signal?.aborted) {
@@ -154,6 +180,7 @@ export class RemoteClient {
         if (signal?.aborted) return;
         if (error instanceof RemoteApiError && error.status < 500) throw error;
         if (++failures > 30) throw error;
+        options.onRetry?.(error, failures);
       }
       await delay(Math.min(1_000 * failures, 10_000), signal).catch(() => {});
     }
