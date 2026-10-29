@@ -29,6 +29,8 @@ export interface RunEvalOptions {
   concurrency?: number;
   /** Glob over task ids. */
   filter?: string;
+  /** Stop scheduling new runs once cumulative cost reaches this (USD). */
+  maxCostUsd?: number;
   /** Keep worktrees after each run. */
   keep?: boolean;
   /** Hook for progress lines; defaults to stderr. */
@@ -62,6 +64,8 @@ export interface RunEvalSummary {
   out: string;
   results: EvalResultLine[];
   resultsFile: string;
+  /** True when `maxCostUsd` stopped the run before every job was scheduled. */
+  budgetExhausted: boolean;
 }
 
 const TEST_LOG_CAP = 1024 * 1024;
@@ -309,17 +313,27 @@ export async function runEval(opts: RunEvalOptions): Promise<RunEvalSummary> {
 
   const results: EvalResultLine[] = [];
   let next = 0;
+  let spent = 0;
+  let budgetExhausted = false;
   const worker = async (): Promise<void> => {
     while (next < jobs.length) {
+      if (opts.maxCostUsd !== undefined && spent >= opts.maxCostUsd) {
+        budgetExhausted = true;
+        return;
+      }
       const job = jobs[next++]!;
       const line = await runOne(job.task, job.sample, { runName, evalConfig, model, out, tracesRoot, keep: opts.keep === true, log, createSession });
+      spent += line.cost_usd;
       results.push(line);
       await appendFile(resultsFile, JSON.stringify(line) + "\n", "utf8");
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, () => worker()));
 
+  if (budgetExhausted) {
+    log(`eval ${runName}: budget cap $${opts.maxCostUsd} reached after ${results.length}/${jobs.length} runs`);
+  }
   const passed = results.filter((r) => r.passed).length;
   log(`eval ${runName}: ${passed}/${results.length} passed; results in ${resultsFile}`);
-  return { out, results, resultsFile };
+  return { out, results, resultsFile, budgetExhausted };
 }

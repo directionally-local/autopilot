@@ -12,6 +12,43 @@ autopilot eval compare /tmp/eval-baseline/results.jsonl /tmp/eval-change/results
 
 `eval compare` collapses samples to one outcome per task (strict majority), pairs tasks present in both files, and prints success rates, an exact two-sided McNemar test on the discordant pairs, mean and median cost, median turns, overflow counts, and the per-task flips.
 
+`eval summarize <results.jsonl> [--out <file>]` turns a raw results file into the small, committable summary described below. Raw `results.jsonl` lines carry absolute `trace_dir` and `session_id` paths, so commit the summary, never the raw file.
+
+`eval run --max-cost-usd <usd>` stops scheduling new runs once cumulative cost reaches the cap. The scheduled workflow uses it as a per-model budget.
+
+## Baseline and harness changes
+
+The baseline is the measurement every harness change is judged against. It is produced by the `Eval baseline` workflow (`.github/workflows/eval-baseline.yml`), which runs `evals/configs/baseline.json` on a frontier, a mid and a cheap/open model every Monday and on `workflow_dispatch`, then uploads the summaries as an artifact. It needs an `OPENROUTER_API_KEY` secret with a spend limit; without it the job warns and exits green.
+
+To record a baseline by hand:
+
+```
+autopilot eval run --tasks evals/tasks/autopilot-bench --config evals/configs/baseline.json \
+  --model <id> --samples 1 --max-cost-usd 5 --out /tmp/eval-baseline
+autopilot eval summarize /tmp/eval-baseline/results.jsonl \
+  --out evals/results/$(date -u +%Y-%m-%d)-<model-slug>.json
+```
+
+Commit the summary under `evals/results/` and add its row to the table in `evals/results/README.md`.
+
+**One config file per harness change.** A harness PR adds `evals/configs/<change>.json` containing only the fields that differ from `baseline.json`, runs both arms on the same model and task set, and includes the `eval compare` output in the PR body. A change is kept only when the comparison shows no significant success regression and the cost/turn numbers justify it.
+
+### Summary schema
+
+`evals/results/<date>-<model>.json` (`schema_version: 1`):
+
+| field | meaning |
+| --- | --- |
+| `generated_at` | ISO timestamp of the summary |
+| `config`, `model` | harness config name and model id |
+| `tasks`, `samples` | task count and runs per task |
+| `passed`, `success_rate` | tasks whose majority of samples passed |
+| `mean_cost_usd`, `median_cost_usd` | per-task mean cost, then mean/median across tasks |
+| `median_turns` | median of per-task median model calls |
+| `overflows` | runs ended by a `ContextBudgetError` |
+| `total_cost_usd` | sum over every run |
+| `per_task[]` | `task_id`, `passed`, `pass_count`, `samples`, `mean_cost_usd`, `median_turns`, `overflows` |
+
 ## Task format
 
 `evals/tasks/<set>/<task_id>.json`:
