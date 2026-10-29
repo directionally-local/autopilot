@@ -31,7 +31,6 @@ import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import type { KimiConfig, PermissionRules, ReasoningEffort } from "./config.js";
 import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
-import { SessionWorktree } from "./runs/session-worktrees.js";
 
 export type PrintFormat = "text" | "json" | "stream-json";
 
@@ -70,8 +69,6 @@ export interface PrintModeOpts
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
-  /** Run code changes in a session worktree instead of the user's checkout. Default: true. */
-  sessionWorktrees?: boolean;
   /** Local session tracing (off unless `trace.enabled`). */
   trace?: KimiConfig["trace"];
   /** Full config, recorded (redacted) on the trace's `session_start` event. */
@@ -186,14 +183,6 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   if (opts.title && isNew) {
     sessionFile.title = opts.title;
   }
-  // #962: code changes go to a session worktree, never the user's checkout.
-  const worktree = new SessionWorktree({
-    sourceCwd: cwd,
-    enabled: () => opts.sessionWorktrees !== false,
-    sessionId: () => sessionFile.id,
-    onNotice: (text) => process.stderr.write(`${text}\n`),
-  });
-  worktree.noteUserMessage(opts.prompt);
 
   // SessionCore: classification, subagent guidance (Jev only on OpenRouter)
   // and the completion check, decided the same way as in every host.
@@ -487,7 +476,6 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       executor,
       hooks,
       cwd,
-      sessionWorktree: worktree,
       signal: controller.signal,
       codeMode: opts.codeMode,
       continueOnLimit: opts.continueOnLimit,
@@ -535,8 +523,6 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     await Promise.all(usageWrites);
     trace.emit("session_end", { reason: traceEndReason, total_cost_usd: traceCostUsd || undefined }, null);
     await trace.flush();
-    const worktreeOffer = await worktree.release().catch(() => null);
-    if (worktreeOffer) process.stderr.write(`${worktreeOffer}\n`);
   }
 
   // Save session

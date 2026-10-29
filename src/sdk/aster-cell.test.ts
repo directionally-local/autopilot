@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeGatewayBaseUrl } from "./aster-cell.js";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { cellSessionConfig, normalizeGatewayBaseUrl } from "./aster-cell.js";
+import { startRpcServer } from "./rpc.js";
 
 test("appends /v1 to the Hotcell gateway base URL exactly once", () => {
   assert.equal(normalizeGatewayBaseUrl("http://host.docker.internal:4752/openrouter"), "http://host.docker.internal:4752/openrouter/v1");
@@ -32,4 +38,88 @@ test("registers the server's entry for the session's model, so the cell knows it
   assert.equal(acceptModelInfo({ id: other, contextWindow: 1_048_576 }, other), undefined, "no pricing or supports");
   assert.equal(acceptModelInfo(undefined, other), undefined);
   assert.equal(getModelOrInfer(other).contextWindow, 128_000);
+});
+
+function sse(events: unknown[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+test("a cell session's edits land in the cell's clone, where the runtime commits and opens the PR", async () => {
+  const keys = ["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "KIMI_MODEL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "KIMIFLARE_BASE_URL"] as const;
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const originalFetch = globalThis.fetch;
+  const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-cell-edit-")));
+  const workspace = join(root, "workspace");
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: workspace, encoding: "utf8" });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main", workspace]);
+    git("-c", "user.email=cell@example.com", "-c", "user.name=cell", "commit", "-q", "--allow-empty", "-m", "start");
+    // Data dirs outside the clone: nothing may move the session's edits there.
+    delete process.env.KIMIFLARE_BASE_URL;
+    process.env.XDG_CONFIG_HOME = join(root, "config");
+    process.env.XDG_DATA_HOME = join(root, "data");
+    process.env.OPENROUTER_BASE_URL = "http://127.0.0.1:9/api/v1";
+    process.env.OPENROUTER_API_KEY = "sk-or-test-cell";
+    process.env.KIMI_MODEL = "moonshotai/kimi-k2.6";
+
+    // The main turn (it carries the tools) writes a file, then answers once the tool ran.
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tools?: unknown[]; messages?: Array<{ role: string }> };
+      const toolRan = body.messages?.some((m) => m.role === "tool");
+      return body.tools?.length && !toolRan
+        ? sse([
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "write", arguments: JSON.stringify({ path: "fix.txt", content: "fixed\n" }) } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ])
+        : sse([{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }]);
+    };
+
+    const replies = new Map<string, { type: string; error?: string }>();
+    let buffer = "";
+    output.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const message = JSON.parse(line) as { id?: string; type: string; error?: string };
+        if (message.id) replies.set(message.id, message);
+      }
+    });
+    const rpc = async (command: Record<string, unknown> & { id: string }) => {
+      input.write(JSON.stringify(command) + "\n");
+      for (let i = 0; i < 400 && !replies.has(command.id); i++) await new Promise((r) => setTimeout(r, 25));
+      return replies.get(command.id);
+    };
+    void startRpcServer(input, output);
+
+    // The same commands the bridge sends.
+    const sessionId = crypto.randomUUID();
+    const created = await rpc({ id: crypto.randomUUID(), type: "new_session", cwd: workspace, sessionId, config: cellSessionConfig("moonshotai/kimi-k2.6", "sk-or-test-cell") });
+    assert.equal(created?.type, "ok", created?.error);
+    const turn = await rpc({ id: crypto.randomUUID(), type: "prompt", message: "write the fix", options: { mode: "auto" } });
+    assert.equal(turn?.type, "ok", turn?.error);
+
+    assert.equal(await readFile(join(workspace, "fix.txt"), "utf8"), "fixed\n");
+    assert.match(git("status", "--porcelain"), /\?\? fix\.txt/);
+    assert.equal(git("branch", "--show-current").trim(), "main");
+    assert.equal(git("worktree", "list", "--porcelain").match(/^worktree /gm)?.length, 1, "no extra worktree");
+  } finally {
+    input.end();
+    globalThis.fetch = originalFetch;
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });
