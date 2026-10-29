@@ -15,10 +15,11 @@ import { runKimi, type KimiEvent } from "./client.js";
 import type { ChatMessage, ToolDef, Usage } from "./messages.js";
 import { ensureOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import { checkOpenRouterKey } from "../models/openrouter.js";
+import { readEnv } from "../util/env.js";
 
 const key = process.env.OPENROUTER_API_KEY;
-const enabled = process.env.KIMIFLARE_LIVE_TESTS === "1" && !!key;
-const model = process.env.KIMIFLARE_LIVE_MODEL ?? "moonshotai/kimi-k2.5";
+const enabled = readEnv("LIVE_TESTS") === "1" && !!key;
+const model = readEnv("LIVE_MODEL") ?? "moonshotai/kimi-k2.5";
 
 const tools: ToolDef[] = [
   {

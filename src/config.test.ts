@@ -74,6 +74,15 @@ describe("loadConfig", () => {
     "KIMIFLARE_SHELL",
     "KIMIFLARE_WORKER_BUDGET_USD",
     "KIMIFLARE_WORKER_BUDGET_MAX_USD",
+    // #911: the AUTOPILOT_* spellings of the same settings
+    "AUTOPILOT_OPENROUTER_KEY",
+    "AUTOPILOT_BASE_URL",
+    "AUTOPILOT_API_KEY",
+    "AUTOPILOT_SUBAGENT_POLICY",
+    "AUTOPILOT_TRACE",
+    "AUTOPILOT_TRACE_DIR",
+    "AUTOPILOT_PLUMBING_MODEL",
+    "AUTOPILOT_SHELL",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -327,6 +336,17 @@ describe("loadConfig", () => {
       assert.deepStrictEqual((await loadConfig())?.trace, { enabled: true, root: "/tmp/traces" });
     });
 
+    it("AUTOPILOT_TRACE / AUTOPILOT_TRACE_DIR work and win over the KIMIFLARE_* names (#911)", async () => {
+      process.env.OPENROUTER_API_KEY = "sk-or-env";
+      process.env.AUTOPILOT_TRACE = "1";
+      process.env.AUTOPILOT_TRACE_DIR = "/tmp/new-traces";
+      assert.deepStrictEqual((await loadConfig())?.trace, { enabled: true, root: "/tmp/new-traces" });
+      process.env.KIMIFLARE_TRACE = "1";
+      process.env.AUTOPILOT_TRACE = "0";
+      process.env.KIMIFLARE_TRACE_DIR = "/tmp/old-traces";
+      assert.deepStrictEqual((await loadConfig())?.trace, { enabled: false, root: "/tmp/new-traces" });
+    });
+
     it("reads the persisted block and lets the env override it", async () => {
       await writeConfigFile({ openrouterApiKey: "sk-or-file", trace: { enabled: true, root: "/persisted" } });
       assert.deepStrictEqual((await loadConfig())?.trace, { enabled: true, root: "/persisted" });
@@ -346,6 +366,19 @@ describe("loadConfig", () => {
       assert.strictEqual(cfg.baseUrl, "https://aig.example.com/v1");
       assert.strictEqual(cfg.apiKey, "broker-key");
       assert.strictEqual(cfg.openrouterApiKey, undefined);
+    });
+
+    it("resolves with AUTOPILOT_BASE_URL + AUTOPILOT_API_KEY, which win over the KIMIFLARE_* names (#911)", async () => {
+      process.env.AUTOPILOT_BASE_URL = "https://new.example.com/v1";
+      process.env.AUTOPILOT_API_KEY = "new-key";
+      let cfg = await loadConfig();
+      assert.strictEqual(cfg?.baseUrl, "https://new.example.com/v1");
+      assert.strictEqual(cfg?.apiKey, "new-key");
+      process.env.KIMIFLARE_BASE_URL = "https://old.example.com/v1";
+      process.env.KIMIFLARE_API_KEY = "old-key";
+      cfg = await loadConfig();
+      assert.strictEqual(cfg?.baseUrl, "https://new.example.com/v1");
+      assert.strictEqual(cfg?.apiKey, "new-key");
     });
 
     it("resolves a persisted baseUrl/apiKey", async () => {

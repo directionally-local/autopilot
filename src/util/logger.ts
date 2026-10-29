@@ -20,6 +20,7 @@
 
 import { writeLogLine, getLogSessionId, getLogTurnId } from "./log-sink.js";
 import { enqueueOtelLog } from "./otel-sink.js";
+import { onLegacyEnvVar, readEnv } from "./env.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "off";
 
@@ -33,7 +34,7 @@ export interface LogEntry {
   data?: Record<string, unknown>;
 }
 
-let globalMinLevel: LogLevel = (process.env.KIMIFLARE_LOG_LEVEL as LogLevel) ?? "off";
+let globalMinLevel: LogLevel = (readEnv("LOG_LEVEL") as LogLevel) ?? "off";
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -118,3 +119,10 @@ export const logger = {
   warn: (event: string, data?: Record<string, unknown>) => log("warn", event, data),
   error: (event: string, data?: Record<string, unknown>) => log("error", event, data),
 };
+
+// #911: note each legacy KIMIFLARE_* variable once per process (file sink and
+// OTLP only unless KIMIFLARE_LOG_LEVEL/AUTOPILOT_LOG_LEVEL is info or lower —
+// never the TUI). Registered last so early reads (LOG_LEVEL above) replay here.
+onLegacyEnvVar((legacy, current) => {
+  logger.info("env.legacy_name", { name: legacy, use: current });
+});

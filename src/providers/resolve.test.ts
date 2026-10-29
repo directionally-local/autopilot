@@ -3,6 +3,31 @@ import assert from "node:assert";
 import { detectEnvProviders, isProviderUsable, resolveActiveProvider, resolveProviderId } from "./resolve.js";
 import { PROVIDER_IDS, PROVIDER_PRESETS } from "./presets.js";
 
+describe("AUTOPILOT_* env names (#911)", () => {
+  it("AUTOPILOT_BASE_URL + AUTOPILOT_API_KEY select the custom endpoint, winning over the KIMIFLARE_* names", () => {
+    assert.strictEqual(resolveProviderId({ provider: "openai" }, { AUTOPILOT_BASE_URL: "https://new/v1" }), "custom");
+    const p = resolveActiveProvider(null, {
+      AUTOPILOT_BASE_URL: "https://new/v1",
+      KIMIFLARE_BASE_URL: "https://old/v1",
+      AUTOPILOT_API_KEY: "new-key",
+      KIMIFLARE_API_KEY: "old-key",
+    });
+    assert.strictEqual(p.id, "custom");
+    assert.strictEqual(p.baseUrl, "https://new/v1");
+    assert.strictEqual(p.apiKey, "new-key");
+  });
+
+  it("still honours the KIMIFLARE_* names alone", () => {
+    const p = resolveActiveProvider(null, { KIMIFLARE_BASE_URL: "https://old/v1", KIMIFLARE_API_KEY: "old-key" });
+    assert.strictEqual(p.baseUrl, "https://old/v1");
+    assert.strictEqual(p.apiKey, "old-key");
+  });
+
+  it("AUTOPILOT_OPENROUTER_KEY is an OpenRouter key", () => {
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_OPENROUTER_KEY: "sk-or-new" }).apiKey, "sk-or-new");
+  });
+});
+
 describe("resolveProviderId", () => {
   it("keeps the pre-provider precedence for old configs: custom, then OpenRouter, then Requesty", () => {
     assert.strictEqual(resolveProviderId({ baseUrl: "https://gw/v1", openrouterApiKey: "k" }, {}), "custom");

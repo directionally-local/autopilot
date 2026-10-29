@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import type { ChatMessage, ReasoningDetail, ToolDef, Usage } from "../agent/messages.js";
 import { approxTokens } from "../agent/artifact-compaction.js";
+import { readEnv } from "./env.js";
 
 /**
  * Debug-only recorder for the *complete* payload KimiFlare sends to the LLM,
@@ -29,14 +30,14 @@ import { approxTokens } from "../agent/artifact-compaction.js";
 
 /** True when payload dumping is enabled via env. Default off. */
 export function isLlmDumpEnabled(): boolean {
-  const raw = process.env.KIMIFLARE_DUMP_LLM;
+  const raw = readEnv("DUMP_LLM");
   if (raw === undefined) return false;
   const v = raw.toLowerCase();
   return v === "1" || v === "true";
 }
 
 function defaultDumpRoot(): string {
-  const override = process.env.KIMIFLARE_DUMP_LLM_DIR;
+  const override = readEnv("DUMP_LLM_DIR");
   if (override && override.trim()) return override;
   const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
   return join(xdg, "kimiflare", "llm-dumps");

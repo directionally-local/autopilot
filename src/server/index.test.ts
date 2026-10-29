@@ -36,6 +36,8 @@ describe("startServer without a password", () => {
   process.env.HOME = mkdtempSync(join(tmpdir(), "serve-guard-"));
   delete process.env.KIMIFLARE_SERVER_PASSWORD;
   delete process.env.KIMIFLARE_SERVER_CORS_ORIGINS;
+  delete process.env.AUTOPILOT_SERVER_PASSWORD;
+  delete process.env.AUTOPILOT_SERVER_CORS_ORIGINS;
   after(() => {
     process.env = prev;
   });
@@ -102,6 +104,48 @@ describe("startServer with a password", () => {
     } finally {
       await new Promise((r) => server.close(r));
     }
+  });
+});
+
+describe("startServer with AUTOPILOT_SERVER_PASSWORD (#911)", () => {
+  const config = { openrouterApiKey: "k", model: "m/m" } as KimiConfig;
+  const basic = (pw: string) => "Basic " + Buffer.from(`kimiflare:${pw}`).toString("base64");
+
+  async function statusWith(env: Record<string, string>, auth?: string): Promise<number> {
+    const prev = { ...process.env };
+    process.env.HOME = mkdtempSync(join(tmpdir(), "serve-auth-new-"));
+    for (const k of ["KIMIFLARE_SERVER_PASSWORD", "AUTOPILOT_SERVER_PASSWORD", "KIMIFLARE_SERVER_CORS_ORIGINS", "AUTOPILOT_SERVER_CORS_ORIGINS"]) delete process.env[k];
+    Object.assign(process.env, env);
+    let server;
+    try {
+      server = await startServer({ port: 0, hostname: "127.0.0.1", config });
+    } finally {
+      process.env = prev;
+    }
+    const port = (server.address() as { port: number }).port;
+    try {
+      return await new Promise<number>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port, path: "/session", method: "GET", headers: auth ? { Authorization: auth } : {} }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  }
+
+  it("requires the new-name password", async () => {
+    assert.equal(await statusWith({ AUTOPILOT_SERVER_PASSWORD: "n3w" }), 401);
+    assert.equal(await statusWith({ AUTOPILOT_SERVER_PASSWORD: "n3w" }, basic("n3w")), 200);
+  });
+
+  it("prefers the new name when both are set", async () => {
+    const env = { AUTOPILOT_SERVER_PASSWORD: "n3w", KIMIFLARE_SERVER_PASSWORD: "old" };
+    assert.equal(await statusWith(env, basic("old")), 401);
+    assert.equal(await statusWith(env, basic("n3w")), 200);
   });
 });
 

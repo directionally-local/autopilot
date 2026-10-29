@@ -96,6 +96,7 @@ import { writeToClipboard } from "../util/clipboard.js";
 import type { Task } from "../tools/registry.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnRecord } from "./use-session-manager.js";
+import { readEnv } from "../util/env.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -916,7 +917,7 @@ const handleProvider: Handler = async (ctx, rest) => {
       return true;
     }
     await saveProviderKey(target, keyArg);
-  } else if (target === "custom" ? !(cfg?.baseUrl || process.env.KIMIFLARE_BASE_URL) : preset.keyRequired && !resolveProviderKey(target, cfg)) {
+  } else if (target === "custom" ? !(cfg?.baseUrl || readEnv("BASE_URL")) : preset.keyRequired && !resolveProviderKey(target, cfg)) {
     info(
       target === "custom"
         ? "set the endpoint first: KIMIFLARE_BASE_URL, or `baseUrl` (and `apiKey`) in config"

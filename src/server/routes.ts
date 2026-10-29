@@ -39,6 +39,7 @@ import { readFile, unlink } from "node:fs/promises";
 import { resolve, basename } from "node:path";
 import { isImagePath } from "../util/image.js";
 import { buildAttachmentMessage } from "../util/attachments.js";
+import { readEnv } from "../util/env.js";
 
 const imageOptions = (config: KimiConfig) => ({ maxEdge: config.imageMaxEdge, quality: config.imageQuality });
 import { glob } from "../util/glob.js";
@@ -399,7 +400,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
 
       // Operator kill switch: cancel every active run and refuse new ones until lifted.
       if (pathname === "/runs/stop-all" && (method === "POST" || method === "DELETE")) {
-        if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
+        if (!readEnv("SERVER_PASSWORD")) {
           json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before managing unattended runs" });
           return;
         }
@@ -447,7 +448,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       // Durable unattended runs are deliberately disabled without server auth.
       const runPathMatch = pathname.match(/^\/runs\/([^/]+)(?:\/(events|cancel|resume))?$/);
       if (pathname === "/runs" && method === "GET") {
-        if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
+        if (!readEnv("SERVER_PASSWORD")) {
           json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before accessing unattended runs" });
           return;
         }
@@ -461,7 +462,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         return;
       }
       if (pathname === "/runs" && method === "POST") {
-        if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
+        if (!readEnv("SERVER_PASSWORD")) {
           json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before creating unattended runs" });
           return;
         }
@@ -625,7 +626,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
         return;
       }
       if (runPathMatch) {
-        if (!process.env.KIMIFLARE_SERVER_PASSWORD) {
+        if (!readEnv("SERVER_PASSWORD")) {
           json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before accessing unattended runs" });
           return;
         }
