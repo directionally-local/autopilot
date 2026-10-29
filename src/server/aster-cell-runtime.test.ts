@@ -30,6 +30,8 @@ interface FakeCellState {
   promptEvents?: Array<Record<string, unknown>>;
   commitAhead?: boolean;
   rpcs?: Array<Record<string, unknown>>;
+  /** Every control request fails, as if the cell were gone. */
+  unreachable?: boolean;
 }
 
 function fakeSandbox(state: FakeCellState) {
@@ -55,6 +57,7 @@ function fakeSandbox(state: FakeCellState) {
       return { exitCode: 0, stdout: "", stderr: "", success: true };
     }
     if (command.startsWith(CONTROL_PREFIX)) {
+      if (state.unreachable) return { exitCode: 1, stdout: "", stderr: "cell gone", success: false };
       const requestId = command.trim().split(" ").pop()!;
       const raw = state.files.get(`/workspace/.aster/control/${requestId}.json`);
       state.files.delete(`/workspace/.aster/control/${requestId}.json`);
@@ -817,6 +820,59 @@ describe("Aster Hotcell runtime", () => {
     runtime.resumeTurn(turn);
     await waitFor(() => turn.finished.length > 0, 60_000);
     assert.deepEqual(turn.finished, ["failed"]);
+  });
+
+  it("fails a turn that stops making progress, and aborts it in the cell", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 80 });
+    const { cellId } = await runtime.provisionConversation({
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
+    });
+    const state = [...cells.values()][0]!;
+    const turn = fakeTurn({ cellId, cellEventCursor: 0 });
+    // The cell says the turn is still running, but nothing comes out of it.
+    state.activeRunId = turn.runId;
+    runtime.resumeTurn(turn);
+    await waitFor(() => turn.finished.length > 0, 10_000);
+    assert.deepEqual(turn.finished, ["failed"]);
+    assert.ok(turn.events.some((event) => event.type === "outcome.failed" && event.data?.reason === "cell_turn_stalled"));
+    await waitFor(() => state.aborts > 0, 5_000);
+  });
+
+  it("keeps a quiet turn that's still within the stall limit", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 60_000 });
+    const { cellId } = await runtime.provisionConversation({
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
+    });
+    const state = [...cells.values()][0]!;
+    const turn = fakeTurn({ cellId, cellEventCursor: 0 });
+    state.activeRunId = turn.runId;
+    runtime.resumeTurn(turn);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(turn.finished, [], "a long, quiet tool call isn't a stall");
+    assert.equal(state.aborts, 0);
+    runtime.cancelRun(turn.runId);
+  });
+
+  it("fails a turn whose cell stops answering", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 0, unreachableTimeoutMs: 80 });
+    const { cellId } = await runtime.provisionConversation({
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
+    });
+    const state = [...cells.values()][0]!;
+    const turn = fakeTurn({ cellId, cellEventCursor: 0 });
+    state.activeRunId = turn.runId;
+    runtime.resumeTurn(turn);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    state.unreachable = true;
+    await waitFor(() => turn.finished.length > 0, 10_000);
+    assert.deepEqual(turn.finished, ["failed"]);
+    assert.ok(turn.events.some((event) => event.type === "outcome.failed" && event.data?.reason === "cell_unreachable"));
   });
 
   it("hands the cell the server's catalog entry for its model, at session start and on a switch", async () => {

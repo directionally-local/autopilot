@@ -22,6 +22,11 @@ const NOTES_FILE = `${CELL_STATE_DIR}/pending-notes`;
 const MEMORY_FILE = `${CELL_STATE_DIR}/memory.md`;
 const MEMORY_EXTRACTION_TIMEOUT_MS = 15_000;
 const LIVENESS_CHECK_MS = 20_000;
+// A turn whose cell says it's still running but has sent nothing this long is stuck (a
+// model call or tool that never returns). Generous: builds and benchmarks run quiet.
+const STALL_TIMEOUT_MS = 30 * 60_000;
+// Every control request failing this long means the cell is gone, not briefly busy.
+const UNREACHABLE_TIMEOUT_MS = 5 * 60_000;
 const ARTIFACTS_DIR = `${CELL_WORKSPACE}/artifacts`;
 const MAX_ARTIFACTS = 500;
 const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
@@ -61,6 +66,10 @@ export interface AsterHotcellRuntimeOptions {
   archiveWorkspace?: (workspaceRoot: string) => Promise<string>;
   pollIntervalMs?: number;
   healthTimeoutMs?: number;
+  /** End a turn that has sent no events this long while its cell says it's running (0 disables). */
+  stallTimeoutMs?: number;
+  /** End a turn whose cell hasn't answered a control request this long. */
+  unreachableTimeoutMs?: number;
   /**
    * Pause cells idle (no turn, no API activity) this long, releasing CPU and memory.
    * Hotcell's own idle reaper skips cells with a live background process unless it can
@@ -135,6 +144,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     this.archiveWorkspace = options.archiveWorkspace ?? defaultArchiveWorkspace;
     this.pollIntervalMs = options.pollIntervalMs ?? EVENT_POLL_MS;
     this.healthTimeoutMs = options.healthTimeoutMs ?? HEALTH_TIMEOUT_MS;
+    this.stallTimeoutMs = options.stallTimeoutMs ?? STALL_TIMEOUT_MS;
+    this.unreachableTimeoutMs = options.unreachableTimeoutMs ?? UNREACHABLE_TIMEOUT_MS;
     this.idlePauseMs = options.idlePauseMs ?? 0;
     this.modelInfo = options.modelInfo ?? defaultModelInfo;
     if (this.idlePauseMs > 0) {
@@ -144,6 +155,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   private readonly idlePauseMs: number;
+  private readonly stallTimeoutMs: number;
+  private readonly unreachableTimeoutMs: number;
   private readonly modelInfo: (model: string) => Promise<ModelEntry | undefined>;
 
   /**
@@ -407,6 +420,10 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     // conversation busy forever.
     let quietPolls = 0;
     const quietLimit = Math.max(5, Math.ceil(LIVENESS_CHECK_MS / this.pollIntervalMs));
+    // Watchdog: a turn that stops making progress fails with a reason instead of leaving
+    // the conversation busy forever.
+    let lastEventAt = Date.now();
+    let lastAnswerAt = Date.now();
     while (!stopped) {
       await sleep(this.pollIntervalMs);
       if (stopped) break;
@@ -416,10 +433,23 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
           events?: Array<{ cursor: number; runId: string | null; event: Record<string, unknown> }>;
         };
         events = page.events ?? [];
+        lastAnswerAt = Date.now();
       } catch {
-        continue; // transient cell-control failure; keep polling until stopped or finished
+        // A transient cell-control failure; keep polling, unless the cell has stopped answering.
+        if (Date.now() - lastAnswerAt >= this.unreachableTimeoutMs) {
+          outcome = { status: "failed", reason: "cell_unreachable" };
+          turn.publishEvent("outcome.failed", { reason: "cell_unreachable" });
+          break;
+        }
+        continue;
       }
       if (events.length === 0) {
+        if (this.stallTimeoutMs > 0 && Date.now() - lastEventAt >= this.stallTimeoutMs) {
+          void this.controlById(cellId, "POST", "/rpc", { id: randomUUID(), type: "abort" }).catch(() => {});
+          outcome = { status: "failed", reason: "cell_turn_stalled" };
+          turn.publishEvent("outcome.failed", { reason: "cell_turn_stalled" });
+          break;
+        }
         if (++quietPolls >= quietLimit) {
           quietPolls = 0;
           const status = await this.controlById(cellId, "GET", "/status").catch(() => undefined) as { activeRunId?: string | null } | undefined;
@@ -431,6 +461,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
         continue;
       }
       quietPolls = 0;
+      lastEventAt = Date.now();
       for (const entry of events) {
         cursor = Math.max(cursor, entry.cursor);
         turn.onCellCursor?.(cursor);
