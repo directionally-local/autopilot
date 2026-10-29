@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.2](https://github.com/directionally-local/autopilot/compare/v2.7.1...v2.7.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **tools:** name the missing edit payload and stop blind retries ([#994](https://github.com/directionally-local/autopilot/issues/994)) ([ab57a0d](https://github.com/directionally-local/autopilot/commit/ab57a0d47abf7709321257ba3bd79d8d748f2067))
+
 ## [2.7.1](https://github.com/directionally-local/autopilot/compare/v2.7.0...v2.7.1) (2026-10-29)
 
 
