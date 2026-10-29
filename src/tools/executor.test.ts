@@ -176,6 +176,29 @@ describe("ToolExecutor — typed error classification", () => {
     assert.strictEqual(ran, false);
   });
 
+  it("returns un-reduced content for a repeated read recovery", async () => {
+    const raw = Array.from(
+      { length: 100 },
+      (_, i) => `${String(i + 1).padStart(4)}\t${"source content ".repeat(8)}`,
+    ).join("\n");
+    const readTool: ToolSpec = {
+      ...makeTool({ run: async () => raw }),
+      name: "read",
+    };
+    const exec = new ToolExecutor([readTool]);
+    const call = { id: "read-retry", name: "read", arguments: JSON.stringify({ path: "large.ts" }) };
+
+    const initial = await exec.run(call, allowAll, ctx);
+    assert.ok(initial.content.includes("File: 100 lines total"));
+    assert.ok(initial.content.includes("output reduced"));
+
+    const recovered = await exec.run(call, allowAll, ctx, undefined, { forceFullRead: true });
+    assert.ok(recovered.content.startsWith("Repeated identical read detected."));
+    assert.ok(recovered.content.includes("100\tsource content"));
+    assert.ok(!recovered.content.includes("output reduced"));
+    assert.strictEqual(recovered.reducedBytes, Buffer.byteLength(recovered.content, "utf8"));
+  });
+
   it("classifies unknown tool name as 'not_found'", async () => {
     const exec = new ToolExecutor([]);
     const res = await exec.run(

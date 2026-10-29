@@ -133,6 +133,14 @@ const WEB_FETCH_TOOL: ToolSpec = {
   run: async () => "ok",
 };
 
+const READ_TOOL: ToolSpec = {
+  name: "read",
+  description: "Read a file.",
+  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+  needsPermission: false,
+  run: async () => "ok",
+};
+
 describe("runAgentTurn guardrails (unattended)", () => {
   let originalFetch: typeof globalThis.fetch;
   before(() => {
@@ -187,6 +195,46 @@ describe("runAgentTurn guardrails (unattended)", () => {
       opts.messages.some((m) => m.role === "system" && String(m.content).includes("Do not repeat them")),
     );
     assert.strictEqual(opts.messages.at(-1)!.content, "done, different approach");
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("recovers a consecutive duplicate read by returning un-reduced content", async () => {
+    const raw = Array.from({ length: 100 }, (_, i) => `line ${i + 1}: source content`).join("\n");
+    const forceFullReadOptions: boolean[] = [];
+    const executor = {
+      list: () => [],
+      run: async (
+        call: { id: string; name: string; arguments: string },
+        _ask: unknown,
+        _ctx: unknown,
+        _onFileChange: unknown,
+        options?: { forceFullRead?: boolean },
+      ) => {
+        forceFullReadOptions.push(options?.forceFullRead === true);
+        return {
+          tool_call_id: call.id,
+          name: call.name,
+          content: options?.forceFullRead ? `Repeated identical read detected.\n${raw}` : "File outline: preview only",
+          ok: true,
+        };
+      },
+    } as unknown as ToolExecutor;
+    const model = scriptModel([
+      { tool: "read", args: { path: "src/large.ts" } },
+      { tool: "read", args: { path: "src/large.ts" } },
+      { text: "I can now inspect the file content." },
+    ]);
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { tools: [READ_TOOL] });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(forceFullReadOptions, [false, true]);
+    const readResults = opts.messages.filter((message) => message.role === "tool");
+    assert.strictEqual(readResults.length, 2);
+    assert.ok(String(readResults[1]!.content).includes("line 100: source content"));
+    assert.deepStrictEqual(events, []);
+    assert.strictEqual(model.requests, 3);
     assertNoDanglingToolCalls(opts.messages);
   });
 

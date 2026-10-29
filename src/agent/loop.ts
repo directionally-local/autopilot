@@ -1115,7 +1115,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     type Guarded =
       | { kind: "blocked"; result: ToolResult; errorCode: string; redirected?: boolean }
       | { kind: "code" }
-      | { kind: "run" };
+      | { kind: "run"; forceFullRead?: boolean };
 
     /** Guardrails, in order: unavailable tool, repeated call, Code Mode redirect, web-fetch budget. */
     const guard = (tc: ToolCall, loopSignature: string): Guarded => {
@@ -1131,7 +1131,17 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           },
         };
       }
-      if (recentToolCalls.filter((s) => s === loopSignature).length >= LOOP_THRESHOLD) {
+      const repeatedCalls = recentToolCalls.filter((s) => s === loopSignature).length;
+      if (
+        tc.function.name === "read" &&
+        repeatedCalls === 1 &&
+        recentToolCalls.at(-1) === loopSignature
+      ) {
+        // A repeated full-file read often means the model couldn't use the
+        // reducer's outline hint. Give it the raw file once before blocking.
+        return { kind: "run", forceFullRead: true };
+      }
+      if (repeatedCalls >= LOOP_THRESHOLD) {
         return {
           kind: "blocked",
           errorCode: "loop_guardrail",
@@ -1185,7 +1195,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     };
 
     /** Run one tool through the executor (permission, PreToolUse/PostToolUse hooks), then truncate. */
-    const execute = async (tc: ToolCall, ask: typeof opts.callbacks.askPermission): Promise<ToolResult> => {
+    const execute = async (
+      tc: ToolCall,
+      ask: typeof opts.callbacks.askPermission,
+      forceFullRead = false,
+    ): Promise<ToolResult> => {
       opts.callbacks.onToolWillExecute?.(tc.id, tc.function.name);
       logger.debug("turn:tool_start", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id });
       // M6.1: PreToolUse / PostToolUse fire inside `executor.run` (see
@@ -1215,6 +1229,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           runsDbPath: opts.runsDbPath,
         },
         opts.onFileChange,
+        forceFullRead ? { forceFullRead: true } : undefined,
       );
       if (!result.ok && result.errorCode === "policy_rejection") {
         logger.warn("hook:vetoed_tool_call", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id });
@@ -1477,7 +1492,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         const results = await Promise.all(
           segment.calls.map(({ tc }, i) => {
             const g = guarded[i]!;
-            return g.outcome.kind === "blocked" ? Promise.resolve(g.outcome.result) : execute(tc, ask);
+            return g.outcome.kind === "blocked"
+              ? Promise.resolve(g.outcome.result)
+              : execute(tc, ask, g.outcome.kind === "run" && g.outcome.forceFullRead === true);
           }),
         );
         for (const [i, { tc, index }] of segment.calls.entries()) {
@@ -1489,7 +1506,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           const loopSignature = `${tc.function.name}:${stableStringify(tc.function.arguments)}`;
           const outcome = guard(tc, loopSignature);
           const result =
-            outcome.kind === "blocked" ? outcome.result : outcome.kind === "code" ? await executeCode(tc) : await execute(tc, opts.callbacks.askPermission);
+            outcome.kind === "blocked"
+              ? outcome.result
+              : outcome.kind === "code"
+                ? await executeCode(tc)
+                : await execute(tc, opts.callbacks.askPermission, outcome.forceFullRead === true);
           if (record(tc, index, loopSignature, outcome, result)) {
             yielded = result.waitRequest;
             break;

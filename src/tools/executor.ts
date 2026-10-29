@@ -415,11 +415,12 @@ export class ToolExecutor {
     askPermission: PermissionAsker,
     ctx: ToolContext,
     onFileChange?: (path: string, content: string) => void,
+    options?: { forceFullRead?: boolean },
   ): Promise<ToolResult> {
     const trace = ctx.trace ?? this.trace;
-    if (!trace?.enabled) return this.runInner(call, askPermission, ctx, onFileChange, null);
+    if (!trace?.enabled) return this.runInner(call, askPermission, ctx, onFileChange, null, options);
     const tr = new ToolTrace(trace, ctx, call);
-    const result = await this.runInner(call, askPermission, ctx, onFileChange, tr);
+    const result = await this.runInner(call, askPermission, ctx, onFileChange, tr, options);
     tr.finish(result);
     return result;
   }
@@ -430,6 +431,7 @@ export class ToolExecutor {
     ctx: ToolContext,
     onFileChange: ((path: string, content: string) => void) | undefined,
     tr: ToolTrace | null,
+    options?: { forceFullRead?: boolean },
   ): Promise<ToolResult> {
     // `spawn_worker` was renamed to `subagent`; resumed sessions and models
     // primed by old history may still emit the old name.
@@ -660,20 +662,24 @@ export class ToolExecutor {
         return diffResult;
       }
 
+      const forceFullRead = options?.forceFullRead === true && call.name === "read";
       const reduced = reduceToolOutput(
         call.name,
         normalized.content,
         args,
         this.artifactStore,
-        this.reducerConfig,
+        forceFullRead ? { ...this.reducerConfig, enabled: false } : this.reducerConfig,
       );
+      const content = forceFullRead
+        ? `Repeated identical read detected. Returning the un-reduced file content; if it is still truncated, request a specific offset/limit slice.\n\n${reduced.content}`
+        : reduced.content;
       const success: ToolResult = {
         tool_call_id: call.id,
         name: call.name,
-        content: reduced.content,
+        content,
         ok: true,
         rawBytes: reduced.rawBytes,
-        reducedBytes: reduced.reducedBytes,
+        reducedBytes: Buffer.byteLength(content, "utf8"),
         artifactId: reduced.artifactId,
         ...(normalized.waitRequest ? { waitRequest: normalized.waitRequest } : {}),
       };
