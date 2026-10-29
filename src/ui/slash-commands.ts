@@ -10,7 +10,7 @@
 import React from "react";
 import { workerRegistry } from "../tools/worker-registry.js";
 import { formatSubagentStats, readSubagentStats } from "../tools/subagent-stats.js";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { unlink } from "node:fs/promises";
 import { renderTerminalQr } from "./terminal-qr.js";
 
@@ -96,6 +96,13 @@ import { writeToClipboard } from "../util/clipboard.js";
 import type { Task } from "../tools/registry.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnRecord } from "./use-session-manager.js";
+import {
+  describeWork,
+  listSessionWorktrees,
+  removeSessionWorktree,
+  type ListedSessionWorktree,
+  type SessionWorktree,
+} from "../runs/session-worktrees.js";
 import { readEnv } from "../util/env.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
@@ -188,6 +195,8 @@ export interface SlashContext {
   traceRef: React.MutableRefObject<TraceRecorder>;
   /** Turns of this session that have ended, oldest first (for /good, /bad, and revert signals). */
   turnHistoryRef: React.MutableRefObject<TurnRecord[]>;
+  /** This session's worktree controller (#962). */
+  sessionWorktreeRef: React.MutableRefObject<SessionWorktree>;
 }
 
 type Handler = (ctx: SlashContext, rest: string[], arg: string) => boolean | Promise<boolean>;
@@ -214,6 +223,10 @@ const handleClear: Handler = (ctx) => {
     ctx.messagesRef.current = [ctx.messagesRef.current[0]!];
   }
   if (ctx.sessionIdRef.current) void endSession(ctx.sessionIdRef.current, "clear");
+  // #962: a new conversation gets its own worktree; offer cleanup of the old one.
+  void ctx.sessionWorktreeRef.current.release().then((note) => {
+    if (note) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: note }]);
+  });
   ctx.hooksManagerRef.current.resetFailureCounts();
   ctx.resetSession();
   ctx.executorRef.current.clearArtifacts();
@@ -758,7 +771,7 @@ const handleModel: Handler = (ctx, rest, arg) => {
  * /settings — feature toggles. `/settings` lists them; `/settings <name> on|off`
  * flips one and persists it to the config file.
  */
-const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics"; describe: string }> = {
+const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "sessionWorktrees"; describe: string }> = {
   modes: {
     key: "modesEnabled",
     describe: "plan / edit / auto permission modes (off: every turn runs in auto)",
@@ -766,6 +779,10 @@ const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics"; de
   diagnostics: {
     key: "postEditDiagnostics",
     describe: "append LSP/syntax diagnostics to edit and write results",
+  },
+  worktrees: {
+    key: "sessionWorktrees",
+    describe: "make code changes in an isolated git worktree, never in your checkout",
   },
 };
 
@@ -796,6 +813,12 @@ const handleSettings: Handler = (ctx, rest) => {
       on
         ? "modes on — now in edit (prompts before mutating tools). Shift+Tab cycles edit → plan → auto; /mode switches directly."
         : "modes off — every turn runs in auto.",
+    );
+  } else if (setting.key === "sessionWorktrees") {
+    info(
+      on
+        ? "worktrees on — a session's first code change creates an isolated worktree on a new branch; your checkout is not modified."
+        : `worktrees off — sessions work directly in your checkout.${ctx.sessionWorktreeRef.current.active ? " This session keeps its current worktree." : ""}`,
     );
   } else {
     info(`${name} ${on ? "on" : "off"}`);
@@ -1868,6 +1891,117 @@ function rateLastTurn(ctx: SlashContext, value: "good" | "bad", reason: string):
   return true;
 }
 
+/**
+ * /worktrees — this repository's session worktrees (#962). `/worktrees` lists
+ * them; `remove <name> [--force]` removes one; `clean` removes every clean
+ * one; `off` keeps this session in your checkout and `on` undoes that.
+ * Uncommitted or unpushed work is only deleted with an explicit --force.
+ */
+const handleWorktrees: Handler = async (ctx, rest) => {
+  const { setEvents, mkKey } = ctx;
+  const info = (text: string, kind: "info" | "error" = "info") => setEvents((e) => [...e, { kind, key: mkKey(), text }]);
+  const controller = ctx.sessionWorktreeRef.current;
+  const sub = rest[0]?.toLowerCase() ?? "list";
+  const active = controller.active;
+
+  if (sub === "off") {
+    info(
+      controller.workInPlace("turned off with /worktrees off")
+        ? "this session works directly in your checkout (no worktree). /worktrees on undoes this; /settings worktrees off changes the default."
+        : `this session already works in ${active?.path}; /settings worktrees off applies to new sessions.`,
+    );
+    return true;
+  }
+  if (sub === "on") {
+    controller.allowWorktree();
+    info(active ? `this session works in ${active.path} (branch ${active.branch})` : "this session's first code change will create an isolated worktree");
+    return true;
+  }
+
+  let listed: ListedSessionWorktree[];
+  try {
+    listed = await listSessionWorktrees(process.cwd(), controller.rootDir);
+  } catch {
+    info("not in a git repository — no worktrees here");
+    return true;
+  }
+  const label = (w: ListedSessionWorktree) => `${w.name}${w.path === active?.path ? " (this session)" : ""}`;
+
+  if (sub === "list" || sub === "ls") {
+    if (listed.length === 0) {
+      info("no Autopilot worktrees for this repository");
+      return true;
+    }
+    const lines = [`Autopilot worktrees for this repository (${listed.length}):`];
+    for (const w of listed) {
+      const used = w.lastUsedAt ? `last used ${new Date(w.lastUsedAt).toLocaleString()}` : "last used unknown";
+      lines.push(`  ${label(w)}  ${w.branch}  ${describeWork(w)}  ${used}`, `    ${w.path}`);
+    }
+    lines.push("remove one with /worktrees remove <name>, or every clean one with /worktrees clean");
+    info(lines.join("\n"));
+    return true;
+  }
+
+  if (sub === "remove" || sub === "rm") {
+    const force = rest.includes("--force") || rest.includes("-f");
+    const wanted = rest.slice(1).find((a) => !a.startsWith("-"));
+    if (!wanted) {
+      info("usage: /worktrees remove <name> [--force]");
+      return true;
+    }
+    const target = listed.find((w) => w.name === wanted || w.branch === wanted || w.path === resolve(wanted));
+    if (!target) {
+      info(`no Autopilot worktree named ${wanted} — /worktrees lists them`, "error");
+      return true;
+    }
+    if (target.path === active?.path && ctx.busy) {
+      info("can't remove this session's worktree while the model is running — press Esc to interrupt first");
+      return true;
+    }
+    try {
+      const result = await removeSessionWorktree(process.cwd(), target, { force });
+      if (!result.removed) {
+        info(
+          `not removed: ${target.name} has ${result.reason}. Commit and push that work first, or run ` +
+            `/worktrees remove ${target.name} --force to delete it anyway (uncommitted changes are lost; ` +
+            `unpushed commits stay on branch ${target.branch}).`,
+        );
+        return true;
+      }
+      if (target.path === active?.path) controller.detach();
+      info(`removed ${target.path}${result.branchKept ? ` (branch ${target.branch} kept)` : ` and its branch ${target.branch}`}`);
+    } catch (error) {
+      info(`couldn't remove ${target.name}: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+    return true;
+  }
+
+  if (sub === "clean") {
+    const removed: string[] = [];
+    const kept: string[] = [];
+    for (const w of listed) {
+      if (w.missing || w.uncommitted > 0 || w.unpushed > 0 || w.path === active?.path) {
+        kept.push(`${label(w)}: ${w.path === active?.path ? "in use" : describeWork(w)}`);
+        continue;
+      }
+      try {
+        const result = await removeSessionWorktree(process.cwd(), w);
+        if (result.removed) removed.push(w.name);
+        else kept.push(`${w.name}: ${result.reason}`);
+      } catch (error) {
+        kept.push(`${w.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const lines = [removed.length ? `removed ${removed.length} clean worktree${removed.length === 1 ? "" : "s"}: ${removed.join(", ")}` : "no clean worktrees to remove"];
+    if (kept.length) lines.push(`kept ${kept.length}:`, ...kept.map((k) => `  ${k}`));
+    info(lines.join("\n"));
+    return true;
+  }
+
+  info("usage: /worktrees [list | remove <name> [--force] | clean | off | on]");
+  return true;
+};
+
 const handleGood: Handler = (ctx, rest) => rateLastTurn(ctx, "good", rest.join(" ").trim());
 const handleBad: Handler = (ctx, rest) => rateLastTurn(ctx, "bad", rest.join(" ").trim());
 
@@ -1886,6 +2020,7 @@ const handlers: Record<string, Handler> = {
   "/key": handleKey,
   "/provider": handleProvider,
   "/settings": handleSettings,
+  "/worktrees": handleWorktrees,
   "/mode": handleMode,
   "/plan": handlePlan,
   "/auto": handleAuto,

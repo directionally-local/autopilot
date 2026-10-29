@@ -2,6 +2,7 @@ import { noteSessionStart } from "../hooks/session-lifecycle.js";
 import { providerPresetOf } from "./llm-auth.js";
 import { withOtelEvents } from "../util/otel-events.js";
 import { runKimi } from "./client.js";
+import type { SessionWorktree } from "../runs/session-worktrees.js";
 import type { ResponseMeta } from "./client.js";
 import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
 import { resetSessionToolState, sessionToolState } from "./session-tool-state.js";
@@ -164,6 +165,8 @@ export interface AgentTurnOpts extends LlmAuth {
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
+  /** Interactive session's worktree controller (#962), forwarded to every tool call. */
+  sessionWorktree?: SessionWorktree;
   /** Host language server manager, forwarded to tools for post-edit diagnostics. */
   lspManager?: LspManager;
   /** When false, edit/write results omit the post-edit diagnostics block. */
@@ -1264,6 +1267,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           runId: opts.runId,
           onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
           runsDbPath: opts.runsDbPath,
+          sessionWorktree: opts.sessionWorktree,
         },
         opts.onFileChange,
         forceFullRead ? { forceFullRead: true } : undefined,
@@ -1322,6 +1326,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           trace,
           turnId,
           codeModeParentToolCallId: tc.id,
+          sessionWorktree: opts.sessionWorktree,
         },
         timeoutMs: 30000,
         memoryLimitMB: 128,

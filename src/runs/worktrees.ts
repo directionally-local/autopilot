@@ -77,7 +77,7 @@ export class RunWorktreeManager {
   }
 }
 
-function defaultWorktreesDir(): string {
+export function defaultWorktreesDir(): string {
   const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
   return join(dataHome, "autopilot", "worktrees");
 }
@@ -86,14 +86,19 @@ function isOutside(path: string): boolean {
   return path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path);
 }
 
-function isWithin(parent: string, candidate: string): boolean {
+export function isWithin(parent: string, candidate: string): boolean {
   const path = relative(parent, candidate);
   return path === "" || !isOutside(path);
 }
 
-function runGit(args: string[], cwd: string): Promise<string> {
+export function runGit(
+  args: string[],
+  cwd: string,
+  opts: { timeoutMs?: number; maxBuffer?: number } = {},
+): Promise<string> {
   return new Promise((resolveOutput, reject) => {
-    execFile("git", args, { cwd, encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const options = { cwd, encoding: "utf8" as const, timeout: opts.timeoutMs ?? 30_000, maxBuffer: opts.maxBuffer ?? 1024 * 1024 };
+    execFile("git", args, options, (error, stdout, stderr) => {
       if (error) {
         const detail = stderr.trim();
         reject(new Error(`git ${args[0]} failed${detail ? `: ${detail}` : ""}`, { cause: error }));

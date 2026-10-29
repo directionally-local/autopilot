@@ -476,6 +476,15 @@ export class ToolExecutor {
     }
     tr?.call(args, tool.needsPermission);
 
+    // #962: once the session works in a worktree, every call runs there —
+    // hooks and permission prompts see the paths the tool will really touch.
+    const sessionWorktree = ctx.sessionWorktree;
+    if (sessionWorktree?.active) {
+      const routed = await sessionWorktree.route(call.name, args, ctx.cwd);
+      args = routed.args;
+      ctx = { ...ctx, cwd: routed.cwd };
+    }
+
     // M6.1: PreToolUse hook (blocking). Fires here — after JSON-args
     // parsing, BEFORE the permission check — so a hook can block a
     // call without the user being asked. Hooks live on the executor
@@ -592,6 +601,20 @@ export class ToolExecutor {
       tr?.permission("auto", 0);
     }
 
+    // #962: the session's first mutating call (approved by now) creates its
+    // worktree; this call and every later one run there.
+    let worktreeNotice: string | undefined;
+    if (sessionWorktree && !sessionWorktree.active) {
+      const routed = await sessionWorktree.route(call.name, args, ctx.cwd);
+      args = routed.args;
+      ctx = { ...ctx, cwd: routed.cwd };
+      worktreeNotice = routed.notice;
+    }
+    const withWorktreeNotice = (result: ToolResult, exitCode?: number | null): ToolResult => {
+      sessionWorktree?.afterTool(call.name, args, result.ok && (exitCode ?? 0) === 0);
+      return worktreeNotice ? { ...result, content: `${worktreeNotice}\n\n${result.content}` } : result;
+    };
+
     let runStore: RunStore | null = null;
     let intentRecorded = false;
     let toolCompleted = false;
@@ -612,6 +635,7 @@ export class ToolExecutor {
         fileReadHashes = new Map<string, string>();
         this.fileReadHashesBySession.set(sessionKey, fileReadHashes);
       }
+      if (worktreeNotice) sessionWorktree?.carryReadSnapshots(fileReadHashes);
       const runCtx: ToolContext = {
         ...ctx,
         fileReadHashes,
@@ -678,7 +702,7 @@ export class ToolExecutor {
           artifactId,
         };
         this.firePostToolUse(call, args, diffResult, ctx, normalized.meta);
-        return diffResult;
+        return withWorktreeNotice(diffResult, normalized.meta?.exitCode);
       }
 
       const forceFullRead = options?.forceFullRead === true && call.name === "read";
@@ -714,7 +738,7 @@ export class ToolExecutor {
         ...(normalized.waitRequest ? { waitRequest: normalized.waitRequest } : {}),
       };
       this.firePostToolUse(call, args, success, ctx, normalized.meta, fileChange);
-      return success;
+      return withWorktreeNotice(success, normalized.meta?.exitCode);
     } catch (e) {
       if (e instanceof RunToolBudgetExceededError) ctx.onRunBudgetExceeded?.(e.reason);
       const err = wrapAsToolError(e);
@@ -739,7 +763,7 @@ export class ToolExecutor {
         }
       }
       this.firePostToolUse(call, args, failure, ctx);
-      return failure;
+      return withWorktreeNotice(failure);
     } finally {
       runStore?.close();
     }
