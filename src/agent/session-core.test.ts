@@ -8,12 +8,13 @@ import type { ToolSpec } from "../tools/registry.js";
 const tool = (name: string): ToolSpec => ({ name, description: name, parameters: { type: "object" }, needsPermission: false, run: async () => "" });
 const TOOLS = [tool("read"), tool("subagent")];
 const deepseek = { provider: "deepseek" as const, providers: { deepseek: { apiKey: "k" } }, model: "deepseek-v4-pro" };
+const hotcellReady = async () => ({ ready: true });
 
 describe("resolveTurnPolicy", () => {
   it("offers the subagent tool only when guidance allows dispatch", async () => {
     const off = await resolveTurnPolicy({ cfg: { ...deepseek, subagentPolicy: "off" }, prompt: "audit the whole codebase in parallel", tools: TOOLS });
     assert.ok(!off.tools.some((t) => t.name === "subagent"), "policy off: no subagent tool");
-    const asked = await resolveTurnPolicy({ cfg: { ...deepseek, subagentPolicy: "suggest" }, prompt: "use 3 subagents to research auth, billing and search", tools: TOOLS });
+    const asked = await resolveTurnPolicy({ cfg: { ...deepseek, subagentPolicy: "suggest" }, prompt: "use 3 subagents to research auth, billing and search", tools: TOOLS, hotcellReadiness: hotcellReady });
     assert.strictEqual(asked.guidance.kind, "explicit-delegate");
     assert.ok(asked.tools.some((t) => t.name === "subagent"));
     assert.match(String(asked.delegationDirective), /explicitly asked for subagents/);
@@ -36,6 +37,40 @@ describe("resolveTurnPolicy", () => {
   it("classifies the request", async () => {
     const p = await resolveTurnPolicy({ cfg: deepseek, prompt: "hi", tools: TOOLS });
     assert.strictEqual(p.classification.tier, "light");
+  });
+
+  it("suppresses delegation and explains why when Hotcell is not ready (#966)", async () => {
+    const p = await resolveTurnPolicy({
+      cfg: { ...deepseek, subagentPolicy: "suggest" },
+      prompt: "use 3 subagents to research auth, billing and search",
+      tools: TOOLS,
+      hotcellReadiness: async () => ({
+        ready: false,
+        reason: "the Hotcell daemon isn't reachable at http://127.0.0.1:4750",
+        fix: "Start it with `hotcell start --defaults` (Docker must be running).",
+      }),
+    });
+    assert.strictEqual(p.guidance.kind, "none");
+    assert.ok(!p.tools.some((t) => t.name === "subagent"), "no subagent tool when Hotcell is down");
+    assert.strictEqual(p.delegationDirective, undefined);
+    assert.match(String(p.readinessNotice), /Subagents are unavailable/);
+    assert.match(String(p.readinessNotice), /hotcell start --defaults/);
+  });
+
+  it("does not probe Hotcell when guidance already says no delegation", async () => {
+    let probed = false;
+    const p = await resolveTurnPolicy({
+      cfg: deepseek,
+      prompt: "hi",
+      tools: TOOLS,
+      hotcellReadiness: async () => {
+        probed = true;
+        return { ready: false };
+      },
+    });
+    assert.strictEqual(p.guidance.kind, "none");
+    assert.strictEqual(probed, false);
+    assert.strictEqual(p.readinessNotice, undefined);
   });
 });
 

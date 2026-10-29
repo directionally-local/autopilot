@@ -27,6 +27,7 @@ import { llmAuthFromConfig, activeOpenRouterKey } from "./llm-auth.js";
 import { completionCheckFromConfig } from "./completion-check.js";
 import { classifyIntent, type IntentResult } from "../intent/classify.js";
 import { allowsSubagentDispatch, resolveSubagentGuidance, type SubagentGuidance, type SubagentPolicy } from "../intent/subagent-policy.js";
+import { checkHotcellReadiness, type HotcellReadiness } from "../tools/hotcell-readiness.js";
 import type { KimiConfig } from "../config.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { ChatMessage } from "./messages.js";
@@ -56,6 +57,8 @@ export interface TurnPolicyInput {
   workerProfile?: "research";
   /** Subagent policy override for this turn (default: config, else "auto"). */
   subagentPolicy?: SubagentPolicy;
+  /** Test seam / override for the Hotcell readiness probe. */
+  hotcellReadiness?: () => Promise<HotcellReadiness>;
 }
 
 export interface TurnPolicy {
@@ -65,12 +68,14 @@ export interface TurnPolicy {
   tools: ToolSpec[];
   delegationDirective?: AgentTurnOpts["delegationDirective"];
   completionCheck?: AgentTurnOpts["completionCheck"];
+  /** One line to show when delegation was suppressed because Hotcell is not ready. */
+  readinessNotice?: string;
 }
 
 /** Classification, delegation guidance, the tool set, and the completion check for one turn. */
 export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPolicy> {
   const classification = classifyIntent(input.prompt);
-  const guidance: SubagentGuidance =
+  let guidance: SubagentGuidance =
     input.workerProfile === "research"
       ? { kind: "explicit-sequential", reason: "research subagent" }
       : await resolveSubagentGuidance({
@@ -80,6 +85,18 @@ export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPol
           apiKey: activeOpenRouterKey(input.cfg),
           signal: input.signal,
         });
+
+  // #966: do not offer delegation when Hotcell cannot run a worker. Probe only
+  // when guidance would otherwise allow dispatch, so light turns pay nothing.
+  let readinessNotice: string | undefined;
+  if (input.workerProfile !== "research" && allowsSubagentDispatch(guidance.kind)) {
+    const readiness = await (input.hotcellReadiness ?? checkHotcellReadiness)();
+    if (!readiness.ready) {
+      guidance = { kind: "none", reason: readiness.reason ?? "Hotcell is not ready" };
+      readinessNotice = `Subagents are unavailable: ${readiness.reason ?? "Hotcell is not ready"}. ${readiness.fix ?? ""}`.trim();
+    }
+  }
+
   const tools = input.tools.filter((tool) => tool.name !== "subagent" || allowsSubagentDispatch(guidance.kind));
   const directive = input.workerProfile === "research" ? undefined : guidance.refinedDirective ?? guidance.directive;
   const completionCheck = input.workerProfile === "research" ? undefined : completionCheckFromConfig(input.cfg);
@@ -89,6 +106,7 @@ export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPol
     tools,
     ...(directive ? { delegationDirective: directive } : {}),
     ...(completionCheck ? { completionCheck } : {}),
+    ...(readinessNotice ? { readinessNotice } : {}),
   };
 }
 
