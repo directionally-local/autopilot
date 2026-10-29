@@ -17,13 +17,14 @@ import type { AppActions, AppBridge, AppSnapshot } from "../ui/app-bridge.js";
 import type { ChatEvent } from "../ui/view-types.js";
 import type { PermissionDecision } from "../tools/executor.js";
 import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
+import { getModel, getModelOrInfer, type ModelEntry } from "../models/registry.js";
 import { applyAsterEvent, initialAsterState, totalCostUsd, type AsterEffect, type AsterViewState } from "./attach-adapter.js";
-import { RemoteApiError, type RemoteClient, type RemoteConversation, type RemoteEvent } from "./client.js";
+import { RemoteApiError, type RemoteClient, type RemoteConversation, type RemoteEvent, type RemoteModelInfo } from "./client.js";
 
 /** The commands a remote session handles; everything else built in is local-only. */
 export const REMOTE_COMMANDS: { name: string; description: string; args_hint?: string }[] = [
   { name: "help", description: "Commands available in a remote session" },
-  { name: "model", description: "Show the server's models, or switch the model for the next turn", args_hint: "[<id>]" },
+  { name: "model", description: "Pick one of the server's models for the next turn (list prints them)", args_hint: "[<id>|list]" },
   { name: "status", description: "Conversation, branch, pull request and model" },
   { name: "pr", description: "Show the conversation's pull request" },
   { name: "exit", description: "Detach (the conversation keeps running on the server)" },
@@ -55,6 +56,30 @@ export async function writeStateFile(path: string, conversation: RemoteConversat
   await chmod(tmp, 0o600);
   await rename(tmp, path);
   return contents;
+}
+
+/**
+ * The picker's entries for the server's models, in the server's order. The
+ * local catalog's entry wins (it has the benchmark scores the picker ranks by),
+ * then the server's metadata, then a generic entry, so every ID is pickable.
+ */
+export function serverModelEntries(ids: string[], catalog: RemoteModelInfo[]): ModelEntry[] {
+  const info = new Map(catalog.map((m) => [m.id, m]));
+  return ids.map((id) => {
+    const local = getModel(id);
+    if (local) return local;
+    const fallback = getModelOrInfer(id);
+    const m = info.get(id);
+    if (!m) return fallback;
+    return {
+      ...fallback,
+      ...(m.name ? { name: m.name } : {}),
+      ...(m.created !== undefined ? { created: m.created } : {}),
+      contextWindow: m.contextWindow ?? fallback.contextWindow,
+      pricing: { inputPerMtok: m.inputPerMtok ?? 0, outputPerMtok: m.outputPerMtok ?? 0 },
+      supports: { ...fallback.supports, reasoning: m.reasoning ?? false, vision: m.vision ?? false },
+    };
+  });
 }
 
 /** A one-line description of an API failure; 401 always means the credential is gone. */
@@ -98,7 +123,9 @@ export class RemoteAttachSession {
   private replayUntil: number;
   private model: string;
   private nextModel: string | null = null;
-  private serverModels: string[] | null = null;
+  private serverModels: ModelEntry[] | null = null;
+  /** `/model` opened the picker (the view draws it from snapshot.modelChoices). */
+  private pickingModel = false;
   private shownPullRequest: string | undefined;
   private permission: AppSnapshot["permission"] = null;
   private keySeq = 0;
@@ -181,7 +208,8 @@ export class RemoteAttachSession {
       intentTier: null,
       tasks: this.state.tasks,
       permission: this.permission,
-      modals: [],
+      modals: this.pickingModel ? ["model"] : [],
+      ...(this.pickingModel && this.serverModels ? { modelChoices: this.serverModels } : {}),
       providerSetup: null,
       resumeSessions: null,
       checkpoints: null,
@@ -212,7 +240,12 @@ export class RemoteAttachSession {
         void this.decide("deny");
         this.submit(feedback);
       },
-      pickModel: () => {},
+      pickModel: (model) => {
+        // Esc (null) leaves the next turn's model as it was.
+        this.pickingModel = false;
+        this.flush();
+        if (model) void this.switchModel(model.id);
+      },
       providerSwitched: unavailable("Switching providers"),
       pickMode: () => {},
       pickResume: () => {},
@@ -227,7 +260,11 @@ export class RemoteAttachSession {
       openCommandWizard: unavailable("Custom commands"),
       saveCommand: unavailable("Custom commands"),
       deleteCommand: unavailable("Custom commands"),
-      closeModal: () => {},
+      closeModal: (modal) => {
+        if (modal !== "model") return;
+        this.pickingModel = false;
+        this.flush();
+      },
       runCommand: (command) => this.submit(command),
       exit: () => this.end({ kind: "detached" }),
     };
@@ -278,7 +315,8 @@ export class RemoteAttachSession {
           ].join("\n"),
         );
       case "model":
-        if (!args || args === "list") return void this.listModels();
+        if (!args) return void this.openModelPicker();
+        if (args === "list") return void this.listModels();
         return void this.switchModel(args);
       case "status": {
         const c = this.conversation;
@@ -301,8 +339,17 @@ export class RemoteAttachSession {
     }
   }
 
-  private async listModels(): Promise<void> {
+  /** `/model` with no ID: the same picker as a local session, offering only the server's models. */
+  private async openModelPicker(): Promise<void> {
     const models = await this.models();
+    if (this.outcome) return;
+    if (!models?.length) return this.listModels();
+    this.pickingModel = true;
+    this.flush();
+  }
+
+  private async listModels(): Promise<void> {
+    const models = (await this.models())?.map((m) => m.id);
     const lines = [`Current model: ${this.model}${this.nextModel ? ` (next turn: ${this.nextModel})` : ""}`];
     if (models?.length) lines.push("Offered by the server:", ...models.slice(0, 40).map((m) => `  ${m}`), ...(models.length > 40 ? [`  … and ${models.length - 40} more`] : []), "Switch with /model <id>.");
     else lines.push("Switch with /model <id> (the server checks it against its catalog).");
@@ -311,7 +358,7 @@ export class RemoteAttachSession {
 
   private async switchModel(id: string): Promise<void> {
     const models = await this.models();
-    if (models && !models.includes(id)) {
+    if (models && !models.some((m) => m.id === id)) {
       return this.warn(`The server doesn't offer ${id}. /model lists the ones it does.`);
     }
     if (id === this.model) {
@@ -322,10 +369,11 @@ export class RemoteAttachSession {
     this.info(`The next turn uses ${id}.`);
   }
 
-  private async models(): Promise<string[] | null> {
+  private async models(): Promise<ModelEntry[] | null> {
     if (this.serverModels) return this.serverModels;
     try {
-      this.serverModels = await this.client.models();
+      const { models, catalog } = await this.client.modelCatalog();
+      this.serverModels = serverModelEntries(models, catalog);
     } catch (error) {
       if (this.fatalIfUnauthorized(error)) return null;
       return null;

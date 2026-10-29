@@ -44,6 +44,10 @@ export interface AsterStub {
   dropAfter: number | null;
   /** Re-send the last event when an SSE stream (re)opens (at-least-once delivery). */
   resendOnConnect: boolean;
+  /** GET /models' `catalog` (the IDs are always model-a and model-b). */
+  modelCatalog: Array<Record<string, unknown>>;
+  /** Answer GET /models 503 (the server's catalog is unavailable). */
+  modelsDown: boolean;
   approvals: Map<string, { approvalId: string; status: string; tool: string; explanation: string; arguments: Record<string, unknown>; decision?: string }>;
   append: (conversationId: string, event: StubEvent) => number;
   seed: (conversation: Partial<StubConversation> & { conversationId: string }, events?: StubEvent[]) => void;
@@ -82,6 +86,8 @@ export async function startAsterStub(): Promise<AsterStub> {
     revoked: false,
     dropAfter: null,
     resendOnConnect: false,
+    modelCatalog: [],
+    modelsDown: false,
     approvals: new Map(),
     append: (conversationId, event) => {
       const list = stub.events.get(conversationId) ?? [];
@@ -139,7 +145,10 @@ export async function startAsterStub(): Promise<AsterStub> {
     const fail = (status: number, code: string, message = code) => json(status, { error: { code, message } });
     if (req.headers.authorization !== `Bearer ${token}` || stub.revoked) return fail(401, "unauthorized", "Invalid or expired credential");
 
-    if (path === "/api/v1/models" && method === "GET") return json(200, { models: ["vendor/model-a", "vendor/model-b"], catalog: [] });
+    if (path === "/api/v1/models" && method === "GET") {
+      if (stub.modelsDown) return fail(503, "model_catalog_unavailable");
+      return json(200, { models: ["vendor/model-a", "vendor/model-b"], catalog: stub.modelCatalog });
+    }
     if (path === "/api/v1/conversations" && method === "POST") {
       if (!req.headers["idempotency-key"]) return fail(400, "idempotency_key_required");
       const id = `c0ffee00-0000-4000-8000-${String(++seq).padStart(12, "0")}`;

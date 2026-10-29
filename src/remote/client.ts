@@ -25,6 +25,18 @@ export interface RemoteEvent {
   data: Record<string, unknown>;
 }
 
+/** One entry of GET /models' `catalog` (empty for a server with a fixed model list). */
+export interface RemoteModelInfo {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  inputPerMtok?: number;
+  outputPerMtok?: number;
+  created?: number;
+  reasoning?: boolean;
+  vision?: boolean;
+}
+
 export interface RemoteApproval {
   approvalId: string;
   conversationId: string;
@@ -107,7 +119,13 @@ export class RemoteClient {
   }
 
   async models(): Promise<string[]> {
-    return (await this.request<{ models: string[] }>("GET", "/models")).models;
+    return (await this.modelCatalog()).models;
+  }
+
+  /** The model IDs a conversation may use, with whatever metadata the server has for them. */
+  async modelCatalog(): Promise<{ models: string[]; catalog: RemoteModelInfo[] }> {
+    const body = await this.request<{ models: string[]; catalog?: RemoteModelInfo[] }>("GET", "/models");
+    return { models: body.models, catalog: body.catalog ?? [] };
   }
 
   createCodeConversation(input: {
