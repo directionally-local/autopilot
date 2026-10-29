@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.7.1](https://github.com/directionally-local/autopilot/compare/v2.7.0...v2.7.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **agent:** batch checklist updates with tool calls ([#989](https://github.com/directionally-local/autopilot/issues/989)) ([79955e0](https://github.com/directionally-local/autopilot/commit/79955e0cf45ce93cc18b05edb9a0c012833abc68))
+* **agent:** name Hotcell gateway refusals instead of blaming OpenRouter ([#987](https://github.com/directionally-local/autopilot/issues/987)) ([88959fe](https://github.com/directionally-local/autopilot/commit/88959fe18124fdd97ac00e9f10afbc8a63b13467))
+* recover repeated read calls with full output ([#988](https://github.com/directionally-local/autopilot/issues/988)) ([3b32e5a](https://github.com/directionally-local/autopilot/commit/3b32e5aa4df5a8a040429ac0f8875111a33f504c))
+* **tools:** scale read output caps with model context ([#985](https://github.com/directionally-local/autopilot/issues/985)) ([fdb90c5](https://github.com/directionally-local/autopilot/commit/fdb90c57b2be1cf60afe605b0ba1b69280646f7b)), closes [#964](https://github.com/directionally-local/autopilot/issues/964)
+
 ## [2.7.0](https://github.com/directionally-local/autopilot/compare/v2.6.2...v2.7.0) (2026-10-29)
 
 
