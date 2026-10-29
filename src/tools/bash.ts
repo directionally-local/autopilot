@@ -147,6 +147,63 @@ export async function guardGitPush(command: string, ctx: ToolContext): Promise<T
   return undefined;
 }
 
+/**
+ * Detect git commands that create commits or rewrite history on the current
+ * branch and block them when that branch is the repository's default branch.
+ * Complements guardGitPush: a commit on `main` is just as unwanted as a push
+ * to it when the user prefers pull requests. Returns a blocked ToolOutput when
+ * the command should not proceed; returns undefined otherwise.
+ */
+export async function guardGitCommit(command: string, ctx: ToolContext): Promise<ToolOutput | undefined> {
+  const trimmed = command.trim();
+  const verbMatch = COMMIT_VERBS.exec(trimmed);
+  const hardReset = HARD_RESET.test(trimmed);
+  if (!verbMatch && !hardReset) return undefined;
+
+  // `preferPullRequests` defaults to true; allowDirectPush is the explicit opt-out.
+  if (ctx.preferPullRequests === false) return undefined;
+  const allowed = ctx.allowDirectPush === true || process.env.KIMIFLARE_ALLOW_DIRECT_PUSH === "1";
+  if (allowed) return undefined;
+
+  // `git merge --abort`, `git rebase --continue`, ... do not create commits.
+  if (/\s--(?:abort|continue|skip|quit)\b/.test(trimmed)) return undefined;
+
+  const verbIndex = hardReset ? trimmed.search(HARD_RESET) : trimmed.search(COMMIT_VERBS);
+  // `git switch -c feat && git commit` lands on the new branch, not the default one.
+  const createIndex = trimmed.search(BRANCH_CREATE);
+  if (createIndex >= 0 && createIndex < verbIndex) return undefined;
+
+  const defaultBranch = await resolveDefaultBranch(ctx.cwd);
+  if (!defaultBranch) return undefined; // not a git repo or no default branch to protect
+
+  const current = await getCurrentBranch(ctx.cwd);
+  if (!current || current !== defaultBranch) return undefined;
+
+  const verb = hardReset ? "reset --hard" : verbMatch![1]!;
+  const msg =
+    `Blocked: \`git ${verb}\` on the default branch (${defaultBranch}). ` +
+    `Create a feature branch first (\`git switch -c <name>\`), then commit and open a PR with \`github_create_pr\`. ` +
+    `To allow direct commits, set \`allowDirectPush: true\` in config or run with \`KIMIFLARE_ALLOW_DIRECT_PUSH=1\`.`;
+  return makeErrorOutput(msg);
+}
+
+/** Commit-creating or history-rewriting git verbs, including `git -C dir <verb>`. */
+const COMMIT_VERBS = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+(commit|merge|rebase|cherry-pick|revert)\b/;
+const HARD_RESET = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+reset\b[^&;|]*\s--hard\b/;
+const BRANCH_CREATE = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+(?:switch\s+-[cC]|checkout\s+-[bB])\b/;
+
+/**
+ * The branch the guard protects. Prefers origin/HEAD; for a local-only repo
+ * (or one where origin/HEAD is unset) falls back to main/master when that is
+ * the checked-out branch.
+ */
+async function resolveDefaultBranch(cwd: string): Promise<string | undefined> {
+  const fromOrigin = await getDefaultBranch(cwd);
+  if (fromOrigin) return fromOrigin;
+  const current = await getCurrentBranch(cwd);
+  return current === "main" || current === "master" ? current : undefined;
+}
+
 function makeErrorOutput(message: string): ToolOutput {
   const bytes = Buffer.byteLength(message, "utf8");
   return { content: message, rawBytes: bytes, reducedBytes: bytes };
@@ -170,7 +227,9 @@ async function getDefaultBranch(cwd: string): Promise<string | undefined> {
   const raw = await execOnce("git rev-parse --abbrev-ref origin/HEAD 2>/dev/null || true", cwd);
   if (!raw) return undefined;
   const match = raw.match(/^origin\/(\S+)$/);
-  return match?.[1];
+  // `origin/HEAD` as a plain ref (not a symbolic ref) tells us nothing.
+  if (!match || match[1] === "HEAD") return undefined;
+  return match[1];
 }
 
 async function getCurrentBranch(cwd: string): Promise<string | undefined> {
@@ -394,6 +453,9 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
 
   const pushGuard = await guardGitPush(args.command, ctx);
   if (pushGuard) return pushGuard;
+
+  const commitGuard = await guardGitCommit(args.command, ctx);
+  if (commitGuard) return commitGuard;
 
   const { shell, args: shellArgs, isPosix } = getShellCommand(ctx.shell);
   const { command, env: coauthorEnv } = isPosix

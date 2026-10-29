@@ -4,7 +4,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashTool, buildCoauthorTrailer, getShellCommand, guardGitPush, injectCoauthor, parsePushTarget } from "./bash.js";
+import { bashTool, buildCoauthorTrailer, getShellCommand, guardGitCommit, guardGitPush, injectCoauthor, parsePushTarget } from "./bash.js";
 import type { ToolContext } from "./registry.js";
 
 describe("getShellCommand", () => {
@@ -159,6 +159,82 @@ describe("guardGitPush", () => {
   });
 });
 
+describe("guardGitCommit", () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "bash-commit-guard-"));
+    execSync("git init -b main", { cwd: repo });
+    execSync("git config user.email test@example.com", { cwd: repo });
+    execSync("git config user.name Test", { cwd: repo });
+    writeFileSync(join(repo, "a.txt"), "a");
+    execSync("git add . && git commit -m init", { cwd: repo });
+    const remote = join(repo, "remote.git");
+    execSync(`git init --bare ${remote}`);
+    execSync(`git remote add origin ${remote}`, { cwd: repo });
+    execSync("git push origin main", { cwd: repo });
+    execSync("git remote set-head origin main", { cwd: repo });
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("blocks a commit on the default branch", async () => {
+    const ctx = { cwd: repo } as ToolContext;
+    const result = await guardGitCommit("git commit -m 'change'", ctx);
+    assert.ok(result);
+    assert.match(result!.content, /Blocked/);
+    assert.match(result!.content, /git switch -c/);
+    assert.match(result!.content, /github_create_pr/);
+  });
+
+  it("blocks a commit chained after other commands", async () => {
+    const ctx = { cwd: repo } as ToolContext;
+    const result = await guardGitCommit("git add -A && git commit -m 'change'", ctx);
+    assert.ok(result);
+  });
+
+  it("blocks reset --hard on the default branch", async () => {
+    const ctx = { cwd: repo } as ToolContext;
+    const result = await guardGitCommit("git reset --hard HEAD~1", ctx);
+    assert.ok(result);
+    assert.match(result!.content, /reset --hard/);
+  });
+
+  it("allows a commit on a feature branch", async () => {
+    execSync("git checkout -b feat", { cwd: repo });
+    const ctx = { cwd: repo } as ToolContext;
+    assert.strictEqual(await guardGitCommit("git commit -m 'change'", ctx), undefined);
+  });
+
+  it("allows a commit after switching to a new branch in the same command", async () => {
+    const ctx = { cwd: repo } as ToolContext;
+    assert.strictEqual(await guardGitCommit("git switch -c feat && git commit -m 'change'", ctx), undefined);
+  });
+
+  it("allows abort/continue forms that do not create commits", async () => {
+    const ctx = { cwd: repo } as ToolContext;
+    assert.strictEqual(await guardGitCommit("git rebase --abort", ctx), undefined);
+    assert.strictEqual(await guardGitCommit("git merge --abort", ctx), undefined);
+  });
+
+  it("allows commits when allowDirectPush is true", async () => {
+    const ctx = { cwd: repo, allowDirectPush: true } as ToolContext;
+    assert.strictEqual(await guardGitCommit("git commit -m 'change'", ctx), undefined);
+  });
+
+  it("allows commits when preferPullRequests is false", async () => {
+    const ctx = { cwd: repo, preferPullRequests: false } as ToolContext;
+    assert.strictEqual(await guardGitCommit("git commit -m 'change'", ctx), undefined);
+  });
+
+  it("ignores commands that do not touch git history", async () => {
+    const ctx = { cwd: repo } as ToolContext;
+    assert.strictEqual(await guardGitCommit("npm test", ctx), undefined);
+  });
+});
+
 describe("co-author trailer injection", { skip: process.platform === "win32" }, () => {
   let repo: string;
   let marker: string;
@@ -178,7 +254,7 @@ describe("co-author trailer injection", { skip: process.platform === "win32" }, 
   async function commitWith(coauthor: { name: string; email: string }, command = "git commit -q -m 'add file'"): Promise<string> {
     writeFileSync(join(repo, `f-${Math.random().toString(36).slice(2)}.txt`), "x");
     execSync("git add -A", { cwd: repo });
-    const ctx = { cwd: repo, coauthor, signal: new AbortController().signal } as unknown as ToolContext;
+    const ctx = { cwd: repo, coauthor, allowDirectPush: true, signal: new AbortController().signal } as unknown as ToolContext;
     const out = await bashTool.run({ command }, ctx);
     const content = typeof out === "string" ? out : out.content;
     assert.match(content, /^exit=0/, content);

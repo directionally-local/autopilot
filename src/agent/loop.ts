@@ -1243,6 +1243,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           llmAuth: llmAuthOf(opts),
           model: opts.model,
           allowDirectPush: opts.allowDirectPush,
+          preferPullRequests: opts.preferPullRequests,
           runId: opts.runId,
           onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
           runsDbPath: opts.runsDbPath,
