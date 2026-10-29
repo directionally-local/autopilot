@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.2](https://github.com/directionally-local/autopilot/compare/v3.0.1...v3.0.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **camouflage:** find the renderer in camouflage-tui's platform package ([#1038](https://github.com/directionally-local/autopilot/issues/1038)) ([4774ee8](https://github.com/directionally-local/autopilot/commit/4774ee85907966585122707aa24ed626264189db))
+
 ## [3.0.1](https://github.com/directionally-local/autopilot/compare/v3.0.0...v3.0.1) (2026-10-29)
 
 
