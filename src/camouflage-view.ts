@@ -505,7 +505,8 @@ export class View implements AppBridge {
   private syncActivity(workers: RunningWorker[]): void {
     this.latestWorkers = workers;
     try {
-      const records = this.jobs.list({ limit: 100 });
+      // Jobs live in one database per user; show only this session's, not every session's.
+      const records = this.sessionId ? this.jobs.list({ session: { id: this.sessionId, cwd: process.cwd() }, limit: 100 }) : [];
       this.latestJobs = [
         ...records.filter(isActiveJob),
         ...records.filter((job) => !isActiveJob(job)).slice(0, 5),

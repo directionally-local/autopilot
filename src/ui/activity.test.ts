@@ -18,6 +18,7 @@ const job = (status: JobRecord["status"], patch: Partial<JobRecord> = {}): JobRe
   stdoutPath: "/tmp/out",
   stderrPath: "/tmp/err",
   idempotencyKey: null,
+  sessionId: null,
   ...patch,
 });
 

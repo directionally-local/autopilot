@@ -22,6 +22,8 @@ export interface JobRecord {
   stdoutPath: string;
   stderrPath: string;
   idempotencyKey: string | null;
+  /** The Autopilot session that started it; null for jobs started before sessions were recorded. */
+  sessionId: string | null;
 }
 
 export interface StartJobOptions {
@@ -31,6 +33,7 @@ export interface StartJobOptions {
   shellArgs: string[];
   timeoutMs?: number;
   idempotencyKey?: string;
+  sessionId?: string;
 }
 
 export interface JobLogResult {
@@ -57,6 +60,7 @@ interface JobRow extends Record<string, unknown> {
   pid_path: string;
   timeout_ms: number | null;
   idempotency_key: string | null;
+  session_id: string | null;
 }
 
 const MAX_LOG_BYTES = 64 * 1024;
@@ -165,6 +169,10 @@ export class JobManager {
         ON jobs(cwd, idempotency_key) WHERE idempotency_key IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
     `);
+    // Databases from before jobs recorded their session gain the column in place.
+    const columns = this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "session_id")) this.db.exec("ALTER TABLE jobs ADD COLUMN session_id TEXT");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_session_created ON jobs(session_id, created_at)");
     this.reconcile();
   }
 
@@ -203,9 +211,9 @@ export class JobManager {
     const now = Date.now();
     try {
       this.db.prepare(`INSERT INTO jobs
-        (id, command, cwd, status, created_at, stdout_path, stderr_path, exit_path, pid_path, timeout_ms, idempotency_key)
-        VALUES (?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, command, options.cwd, now, paths.stdoutPath, paths.stderrPath, paths.exitPath, paths.pidPath, options.timeoutMs ?? null, options.idempotencyKey ?? null);
+        (id, command, cwd, status, created_at, stdout_path, stderr_path, exit_path, pid_path, timeout_ms, idempotency_key, session_id)
+        VALUES (?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, command, options.cwd, now, paths.stdoutPath, paths.stderrPath, paths.exitPath, paths.pidPath, options.timeoutMs ?? null, options.idempotencyKey ?? null, options.sessionId ?? null);
     } catch (error) {
       if (options.idempotencyKey && (error as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") {
         rmSync(jobDir, { recursive: true, force: true });
@@ -246,12 +254,25 @@ export class JobManager {
     return this.getRecord(id);
   }
 
-  list(options: { cwd?: string; limit?: number } = {}): JobRecord[] {
+  /**
+   * Recent jobs, newest first. `session` narrows them to one Autopilot session's jobs, plus
+   * jobs from before sessions were recorded that ran in that session's directory.
+   */
+  list(options: { cwd?: string; session?: { id: string; cwd: string }; limit?: number } = {}): JobRecord[] {
     this.reconcile();
     const limit = Math.max(1, Math.min(100, Math.trunc(options.limit ?? 20)));
-    const rows = options.cwd
-      ? this.db.prepare("SELECT * FROM jobs WHERE cwd = ? ORDER BY created_at DESC LIMIT ?").all(options.cwd, limit) as JobRow[]
-      : this.db.prepare("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?").all(limit) as JobRow[];
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (options.cwd) {
+      where.push("cwd = ?");
+      params.push(options.cwd);
+    }
+    if (options.session) {
+      where.push("(session_id = ? OR (session_id IS NULL AND cwd = ?))");
+      params.push(options.session.id, options.session.cwd);
+    }
+    const rows = this.db.prepare(`SELECT * FROM jobs ${where.length ? `WHERE ${where.join(" AND ")} ` : ""}ORDER BY created_at DESC LIMIT ?`)
+      .all(...params, limit) as JobRow[];
     return rows.map(toJobRecord);
   }
 
@@ -440,5 +461,6 @@ function toJobRecord(row: JobRow): JobRecord {
     stdoutPath: row.stdout_path,
     stderrPath: row.stderr_path,
     idempotencyKey: row.idempotency_key,
+    sessionId: row.session_id ?? null,
   };
 }

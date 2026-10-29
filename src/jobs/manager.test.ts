@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { JobManager } from "./manager.js";
 
 const WAIT = new Int32Array(new SharedArrayBuffer(4));
@@ -76,6 +77,48 @@ describe("JobManager", { concurrency: 1 }, () => {
     assert.equal(jobs.list({ cwd: dir }).length, 1);
     await waitForStatus(jobs, first.id, "completed");
   }));
+
+  it("lists one session's jobs, not every session's", async () => withFixture(async ({ dir, jobs }) => {
+    const other = join(dir, "other-project");
+    execFileSync("mkdir", ["-p", other]);
+    const mine = start(jobs, dir, "true", { sessionId: "session-a" });
+    start(jobs, other, "true", { sessionId: "session-b" });
+    const sameDirOtherSession = start(jobs, dir, "true", { sessionId: "session-b" });
+    const legacyHere = start(jobs, dir, "true");
+    start(jobs, other, "true");
+    assert.equal(mine.sessionId, "session-a");
+    assert.equal(legacyHere.sessionId, null);
+
+    const shown = jobs.list({ session: { id: "session-a", cwd: dir }, limit: 100 }).map((job) => job.id);
+    assert.deepEqual(shown.sort(), [mine.id, legacyHere.id].sort(), "its own jobs, and unrecorded ones from its directory");
+    assert.ok(!shown.includes(sameDirOtherSession.id));
+    assert.equal(jobs.list({ session: { id: "session-new", cwd: other }, limit: 100 }).filter((job) => job.sessionId !== null).length, 0);
+    assert.equal(jobs.list({ limit: 100 }).length, 5, "without a session, everything, as before");
+  }));
+
+  it("adds the session column to a database from before it existed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "autopilot-jobs-"));
+    try {
+      const dbPath = join(dir, "jobs.db");
+      const old = new Database(dbPath);
+      old.exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, status TEXT NOT NULL, pid INTEGER, pgid INTEGER,
+        process_start_time TEXT, created_at INTEGER NOT NULL, finished_at INTEGER, exit_code INTEGER, stdout_path TEXT NOT NULL, stderr_path TEXT NOT NULL,
+        exit_path TEXT NOT NULL, pid_path TEXT NOT NULL, timeout_ms INTEGER, idempotency_key TEXT)`);
+      old.prepare("INSERT INTO jobs (id, command, cwd, status, created_at, finished_at, exit_code, stdout_path, stderr_path, exit_path, pid_path) VALUES ('old', 'true', ?, 'completed', 1, 2, 0, 'o', 'e', 'x', 'p')").run(dir);
+      old.close();
+      const jobs = new JobManager(dbPath);
+      try {
+        assert.equal(jobs.get("old")?.sessionId, null);
+        const job = start(jobs, dir, "true", { sessionId: "session-a" });
+        assert.equal(jobs.get(job.id)?.sessionId, "session-a");
+        assert.deepEqual(jobs.list({ session: { id: "session-a", cwd: dir } }).map((entry) => entry.id).sort(), [job.id, "old"].sort());
+      } finally {
+        jobs.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("rejects invalid timeouts", async () => withFixture(({ dir, jobs }) => {
     assert.throws(() => start(jobs, dir, "true", { timeoutMs: 1 }), /timeout_ms/);
