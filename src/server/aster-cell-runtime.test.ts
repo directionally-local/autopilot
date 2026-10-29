@@ -384,6 +384,60 @@ describe("Aster Hotcell runtime", () => {
     assert.deepEqual(turn.finished, ["completed"]);
   });
 
+  it("opens the PR when the agent committed its own work, counting from the clone's start, not origin/<base>", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aster-cell-"));
+    const remote = mkdtempSync(join(tmpdir(), "aster-remote-"));
+    try {
+      const git = (args: string) => execSync(`git -c user.name=t -c user.email=t@t -c commit.gpgsign=false ${args}`, { cwd: root, encoding: "utf8" });
+      execSync("git init -q --bare", { cwd: remote });
+      // Like a cloned cell: the client's base, its local changes committed on top, the start
+      // ref after them, and no origin/main (the clone fetches one commit into FETCH_HEAD).
+      git("init -q");
+      writeFileSync(join(root, "README.md"), "seed\n");
+      git("add README.md");
+      git("commit -q -m base");
+      git("checkout -q -b aster/12345678");
+      writeFileSync(join(root, "README.md"), "seed, edited on the laptop\n");
+      git("commit -q -am 'Apply local changes'");
+      git(`remote add origin ${remote}`);
+      git("update-ref refs/aster/start HEAD");
+      mkdirSync(join(root, ".aster"));
+      writeFileSync(join(root, ".aster", ".seeded"), "");
+      writeFileSync(join(root, ".git", "info", "exclude"), ".aster/\n");
+      assert.throws(() => git("rev-parse --verify -q origin/main"));
+
+      const conversation = {
+        id: "conv-commits", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/12345678", pullRequestNumber: null,
+      } as never;
+      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(emptyCellState(), root), { pollIntervalMs: 5 });
+      const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
+      let published = 0;
+
+      // Only the client's local changes so far: nothing of the agent's to publish.
+      const idle = fakeTurn({ cellId: "real-cell", conversation, userText: "look around", githubProxy, beforeFinish: async () => { published++; } });
+      runtime.startTurn(idle);
+      await waitFor(() => idle.finished.length > 0);
+      assert.equal(published, 0);
+      assert.deepEqual(idle.finished, ["completed"]);
+      assert.ok(idle.events.some((event) => event.type === "outcome" && /no pull request was opened/.test(String(event.data?.summary))));
+
+      // The agent commits its work itself, leaving nothing uncommitted for a checkpoint.
+      writeFileSync(join(root, "design.md"), "the plan\n");
+      git("add design.md");
+      git("commit -q -m 'docs: the plan'");
+      const committed = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 2, userText: "write the plan", githubProxy, beforeFinish: async () => { published++; } });
+      runtime.startTurn(committed);
+      await waitFor(() => committed.finished.length > 0);
+      assert.ok(!committed.events.some((event) => event.type === "checkpoint.created"));
+      assert.equal(published, 1, "the PR hook runs");
+      assert.deepEqual(committed.finished, ["completed"]);
+      assert.match(execSync("git log --format=%s aster/12345678", { cwd: remote, encoding: "utf8" }), /^docs: the plan\n/, "the branch was pushed");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(remote, { recursive: true, force: true });
+    }
+  });
+
   it("maps cell events to Aster events, advances the cursor, and finishes completed turns", async () => {
     const cells = new Map<string, FakeCellState>();
     const provider = fakeProvider(cells);
