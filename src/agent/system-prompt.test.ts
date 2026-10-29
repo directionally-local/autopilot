@@ -43,6 +43,9 @@ describe("buildStaticPrefix", () => {
     assert.match(p, /two or more distinct steps, proactively create a visible checklist/);
     assert.match(p, /before doing work/);
     assert.match(p, /skip it only for a genuinely quick single-action request/i);
+    assert.match(p, /never spend a model response on `tasks_set` alone/);
+    assert.match(p, /same response as the next substantive tool call/);
+    assert.match(p, /final all-completed update with the final substantive tool call/);
   });
 
   it("directs the agent to recover from blockers or give a concrete next action", () => {
