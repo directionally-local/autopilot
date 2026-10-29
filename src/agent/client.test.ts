@@ -353,6 +353,31 @@ describe("runKimi: OpenRouter HTTP errors", () => {
     assert.strictEqual(calls, 1);
   });
 
+  it("Hotcell gateway refusals name the gateway, not OpenRouter moderation or credits", async () => {
+    const plain = (status: number, text: string) => {
+      calls = 0;
+      globalThis.fetch = async () => {
+        calls++;
+        return new Response(text, { status, headers: { "content-type": "text/plain" } });
+      };
+    };
+    plain(403, "model not priced: openai/gpt-6-luna — a spend cap applies, so the gateway can only forward models with a known price (add it via HOTCELL_MODEL_PRICES)");
+    let err = await failure();
+    assert.strictEqual(err.httpStatus, 403);
+    assert.match(err.message, /gateway has no price for moonshotai\/kimi-k2\.6/);
+    assert.doesNotMatch(err.message, /moderation|guardrail/);
+    assert.strictEqual(calls, 1);
+
+    plain(402, "egress spend cap exceeded (token): needs $0.20, $0.05 left of $5.00");
+    err = await failure();
+    assert.match(err.message, /spend cap is used up/);
+    assert.doesNotMatch(err.message, /out of credits/);
+
+    plain(403, "egress token expired");
+    err = await failure();
+    assert.match(err.message, /gateway refused the request \(HTTP 403\): egress token expired/);
+  });
+
   it("includes the upstream provider's raw reason when OpenRouter supplies it", async () => {
     respondWith(400, "Provider returned error", { metadata: { raw: "context too long", provider_name: "Moonshot AI" } });
     const err = await failure();
