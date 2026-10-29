@@ -3,9 +3,11 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolRow, toolSummary, validateCommandName } from "./camouflage-view.js";
+import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName } from "./camouflage-view.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import { listModels } from "./models/registry.js";
+import { bashTool } from "./tools/bash.js";
+import { jobStartTool } from "./tools/jobs.js";
 
 describe("Camouflage event sync helpers", () => {
   it("registers slash commands only when the complete payload changes", () => {
@@ -69,6 +71,32 @@ describe("tool rows", () => {
     assert.deepEqual(toolRow("execute_code", undefined, '{"code":"const p = 1;\\nconsole.log(p);","reasoning":"Check the  worktree state"}'), { label: "Code", args: "Check the worktree state" });
     assert.deepEqual(toolRow("execute_code", undefined, '{"code":"// read files\\nconst r = await api.read({path:\\"a\\"});"}'), { label: "Code", args: 'const r = await api.read({path:"a"});' });
     assert.deepEqual(toolRow("execute_code", undefined, "not json"), { label: "Code", args: "running a code batch" });
+  });
+  it("collapses a long shell command to a short preview with +N lines", () => {
+    const script = ["for r in 1 2 3; do", '  echo "=== rep $r"', ...Array.from({ length: 12 }, (_, i) => `  echo ${i}`), "done"].join("\n");
+    const raw = JSON.stringify({ command: script });
+    const title = bashTool.render!({ command: script }).title;
+    assert.equal(title, "$ for r in 1 2 3; do … +14 lines");
+    assert.deepEqual(toolRow("bash", title, raw), { label: "Bash", args: "$ for r in 1 2 3; do … +14 lines" });
+    assert.deepEqual(toolRow("bash", title, raw, 80), { label: "Bash", args: "$ for r in 1 2 3; do … +14 lines" });
+    const job = jobStartTool.render!({ command: script }).title;
+    assert.equal(job, "job_start: for r in 1 2 3; do … +14 lines");
+    assert.deepEqual(toolRow("job_start", job, raw, 80), { label: "Job_start", args: "job_start: for r in 1 2 3; do … +14 lines" });
+  });
+  it("keeps short shell commands unchanged and fits long lines to the terminal", () => {
+    const raw = JSON.stringify({ command: "npm test" });
+    assert.deepEqual(toolRow("bash", bashTool.render!({ command: "npm test" }).title, raw, 80), { label: "Bash", args: "$ npm test" });
+    const long = `echo ${"x".repeat(300)}`;
+    const row = toolRow("bash", bashTool.render!({ command: long }).title, JSON.stringify({ command: long }), 60);
+    assert.equal(Array.from(row.args).length, 60 - "Bash".length - 12);
+    assert.match(row.args, /^\$ echo x+…$/);
+    assert.equal(Array.from(toolRow("bash", bashTool.render!({ command: long }).title, JSON.stringify({ command: long })).args).length, 120);
+  });
+  it("puts a collapsed command in the expandable output, after the result", () => {
+    assert.equal(toolOutputWithCommand("ok\n", "npm test"), "ok\n");
+    assert.equal(toolOutputWithCommand("ok\n", "make\nmake test"), "ok\n\nFull command:\nmake\nmake test");
+    assert.equal(toolOutputWithCommand("", "make\nmake test"), "Full command:\nmake\nmake test");
+    assert.equal(toolOutputWithCommand("ok", undefined), "ok");
   });
   it("summarizes results", () => {
     assert.equal(toolSummary("read", true, false, "a\nb\nc\n"), "3 lines");
@@ -237,6 +265,21 @@ describe("Camouflage permission: deny with feedback", () => {
     await settle();
     assert.deepStrictEqual(b.calls, [["decidePermission", "allow_session"]]);
     b.view.dispose();
+  });
+
+  it("shows a collapsed command in full as the prompt's detail", async () => {
+    const command = "for f in a b; do\n  echo $f\ndone";
+    const { view, prompts } = await fakeView({ permission: [{ choice: "allow_once" }] });
+    view.sync(baseSnapshot({ permission: { tool: bashTool as never, args: { command } } }));
+    await settle();
+    assert.strictEqual(prompts[0]?.payload.action, "$ for f in a b; do … +2 lines");
+    assert.strictEqual(prompts[0]?.payload.detail, command);
+    view.dispose();
+    const short = await fakeView({ permission: [{ choice: "allow_once" }] });
+    short.view.sync(baseSnapshot({ permission: { tool: bashTool as never, args: { command: "npm test" } } }));
+    await settle();
+    assert.strictEqual(short.prompts[0]?.payload.detail, undefined);
+    short.view.dispose();
   });
 });
 

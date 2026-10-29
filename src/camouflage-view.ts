@@ -53,7 +53,9 @@ import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
 import { PRESETS as LSP_PRESETS } from "./ui/lsp-presets.js";
-import { getShellCommand } from "./tools/bash.js";
+import { formatBashTitle, getShellCommand } from "./tools/bash.js";
+import { formatJobStartTitle } from "./tools/jobs.js";
+import { isCommandCollapsed } from "./util/command-preview.js";
 import type { LspServerConfig } from "./config.js";
 import { TOOL_HOOK_EVENTS, type HookConfig, type HookEvent } from "./hooks/types.js";
 import { RECOMMENDED_HOOKS } from "./hooks/recommended.js";
@@ -694,7 +696,7 @@ export class View implements AppBridge {
 
   private syncTool(e: { key: string } & ToolEventState, prev: { text: number; done: boolean } | undefined): boolean {
     if (!prev) {
-      const { label, args } = toolRow(e.name, e.render?.title, e.args);
+      const { label, args } = toolRow(e.name, e.render?.title, e.args, process.stdout.columns);
       this.cam.send("ToolExecutionStarted", { tool_id: e.key, tool: label, command: args, started_at_ms: e.startedAt });
     }
     if (e.status === "queued" || e.status === "running") return this.mark(e.key, 0, false);
@@ -707,7 +709,7 @@ export class View implements AppBridge {
       exit_code: bang.exitCode ?? (ok ? 0 : 1),
       status: e.status === "rejected" ? "rejected" : e.status === "cancelled" ? "cancelled" : ok ? "done" : "error",
       summary: bang.status ?? toolSummary(e.name, ok, e.status === "rejected", output),
-      output,
+      output: e.status === "rejected" ? "" : toolOutputWithCommand(output, shellCommandArg(e.name, e.args)),
       ...(ok && e.render?.diff ? { diff: e.render.diff } : {}),
     });
     return this.mark(e.key, 0, true);
@@ -761,6 +763,10 @@ export class View implements AppBridge {
         request_id: `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         tool: tool.name,
         action: render?.title ?? tool.name,
+        // A collapsed command is shown in full before the user approves it.
+        ...(typeof args.command === "string" && (tool.name === "bash" || tool.name === "job_start") && isCommandCollapsed(args.command)
+          ? { detail: args.command.trim() }
+          : {}),
         ...(render?.diff ? { diff: render.diff } : {}),
       })
       .then(async (answer) => {
@@ -1768,9 +1774,18 @@ function modalName(m: AppModal): string {
   return names[m];
 }
 
-/** "read src/a.ts" → { label: "Read", args: "src/a.ts" }. */
-export function toolRow(name: string, title: string | undefined, rawArgs: string | undefined): { label: string; args: string } {
+/**
+ * "read src/a.ts" → { label: "Read", args: "src/a.ts" }. With the terminal's
+ * `columns`, a shell command (bash, job_start) is re-previewed to fit the row.
+ */
+export function toolRow(name: string, title: string | undefined, rawArgs: string | undefined, columns?: number): { label: string; args: string } {
   const label = name.startsWith("mcp_") || name.startsWith("lsp_") ? name : name.charAt(0).toUpperCase() + name.slice(1);
+  const command = shellCommandArg(name, rawArgs);
+  if (command !== undefined && columns) {
+    // Room for the status glyph, label and elapsed time around the command.
+    const width = Math.max(20, Math.min(120, columns - label.length - 12));
+    title = name === "bash" ? formatBashTitle(command, width) : formatJobStartTitle(command, width + "job_start: ".length);
+  }
   if (title) {
     const rest = title.toLowerCase().startsWith(`${name.toLowerCase()} `) ? title.slice(name.length + 1) : title;
     return { label, args: rest.trim() };
@@ -1782,6 +1797,27 @@ export function toolRow(name: string, title: string | undefined, rawArgs: string
   }
   const args = (rawArgs ?? "").replace(/\s+/g, " ").trim();
   return { label, args: clip(args) };
+}
+
+/** The command of a bash or job_start call, from its raw JSON arguments. */
+export function shellCommandArg(name: string, rawArgs: string | undefined): string | undefined {
+  if (name !== "bash" && name !== "job_start") return undefined;
+  try {
+    const parsed = rawArgs ? (JSON.parse(rawArgs) as { command?: unknown }) : {};
+    return typeof parsed.command === "string" ? parsed.command : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The output behind "ctrl+o to expand". A collapsed shell command is appended
+ * in full after the result, so the error lines shown by default stay first.
+ */
+export function toolOutputWithCommand(output: string, command: string | undefined): string {
+  if (command === undefined || !isCommandCollapsed(command)) return output;
+  const full = `Full command:\n${command.trim()}`;
+  return output ? `${output.replace(/\n+$/, "")}\n\n${full}` : full;
 }
 
 function clip(s: string): string {

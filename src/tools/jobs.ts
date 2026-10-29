@@ -1,6 +1,7 @@
 import type { ToolContext, ToolSpec } from "./registry.js";
 import { JobManager } from "../jobs/manager.js";
 import { getShellCommand } from "./bash.js";
+import { previewCommand } from "../util/command-preview.js";
 
 interface StartArgs {
   command: string;
@@ -46,7 +47,7 @@ export const jobStartTool: ToolSpec<StartArgs> = {
     additionalProperties: false,
   },
   needsPermission: true,
-  render: (args) => ({ title: `job_start: ${String(args.command ?? "").slice(0, 100)}` }),
+  render: (args) => ({ title: formatJobStartTitle(String(args.command ?? "")) }),
   async run(args, ctx) {
     const shell = getShellCommand(ctx.shell);
     const record = withJobs(ctx, (jobs) => jobs.start({
@@ -127,3 +128,8 @@ export const jobCancelTool: ToolSpec<CancelArgs> = {
     return withJobs(ctx, (jobs) => renderRecord(jobs.cancel(args.job_id)));
   },
 };
+
+/** The job_start row title, with a long script collapsed to its first line. */
+export function formatJobStartTitle(command: string, maxWidth = 111): string {
+  return `job_start: ${previewCommand(command, maxWidth - 11)}`;
+}

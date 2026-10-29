@@ -3,6 +3,7 @@ import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
 import { logger } from "../util/logger.js";
+import { previewCommand } from "../util/command-preview.js";
 import { getUserAgent } from "../util/version.js";
 import { interactiveCommandHint, userShellCommandsEnabled } from "../agent/user-shell.js";
 
@@ -124,11 +125,12 @@ export function isFileReadCommand(command: string): boolean {
   });
 }
 
-function formatBashTitle(raw: string): string {
+/** The bash row title: a leading `cd <dir> &&` dropped, a long script collapsed to its first line. */
+export function formatBashTitle(raw: string, maxWidth = 120): string {
   let cmd = (raw ?? "").trim();
-  const m = cmd.match(/^cd\s+([^\s&;]+)\s*(?:&&|;)\s*(.*)$/);
+  const m = cmd.match(/^cd\s+([^\s&;]+)\s*(?:&&|;)\s*([\s\S]*)$/);
   if (m) cmd = m[2]!.trim();
-  return `$ ${cmd}`.slice(0, 120);
+  return `$ ${previewCommand(cmd, maxWidth - 2)}`;
 }
 
 /**
