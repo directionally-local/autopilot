@@ -811,7 +811,7 @@ describe("Aster Hotcell runtime", () => {
 
   it("ends a turn the cell no longer runs instead of leaving the chat busy", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1 });
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, livenessCheckMs: 50 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },

@@ -70,6 +70,8 @@ export interface AsterHotcellRuntimeOptions {
   stallTimeoutMs?: number;
   /** End a turn whose cell hasn't answered a control request this long. */
   unreachableTimeoutMs?: number;
+  /** How often to check that a quiet turn's cell still runs it (default 20s). */
+  livenessCheckMs?: number;
   /**
    * Pause cells idle (no turn, no API activity) this long, releasing CPU and memory.
    * Hotcell's own idle reaper skips cells with a live background process unless it can
@@ -146,6 +148,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     this.healthTimeoutMs = options.healthTimeoutMs ?? HEALTH_TIMEOUT_MS;
     this.stallTimeoutMs = options.stallTimeoutMs ?? STALL_TIMEOUT_MS;
     this.unreachableTimeoutMs = options.unreachableTimeoutMs ?? UNREACHABLE_TIMEOUT_MS;
+    this.livenessCheckMs = options.livenessCheckMs ?? LIVENESS_CHECK_MS;
     this.idlePauseMs = options.idlePauseMs ?? 0;
     this.modelInfo = options.modelInfo ?? defaultModelInfo;
     if (this.idlePauseMs > 0) {
@@ -157,6 +160,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   private readonly idlePauseMs: number;
   private readonly stallTimeoutMs: number;
   private readonly unreachableTimeoutMs: number;
+  private readonly livenessCheckMs: number;
   private readonly modelInfo: (model: string) => Promise<ModelEntry | undefined>;
 
   /**
@@ -419,7 +423,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     // the turn was lost (e.g. the cell was stopped mid-turn); end it rather than leave the
     // conversation busy forever.
     let quietPolls = 0;
-    const quietLimit = Math.max(5, Math.ceil(LIVENESS_CHECK_MS / this.pollIntervalMs));
+    const quietLimit = Math.max(5, Math.ceil(this.livenessCheckMs / this.pollIntervalMs));
     // Watchdog: a turn that stops making progress fails with a reason instead of leaving
     // the conversation busy forever.
     let lastEventAt = Date.now();
