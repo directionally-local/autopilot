@@ -43,6 +43,13 @@ export interface ToolContext {
    *  commands (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`) and
    *  `reset --hard` on the default branch, directing the model to branch first. */
   preferPullRequests?: boolean;
+  /** Host language server manager, when one is running. Used to append a
+   *  diagnostics block to edit/write results. */
+  lspManager?: import("../lsp/manager.js").LspManager;
+  /** When false, edit/write results omit the post-edit diagnostics block. */
+  postEditDiagnostics?: boolean;
+  /** Include warnings (not just errors) in the post-edit diagnostics block. */
+  postEditDiagnosticsWarnings?: boolean;
   /** Session trace recorder for this call (set by the agent loop). Tools and
    *  the executor emit on it; absent or disabled means no-op. */
   trace?: import("../trace/recorder.js").TraceRecorder;

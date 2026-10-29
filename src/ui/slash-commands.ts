@@ -754,10 +754,14 @@ const handleModel: Handler = (ctx, rest, arg) => {
  * /settings — feature toggles. `/settings` lists them; `/settings <name> on|off`
  * flips one and persists it to the config file.
  */
-const SETTINGS: Record<string, { key: "modesEnabled"; describe: string }> = {
+const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics"; describe: string }> = {
   modes: {
     key: "modesEnabled",
     describe: "plan / edit / auto permission modes (off: every turn runs in auto)",
+  },
+  diagnostics: {
+    key: "postEditDiagnostics",
+    describe: "append LSP/syntax diagnostics to edit and write results",
   },
 };
 
@@ -789,6 +793,8 @@ const handleSettings: Handler = (ctx, rest) => {
         ? "modes on — now in edit (prompts before mutating tools). Shift+Tab cycles edit → plan → auto; /mode switches directly."
         : "modes off — every turn runs in auto.",
     );
+  } else {
+    info(`${name} ${on ? "on" : "off"}`);
   }
   return true;
 };

@@ -8,6 +8,7 @@ import { classifyVerification } from "../trace/verification.js";
 import { detectGitRevert } from "../trace/git-delta.js";
 import type { PermissionDecision as TracePermissionDecision, ToolCallPayload, ToolResultPayload } from "../trace/types.js";
 import { readTool } from "./read.js";
+import { collectPostEditDiagnostics } from "./post-edit-diagnostics.js";
 import { writeTool } from "./write.js";
 import { editTool } from "./edit.js";
 import { bashTool } from "./bash.js";
@@ -641,6 +642,23 @@ export class ToolExecutor {
         }
       }
 
+      // Append a compact diagnostics block to edit/write results so the model
+      // learns about a syntax or type error without spending a turn on tests.
+      let modelContent = normalized.content;
+      if (
+        (call.name === "edit" || call.name === "write") &&
+        typeof args.path === "string" &&
+        ctx.postEditDiagnostics !== false
+      ) {
+        const block = await collectPostEditDiagnostics(resolvePath(ctx.cwd, args.path), {
+          lsp: ctx.lspManager,
+          includeWarnings: ctx.postEditDiagnosticsWarnings === true,
+          cwd: ctx.cwd,
+          signal: ctx.signal,
+        });
+        if (block) modelContent = `${modelContent}\n\n${block}`;
+      }
+
       // Diff-style git commands carry meaning per line; the bash reducer's
       // dedupeConsecutiveLines rule mangles them and traps the model in retry
       // loops on merge-conflict resolution. Archive the artifact so
@@ -665,7 +683,7 @@ export class ToolExecutor {
       const forceFullRead = options?.forceFullRead === true && call.name === "read";
       const reduced = reduceToolOutput(
         call.name,
-        normalized.content,
+        modelContent,
         args,
         this.artifactStore,
         forceFullRead ? { ...this.reducerConfig, enabled: false } : this.reducerConfig,
