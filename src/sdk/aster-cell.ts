@@ -20,6 +20,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
  */
 const CELL_MODE = "auto";
 
+/**
+ * The session config every cell `new_session` gets. The session edits /workspace in place:
+ * that clone is what the runtime checkpoints, pushes as `aster/<id>` and opens the PR from.
+ */
+export function cellSessionConfig(model: string, apiKey: string): Record<string, unknown> {
+  return { model, mode: CELL_MODE, openrouterApiKey: apiKey };
+}
+
 type RpcCommand = { id: string; type: string; [key: string]: unknown };
 type RpcOutput = { id?: string; type: string; [key: string]: unknown };
 type CellEvent = { cursor: number; runId: string | null; event: SessionEvent };
@@ -167,7 +175,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, state: B
       const apiKey = process.env.OPENROUTER_API_KEY;
       if (!model || !apiKey || !process.env.OPENROUTER_BASE_URL) return send(res, 503, { error: "scoped_openrouter_gateway_unavailable" });
       command.cwd = "/workspace";
-      command.config = { model, mode: CELL_MODE, openrouterApiKey: apiKey };
+      command.config = cellSessionConfig(model, apiKey);
       state.sessionId = sessionId;
       state.model = model;
       state.modelInfo = acceptModelInfo(command.modelInfo, model);
@@ -287,7 +295,7 @@ async function restoreSession(input: PassThrough, pending: Map<string, PendingRp
     type: "new_session",
     cwd: "/workspace",
     sessionId: state.sessionId,
-    config: { model: state.model, mode: CELL_MODE, openrouterApiKey: apiKey },
+    config: cellSessionConfig(state.model, apiKey),
   }).catch(() => undefined);
   state.initialized = response?.type === "ok";
   await persistState(state);

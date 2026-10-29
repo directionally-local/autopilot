@@ -2,7 +2,6 @@ import { noteSessionStart } from "../hooks/session-lifecycle.js";
 import { providerPresetOf } from "./llm-auth.js";
 import { withOtelEvents } from "../util/otel-events.js";
 import { runKimi } from "./client.js";
-import type { SessionWorktree } from "../runs/session-worktrees.js";
 import type { ResponseMeta } from "./client.js";
 import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
 import { resetSessionToolState, sessionToolState } from "./session-tool-state.js";
@@ -169,8 +168,6 @@ export interface AgentTurnOpts extends LlmAuth {
   preferPullRequests?: boolean;
   /** Re-inject the live `tasks_set` plan on every request (#950). Default: true. */
   planReminder?: boolean;
-  /** Interactive session's worktree controller (#962), forwarded to every tool call. */
-  sessionWorktree?: SessionWorktree;
   /** Host language server manager, forwarded to tools for post-edit diagnostics. */
   lspManager?: LspManager;
   /** When false, edit/write results omit the post-edit diagnostics block. */
@@ -639,36 +636,6 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     throw new DOMException("aborted", "AbortError");
   }
 
-  // #962: the session may switch into a git worktree on its first mutating
-  // tool call. The prompt names the working directory, so rebuild it once the
-  // worktree is active — otherwise the model keeps believing it is in the
-  // user's checkout and writes paths that only exist there.
-  let promptCwd = opts.cwd;
-  const refreshPromptCwd = (): void => {
-    const active = opts.sessionWorktree?.active;
-    if (!active || active.cwd === promptCwd) return;
-    promptCwd = active.cwd;
-    const content = opts.cacheStable
-      ? buildSessionPrefix({
-          cwd: promptCwd,
-          tools: opts.tools,
-          model: opts.model,
-          mode: opts.mode,
-          skillContext: skillResult?.skillContext,
-          preferPullRequests: opts.preferPullRequests,
-        })
-      : buildSystemPrompt({
-          cwd: promptCwd,
-          tools: opts.tools,
-          model: opts.model,
-          mode: opts.mode,
-          skillContext: skillResult?.skillContext,
-          preferPullRequests: opts.preferPullRequests,
-        });
-    const index = opts.cacheStable ? 1 : 0;
-    if (opts.messages[index]?.role === "system") opts.messages[index] = { role: "system", content };
-  };
-
   const preTurnMs = Math.round(performance.now() - preTurnStart);
 
   opts.callbacks.onMetaBanner?.({
@@ -822,9 +789,6 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   for (const msg of drainBackgroundResults()) opts.messages.push(msg);
 
   while (true) {
-    // A tool call in the previous iteration may have created the session
-    // worktree; point the prompt at it before the next request.
-    refreshPromptCwd();
     // Budget enforcement: before starting a new turn, if we've already hit the
     // limit, run one final synthesis turn and then signal budget exhaustion.
     if (budgetExhausted) {
@@ -1317,7 +1281,6 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           runId: opts.runId,
           onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
           runsDbPath: opts.runsDbPath,
-          sessionWorktree: opts.sessionWorktree,
         },
         opts.onFileChange,
         forceFullRead ? { forceFullRead: true } : undefined,
@@ -1376,7 +1339,6 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           trace,
           turnId,
           codeModeParentToolCallId: tc.id,
-          sessionWorktree: opts.sessionWorktree,
         },
         timeoutMs: 30000,
         memoryLimitMB: 128,

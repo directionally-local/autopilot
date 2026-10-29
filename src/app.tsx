@@ -83,7 +83,6 @@ import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
 import { switchedMessage } from "./providers/connect.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
-import { SessionWorktree } from "./runs/session-worktrees.js";
 import { submitUserPrompt } from "./hooks/prompt-submit.js";
 import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
@@ -429,31 +428,6 @@ function App({
     turnHistoryRef,
     noteTurnEnded,
   } = sessionMgr;
-
-  // #962: code changes happen in a worktree of this session's own, created
-  // on the first mutating tool call; the user's checkout is never modified.
-  const cfgRef = useRef(cfg);
-  cfgRef.current = cfg;
-  const sessionWorktreeRef = useRef<SessionWorktree | null>(null);
-  if (!sessionWorktreeRef.current) {
-    sessionWorktreeRef.current = new SessionWorktree({
-      sourceCwd: process.cwd(),
-      enabled: () => cfgRef.current?.sessionWorktrees !== false,
-      sessionId: () => sessionIdRef.current,
-      onNotice: (text) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]),
-      // #962: the language servers were started at the original checkout. Once
-      // the session moves into its worktree, start a set rooted there so
-      // post-edit diagnostics and the lsp_* tools resolve worktree files.
-      onActivate: (info) => {
-        const current = cfgRef.current;
-        if (!current?.lspEnabled || !current.lspServers) return;
-        for (const [name, server] of Object.entries(current.lspServers)) {
-          if (server.enabled === false) continue;
-          void lspManagerRef.current.startServer(name, server, info.path).catch(() => undefined);
-        }
-      },
-    });
-  }
 
   // Batched streaming delta refs to reduce React re-render frequency
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
@@ -1046,7 +1020,6 @@ function App({
     sessionPlanRef,
     traceRef,
     turnHistoryRef,
-    sessionWorktreeRef: sessionWorktreeRef as React.MutableRefObject<SessionWorktree>,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage,
@@ -1289,8 +1262,6 @@ function App({
       // (no network). The result is reused below where the turn is
       // actually configured, so this isn't a duplicate cost.
       const classification = classifyIntent(trimmed);
-      // "Work in place" in the prompt keeps this session out of a worktree (#962).
-      sessionWorktreeRef.current?.noteUserMessage(trimmed);
 
       // SessionStart, then the UserPromptSubmit hook (veto-able), shared with
       // every host. Fired after we know the prompt resolves to actual
@@ -1511,7 +1482,6 @@ function App({
           messages: messagesRef.current,
           executor: executorRef.current,
           cwd: process.cwd(),
-          sessionWorktree: sessionWorktreeRef.current ?? undefined,
           signal: turnScope.signal,
           reasoningEffort,
           sessionId: ensureSessionId(),

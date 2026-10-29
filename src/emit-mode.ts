@@ -34,7 +34,6 @@ import { KimiApiError, humanizeApiError } from "./util/errors.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt, PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submit.js";
 import { makeSessionId } from "./sessions.js";
-import { SessionWorktree } from "./runs/session-worktrees.js";
 import type { KimiConfig, ReasoningEffort } from "./config.js";
 
 export interface EmitModeOpts
@@ -55,8 +54,6 @@ export interface EmitModeOpts
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
-  /** Run code changes in a session worktree instead of the user's checkout. Default: true. */
-  sessionWorktrees?: boolean;
 }
 
 export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
@@ -202,13 +199,6 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
     emit("RuntimeError", { message: formatHookFailureNotice(notice), source: "hooks", kind: "generic", severity: "warn" });
   });
   const sessionId = makeSessionId(opts.prompt);
-  // #962: code changes go to a session worktree, never the user's checkout.
-  const worktree = new SessionWorktree({
-    sourceCwd: cwd,
-    enabled: () => opts.sessionWorktrees !== false,
-    sessionId: () => sessionId,
-    onNotice: (text) => emit("RuntimeError", { message: text, source: "worktree", kind: "generic", severity: "info" }),
-  });
   const executor = new ToolExecutor(ALL_TOOLS, { hooks });
   const messages: ChatMessage[] = [
     {
@@ -235,7 +225,6 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
    *  turn session. */
   async function runTurn(text: string): Promise<void> {
     emit("UserMessageCreated", { text });
-    worktree.noteUserMessage(text);
 
     // SessionStart, then UserPromptSubmit (veto-able), as in every host. A
     // blocked prompt never reaches the model; a one-shot run exits with
@@ -273,7 +262,6 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
         cwd,
         sessionId,
         hooks,
-        sessionWorktree: worktree,
         signal: controller.signal,
         codeMode: opts.codeMode,
         continueOnLimit: opts.continueOnLimit,
@@ -473,8 +461,6 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
     const finalSecs = Math.floor((Date.now() - sessionStartMs) / 1000);
     emit("StatusUpdate", { segments: { phase: "idle", elapsed: formatElapsed(finalSecs) } });
     process.off("SIGINT", sigintHandler);
-    const worktreeOffer = await worktree.release().catch(() => null);
-    if (worktreeOffer) emit("RuntimeError", { message: worktreeOffer, source: "worktree", kind: "generic", severity: "info" });
     await endSessions("exit");
     emit("SessionEnded", {});
     console.log = origLog;

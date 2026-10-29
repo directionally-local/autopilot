@@ -53,10 +53,6 @@ export const CATEGORIES: Category[] = [
       { command: "/fresh", description: "reset session and start fresh with the last plan" },
       { command: "/good", description: "rate the last turn good (local session trace)" },
       { command: "/bad [reason]", description: "rate the last turn bad (local session trace)", selectable: false },
-      { command: "/worktrees", description: "list this repo's Autopilot worktrees (branch, last used, unsaved work)" },
-      { command: "/worktrees clean", description: "remove every worktree with no uncommitted or unpushed work" },
-      { command: "/worktrees remove <name>", description: "remove one worktree (--force to discard unsaved work)", selectable: false },
-      { command: "/worktrees off", description: "work directly in your checkout for this session" },
     ],
   },
   {

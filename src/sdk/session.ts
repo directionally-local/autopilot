@@ -28,7 +28,6 @@ import { workerRegistry } from "../tools/worker-registry.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { logger } from "../util/logger.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
-import { SessionWorktree } from "../runs/session-worktrees.js";
 import { resolveSdkConfig } from "./config.js";
 import type { CreateSessionOptions, KimiFlareSession, SessionEvent, SessionUsage, SessionStatus, PromptOptions } from "./types.js";
 import { createDefaultPermissionHandler } from "./permissions.js";
@@ -243,8 +242,6 @@ class InternalSession implements KimiFlareSession {
   /** Persisted compaction state (session state + archived artifacts). */
   private readonly compactionState: Pick<SessionFile, "sessionState" | "artifactStore">;
   private readonly compaction: CompactionTarget;
-  /** #962: code changes go to a session worktree, never the caller's checkout. */
-  private readonly worktree: SessionWorktree;
 
   /** Stops forwarding hook failures as `hook.failed` events. */
   private unsubscribeHookFailures: () => void;
@@ -262,21 +259,6 @@ class InternalSession implements KimiFlareSession {
     this.compactionState = { sessionState: opts.sessionFile.sessionState, artifactStore: opts.sessionFile.artifactStore };
     this.compaction = sessionFileCompactionTarget(this.compactionState);
     this.cwd = opts.cwd;
-    this.worktree = new SessionWorktree({
-      sourceCwd: opts.cwd,
-      enabled: () => opts.config.sessionWorktrees !== false,
-      sessionId: () => this.sessionId,
-      onNotice: (text) => this.emit({ type: "warning", message: text }),
-      onActivate: (info) => {
-        // Re-root the language servers at the worktree so diagnostics and the
-        // lsp_* tools resolve files there instead of the caller's checkout.
-        if (!this.lspManager || !opts.config.lspServers) return;
-        for (const [id, serverConfig] of Object.entries(opts.config.lspServers)) {
-          if (serverConfig.enabled === false) continue;
-          void this.lspManager.startServer(id, serverConfig, info.path).catch(() => undefined);
-        }
-      },
-    });
     this.messages = opts.messages;
     this.config = opts.config;
     this.executor = opts.executor;
@@ -552,7 +534,6 @@ class InternalSession implements KimiFlareSession {
     }
     this.denyPendingPermissions();
     this.abortController?.abort();
-    void this.worktree.release().catch(() => null);
     this.lspManager?.stopAll().catch(() => {});
     this.memoryManager?.close();
     this.listeners.clear();
@@ -560,7 +541,6 @@ class InternalSession implements KimiFlareSession {
 
   private async runTurn(mode: Mode, maxToolIterations?: number, turnId: string = makeTurnId()): Promise<void> {
     const signal = this.abortController!.signal;
-    this.worktree.noteUserMessage(lastUserText(this.messages));
     const coauthor =
       this.config.coauthor !== false
         ? {
@@ -727,7 +707,6 @@ class InternalSession implements KimiFlareSession {
       messages: this.messages,
       executor: this.executor,
       cwd: this.cwd,
-      sessionWorktree: this.worktree,
       signal,
       callbacks,
       hooks: this.hooks, // M6.1: Stop fires at end-of-turn when enabled.
