@@ -145,6 +145,12 @@ let requestyFeatured: string[] = [];
  */
 let providerIndex: Map<string, ModelEntry> = new Map();
 let providerCatalogId: string | null = null;
+/**
+ * Entries handed over by whoever could load the live catalog, for a process that can't:
+ * a Hotcell cell gets its model's entry from the Aster server, since the cell's gateway
+ * doesn't serve OpenRouter's /models. Below every catalog, above the seed list.
+ */
+const hintIndex = new Map<string, ModelEntry>();
 
 /** Register (or clear, with an empty list) the active provider's catalog (see provider-catalog.ts). */
 export function registerProviderModels(providerId: string, entries: ModelEntry[]): void {
@@ -184,6 +190,11 @@ export function registerRequestyModels(entries: ModelEntry[], featured: string[]
   requestyFeatured = featured.filter((id) => requestyIndex.has(id));
 }
 
+/** Add (or replace) model hints; see `hintIndex`. */
+export function registerModelHints(entries: ModelEntry[]): void {
+  for (const entry of entries) hintIndex.set(entry.id, entry);
+}
+
 /** True once a live (or cached) OpenRouter catalog has been registered. */
 export function hasOpenRouterCatalog(): boolean {
   return openRouterIndex.size > 0;
@@ -191,7 +202,7 @@ export function hasOpenRouterCatalog(): boolean {
 
 /** Look up a model by id. Returns undefined for unknown models. */
 export function getModel(id: string): ModelEntry | undefined {
-  return userOverrides.get(id) ?? providerIndex.get(id) ?? openRouterIndex.get(id) ?? requestyIndex.get(id) ?? seedIndex.get(id);
+  return userOverrides.get(id) ?? providerIndex.get(id) ?? openRouterIndex.get(id) ?? requestyIndex.get(id) ?? hintIndex.get(id) ?? seedIndex.get(id);
 }
 
 /** Look up a model, falling back to a generic entry for ids not in the catalog. */
