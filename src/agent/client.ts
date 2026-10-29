@@ -587,6 +587,8 @@ function describeHttpError(
     return msg;
   }
   if (requesty) return describeRequestyHttpError(model, status, msg);
+  const gateway = describeGatewayRefusal(model, status, msg);
+  if (gateway) return gateway;
   if (status === 401) {
     return [
       `OpenRouter rejected your API key (HTTP 401): ${msg || "invalid key"}.`,
@@ -606,7 +608,7 @@ function describeHttpError(
     return [
       `OpenRouter refused the request (HTTP 403): ${msg}.`,
       ``,
-      `This is usually a moderation or guardrail block on the key, or a model your account can't access.`,
+      `This can be a moderation or guardrail block on the key, or a model your account can't access.`,
     ].join("\n");
   }
   if (status === 404 && /model|endpoint/i.test(msg)) {
@@ -617,6 +619,37 @@ function describeHttpError(
     ].join("\n");
   }
   return msg;
+}
+
+/**
+ * Refusals from the Hotcell gateway that a sandboxed agent reaches OpenRouter through
+ * (OPENROUTER_BASE_URL). They reuse 402/403, so without this they read as OpenRouter
+ * billing or moderation problems. Matched by Hotcell's own wording; undefined otherwise.
+ */
+function describeGatewayRefusal(model: string, status: number, msg: string): string | undefined {
+  const reason = msg.replace(/^HTTP \d+: /, "");
+  if (/^model not priced\b/.test(reason)) {
+    return [
+      `The sandbox's gateway has no price for ${model}, so it can't keep the task under its spend cap (HTTP ${status}).`,
+      ``,
+      `Pick another model with  /model , or add its price to the gateway (HOTCELL_MODEL_PRICES).`,
+    ].join("\n");
+  }
+  if (/^egress spend cap exceeded\b/.test(reason)) {
+    return [
+      `This task's spend cap is used up (HTTP ${status}): ${reason}.`,
+      ``,
+      `Start a new task with a larger budget, or raise the cap on the server.`,
+    ].join("\n");
+  }
+  if (/^(invalid egress token|egress token expired|provider not in token scope|model not allowed)\b/.test(reason)) {
+    return [
+      `The sandbox's gateway refused the request (HTTP ${status}): ${reason}.`,
+      ``,
+      `The sandbox's model credential is invalid, expired, or doesn't cover ${model}; start the task again, or pick an allowed model with  /model .`,
+    ].join("\n");
+  }
+  return undefined;
 }
 
 /** Error text for a preset provider (OpenAI, DeepSeek, Ollama, …): its name, key env var and console. */

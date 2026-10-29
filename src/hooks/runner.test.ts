@@ -438,3 +438,21 @@ describe("runHooks — env var exposure", () => {
     assert.strictEqual(env.KIMIFLARE_HOOK_RESULT_ERROR_CODE, "unknown");
   });
 });
+
+describe("runHooks — real processes", () => {
+  it("keeps a hook's last output, written just before it exits", async () => {
+    for (let i = 0; i < 20; i++) {
+      const outcome = await runHooks("Stop", [{ id: "h", command: "echo last-words >&2; exit 3" }], { event: "Stop", session_id: "s", cwd: tmpdir() });
+      assert.strictEqual(outcome.outcomes[0]!.exitCode, 3);
+      assert.match(outcome.outcomes[0]!.stderr, /last-words/);
+    }
+  });
+
+  it("doesn't wait for a background process the hook left holding its output", async () => {
+    const started = Date.now();
+    const outcome = await runHooks("Stop", [{ id: "h", command: "sleep 3 & exit 0", timeoutMs: 2500 }], { event: "Stop", session_id: "s", cwd: tmpdir() });
+    assert.strictEqual(outcome.outcomes[0]!.exitCode, 0);
+    assert.strictEqual(outcome.outcomes[0]!.timedOut, false);
+    assert.ok(Date.now() - started < 1500, `took ${Date.now() - started}ms`);
+  });
+});
