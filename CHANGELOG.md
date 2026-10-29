@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.10.0](https://github.com/directionally-local/autopilot/compare/v2.9.0...v2.10.0) (2026-10-29)
+
+
+### Features
+
+* **agent:** budget-relative compaction with stale-output elision ([#1015](https://github.com/directionally-local/autopilot/issues/1015)) ([96dc361](https://github.com/directionally-local/autopilot/commit/96dc3619b2319dd9cd26ca0982951a93f3e93c7d)), closes [#947](https://github.com/directionally-local/autopilot/issues/947)
+* **eval:** baseline workflow, committable summaries, and a cost cap ([#1017](https://github.com/directionally-local/autopilot/issues/1017)) ([cb2392c](https://github.com/directionally-local/autopilot/commit/cb2392cbab6e193b240e8a0c2b5340d7d3b4bae3)), closes [#946](https://github.com/directionally-local/autopilot/issues/946)
+* **insights:** per-model metrics from session traces ([#1019](https://github.com/directionally-local/autopilot/issues/1019)) ([e5adaf9](https://github.com/directionally-local/autopilot/commit/e5adaf91e08d8bd7429dfdedaddcac6031560de1))
+
+
+### Bug Fixes
+
+* **aster:** push a failed turn's work instead of stranding it in the cell ([#1022](https://github.com/directionally-local/autopilot/issues/1022)) ([e8a150d](https://github.com/directionally-local/autopilot/commit/e8a150d29916e868b17d4bac960b930440ab8aaa))
+* **jobs:** show each session only its own background jobs ([#1016](https://github.com/directionally-local/autopilot/issues/1016)) ([0a789f5](https://github.com/directionally-local/autopilot/commit/0a789f5938d4292d254b857af0c053bbd9df7e1f))
+* **prompts:** act on reversible next steps, clarify Code Mode, mark prompted decisions ([#1021](https://github.com/directionally-local/autopilot/issues/1021)) ([84b9f17](https://github.com/directionally-local/autopilot/commit/84b9f178513541f051d032dc66c2ce1409cc9db7)), closes [#968](https://github.com/directionally-local/autopilot/issues/968)
+* **ui:** collapse long shell commands in the transcript ([#1023](https://github.com/directionally-local/autopilot/issues/1023)) ([0bd1574](https://github.com/directionally-local/autopilot/commit/0bd157457b1c57ae40d8c6ca32d8aff28fb3d004))
+
 ## [2.9.0](https://github.com/directionally-local/autopilot/compare/v2.8.0...v2.9.0) (2026-10-29)
 
 
