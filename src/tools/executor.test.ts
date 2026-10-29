@@ -1,5 +1,5 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert";
@@ -508,6 +508,35 @@ describe("ToolExecutor — M6.1 executor-level hooks", () => {
       assert.strictEqual(r.stderr, "err\n");
       assert.strictEqual(r.interrupted, false);
       assert.strictEqual(posts[1]!.result.exitCode, 0);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("appends the read-tool hint for a bash file read only under a profile that asks for it", async () => {
+    const exec = new ToolExecutor(ALL_TOOLS.filter((t) => t.name === "bash"));
+    const cwd = mkdtempSync(join(tmpdir(), "kf-read-hint-"));
+    try {
+      writeFileSync(join(cwd, "a.txt"), "one\ntwo\n");
+      const args = JSON.stringify({ command: "cat a.txt" });
+      const deepseek = await exec.run({ id: "r1", name: "bash", arguments: args }, allowAll, {
+        cwd,
+        model: "deepseek/deepseek-v4.1-flash",
+      });
+      assert.match(deepseek.content, /Use the `read` tool instead/);
+
+      const other = await exec.run({ id: "r2", name: "bash", arguments: args }, allowAll, {
+        cwd,
+        model: "openai/gpt-6-luna",
+      });
+      assert.doesNotMatch(other.content, /Use the `read` tool instead/);
+
+      const notARead = await exec.run(
+        { id: "r3", name: "bash", arguments: JSON.stringify({ command: "echo hi" }) },
+        allowAll,
+        { cwd, model: "deepseek/deepseek-v4.1-flash" },
+      );
+      assert.doesNotMatch(notARead.content, /Use the `read` tool instead/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

@@ -4,8 +4,44 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashTool, buildCoauthorTrailer, getShellCommand, guardGitCommit, guardGitPush, injectCoauthor, parsePushTarget } from "./bash.js";
+import { bashTool, buildCoauthorTrailer, getShellCommand, guardGitCommit, guardGitPush, injectCoauthor, isFileReadCommand, parsePushTarget } from "./bash.js";
 import type { ToolContext } from "./registry.js";
+
+describe("isFileReadCommand", () => {
+  it("matches plain file readers", () => {
+    for (const cmd of [
+      "cat src/index.ts",
+      "head -n 40 src/index.ts",
+      "tail -20 README.md",
+      "nl -ba src/index.ts",
+      "bat src/index.ts",
+      "sed -n '1,40p' src/index.ts",
+      "sed -n 1,40p src/index.ts",
+      "awk 'NR>=1 && NR<=120' src/index.ts",
+      "cat src/index.ts | head -20",
+    ]) {
+      assert.strictEqual(isFileReadCommand(cmd), true, cmd);
+    }
+  });
+
+  it("does not match searches, writes, or compound commands", () => {
+    for (const cmd of [
+      "grep -n foo src/index.ts",
+      "find . -name '*.ts'",
+      "ls -la",
+      "echo hi",
+      "cat src/index.ts > out.txt",
+      "cat src/index.ts && rm out.txt",
+      "cat src/index.ts; echo done",
+      "sed -i 's/a/b/' src/index.ts",
+      "awk '{print $1}' src/index.ts",
+      "cat $(echo file)",
+      "",
+    ]) {
+      assert.strictEqual(isFileReadCommand(cmd), false, cmd);
+    }
+  });
+});
 
 describe("getShellCommand", () => {
   it("returns bash for explicit 'bash'", () => {
@@ -106,6 +142,18 @@ describe("parsePushTarget", () => {
 
   it("ignores non-push commands", () => {
     assert.strictEqual(parsePushTarget("git status"), undefined);
+  });
+
+  it("finds the push in a compound command", () => {
+    assert.deepStrictEqual(parsePushTarget("cd sub && git push origin main"), { kind: "ref", ref: "main" });
+    assert.deepStrictEqual(parsePushTarget("git add -A; git push"), { kind: "current" });
+    assert.deepStrictEqual(parsePushTarget("(cd sub && git push --all)"), { kind: "all" });
+    assert.deepStrictEqual(parsePushTarget("git -C sub push origin main"), { kind: "ref", ref: "main" });
+  });
+
+  it("does not treat a non-push git command as a push", () => {
+    assert.strictEqual(parsePushTarget("git commit -m 'push the button'"), undefined);
+    assert.strictEqual(parsePushTarget("echo git push"), undefined);
   });
 });
 

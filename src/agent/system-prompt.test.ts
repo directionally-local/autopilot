@@ -124,6 +124,16 @@ describe("buildSessionPrefix", () => {
       "session prefix must include the override instruction so recalled memory loses the tug-of-war",
     );
   });
+
+  it("adds the DeepSeek profile guidance only for DeepSeek V4 models", () => {
+    const deepseek = buildSessionPrefix({ cwd: "/tmp", tools: DUMMY_TOOLS, model: "deepseek/deepseek-v4.1-flash" });
+    assert.match(deepseek, /Model-specific tool guidance/);
+    assert.match(deepseek, /Use the `read` tool to view files/);
+    assert.match(deepseek, /always include both `old_string` and `new_string`/);
+
+    const other = buildSessionPrefix({ cwd: "/tmp", tools: DUMMY_TOOLS, model: "openai/gpt-6-luna" });
+    assert.doesNotMatch(other, /Model-specific tool guidance/);
+  });
 });
 
 describe("buildSystemMessages", () => {

@@ -75,6 +75,24 @@ export function applyEdits(text: string, edits: EditPair[], path: string): { tex
 
 const HUNK_SEPARATOR = "\n⋯\n";
 
+/**
+ * Schema for models that drop optional payload fields (#1000): the replacement
+ * text is required and `replace_all` carries no default, so a call cannot
+ * satisfy the schema by filling only `path` and `replace_all`. The `edits[]`
+ * multi-edit form is omitted — call `edit` once per replacement instead.
+ */
+export const strictEditParameters: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    path: { type: "string" },
+    old_string: { type: "string", description: "Exact text to replace." },
+    new_string: { type: "string", description: "Replacement text." },
+    replace_all: { type: "boolean", description: "Replace every occurrence of old_string. Defaults to false." },
+  },
+  required: ["path", "old_string", "new_string"],
+  additionalProperties: false,
+};
+
 export const editTool: ToolSpec<Args> = {
   name: "edit",
   description: [

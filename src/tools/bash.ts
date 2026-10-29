@@ -95,6 +95,35 @@ export const bashTool: ToolSpec<Args> = {
   run: (args, ctx) => runBash(args, ctx),
 };
 
+/** Commands that only print file contents. `sed`/`awk` count only in their
+ *  line-range form, which is how models use them to read a slice of a file. */
+const FILE_READ_COMMANDS = new Set(["cat", "head", "tail", "nl", "bat"]);
+
+/**
+ * True when a bash command only reads file contents (`cat`, `head`, `tail`,
+ * `nl`, `bat`, `sed -n`, `awk 'NR…'`), optionally piped into another reader.
+ * Used to point models that read through bash at the `read` tool (#1001).
+ * Conservative: any other command, redirection, substitution or shell
+ * operator makes it false.
+ */
+export function isFileReadCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  // Ignore operators inside quoted arguments (`awk 'NR>=1 && NR<=120' file`).
+  const unquoted = trimmed.replace(/'[^']*'|"[^"]*"/g, "''");
+  if (/[;&<>`]|\$\(/.test(unquoted)) return false;
+  const segments = trimmed.split("|").map((s) => s.trim()).filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => {
+    const tokens = segment.split(/\s+/);
+    const cmd = tokens[0]!;
+    if (FILE_READ_COMMANDS.has(cmd)) return true;
+    if (cmd === "sed") return tokens.some((t) => t === "-n" || /^-[a-zA-Z]*n/.test(t));
+    if (cmd === "awk") return tokens.some((t) => /\b(?:NR|FNR)\b/.test(t));
+    return false;
+  });
+}
+
 function formatBashTitle(raw: string): string {
   let cmd = (raw ?? "").trim();
   const m = cmd.match(/^cd\s+([^\s&;]+)\s*(?:&&|;)\s*(.*)$/);
@@ -318,55 +347,66 @@ async function getBranchProtectionHint(cwd: string, branch: string, ctx: ToolCon
 export type PushTarget = { kind: "current" } | { kind: "ref"; ref: string } | { kind: "all" } | { kind: "mirror" };
 
 export function parsePushTarget(command: string): PushTarget | undefined {
-  // Strip common shell wrappers so we can look at the git push tokens.
-  const stripped = command.replace(/^\s*(?:\(.*\)\s*&&\s*)?/, "").trim();
-  const tokens = stripped.split(/\s+/);
-  // tokens[0] = git, tokens[1] = push
-  if (tokens[0] !== "git" || tokens[1] !== "push") return undefined;
+  // Look at the `git push` segment of a compound command: `cd sub && git push
+  // origin main` must be guarded just like a bare `git push origin main`.
+  const segments = command
+    .split(/&&|\|\||;|\n/)
+    .map((s) => s.trim().replace(/^\(+/, "").replace(/\)+$/, "").trim());
 
-  let i = 2;
-  const options = new Set<string>();
-  const positional: string[] = [];
-
-  while (i < tokens.length) {
-    const tok = tokens[i]!;
-    if (tok === "--") {
-      i++;
-      while (i < tokens.length) {
-        positional.push(tokens[i]!);
-        i++;
-      }
-      break;
-    }
-    if (tok.startsWith("-")) {
-      if (tok === "--all") options.add("all");
-      else if (tok === "--mirror") options.add("mirror");
-      else if (tok === "--delete" || tok === "-d") options.add("delete");
-      // option may consume next token as its value
-      const needsArg = /^-[A-Za-z]$/.test(tok) && !/[dutq]/.test(tok.charAt(1));
-      i++;
-      if (needsArg && i < tokens.length) i++;
-      continue;
-    }
-    positional.push(tok);
+  for (const segment of segments) {
+    const tokens = segment.split(/\s+/);
+    if (tokens[0] !== "git") continue;
+    let i = 1;
+    // `git -C dir push`, `git -c key=value push`
+    while (i < tokens.length && (tokens[i] === "-C" || tokens[i] === "-c")) i += 2;
+    if (tokens[i] !== "push") continue;
     i++;
+
+    const options = new Set<string>();
+    const positional: string[] = [];
+
+    while (i < tokens.length) {
+      const tok = tokens[i]!;
+      if (tok === "--") {
+        i++;
+        while (i < tokens.length) {
+          positional.push(tokens[i]!);
+          i++;
+        }
+        break;
+      }
+      if (tok.startsWith("-")) {
+        if (tok === "--all") options.add("all");
+        else if (tok === "--mirror") options.add("mirror");
+        else if (tok === "--delete" || tok === "-d") options.add("delete");
+        // option may consume next token as its value
+        const needsArg = /^-[A-Za-z]$/.test(tok) && !/[dutq]/.test(tok.charAt(1));
+        i++;
+        if (needsArg && i < tokens.length) i++;
+        continue;
+      }
+      positional.push(tok);
+      i++;
+    }
+
+    if (options.has("all")) return { kind: "all" };
+    if (options.has("mirror")) return { kind: "mirror" };
+
+    // positional: [remote] [refspec ...]
+    const refspecs = positional.slice(1);
+    if (refspecs.length === 0) return { kind: "current" };
+
+    // Use the last refspec; for `git push origin src:dst` we care about dst.
+    const last = refspecs[refspecs.length - 1]!;
+    if (last.includes(":")) {
+      const dst = last.split(":").pop()!;
+      if (!dst) return { kind: "current" }; // e.g. ":branch" is delete
+      return { kind: "ref", ref: dst.replace(/^\+/, "").replace(/^refs\/heads\//, "") };
+    }
+    return { kind: "ref", ref: last.replace(/^refs\/heads\//, "") };
   }
 
-  if (options.has("all")) return { kind: "all" };
-  if (options.has("mirror")) return { kind: "mirror" };
-
-  // positional: [remote] [refspec ...]
-  const refspecs = positional.slice(1);
-  if (refspecs.length === 0) return { kind: "current" };
-
-  // Use the last refspec; for `git push origin src:dst` we care about dst.
-  const last = refspecs[refspecs.length - 1]!;
-  if (last.includes(":")) {
-    const dst = last.split(":").pop()!;
-    if (!dst) return { kind: "current" }; // e.g. ":branch" is delete
-    return { kind: "ref", ref: dst.replace(/^\+/, "").replace(/^refs\/heads\//, "") };
-  }
-  return { kind: "ref", ref: last.replace(/^refs\/heads\//, "") };
+  return undefined;
 }
 
 /** Env vars that carry co-author data into the generated shell. The script
