@@ -108,6 +108,61 @@ describe("fetchEmbeddings", () => {
     responseBody = { data: [] };
     await assert.rejects(fetchEmbeddings({ openrouterApiKey: "k", texts: ["x"] }), /no vectors/);
   });
+
+  it("truncates inputs to the embedding model's context window", async () => {
+    const long = "x".repeat(5000);
+    await fetchEmbeddings({ openrouterApiKey: "sk-or-test", texts: [long] });
+    const body = (await lastRequest!.clone().json()) as { input: string[] };
+    // bge-base-en-v1.5 has a 512-token context; 2.5 chars/token with 10% headroom.
+    assert.ok(body.input[0]!.length <= 1152, `input was ${body.input[0]!.length} chars`);
+    assert.ok(body.input[0]!.length > 0);
+  });
+
+  it("retries with a smaller budget when the model rejects the input as too long", async () => {
+    const long = "x".repeat(5000);
+    const lengths: number[] = [];
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      const body = (await req.clone().json()) as { input: string[] };
+      lengths.push(body.input[0]!.length);
+      calls++;
+      if (calls === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message:
+                "You passed 513 input tokens and requested 0 output tokens. However, the model's context length is only 512 tokens, resulting in a maximum input length of 512 tokens. Please reduce the length of the input prompt.",
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ data: [{ index: 0, embedding: [0.1, 0.2, 0.3] }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const vectors = await fetchEmbeddings({ openrouterApiKey: "sk-or-test", texts: [long] });
+    assert.strictEqual(calls, 2);
+    assert.ok(lengths[1]! < lengths[0]!, `expected a smaller retry, got ${lengths.join(" then ")}`);
+    assertClose(vectors[0]!, [0.1, 0.2, 0.3]);
+  });
+
+  it("does not retry a non-context 400", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: { message: "invalid model" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await assert.rejects(fetchEmbeddings({ openrouterApiKey: "sk-or-test", texts: ["x"] }), /invalid model/);
+    assert.strictEqual(calls, 1);
+  });
 });
 
 describe("vectorFromBlob", () => {

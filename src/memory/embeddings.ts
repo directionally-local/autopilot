@@ -35,15 +35,46 @@ export class EmbeddingsUnavailableError extends Error {
 export function embeddingModelFor(auth: LlmAuth, override?: string): string | null {
   return override?.trim() || providerPresetOf(auth).embedding?.model || null;
 }
-const MAX_EMBED_CHARS = 2000; // ≈ the 512-token context of bge-base-en-v1.5
+/** Context window (tokens) of the embedding models we ship with. bge-base-en-v1.5,
+ *  OpenRouter's default, is 512; OpenAI's text-embedding-3-small is 8191. */
+const EMBEDDING_CONTEXT_TOKENS: Record<string, number> = {
+  "baai/bge-base-en-v1.5": 512,
+  "openai/text-embedding-3-small": 8191,
+};
+const DEFAULT_EMBEDDING_CONTEXT_TOKENS = 512;
+/** Coding-agent text (markdown, code, paths) tokenizes denser than prose:
+ *  budget 2.5 chars/token and keep 10% headroom so a section never overflows
+ *  the model's context. A fixed char cap assumed 4 chars/token and sent
+ *  513-token inputs to a 512-token model. */
+const CHARS_PER_TOKEN = 2.5;
+const CONTEXT_HEADROOM = 0.9;
+const MIN_EMBED_CHARS = 200;
 
-function truncateForEmbedding(text: string): string {
-  if (text.length <= MAX_EMBED_CHARS) return text;
-  return text.slice(0, MAX_EMBED_CHARS);
+/** Largest input, in characters, that fits `model`'s context window. */
+export function embeddingCharBudget(model: string): number {
+  const tokens = EMBEDDING_CONTEXT_TOKENS[model] ?? DEFAULT_EMBEDDING_CONTEXT_TOKENS;
+  return Math.max(MIN_EMBED_CHARS, Math.floor(tokens * CONTEXT_HEADROOM * CHARS_PER_TOKEN));
+}
+
+function truncateForEmbedding(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars);
+}
+
+/** A 400 that says the input was too long for the model's context. */
+function isContextLengthError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if ((err as { status?: number }).status !== 400) return false;
+  return /context length|maximum input|input_tokens|too long|reduce the length/i.test(err.message);
 }
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface EmbeddingsHttpError extends Error {
+  /** HTTP status, set for a non-retryable 4xx so callers can classify it. */
+  status?: number;
 }
 
 async function fetchWithRetry(
@@ -53,23 +84,28 @@ async function fetchWithRetry(
 ): Promise<Response> {
   let lastError: Error | undefined;
   for (let i = 0; i < retries; i++) {
+    let res: Response;
     try {
-      const res = await fetch(url, init);
-      if (res.ok) return res;
-      if (res.status === 429 || res.status >= 500) {
-        // Rate limit or server error — retry with backoff
-        const delay = 1000 * 2 ** i;
-        await sleep(delay);
-        continue;
-      }
-      const errText = await res.text().catch(() => "unknown error");
-      throw new Error(`embeddings request failed (${res.status}): ${errText}`);
+      res = await fetch(url, init);
     } catch (e) {
+      // Network error — retry with backoff.
       lastError = e as Error;
-      if (i < retries - 1) {
-        await sleep(1000 * 2 ** i);
-      }
+      if (i < retries - 1) await sleep(1000 * 2 ** i);
+      continue;
     }
+    if (res.ok) return res;
+    if (res.status === 429 || res.status >= 500) {
+      // Rate limit or server error — retry with backoff.
+      lastError = new Error(`embeddings request failed (${res.status})`);
+      if (i < retries - 1) await sleep(1000 * 2 ** i);
+      continue;
+    }
+    // Other 4xx are not retryable: a bad request stays bad. Retrying it three
+    // times only repeated the same error and delayed startup.
+    const errText = await res.text().catch(() => "unknown error");
+    const err: EmbeddingsHttpError = new Error(`embeddings request failed (${res.status}): ${errText}`);
+    err.status = res.status;
+    throw err;
   }
   throw lastError ?? new Error("embeddings request failed after retries");
 }
@@ -114,9 +150,8 @@ export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> 
   const requesty = !custom && usesRequesty(opts);
   const model = embeddingModelFor(opts, opts.model);
   if (!model) throw new EmbeddingsUnavailableError(providerPresetOf(opts).name);
-  const texts = opts.texts.map(truncateForEmbedding);
 
-  if (texts.length === 0) {
+  if (opts.texts.length === 0) {
     return [];
   }
 
@@ -137,13 +172,27 @@ export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> 
   }
   headers["Content-Type"] = "application/json";
 
-  const res = await fetchWithRetry(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ model, input: texts }),
-  });
-  const json = (await res.json()) as unknown;
-  return parseOpenAiEmbeddingResponse(json);
+  // Truncate to the model's context. If the estimate was still too generous
+  // for this tokenizer (a context-length 400), halve the budget and retry.
+  let budget = embeddingCharBudget(model);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const texts = opts.texts.map((text) => truncateForEmbedding(text, budget));
+    try {
+      const res = await fetchWithRetry(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model, input: texts }),
+      });
+      const json = (await res.json()) as unknown;
+      return parseOpenAiEmbeddingResponse(json);
+    } catch (e) {
+      lastError = e;
+      if (!isContextLengthError(e) || budget <= MIN_EMBED_CHARS) break;
+      budget = Math.max(MIN_EMBED_CHARS, Math.floor(budget / 2));
+    }
+  }
+  throw lastError;
 }
 
 /**
