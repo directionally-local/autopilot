@@ -56,6 +56,7 @@ export const jobStartTool: ToolSpec<StartArgs> = {
       shellArgs: shell.args,
       timeoutMs: args.timeout_ms,
       idempotencyKey: args.idempotency_key,
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     }));
     return `${renderRecord(record)}\n\nUse job_status with job_id=${record.id} to check progress.`;
   },
