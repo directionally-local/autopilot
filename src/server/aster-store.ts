@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -222,12 +222,12 @@ const DEVICE_POLL_INTERVAL_MS = 5_000;
 const MAX_EVENTS_PER_CONVERSATION = 50_000;
 
 export class AsterStore {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
 
   constructor(dbPath = defaultAsterDbPath()) {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     try { chmodSync(dirname(dbPath), 0o700); } catch { /* permissions are managed by the service account */ }
-    this.db = new Database(dbPath);
+    this.db = new SqliteDatabase(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");

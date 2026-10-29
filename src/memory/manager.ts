@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import { pickLlmAuth, providerPresetOf, type LlmAuth } from "../agent/llm-auth.js";
 import { runKimi } from "../agent/client.js";
 import type { ChatMessage } from "../agent/messages.js";
@@ -134,7 +134,7 @@ Return a JSON array of strings. Example:
 ["what package manager does this project use?", "pnpm preference", "user likes pnpm over npm"]`;
 
 export class MemoryManager {
-  private db: Database.Database | null = null;
+  private db: SqliteDatabase | null = null;
   private opts: MemoryManagerOpts;
 
   constructor(opts: MemoryManagerOpts) {

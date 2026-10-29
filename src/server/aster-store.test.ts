@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,7 +104,7 @@ describe("AsterStore", () => {
     const dbPath = join(root, "state", "aster.db");
     await mkdir(join(root, "state"));
     const now = Date.now();
-    const legacy = new Database(dbPath);
+    const legacy = new SqliteDatabase(dbPath);
     legacy.exec("CREATE TABLE aster_conversations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, model TEXT NOT NULL, session_id TEXT NOT NULL UNIQUE, worktree_path TEXT NOT NULL, cwd TEXT NOT NULL, branch TEXT NOT NULL, status TEXT NOT NULL, active_run_id TEXT, last_event_sequence INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
     legacy.prepare("INSERT INTO aster_conversations (id, workspace_id, model, session_id, worktree_path, cwd, branch, status, active_run_id, last_event_sequence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run("conv-legacy", "default", "test/model", "session-legacy", join(root, "worktree"), join(root, "worktree"), "branch", "ready", null, 0, now, now);

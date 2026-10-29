@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,7 +16,7 @@ interface Fixture {
 describe("RunStore", () => {
   it("migrates existing run databases with nullable worktree metadata", async () => withFixture(({ dir }) => {
     const dbPath = join(dir, "legacy.db");
-    const legacy = new Database(dbPath);
+    const legacy = new SqliteDatabase(dbPath);
     legacy.exec(`CREATE TABLE runs (
       id TEXT PRIMARY KEY,
       session_id TEXT,

@@ -15,7 +15,6 @@ export default defineConfig({
   external: [
     "@agentclientprotocol/sdk",
     "@modelcontextprotocol/sdk",
-    "better-sqlite3",
     "fast-glob",
     "diff",
     "turndown",

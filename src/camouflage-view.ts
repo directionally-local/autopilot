@@ -395,7 +395,8 @@ export class View implements AppBridge {
   cancels = 0;
   private commandsKey: string | undefined;
   private readonly sentSubagentPolicyNotices = new Set<string>();
-  private readonly jobs = new JobManager();
+  /** The jobs database: undefined until first use, null when it couldn't open. */
+  private jobsManager: JobManager | null | undefined;
   private readonly sentActivities = new Map<string, string>();
   private readonly workerActivities = new Map<string, {
     item: ActivityItem;
@@ -416,8 +417,30 @@ export class View implements AppBridge {
     private cam: CamouflageHandle,
     private sdk: CamouflageSdk,
     /** `commands`: a fixed slash-command list (a remote session) instead of the built-ins plus custom ones. */
-    private readonly opts: { commands?: RegisteredSlashCommand[] } = {},
+    /** `openJobs`: how to open the jobs database (tests inject a failing one). */
+    private readonly opts: { commands?: RegisteredSlashCommand[]; openJobs?: () => JobManager } = {},
   ) {}
+
+  /**
+   * The jobs database, opened on first use. When it can't open (a broken
+   * SQLite install, an unwritable state dir), background-job activity is off
+   * for this session with one dim notice, instead of crashing the UI.
+   */
+  private get jobs(): JobManager | null {
+    if (this.jobsManager !== undefined) return this.jobsManager;
+    try {
+      this.jobsManager = (this.opts.openJobs ?? (() => new JobManager()))();
+    } catch (error) {
+      this.jobsManager = null;
+      const reason = error instanceof Error ? error.message : String(error);
+      logger.warn("camouflage.jobs_db_unavailable", { error: reason });
+      this.cam.send("RuntimeError", {
+        message: `Background job activity is off: couldn't open the jobs database (${reason.split("\n")[0]}).`,
+        severity: "info",
+      });
+    }
+    return this.jobsManager;
+  }
 
   connect(actions: AppActions): void {
     this.actions = actions;
@@ -486,10 +509,12 @@ export class View implements AppBridge {
       workerRegistry.cancel(id.slice("agent:".length));
       return;
     }
+    const jobs = this.jobs;
+    if (!jobs) return;
     try {
-      const job = this.jobs.get(id);
+      const job = jobs.get(id);
       if (!job || !isActiveJob(job)) return;
-      this.jobs.cancel(id);
+      jobs.cancel(id);
       this.refreshActivities();
     } catch (error) {
       logger.warn("camouflage.activity_stop_failed", { id, error: String(error) });
@@ -501,14 +526,14 @@ export class View implements AppBridge {
     this.disposed = true;
     if (this.activityPoll) clearInterval(this.activityPoll);
     this.activityPoll = null;
-    this.jobs.close();
+    this.jobsManager?.close();
   }
 
   private syncActivity(workers: RunningWorker[]): void {
     this.latestWorkers = workers;
     try {
       // Jobs live in one database per user; show only this session's, not every session's.
-      const records = this.sessionId ? this.jobs.list({ session: { id: this.sessionId, cwd: process.cwd() }, limit: 100 }) : [];
+      const records = this.sessionId ? this.jobs?.list({ session: { id: this.sessionId, cwd: process.cwd() }, limit: 100 }) ?? [] : [];
       this.latestJobs = [
         ...records.filter(isActiveJob),
         ...records.filter((job) => !isActiveJob(job)).slice(0, 5),
@@ -596,12 +621,14 @@ export class View implements AppBridge {
   }
 
   private streamJobLogs(id: string, initial: boolean): void {
+    const jobs = this.jobs;
+    if (!jobs) return;
     for (const stream of ["stdout", "stderr"] as const) {
       const key = `${id}:${stream}`;
       try {
         const result = initial
-          ? this.jobs.logs(id, stream, { tail: 1000 })
-          : this.jobs.logs(id, stream, { offset: this.jobLogOffsets.get(key) ?? 0 });
+          ? jobs.logs(id, stream, { tail: 1000 })
+          : jobs.logs(id, stream, { offset: this.jobLogOffsets.get(key) ?? 0 });
         this.jobLogOffsets.set(key, result.offset);
         if (result.content) this.cam.send("ActivityLog", { id, chunk: result.content, stream });
       } catch {

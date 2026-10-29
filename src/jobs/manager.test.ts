@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { JobManager } from "./manager.js";
 
 const WAIT = new Int32Array(new SharedArrayBuffer(4));
@@ -100,7 +100,7 @@ describe("JobManager", { concurrency: 1 }, () => {
     const dir = mkdtempSync(join(tmpdir(), "autopilot-jobs-"));
     try {
       const dbPath = join(dir, "jobs.db");
-      const old = new Database(dbPath);
+      const old = new SqliteDatabase(dbPath);
       old.exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, status TEXT NOT NULL, pid INTEGER, pgid INTEGER,
         process_start_time TEXT, created_at INTEGER NOT NULL, finished_at INTEGER, exit_code INTEGER, stdout_path TEXT NOT NULL, stderr_path TEXT NOT NULL,
         exit_path TEXT NOT NULL, pid_path TEXT NOT NULL, timeout_ms INTEGER, idempotency_key TEXT)`);

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import type { LlmAuth } from "../agent/llm-auth.js";
 import type { SemanticSkillRoutingResult, SectionResult } from "./types.js";
 import { searchSections } from "./search.js";
@@ -14,7 +14,7 @@ export interface RouterOptions {
 }
 
 export interface RouterDeps extends LlmAuth {
-  db: Database.Database;
+  db: SqliteDatabase;
   embeddingModel?: string;
 }
 

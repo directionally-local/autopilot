@@ -3,15 +3,15 @@
  * Test script to index skills and verify semantic search works.
  * Run: node scripts/index-skills-test.mjs
  */
-import Database from "better-sqlite3";
+import { DatabaseSync as Database } from "node:sqlite";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
 const dbPath = join(process.cwd(), ".kimiflare", "memory.db");
 const db = new Database(dbPath);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+db.exec("PRAGMA journal_mode = WAL");
+db.exec("PRAGMA foreign_keys = ON");
 
 // Init schema
 db.exec(`

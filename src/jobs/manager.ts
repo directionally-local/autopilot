@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync, existsSync, statSync, closeSync, appendFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -136,14 +136,14 @@ child.on('close', (code, signal) => {
  * connection; create a fresh instance after a process restart to reconcile jobs.
  */
 export class JobManager {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
   private readonly jobsDir: string;
 
   constructor(dbPath = defaultJobDbPath()) {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     this.jobsDir = join(dirname(dbPath), "jobs");
     mkdirSync(this.jobsDir, { recursive: true, mode: 0o700 });
-    this.db = new Database(dbPath);
+    this.db = new SqliteDatabase(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("busy_timeout = 5000");
     this.db.exec(`

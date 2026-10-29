@@ -1,10 +1,10 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import type { Memory, MemoryQuery, HybridResult } from "./schema.js";
 import { searchMemoriesFts, listMemoriesForVectorSearch, updateAccessedAt } from "./db.js";
 import { cosineSimilarity } from "./embeddings.js";
 
 export interface RetrieveOpts {
-  db: Database.Database;
+  db: SqliteDatabase;
   query: MemoryQuery;
 }
 

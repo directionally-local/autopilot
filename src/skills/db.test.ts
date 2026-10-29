@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert";
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import {
   initSkillsSchema,
   upsertSkill,
@@ -28,7 +28,7 @@ function makeSkill(overrides: Partial<ParsedSkill> = {}): ParsedSkill {
 
 describe("initSkillsSchema", () => {
   it("creates tables without error", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -42,7 +42,7 @@ describe("initSkillsSchema", () => {
 
 describe("upsertSkill", () => {
   it("inserts a new skill", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     const skill = makeSkill();
     const id = upsertSkill(db, skill);
@@ -55,7 +55,7 @@ describe("upsertSkill", () => {
   });
 
   it("updates an existing skill and clears old sections", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     const skill = makeSkill();
     const id1 = upsertSkill(db, skill);
@@ -77,7 +77,7 @@ describe("upsertSkill", () => {
 
 describe("insertSections", () => {
   it("inserts sections with embeddings", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     const skill = makeSkill();
     const id = upsertSkill(db, skill);
@@ -95,7 +95,7 @@ describe("insertSections", () => {
 
 describe("deleteOrphanedSkills", () => {
   it("removes skills whose files no longer exist", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     const skill1 = makeSkill({ filePath: "/tmp/a.md" });
     const skill2 = makeSkill({ filePath: "/tmp/b.md" });
@@ -112,7 +112,7 @@ describe("deleteOrphanedSkills", () => {
   });
 
   it("removes all skills when no paths provided", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     upsertSkill(db, makeSkill());
     const removed = deleteOrphanedSkills(db, []);
@@ -123,7 +123,7 @@ describe("deleteOrphanedSkills", () => {
 
 describe("getSkillByPath", () => {
   it("returns null for missing skill", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     const row = getSkillByPath(db, "/tmp/missing.md");
     assert.strictEqual(row, null);

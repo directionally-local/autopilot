@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
-import Database from "better-sqlite3";
+import { SqliteDatabase } from "../util/sqlite.js";
 import { initSkillsSchema, insertSections, setSkillEmbeddingModel, upsertSkill } from "./db.js";
 import { keywordSimilarity, searchSections } from "./search.js";
 import type { ParsedSkill } from "./types.js";
@@ -26,12 +26,12 @@ describe("keywordSimilarity", () => {
 });
 
 describe("searchSections", () => {
-  let db: Database.Database;
+  let db: SqliteDatabase;
   const originalFetch = globalThis.fetch;
   let embedCalls = 0;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     initSkillsSchema(db);
     embedCalls = 0;
     globalThis.fetch = (async () => {

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import type { LlmAuth } from "../agent/llm-auth.js";
 import { embeddingModelFor, fetchEmbeddings, cosineSimilarity, vectorFromBlob } from "../memory/embeddings.js";
 import { hasAnySections, listAllSectionRows, rowToSectionResult } from "./db.js";
@@ -38,7 +38,7 @@ export function keywordSimilarity(query: string, text: string): number {
  */
 export async function searchSections(
   query: string,
-  db: Database.Database,
+  db: SqliteDatabase,
   opts: SearchOpts
 ): Promise<SectionResult[]> {
   if (!hasAnySections(db)) return [];
