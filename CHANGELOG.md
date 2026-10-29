@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/directionally-local/autopilot/compare/v3.0.0...v3.0.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* use node:sqlite instead of better-sqlite3 so npm 12 installs work ([#1036](https://github.com/directionally-local/autopilot/issues/1036)) ([9ace62b](https://github.com/directionally-local/autopilot/commit/9ace62b920ef39d4fc3e3267dbf2a5b7214eed05))
+
 ## [3.0.0](https://github.com/directionally-local/autopilot/compare/v2.10.0...v3.0.0) (2026-10-29)
 
 
