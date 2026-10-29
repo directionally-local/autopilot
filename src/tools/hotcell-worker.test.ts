@@ -4,9 +4,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { getRepositorySnapshot } from "./hotcell-snapshot.js";
 import {
+  acquireSlot,
   parseWorkerReport,
+  releaseSlot,
   resolveWorkerPackage,
   parseCellId,
   parseNamedCellId,
@@ -32,6 +35,30 @@ after(() => {
   delete process.env.KIMIFLARE_WORKER_ARCHIVE;
 });
 const cellId = "12345678-1234-1234-1234-123456789abc";
+
+describe("worker slot queue", () => {
+  it("removes the abort listener when a waiter is woken (#967)", async () => {
+    const turn = new AbortController();
+    await acquireSlot(1, turn.signal); // takes the only slot
+    const queued = acquireSlot(1, turn.signal); // waits, adds one listener
+    assert.equal(getEventListeners(turn.signal, "abort").length, 1);
+    releaseSlot(); // wakes the waiter without aborting
+    await queued;
+    assert.equal(getEventListeners(turn.signal, "abort").length, 0);
+    releaseSlot();
+  });
+
+  it("removes the abort listener when a waiter is cancelled (#967)", async () => {
+    const turn = new AbortController();
+    await acquireSlot(1, turn.signal);
+    const queued = acquireSlot(1, turn.signal);
+    assert.equal(getEventListeners(turn.signal, "abort").length, 1);
+    turn.abort();
+    await assert.rejects(queued, /cancelled while waiting for a slot/);
+    assert.equal(getEventListeners(turn.signal, "abort").length, 0);
+    releaseSlot();
+  });
+});
 
 async function makeRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), "autopilot-hotcell-test-"));
