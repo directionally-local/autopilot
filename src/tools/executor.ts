@@ -11,7 +11,7 @@ import { readTool } from "./read.js";
 import { collectPostEditDiagnostics } from "./post-edit-diagnostics.js";
 import { writeTool } from "./write.js";
 import { editTool } from "./edit.js";
-import { bashTool } from "./bash.js";
+import { bashTool, isFileReadCommand } from "./bash.js";
 import { globTool } from "./glob.js";
 import { grepTool } from "./grep.js";
 import { webFetchTool } from "./web-fetch.js";
@@ -34,6 +34,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { resolvePath } from "../util/paths.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
+import { modelProfileFor } from "../models/profile.js";
 
 export const ALL_TOOLS: ToolSpec[] = [
   { ...readTool, isReadOnly: true },
@@ -691,13 +692,24 @@ export class ToolExecutor {
       const content = forceFullRead
         ? `Repeated identical read detected. Returning the un-reduced file content; if it is still truncated, request a specific offset/limit slice.\n\n${reduced.content}`
         : reduced.content;
+      // #1001: models that read files through bash get one line pointing at
+      // the read tool. Appended after reduction so it survives truncation.
+      const readHint =
+        call.name === "bash" &&
+        typeof args.command === "string" &&
+        (normalized.meta?.exitCode ?? 0) === 0 &&
+        modelProfileFor(ctx.model)?.bashReadHint === true &&
+        isFileReadCommand(args.command)
+          ? "\n\n[autopilot] That bash call only read a file. Use the `read` tool instead: it returns line numbers, caps output, and registers the file as read for edit staleness checks."
+          : "";
+      const finalContent = content + readHint;
       const success: ToolResult = {
         tool_call_id: call.id,
         name: call.name,
-        content,
+        content: finalContent,
         ok: true,
         rawBytes: reduced.rawBytes,
-        reducedBytes: Buffer.byteLength(content, "utf8"),
+        reducedBytes: Buffer.byteLength(finalContent, "utf8"),
         artifactId: reduced.artifactId,
         ...(normalized.waitRequest ? { waitRequest: normalized.waitRequest } : {}),
       };

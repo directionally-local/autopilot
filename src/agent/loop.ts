@@ -8,6 +8,7 @@ import { resetSessionToolState, sessionToolState } from "./session-tool-state.js
 import { workerRegistry } from "../tools/worker-registry.js";
 import { finishedReport } from "../tools/workers.js";
 import { toOpenAIToolDefs, type ToolSpec } from "../tools/registry.js";
+import { applyToolProfile } from "../tools/tool-profile.js";
 import type { ToolExecutor, PermissionAsker, ToolResult } from "../tools/executor.js";
 import { mergeReasoningDetails, sanitizeString, stableStringify, stripOldImages } from "./messages.js";
 import type { ChatMessage, ReasoningDetail, ToolCall, Usage } from "./messages.js";
@@ -644,8 +645,12 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // Code Mode: most tools live inside execute_code's API, but long-running or
   // parallel tools (subagents) stay direct tools — the sandbox is synchronous
   // and time-limited, so it can neither host them nor run them concurrently.
-  const sandboxTools = opts.tools.filter((tool) => !tool.codeModeDirect);
-  const directTools = opts.tools.filter((tool) => tool.codeModeDirect);
+  // Model profiles (#999): the schemas the model sees may differ from the
+  // module-level tools (e.g. DeepSeek's strict `edit`), so apply the profile
+  // before building both the direct defs and the Code Mode API.
+  const profiledTools = applyToolProfile(opts.tools, opts.model);
+  const sandboxTools = profiledTools.filter((tool) => !tool.codeModeDirect);
+  const directTools = profiledTools.filter((tool) => tool.codeModeDirect);
   if (codeMode) {
     const toolsKey = stableStringify(sandboxTools);
     const cached = codeModeApiCache.get(toolsKey);
@@ -693,7 +698,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       ...toOpenAIToolDefs(directTools),
     ];
   } else {
-    toolDefs = toOpenAIToolDefs(opts.tools);
+    toolDefs = toOpenAIToolDefs(profiledTools);
   }
 
   let turn = 0;

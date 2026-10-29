@@ -6,6 +6,7 @@ import type { ToolSpec } from "../tools/registry.js";
 import { systemPromptForMode, type Mode } from "../mode.js";
 import type { ChatMessage } from "./messages.js";
 import { USER_SHELL_PROMPT_SECTION, userShellCommandsEnabled } from "./user-shell.js";
+import { modelProfileFor } from "../models/profile.js";
 
 export interface SystemPromptOpts {
   cwd: string;
@@ -141,6 +142,10 @@ If the user asks what model you are, answer with exactly: \`${opts.model}\`. Thi
     ? `\n\nProject context from ${ctx.name} (${ctx.lineCount} lines, treat as authoritative):\n${ctx.content.trim()}`
     : "";
   const modeBlock = opts.mode ? systemPromptForMode(opts.mode) : "";
+  // Per-model guidance (#999). Lives in the session prefix, not the static
+  // one, so switching models mid-session swaps the addendum with the identity.
+  const profile = modelProfileFor(opts.model);
+  const profileBlock = profile?.promptAddendum ? `\n\n${profile.promptAddendum}` : "";
 
   const skillsBlock = opts.skillContext
     ? `\n\n## Relevant Skills\n\n${opts.skillContext}`
@@ -161,7 +166,7 @@ If the user asks what model you are, answer with exactly: \`${opts.model}\`. Thi
   const mcpContextBlock = opts.mcpContext
     ? `\n\n## MCP Context\n\nThe following MCP server information was pre-computed by the coordinator.\n\n${opts.mcpContext}`
     : "";
-  return identity + "\n\n" + env + "\n\n" + tools + artifactGuidance + lspBlock + userShellBlock + contextBlock + modeBlock + skillsBlock + memoryBlock + lspContextBlock + mcpContextBlock;
+  return identity + "\n\n" + env + "\n\n" + tools + artifactGuidance + lspBlock + userShellBlock + contextBlock + modeBlock + profileBlock + skillsBlock + memoryBlock + lspContextBlock + mcpContextBlock;
 }
 
 /** Build a single concatenated system prompt for backward compatibility. */

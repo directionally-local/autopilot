@@ -20,6 +20,7 @@ import { sha256Hex } from "./blobs.js";
 import type { TraceRecorder } from "./recorder.js";
 import { redactConfig } from "./redact.js";
 import type { SessionStartPayload, TraceSessionMode } from "./types.js";
+import { modelProfileId } from "../models/profile.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -77,6 +78,7 @@ export async function collectSessionStart(
     git(["remote", "get-url", "origin"], opts.cwd),
     git(["rev-parse", "HEAD"], opts.cwd),
   ]);
+  const profileId = modelProfileId(opts.model);
   return {
     autopilot_version: getAppVersion(),
     harness_commit: harnessCommit,
@@ -87,6 +89,7 @@ export async function collectSessionStart(
     mode: opts.mode,
     config: redactConfig((opts.config ?? {}) as Record<string, unknown>),
     tool_profile: opts.toolProfile ?? "full",
+    ...(profileId ? { model_profile: profileId } : {}),
     tool_schemas_sha: sha256Hex(toolsJson),
     tools_blob: blob(toolsJson) ?? "",
     system_prompt_sha: sha256Hex(opts.systemPrompt),

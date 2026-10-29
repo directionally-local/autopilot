@@ -56,6 +56,8 @@ export interface SessionStartPayload {
   /** KimiConfig with credential-bearing keys replaced by "<redacted>". */
   config: Record<string, unknown>;
   tool_profile: string;
+  /** Active model profile (#999), absent when the model uses the default behavior. */
+  model_profile?: string;
   /** sha256 of the JSON array of ToolDef sent to the model. */
   tool_schemas_sha: string;
   /** Blob sha of that same JSON array. */
