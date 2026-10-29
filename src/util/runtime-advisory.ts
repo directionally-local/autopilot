@@ -1,3 +1,7 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
 /**
  * CVE-2026-111497 ("Node2Shell"): an out-of-bounds write in the Brotli
  * decoder bundled with Node.js and Bun. Node's fetch() decodes a
@@ -57,4 +61,49 @@ export function assertSafeRuntimeForUntrustedFetch(tool: string): void {
   const advisory = brotliRuntimeAdvisory();
   if (!advisory) return;
   throw new Error(`${tool} is disabled on this runtime. ${advisory} (Set ${ALLOW_VULNERABLE_RUNTIME_ENV}=1 to fetch anyway.)`);
+}
+
+/** Warn at most once a day, so a long-lived shell does not repeat it every run. */
+const WARN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function warnCachePath(): string {
+  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  return join(xdg, "kimiflare", "runtime-advisory.json");
+}
+
+export interface WarnRuntimeAdvisoryOptions {
+  now?: number;
+  /** Override the cache file (tests). */
+  cachePath?: string;
+  /** Where the warning goes. Default: stderr. */
+  write?: (text: string) => void;
+}
+
+/**
+ * Print the startup advisory once per day. The fetch guard still throws on
+ * every call; only the startup notice is rate-limited.
+ */
+export async function warnRuntimeAdvisoryOncePerDay(
+  advisory: string | null = brotliRuntimeAdvisory(),
+  opts: WarnRuntimeAdvisoryOptions = {},
+): Promise<void> {
+  if (!advisory) return;
+  const now = opts.now ?? Date.now();
+  const path = opts.cachePath ?? warnCachePath();
+  try {
+    const raw = await readFile(path, "utf8");
+    const parsed = JSON.parse(raw) as { warnedAt?: number; advisory?: string };
+    if (parsed.advisory === advisory && typeof parsed.warnedAt === "number" && now - parsed.warnedAt < WARN_CACHE_TTL_MS) {
+      return;
+    }
+  } catch {
+    /* no cache yet */
+  }
+  (opts.write ?? ((text) => process.stderr.write(text)))(`warning: ${advisory} web_fetch is disabled until then.\n`);
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify({ warnedAt: now, advisory }), "utf8");
+  } catch {
+    /* best-effort: a read-only config dir must not break startup */
+  }
 }
