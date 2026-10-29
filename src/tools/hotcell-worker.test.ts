@@ -333,14 +333,31 @@ describe("Hotcell worker helpers", () => {
     let activeCells = 0;
     let maxActiveCells = 0;
     let created = 0;
+    // Hold each worker at `create` until both have arrived. Without this the
+    // assertion depends on how long each worker's snapshot takes: on a loaded
+    // machine one worker can finish before the other even creates its cell.
+    // If the concurrency gate serializes them, the second never arrives and
+    // the timeout lets the assertion below report it.
+    let arrived = 0;
+    let openGate!: () => void;
+    const bothArrived = new Promise<void>((resolvePromise) => { openGate = resolvePromise; });
+    const waitForBoth = async () => {
+      if (++arrived === 2) openGate();
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        bothArrived,
+        new Promise<void>((resolvePromise) => { timer = setTimeout(resolvePromise, 2_000); }),
+      ]);
+      clearTimeout(timer);
+    };
     const runner: HotcellProcessRunner = async (_executable, args) => {
       if (args[0] === "start") return { code: 0, stdout: "started", stderr: "", aborted: false };
       if (args[0] === "create") {
         created++;
         activeCells++;
         maxActiveCells = Math.max(maxActiveCells, activeCells);
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
         const id = created === 1 ? "11111111-1111-1111-1111-111111111111" : "22222222-2222-2222-2222-222222222222";
+        await waitForBoth();
         return { code: 0, stdout: id, stderr: "", aborted: false };
       }
       if (args[0] === "exec") {
