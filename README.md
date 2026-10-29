@@ -38,7 +38,7 @@ On OpenRouter you also get:
 
 - **Up to 1M+ context** (model-dependent) — Read entire modules, large configs, and full stack traces without the model losing track.
 - **Image understanding** — Drop image paths (PNG, JPG, WebP, GIF, BMP up to 5 MB) into any prompt. Great for UI reviews, diagrams, and screenshots.
-- **Plan / Edit / Auto modes** — `plan` is a whitelist-only research mode: only read-only tools (read, glob, grep, web search, GitHub read-only, browser fetch) are allowed. Writes, edits, mutating bash, MCP tools, and LSP renames are all blocked. `edit` (default) prompts per mutating call. `auto` approves everything for trusted tasks. In `plan` and `edit`, reading a credentials file (`~/.ssh`, `~/.aws`, Autopilot's own config with your provider keys, `.env`, `/proc/*/environ`) also asks first, so a prompt injection cannot quietly read a key and send it out with `web_fetch`. Likewise `web_fetch` and `browser_fetch` ask before reaching a local or private network address (localhost, `127.0.0.1`, `10.x`/`192.168.x`, cloud metadata at `169.254.169.254`, including names and redirects that resolve there), approved per origin, so a prompt injection cannot read metadata credentials or local services.
+- **Plan / Edit / Auto modes (opt-in)** — Modes are off by default: every interactive turn runs in `auto` until you turn them on with `/settings modes on` (`/settings modes off` turns them off again). With modes on, the session starts in `edit` and `Shift+Tab` or `/mode` switches between them. SDK sessions always have modes and start in `edit`. `plan` is a whitelist-only research mode: only read-only tools (read, glob, grep, web search, GitHub read-only, browser fetch) are allowed. Writes, edits, mutating bash, MCP tools, and LSP renames are all blocked. `edit` prompts per mutating call. `auto` approves everything for trusted tasks. In `plan` and `edit`, reading a credentials file (`~/.ssh`, `~/.aws`, Autopilot's own config with your provider keys, `.env`, `/proc/*/environ`) also asks first, so a prompt injection cannot quietly read a key and send it out with `web_fetch`. Likewise `web_fetch` and `browser_fetch` ask before reaching a local or private network address (localhost, `127.0.0.1`, `10.x`/`192.168.x`, cloud metadata at `169.254.169.254`, including names and redirects that resolve there), approved per origin, so a prompt injection cannot read metadata credentials or local services.
 - **Subagents** — By default, the coordinator assesses substantial tasks for independent research and may delegate without special phrasing. Worker calls still go through permission checks and need a configured backend. See the [subagents guide](docs/subagents.md) for examples, controls, limits, and setup.
 - **Long-running unattended runs** — The headless server can launch detached jobs, sleep between check-ins, and resume from saved checkpoints. Overall runtime, token, cost, and action budgets are optional; explicit budget exhaustion pauses for input. See the [long-running runs guide](docs/long-running-unattended-runs.md).
 - **Windows support** — OS-aware shell auto-detects `cmd.exe` / PowerShell on Windows, `bash` on Unix. The `bash` tool works out of the box on all platforms.
@@ -163,7 +163,7 @@ For substantial tasks, the agent can hand independent investigations to **subage
 
 Setup: install and start Hotcell, then add your OpenRouter key to its host key store (`hotcell keys add openrouter`). The real key never enters a sandbox. Subagents are read-only (no edits, shell, PRs, or MCP) and see your current working tree, including uncommitted changes — it is streamed into the sandbox, so private repositories work and nothing needs to be pushed (secrets like `.env` are never copied). The first subagent after an install builds a cached runtime (about two minutes, once per version); later ones start in seconds. See [docs/subagents.md](docs/subagents.md) for limits and troubleshooting.
 
-While subagents run they are listed above the prompt (Ink) or in the activity panel (`/agents`, Camouflage). `/subagents cancel <n>` stops one without interrupting the turn, and `/subagents stats` shows how often subagents were offered, used, and succeeded over the last week (kept locally in `~/.local/share/kimiflare/subagents.jsonl`; no prompts or code are recorded).
+While subagents run they are listed in the activity panel (`/agents`). `/subagents cancel <n>` stops one without interrupting the turn, and `/subagents stats` shows how often subagents were offered, used, and succeeded over the last week (kept locally in `~/.local/share/kimiflare/subagents.jsonl`; no prompts or code are recorded).
 
 ### Model
 
@@ -284,10 +284,12 @@ session.dispose();
 ```
 
 **Key features:**
-- `subscribe()` — receive typed events (`text_delta`, `tool_call`, `tool_result`, `task_update`, `usage`, `warning`, `error`, `done`, etc.)
+- `subscribe()` — receive typed events (`SessionEvent` in `src/sdk/types.ts`): `session.start` / `session.end`, `message.start` / `message.delta` / `message.reasoning` / `message.end`, `tool.start` / `tool.result`, `usage`, `permission.request` / `permission.resolved`, `tasks.update`, `warning`, `hook.failed`, `context.compacted`, `status` and `worker.finished`. Errors arrive as `session.end` with `reason: "error"`.
 - `prompt()` / `steer()` / `followUp()` — full conversation lifecycle
-- `pause()` / `resume()` — graceful preemption
-- `getStatus()` / `getUsage()` — inspect session state
+- `abort()` — stop the running turn
+- `setModel()` / `setMode()` / `setReasoningEffort()` — change the model, permission mode (sessions start in `edit`) or reasoning effort (`low|medium|high`)
+- `resolvePermission()` — answer a `permission.request` event
+- `getStatus()` / `getUsage()` / `save()` — inspect and persist session state
 - Custom `permissionHandler` — decide programmatically whether to allow mutating tools
 - Optional `memoryEnabled`, `lspEnabled`, `costAttribution` flags
 
@@ -401,12 +403,13 @@ autopilot
 
 | Command | Effect |
 |---------|--------|
-| `/mode edit\|plan\|auto` | Switch permission mode |
+| `/settings` | List feature settings; `/settings modes on\|off` turns plan/edit/auto modes on or off (off by default), `/settings diagnostics on\|off` toggles post-edit diagnostics |
+| `/mode edit\|plan\|auto` | Switch permission mode (needs modes on) |
 | `/shell auto\|bash\|cmd\|powershell` | Show or set the shell for the bash tool |
-| `/thinking low\|medium\|high` | Reasoning effort (persists) |
 | `/resume` | Pick a past conversation to restore |
+| `/checkpoint [label]` / `/checkpoint list` | Save a checkpoint in the current session, or list this session's checkpoints |
 | `/compact` | Summarize older turns to free context |
-| `/init` | Scan repo and write `KIMI.md` project context |
+| `/init` | Scan repo and write `AGENTS.md` project context (refreshes an existing `AGENTS.md`, or a legacy `KIMI.md`, `KIMIFLARE.md` or `AGENT.md` in place) |
 | `/memory` | Show memory stats and search |
 | `/mcp list` / `/mcp reload` | Manage MCP servers |
 | `/reasoning` | Toggle chain-of-thought display |
@@ -420,6 +423,8 @@ autopilot
 | `/good` / `/bad` `[note]` | Rate the last turn; recorded in the session trace when [tracing](#session-traces-and-evals) is on |
 | `/update` | Check for updates |
 | `/help` | List all commands |
+
+There is no `/thinking` command. In the interactive UI the reasoning effort for each turn follows the request's intent tier (light → `low`, medium → `medium`, heavy → `high`), and a custom command (`/command create`) can pin it with `effort`. `reasoningEffort` in config (or `KIMI_REASONING_EFFORT`) sets the session default, and SDK sessions can change it with `setReasoningEffort()`.
 
 ### Subagent routing
 
@@ -442,7 +447,7 @@ Type `!` followed by a command (for example `! gh auth login`) to run it in your
 | `Ctrl+C` / `Esc` | Interrupt current turn when busy; exit when idle |
 | `Ctrl+R` | Toggle reasoning display |
 | `Ctrl+O` | Toggle verbose tool output |
-| `Shift+Tab` | Cycle mode (edit → plan → auto) |
+| `Shift+Tab` | Cycle mode (edit → plan → auto) when modes are on (`/settings modes on`) |
 | `↑` / `↓` | Walk prompt history |
 
 ### Messages sent while the agent is working
