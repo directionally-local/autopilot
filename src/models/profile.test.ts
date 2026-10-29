@@ -42,6 +42,7 @@ describe("modelProfileFor", () => {
     const profile = modelProfileFor("deepseek/deepseek-v4.1-flash");
     assert.ok(profile);
     assert.match(profile!.promptAddendum ?? "", /Use the `read` tool to view files/);
+    assert.match(profile!.promptAddendum ?? "", /issue them all in one response/);
     assert.strictEqual(profile!.strictEditSchema, true);
     assert.strictEqual(profile!.bashReadHint, true);
   });
