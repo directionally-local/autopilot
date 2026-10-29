@@ -153,7 +153,7 @@ function runCheck(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
+    // Not unref'd: the debounce must keep the loop alive until it resolves.
+    setTimeout(resolve, ms);
   });
 }
