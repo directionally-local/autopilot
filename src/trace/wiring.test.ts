@@ -157,6 +157,7 @@ describe("trace wiring: runAgentTurn", () => {
     const [perm] = rec.ofType("permission_decision");
     assert.strictEqual(perm!.payload.decision, "auto");
     assert.strictEqual(perm!.payload.tool_call_id, "tc_1");
+    assert.strictEqual(perm!.payload.prompted, false, "auto decisions are not prompts");
     const [result] = rec.ofType("tool_result");
     assert.strictEqual(result!.payload.ok, true);
     assert.strictEqual(rec.blobText(result!.payload.raw_blob), "probe output");
@@ -178,6 +179,7 @@ describe("trace wiring: runAgentTurn", () => {
     const [perm] = rec.ofType("permission_decision");
     assert.strictEqual(perm!.payload.decision, "deny");
     assert.strictEqual(perm!.payload.feedback_text, "use the other one");
+    assert.strictEqual(perm!.payload.prompted, true, "a user decision is a prompt");
     const [result] = rec.ofType("tool_result");
     assert.strictEqual(result!.payload.ok, false);
     assert.strictEqual(result!.payload.error_code, "permission_denied");

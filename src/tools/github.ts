@@ -445,7 +445,7 @@ export const githubCreatePrTool: ToolSpec<CreatePrArgs> = {
       body: { type: "string", description: "Pull request description (markdown supported)." },
       head: { type: "string", description: "Branch containing the changes." },
       base: { type: "string", description: "Branch to merge into. Defaults to the repository's default branch." },
-      draft: { type: "boolean", description: "Create as a draft pull request." },
+      draft: { type: "boolean", description: "Only when the user asks for a draft." },
     },
     required: ["owner", "repo", "title", "head"],
     additionalProperties: false,
