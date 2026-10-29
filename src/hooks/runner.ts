@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { withEnvAliases } from "../util/env.js";
 import type {
   HookConfig,
   HookEvent,
@@ -149,10 +150,7 @@ export function buildHookEnv(payload: HookPayload, payloadJson?: string): Record
   }
   // #887: every KIMIFLARE_HOOK_* var is also set as AUTOPILOT_HOOK_* (same
   // value); the old names stay for existing scripts.
-  for (const [k, v] of Object.entries(env)) {
-    if (k.startsWith("KIMIFLARE_HOOK_")) env[`AUTOPILOT_HOOK_${k.slice("KIMIFLARE_HOOK_".length)}`] = v;
-  }
-  return env;
+  return withEnvAliases(env);
 }
 
 /**

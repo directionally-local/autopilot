@@ -14,6 +14,7 @@ import { installExitHandlers, onShutdown } from "../util/exit.js";
 import { setupRoutes } from "./routes.js";
 import { hasDotSegment, requestPathname } from "./request-path.js";
 import type { AsterApiRuntime } from "./aster-api.js";
+import { readEnv } from "../util/env.js";
 
 export interface ServerOpts {
   port: number;
@@ -26,11 +27,11 @@ export interface ServerOpts {
 export async function startServer(opts: ServerOpts): Promise<Server> {
   const { handleRequest, cleanup } = setupRoutes(opts.config, { asterRuntime: opts.asterRuntime });
 
-  const password = process.env.KIMIFLARE_SERVER_PASSWORD;
+  const password = readEnv("SERVER_PASSWORD");
   if (!password && !isLoopbackHost(opts.hostname)) {
     throw new Error(`Refusing to listen on ${opts.hostname} without KIMIFLARE_SERVER_PASSWORD: the API can run tools on this machine.`);
   }
-  const corsOrigins = parseOrigins(process.env.KIMIFLARE_SERVER_CORS_ORIGINS);
+  const corsOrigins = parseOrigins(readEnv("SERVER_CORS_ORIGINS"));
 
   const server = createServer((req, res) => {
     // Decide the auth path from the same normalized pathname the routers use.

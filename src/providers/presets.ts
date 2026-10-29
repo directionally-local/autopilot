@@ -161,7 +161,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
   openrouter: {
     id: "openrouter",
     name: "OpenRouter",
-    apiKeyEnv: ["OPENROUTER_API_KEY", "KIMIFLARE_OPENROUTER_KEY"],
+    apiKeyEnv: ["OPENROUTER_API_KEY", "AUTOPILOT_OPENROUTER_KEY", "KIMIFLARE_OPENROUTER_KEY"],
     keyRequired: true,
     keysUrl: "https://openrouter.ai/settings/keys",
     statusUrl: "https://status.openrouter.ai",
@@ -191,7 +191,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
   custom: {
     id: "custom",
     name: "custom endpoint",
-    apiKeyEnv: ["KIMIFLARE_API_KEY"],
+    apiKeyEnv: ["AUTOPILOT_API_KEY", "KIMIFLARE_API_KEY"],
     keyRequired: false,
     // No defaults: the host's gateway decides which models exist, and side
     // calls fall back to the session's chat model.

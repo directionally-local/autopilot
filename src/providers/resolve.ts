@@ -15,6 +15,7 @@
 import { getPreset, isProviderId, type ProviderId, type ProviderPreset } from "./presets.js";
 import { vertexBase, vertexLocation, vertexProject } from "./vertex.js";
 import { bedrockAuth, bedrockBase, bedrockRegion } from "./bedrock.js";
+import { readEnv } from "../util/env.js";
 
 /** Per-provider settings persisted under `providers.<id>` in config.json. */
 export interface ProviderSettings {
@@ -66,7 +67,7 @@ function nonEmpty(v: string | undefined): string | undefined {
 export function resolveProviderId(cfg: ProviderConfigFields | null | undefined, env: NodeJS.ProcessEnv = process.env): ProviderId {
   const envProvider = nonEmpty(env.AUTOPILOT_PROVIDER)?.toLowerCase();
   if (isProviderId(envProvider)) return envProvider;
-  if (nonEmpty(env.KIMIFLARE_BASE_URL)) return "custom";
+  if (nonEmpty(readEnv("BASE_URL", env))) return "custom";
   if (cfg?.provider && isProviderId(cfg.provider)) return cfg.provider;
   if (nonEmpty(cfg?.baseUrl)) return "custom";
   if (nonEmpty(cfg?.openrouterApiKey)) return "openrouter";
@@ -100,7 +101,7 @@ export function resolveActiveProvider(
   const preset = getPreset(id);
   const apiKey = resolveProviderKey(id, cfg, env);
   let baseUrl: string | undefined;
-  if (id === "custom") baseUrl = nonEmpty(env.KIMIFLARE_BASE_URL) ?? nonEmpty(cfg?.baseUrl);
+  if (id === "custom") baseUrl = nonEmpty(readEnv("BASE_URL", env)) ?? nonEmpty(cfg?.baseUrl);
   else if (id === "vertex") {
     const settings = cfg?.providers?.vertex;
     const project = vertexProject(settings, env);

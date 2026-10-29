@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, createWriteStream, readdirSync, statSync, unlinkSync } from "node:fs";
 import type { WriteStream } from "node:fs";
+import { readEnv } from "./env.js";
 
 /**
  * File sink for structured logs (M5.1). Writes JSONL lines to
@@ -45,7 +46,7 @@ function isInNodeTestContext(): boolean {
 }
 
 let sinkEnabled: boolean =
-  process.env.KIMIFLARE_LOG_SINK !== "off" && !isInNodeTestContext();
+  readEnv("LOG_SINK") !== "off" && !isInNodeTestContext();
 
 /** Resolve the directory new log files land in. Honors a test override. */
 export function logDir(): string {

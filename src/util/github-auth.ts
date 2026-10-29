@@ -1,8 +1,9 @@
 import { loadConfig, saveConfig, DEFAULT_MODEL } from "../config.js";
+import { readEnv } from "./env.js";
 
 const GITHUB_DEVICE_AUTH_URL = "https://github.com/login/device/code";
 const GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
-const CLIENT_ID = process.env.KIMIFLARE_GITHUB_CLIENT_ID ?? "Ov23liM7lJX1xE2V1sVK";
+const CLIENT_ID = readEnv("GITHUB_CLIENT_ID") ?? "Ov23liM7lJX1xE2V1sVK";
 
 export interface AuthStep {
   message: string;

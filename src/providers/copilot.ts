@@ -22,9 +22,10 @@
 import type { ModelEntry } from "../models/registry.js";
 import { getUserAgent } from "../util/version.js";
 import type { WireProtocol } from "./presets.js";
+import { readEnv } from "../util/env.js";
 
 /** Autopilot's GitHub OAuth app (the same one `autopilot auth github` uses); overridable for forks/enterprise apps. */
-export const COPILOT_CLIENT_ID = process.env.AUTOPILOT_COPILOT_CLIENT_ID ?? process.env.KIMIFLARE_GITHUB_CLIENT_ID ?? "Ov23liM7lJX1xE2V1sVK";
+export const COPILOT_CLIENT_ID = process.env.AUTOPILOT_COPILOT_CLIENT_ID ?? readEnv("GITHUB_CLIENT_ID") ?? "Ov23liM7lJX1xE2V1sVK";
 export const COPILOT_API_VERSION = "2026-08-01";
 const USER_API_VERSION = "2025-04-01";
 export const COPILOT_DEFAULT_BASE = "https://api.githubcopilot.com";

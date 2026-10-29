@@ -7,6 +7,7 @@ import { validateModelId } from "../agent/client.js";
 import { getAppVersion, PACKAGE_NAME, CLI_NAME } from "../util/version.js";
 import { chunkPayload, getRepositorySnapshot, getWorkingTreeArchive } from "./hotcell-snapshot.js";
 import { CACHED_WORKER_DIR, ensureWorkerBackup } from "./hotcell-worker-cache.js";
+import { readEnv } from "../util/env.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT_BYTES = 1_000_000;
@@ -113,10 +114,10 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
     // Default: stream your working tree in (no clone, no credentials, no
     // push — works for private repos). Trees too large to copy fall back to
     // cloning origin and applying a patch of local changes.
-    const useArchive = options.useArchive ?? process.env.KIMIFLARE_WORKER_ARCHIVE !== "0";
+    const useArchive = options.useArchive ?? readEnv("WORKER_ARCHIVE") !== "0";
     const tree = useArchive ? await getWorkingTreeArchive(cwd) : { archive: null, files: 0, bytes: 0 };
     const repo = tree.archive ? null : await getRepositorySnapshot(cwd);
-    const useCache = options.useRuntimeCache ?? process.env.KIMIFLARE_WORKER_CACHE !== "0";
+    const useCache = options.useRuntimeCache ?? readEnv("WORKER_CACHE") !== "0";
     // Build or look up the cached runtime while the sandbox is created.
     const backupPromise = useCache
       ? ensureWorkerBackup({ packageSpec: workerPackage, command, execute, cwd, signal: options.signal })
@@ -383,7 +384,7 @@ export function parseWorkerReport(text: string): WorkerReport | null {
 /** npm spec for the worker CLI: explicit option, KIMIFLARE_WORKER_PACKAGE, or
  *  the coordinator's own published version so worker flags always match. */
 export function resolveWorkerPackage(override?: string): string {
-  const spec = (override ?? process.env.KIMIFLARE_WORKER_PACKAGE ?? `${PACKAGE_NAME}@${getAppVersion()}`).trim();
+  const spec = (override ?? readEnv("WORKER_PACKAGE") ?? `${PACKAGE_NAME}@${getAppVersion()}`).trim();
   if (!spec || !PACKAGE_SPEC.test(spec)) {
     throw new Error(`Invalid Hotcell worker package spec: ${JSON.stringify(spec)}.`);
   }
