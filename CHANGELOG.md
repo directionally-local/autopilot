@@ -1,5 +1,28 @@
 # Changelog
 
+## [3.0.0](https://github.com/directionally-local/autopilot/compare/v2.10.0...v3.0.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **git:** SDK, server and print/emit sessions now write code changes to a session worktree instead of the caller's checkout. Set `sessionWorktrees: false` (or `KIMIFLARE_SESSION_WORKTREES=0`) to keep the old in-place behavior.
+
+### Features
+
+* accept AUTOPILOT_* names for every KIMIFLARE_* environment variable ([#1029](https://github.com/directionally-local/autopilot/issues/1029)) ([d5a2870](https://github.com/directionally-local/autopilot/commit/d5a28708388de7e298f22146234b2621be60ecf0))
+* **agent:** re-inject the live plan and nudge repeated verification ([#1034](https://github.com/directionally-local/autopilot/issues/1034)) ([5e23f6d](https://github.com/directionally-local/autopilot/commit/5e23f6dcf1037e1f2ba550e873f7a860e1691ba2)), closes [#950](https://github.com/directionally-local/autopilot/issues/950)
+* **git:** isolate print, emit, SDK and server sessions in worktrees ([#1033](https://github.com/directionally-local/autopilot/issues/1033)) ([69caf8f](https://github.com/directionally-local/autopilot/commit/69caf8f7a3a9676e78e85df72ade688c4b5f7c24)), closes [#962](https://github.com/directionally-local/autopilot/issues/962)
+* **git:** run interactive sessions' code changes in a session worktree ([#1031](https://github.com/directionally-local/autopilot/issues/1031)) ([d8972e5](https://github.com/directionally-local/autopilot/commit/d8972e591e88068401eb17c96c514a63cbcd992a))
+* **models:** tell DeepSeek to batch independent tool calls ([#1024](https://github.com/directionally-local/autopilot/issues/1024)) ([a730e35](https://github.com/directionally-local/autopilot/commit/a730e35f10c3b6570f31aca4e69c1f3f8e45e85e))
+* **subagents:** check Hotcell readiness before offering delegation ([#1025](https://github.com/directionally-local/autopilot/issues/1025)) ([7b29c11](https://github.com/directionally-local/autopilot/commit/7b29c1149c45194e8f424fab6ea0bdb1390ec6d1)), closes [#966](https://github.com/directionally-local/autopilot/issues/966)
+
+
+### Bug Fixes
+
+* **aster:** end a turn that stops making progress ([#1032](https://github.com/directionally-local/autopilot/issues/1032)) ([f23d0f0](https://github.com/directionally-local/autopilot/commit/f23d0f0473464dc8b0d5e40c925832db8c233264))
+* drop the dead /checkpoints command and require patched Node in acp ([#1030](https://github.com/directionally-local/autopilot/issues/1030)) ([9e41a2c](https://github.com/directionally-local/autopilot/commit/9e41a2cb958d651808b0b06aa9910d3818c36915))
+* **util:** warn about an unpatched Node at most once a day ([#1035](https://github.com/directionally-local/autopilot/issues/1035)) ([25c704f](https://github.com/directionally-local/autopilot/commit/25c704f11ee58d4ebaf985bb48ec46097172cab0)), closes [#921](https://github.com/directionally-local/autopilot/issues/921)
+
 ## [2.10.0](https://github.com/directionally-local/autopilot/compare/v2.9.0...v2.10.0) (2026-10-29)
 
 
