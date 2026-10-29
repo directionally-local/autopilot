@@ -37,6 +37,7 @@ const DEEPSEEK_V4: ModelProfile = {
   promptAddendum: [
     "## Model-specific tool guidance",
     "Use the `read` tool to view files and `grep`/`glob` to search. Do not use `sed`, `awk`, `cat`, `head` or `tail` in bash for reading files. Read whole files at once instead of small chunks.",
+    "When several reads, searches or status commands don't depend on each other, issue them all in one response instead of one per turn.",
     "When you call `edit`, always include both `old_string` and `new_string`. A call with only `path` is rejected without touching the file.",
   ].join("\n"),
   strictEditSchema: true,
