@@ -25,6 +25,7 @@ function deps(over: Partial<DiagnoseDeps> & { files?: Record<string, string>; ex
     arch: "x64",
     home: "/home/u",
     packageDir: () => PKG,
+    platformBin: () => null,
     isExecutable: (p) => executables.has(p),
     readFile: (p) => {
       const f = files[p];
@@ -42,6 +43,21 @@ describe("diagnoseRenderer / rendererBlocker", () => {
     assert.equal(d.packageBin, BIN);
     assert.equal(d.packageBinExists, true);
     assert.equal(rendererBlocker(d), null);
+  });
+
+  it("prefers the platform package's renderer (camouflage-tui 2.10+)", () => {
+    const platformBin = join("/opt", "lib", "node_modules", "autopilot-ai", "node_modules", "camouflage-tui-linux-x64", "camouflage-tui");
+    const d = diagnoseRenderer(deps({ platformBin: () => platformBin, executables: [platformBin] }));
+    assert.equal(d.packageBin, platformBin);
+    assert.equal(d.packageBinExists, true);
+    assert.equal(rendererBlocker(d), null);
+  });
+
+  it("falls back to bin/ when the platform package's renderer isn't executable", () => {
+    const platformBin = join("/opt", "x", "camouflage-tui");
+    const d = diagnoseRenderer(deps({ platformBin: () => platformBin, executables: [BIN] }));
+    assert.equal(d.packageBin, BIN);
+    assert.equal(d.packageBinExists, true);
   });
 
   it("an empty bin/ on a supported platform is left to the SDK's one-time download", () => {
