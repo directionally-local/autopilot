@@ -440,6 +440,58 @@ describe("Aster Hotcell runtime", () => {
     }
   });
 
+  it("pushes a failed turn's work to its branch instead of stranding it, without opening a PR", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aster-cell-"));
+    const remote = mkdtempSync(join(tmpdir(), "aster-remote-"));
+    try {
+      const git = (args: string) => execSync(`git -c user.name=t -c user.email=t@t -c commit.gpgsign=false ${args}`, { cwd: root, encoding: "utf8" });
+      execSync("git init -q --bare", { cwd: remote });
+      git("init -q");
+      writeFileSync(join(root, "README.md"), "seed\n");
+      git("add README.md");
+      git("commit -q -m base");
+      git("checkout -q -b aster/12345678");
+      git(`remote add origin ${remote}`);
+      git("update-ref refs/aster/start HEAD");
+      mkdirSync(join(root, ".aster"));
+      writeFileSync(join(root, ".aster", ".seeded"), "");
+      writeFileSync(join(root, ".git", "info", "exclude"), ".aster/\n");
+      const conversation = {
+        id: "conv-failed", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/12345678", pullRequestNumber: null,
+      } as never;
+      const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
+      const state = emptyCellState();
+      state.promptEvents = [{ type: "session.end", reason: "error", error: "context window exceeded" }];
+      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      let published = 0;
+
+      // Nothing done yet: nothing to push.
+      const empty = fakeTurn({ cellId: "real-cell", conversation, userText: "start", githubProxy, beforeFinish: async () => { published++; } });
+      runtime.startTurn(empty);
+      await waitFor(() => empty.finished.length > 0);
+      assert.deepEqual(empty.finished, ["failed"]);
+      assert.equal(execSync("git branch --list", { cwd: remote, encoding: "utf8" }).trim(), "", "nothing was pushed");
+
+      // The agent committed part of the work, and left more uncommitted, before the turn failed.
+      writeFileSync(join(root, "plan.md"), "part one\n");
+      git("add plan.md");
+      git("commit -q -m 'docs: part one'");
+      writeFileSync(join(root, "plan.md"), "part one\npart two\n");
+      const failed = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 2, userText: "write the plan", githubProxy, beforeFinish: async () => { published++; } });
+      runtime.startTurn(failed);
+      await waitFor(() => failed.finished.length > 0);
+      assert.deepEqual(failed.finished, ["failed"], "the turn's own outcome stands");
+      assert.equal(published, 0, "no pull request for a failed turn");
+      const log = execSync("git log --format=%s aster/12345678", { cwd: remote, encoding: "utf8" });
+      assert.match(log, /^write the plan\ndocs: part one\nbase\n$/, "the agent's commit and the checkpoint of its uncommitted work were pushed");
+      const outcome = failed.events.find((event) => event.type === "outcome");
+      assert.match(String(outcome?.data?.summary), /didn't finish, so no pull request was opened\. Its work so far is on branch aster\/12345678/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(remote, { recursive: true, force: true });
+    }
+  });
+
   it("maps cell events to Aster events, advances the cursor, and finishes completed turns", async () => {
     const cells = new Map<string, FakeCellState>();
     const provider = fakeProvider(cells);

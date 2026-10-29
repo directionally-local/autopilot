@@ -559,6 +559,22 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
       }
     } else if (outcome?.status === "completed" && turn.beforeFinish) {
       await Promise.race([turn.beforeFinish().catch(() => {}), sleep(MEMORY_EXTRACTION_TIMEOUT_MS)]);
+    } else if (outcome?.status !== "completed" && turn.conversation.kind === "code" && turn.conversation.repository && turn.conversation.branch) {
+      // A failed or stopped turn opens no PR, but its work so far is still pushed, so it can
+      // be checked out (dl pull) instead of being stranded in the cell. Best-effort: the
+      // turn's own outcome stands either way.
+      const hasWork = checkpoint !== undefined
+        || await this.hasCommitsAhead(cellId, turn.conversation.baseBranch ?? "main").catch(() => false);
+      if (hasWork) {
+        const cell = await this.provider.getCell(cellId);
+        const push = await cell.exec(`${GIT} push -u origin ${shellQuote(turn.conversation.branch)}`).catch(() => undefined);
+        if (push?.exitCode === 0) {
+          turn.publishEvent("outcome", {
+            summary: `The turn didn't finish, so no pull request was opened. Its work so far is on branch ${turn.conversation.branch}.`,
+            branch: turn.conversation.branch,
+          });
+        }
+      }
     }
     finish(outcome?.status ?? "cancelled", outcome?.reason ?? "cell_turn_stopped");
   }
