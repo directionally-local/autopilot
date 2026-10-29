@@ -119,10 +119,22 @@ describe("hook failures fail open, and are reported (#889)", () => {
       "write",
     );
     assert.strictEqual(out.vetoed, true);
-    assert.match(out.vetoReason, /^hook policy failed \(exited 139: segfault\) and is set to failClosed/);
+    // A real shell's stderr is not guaranteed to reach us before the process
+    // closes on a loaded runner (Node 26 CI lost it, run 40818087755), so only
+    // the exit code is asserted here. The stderr text is covered
+    // deterministically by the injected-spawn test below.
+    assert.match(out.vetoReason, /^hook policy failed \(exited 139/);
     assert.strictEqual(out.failures[0]!.allowed, false);
     assert.strictEqual(out.failures[0]!.failClosed, true);
     assert.strictEqual(out.outcomes.length, 1, "later hooks don't run after a block");
+  });
+
+  it("failClosed: the reason carries the hook's stderr", async () => {
+    setSpawnHookImplForTesting(async () => ({ exitCode: 139, stdout: "", stderr: "segfault", timedOut: false }));
+    const out = await runHooks("PreToolUse", [{ id: "policy", command: "x", failClosed: true }], prePayload("/tmp"), "write");
+    assert.strictEqual(out.vetoed, true);
+    assert.match(out.vetoReason, /^hook policy failed \(exited 139: segfault\) and is set to failClosed/);
+    assert.strictEqual(out.failures[0]!.reason, "exited 139: segfault");
   });
 
   it("failClosed: a timeout and a missing binary block too", async () => {
