@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { AsterStore } from "./aster-store.js";
+import { AsterStore, asterConversationState } from "./aster-store.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -282,6 +282,78 @@ describe("AsterStore", () => {
       const expired = store.createOwnerClaim(1_000, Date.now() - 10_000);
       assert.equal(store.redeemOwnerClaim(expired.token, { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
       assert.equal(store.redeemOwnerClaim("aster_claim_short", { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps a sidebar summary per conversation without replaying events", async () => {
+    const root = await fixture();
+    const store = new AsterStore(join(root, "state", "aster.db"));
+    try {
+      const conversation = store.createConversation({
+        id: "conv-summary",
+        workspaceId: "default",
+        model: "test/model",
+        sessionId: "session-summary",
+        worktreePath: join(root, "workspace"),
+        cwd: join(root, "workspace"),
+        branch: "aster/12345678",
+      });
+      assert.equal(conversation.title, null);
+      assert.equal(conversation.costUsd, 0);
+      assert.equal(conversation.lastError, null);
+      assert.equal(conversation.lastActivityAt, conversation.updatedAt);
+
+      store.setConversationTitle(conversation.id, "  Fix the flaky test  \nand keep it short");
+      store.setConversationTitle(conversation.id, "a later turn never renames it");
+      assert.equal(store.getConversation(conversation.id)?.title, "Fix the flaky test");
+
+      assert.equal(store.beginTurn(conversation.id, "run-1"), true);
+      store.appendEvent(conversation.id, "run-1", "usage", { inputTokens: 10, outputTokens: 2, costUsd: 0.25, cumulative: true });
+      store.appendEvent(conversation.id, "run-1", "usage", { inputTokens: 20, outputTokens: 4, costUsd: 0.5, cumulative: true });
+      assert.equal(store.getConversation(conversation.id)?.costUsd, 0.5, "cumulative usage replaces, never double-counts");
+      assert.equal(store.updateConversationStatus(conversation.id, "run-1", "failed", { reason: "cell_turn_stalled" }), true);
+      const failed = store.getConversation(conversation.id)!;
+      assert.equal(failed.lastError, "cell_turn_stalled");
+      assert.equal(asterConversationState(failed.status), "failed");
+
+      assert.equal(store.beginTurn(conversation.id, "run-2"), true);
+      assert.equal(store.getConversation(conversation.id)?.lastError, null, "a new turn clears the previous error");
+      store.appendEvent(conversation.id, "run-2", "usage", { inputTokens: 5, outputTokens: 1, costUsd: 0.125, cumulative: true });
+      assert.equal(store.getConversation(conversation.id)?.costUsd, 0.625, "each run's usage adds to the conversation total");
+
+      const approval = store.createApproval({
+        conversationId: conversation.id,
+        runId: "run-2",
+        toolName: "write",
+        explanation: "Create or replace created.txt\nin this workspace",
+        arguments: { path: "created.txt" },
+        expiresAt: Date.now() + 60_000,
+      });
+      assert.deepEqual(store.pendingApprovalSummaries([conversation.id]).get(conversation.id), {
+        tool: "write",
+        summary: "Create or replace created.txt in this workspace",
+      });
+      assert.equal(store.pendingApprovalSummaries([]).size, 0);
+      store.resolveApproval(approval.id, "allow");
+      assert.equal(store.pendingApprovalSummaries([conversation.id]).size, 0);
+
+      const before = store.getConversation(conversation.id)!.lastActivityAt;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      store.appendEvent(conversation.id, "run-2", "assistant.delta", { text: "hi" });
+      assert.ok(store.getConversation(conversation.id)!.lastActivityAt > before);
+
+      assert.equal(asterConversationState("provisioning"), "working");
+      assert.equal(asterConversationState("running"), "working");
+      assert.equal(asterConversationState("waiting_approval"), "blocked");
+      assert.equal(asterConversationState("ready"), "idle");
+      assert.equal(asterConversationState("paused"), "idle");
+      assert.equal(asterConversationState("completed"), "done");
+      assert.equal(asterConversationState("merged"), "done");
+      assert.equal(asterConversationState("failed"), "failed");
+      assert.equal(asterConversationState("cancelled"), "failed");
+      assert.equal(asterConversationState("interrupted"), "failed");
     } finally {
       store.close();
     }

@@ -11,7 +11,7 @@ import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager } from "../runs/worktrees.js";
 import { loadSession, saveSession, sessionsDir, type SessionFile } from "../sessions.js";
 import { getAppVersion } from "../util/version.js";
-import { AsterStore, type AsterConversationProject, type AsterConversation, type AsterConversationStatus, type AsterPrincipal, type AsterScope } from "./aster-store.js";
+import { AsterStore, asterConversationState, type AsterConversationProject, type AsterConversation, type AsterConversationStatus, type AsterPrincipal, type AsterScope, type AsterWaitingFor } from "./aster-store.js";
 import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, type AsterServerConfig } from "./aster-workspaces.js";
 import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import type { AsterArtifact, AsterCellProject } from "./aster-cell-runtime.js";
@@ -207,7 +207,7 @@ export class AsterApi {
           service: "autopilot",
           apiVersion: "v1",
           serviceVersion: getAppVersion(),
-          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "patch-upload", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
+          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "conversation-summaries", "patch-upload", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
         });
       }
 
@@ -280,9 +280,16 @@ export class AsterApi {
         const limit = /^\d{1,4}$/.test(limitParam) ? Math.min(Number(limitParam), MAX_LISTED_CONVERSATIONS) : 0;
         if (limit < 1) return sendError(res, 400, "invalid_limit", `limit must be 1-${MAX_LISTED_CONVERSATIONS}`);
         const conversations = store.listCredentialConversations(principal.credentialId, limit)
-          .filter((conversation) => principal.workspaceIds.includes(conversation.workspaceId))
-          .map((conversation) => publicConversation(conversation, store.getConversationProject(conversation.id)));
-        return json(res, 200, { conversations });
+          .filter((conversation) => principal.workspaceIds.includes(conversation.workspaceId));
+        // One query for every blocked conversation's pending approval, never a per-conversation replay.
+        const waitingFor = store.pendingApprovalSummaries(conversations.map((conversation) => conversation.id));
+        return json(res, 200, {
+          conversations: conversations.map((conversation) => publicConversation(
+            conversation,
+            store.getConversationProject(conversation.id),
+            waitingFor.get(conversation.id),
+          )),
+        });
       }
 
       if (path === `${API_PREFIX}/devices` && method === "POST") {
@@ -485,7 +492,11 @@ export class AsterApi {
         if (!this.hasScope(principal, "conversations:read")) return sendError(res, 403, "insufficient_scope", "Credential lacks conversation/read scope");
         const conversation = await this.authorizedConversation(store, principal, conversationMatch[1]!);
         if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
-        return json(res, 200, publicConversation(conversation, store.getConversationProject(conversation.id)));
+        return json(res, 200, publicConversation(
+          conversation,
+          store.getConversationProject(conversation.id),
+          store.pendingApprovalSummaries([conversation.id]).get(conversation.id),
+        ));
       }
 
       const approvalMatch = path.match(/^\/api\/v1\/approvals\/([^/]+)$/);
@@ -868,6 +879,8 @@ export class AsterApi {
       }
     }
 
+    // The sidebar title comes from the first user message; later turns never change it.
+    store.setConversationTitle(conversation.id, text);
     const previousLength = sessionFile.messages.length;
     sessionFile.messages.push({ role: "user", content: text });
     sessionFile.updatedAt = new Date().toISOString();
@@ -1352,7 +1365,12 @@ function collectAssistantText(store: AsterStore, conversationId: string, runId: 
   return text;
 }
 
-function publicConversation(conversation: AsterConversation, project?: AsterConversationProject): Record<string, unknown> {
+function publicConversation(
+  conversation: AsterConversation,
+  project?: AsterConversationProject,
+  waitingFor?: AsterWaitingFor,
+): Record<string, unknown> {
+  const state = asterConversationState(conversation.status);
   return {
     ...(project ? { kind: project.kind, repository: project.repository, branch: project.branch } : {}),
     ...(conversation.pullRequestNumber ? { pullRequestNumber: conversation.pullRequestNumber } : {}),
@@ -1361,6 +1379,13 @@ function publicConversation(conversation: AsterConversation, project?: AsterConv
     workspaceId: conversation.workspaceId,
     model: conversation.model,
     status: conversation.status,
+    // Additive in API v1: clients that predate these fields ignore them.
+    state,
+    title: conversation.title,
+    costUsd: conversation.costUsd,
+    lastActivityAt: new Date(conversation.lastActivityAt).toISOString(),
+    ...(state === "blocked" && waitingFor ? { waitingFor } : {}),
+    ...(state === "failed" && conversation.lastError ? { lastError: conversation.lastError } : {}),
     activeRunId: conversation.activeRunId,
     lastEventId: conversation.lastEventSequence,
     createdAt: new Date(conversation.createdAt).toISOString(),

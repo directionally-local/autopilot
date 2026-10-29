@@ -8,6 +8,18 @@ export interface RemoteConversation {
   workspaceId: string;
   model: string;
   status: string;
+  /** Client-facing state a sidebar draws: working, blocked, idle, done, or failed. */
+  state?: "working" | "blocked" | "idle" | "done" | "failed";
+  /** First line of the first user message; null until the first turn. */
+  title?: string | null;
+  /** Sum of the usage every turn reported so far, in USD. */
+  costUsd?: number;
+  /** When the last event was recorded. */
+  lastActivityAt?: string;
+  /** What a blocked conversation is waiting on. */
+  waitingFor?: { tool: string; summary: string };
+  /** Why the last turn failed; present only while the state is failed. */
+  lastError?: string;
   activeRunId: string | null;
   lastEventId: number;
   createdAt: string;

@@ -6,7 +6,42 @@ import { dirname, join } from "node:path";
 
 export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve" | "pairing:approve";
 export type AsterConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "merged";
+/**
+ * The coarse state a sidebar draws: one row per conversation, no event replay.
+ * Teardown states are terminal, so they read as done rather than as work in progress.
+ */
+export type AsterConversationState = "working" | "blocked" | "idle" | "done" | "failed";
 export type AsterApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
+
+/** Maps a conversation's detailed status onto the state clients render. */
+export function asterConversationState(status: AsterConversationStatus): AsterConversationState {
+  switch (status) {
+    case "provisioning":
+    case "running":
+      return "working";
+    case "waiting_approval":
+      return "blocked";
+    case "ready":
+    case "paused":
+      return "idle";
+    case "completed":
+    case "merged":
+    case "destroying":
+    case "cleanup_pending":
+    case "destroyed":
+      return "done";
+    case "failed":
+    case "cancelled":
+    case "interrupted":
+      return "failed";
+  }
+}
+
+/** What a blocked conversation is waiting on: the pending approval's tool and summary. */
+export interface AsterWaitingFor {
+  tool: string;
+  summary: string;
+}
 
 export interface AsterPrincipal {
   credentialId: string;
@@ -31,6 +66,14 @@ export interface AsterConversation {
   pullRequestURL: string | null;
   status: AsterConversationStatus;
   activeRunId: string | null;
+  /** First line of the first user message, trimmed; null until the first turn. */
+  title: string | null;
+  /** Sum of the usage every turn reported so far, in USD. */
+  costUsd: number;
+  /** Why the last turn failed; only meaningful while the status is failed. */
+  lastError: string | null;
+  /** When the last event was recorded (updatedAt for rows that predate the column). */
+  lastActivityAt: number;
   lastEventSequence: number;
   oldestEventSequence: number;
   createdAt: number;
@@ -139,6 +182,10 @@ interface ConversationRow extends Record<string, unknown> {
   pull_request_url: string | null;
   status: AsterConversationStatus;
   active_run_id: string | null;
+  title: string | null;
+  cost_usd: number;
+  last_error: string | null;
+  last_activity_at: number | null;
   last_event_sequence: number;
   oldest_event_sequence: number;
   created_at: number;
@@ -258,6 +305,10 @@ export class AsterStore {
         pull_request_url TEXT,
         status TEXT NOT NULL,
         active_run_id TEXT,
+        title TEXT,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        last_error TEXT,
+        last_activity_at INTEGER,
         last_event_sequence INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -361,6 +412,14 @@ export class AsterStore {
     if (!conversationColumns.has("base_branch")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN base_branch TEXT");
     if (!conversationColumns.has("pull_request_number")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN pull_request_number INTEGER");
     if (!conversationColumns.has("pull_request_url")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN pull_request_url TEXT");
+    if (!conversationColumns.has("title")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN title TEXT");
+    if (!conversationColumns.has("cost_usd")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0");
+    if (!conversationColumns.has("last_error")) this.db.exec("ALTER TABLE aster_conversations ADD COLUMN last_error TEXT");
+    if (!conversationColumns.has("last_activity_at")) {
+      this.db.exec("ALTER TABLE aster_conversations ADD COLUMN last_activity_at INTEGER");
+      // Rows written before the column existed: their last write is the best activity time.
+      this.db.exec("UPDATE aster_conversations SET last_activity_at = updated_at WHERE last_activity_at IS NULL");
+    }
     const grantColumns = new Set(
       (this.db.prepare("PRAGMA table_info(aster_github_grants)").all() as Array<{ name: string }>).map(({ name }) => name),
     );
@@ -727,7 +786,7 @@ export class AsterStore {
       if (!conversation) return { kind: "not_found" };
       if (conversation.activeRunId) return { kind: "busy" };
       const now = Date.now();
-      const updated = this.db.prepare("UPDATE aster_conversations SET status = 'running', active_run_id = ?, updated_at = ? WHERE id = ? AND active_run_id IS NULL")
+      const updated = this.db.prepare("UPDATE aster_conversations SET status = 'running', active_run_id = ?, last_error = NULL, updated_at = ? WHERE id = ? AND active_run_id IS NULL")
         .run(input.runId, now, input.conversationId);
       if (updated.changes !== 1) return { kind: "busy" };
       this.insertEvent(input.conversationId, input.runId, "status", { status: "running" }, now);
@@ -743,7 +802,7 @@ export class AsterStore {
       const conversation = this.getConversation(conversationId);
       if (!conversation || conversation.activeRunId) return false;
       const now = Date.now();
-      const result = this.db.prepare(`UPDATE aster_conversations SET status = 'running', active_run_id = ?, updated_at = ?
+      const result = this.db.prepare(`UPDATE aster_conversations SET status = 'running', active_run_id = ?, last_error = NULL, updated_at = ?
         WHERE id = ? AND active_run_id IS NULL`).run(runId, now, conversationId);
       if (result.changes !== 1) return false;
       this.insertEvent(conversationId, runId, "status", { status: "running" }, now);
@@ -754,11 +813,12 @@ export class AsterStore {
 
   updateConversationStatus(conversationId: string, runId: string, status: AsterConversationStatus, data: Record<string, unknown> = {}): boolean {
     const terminal = status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted" || status === "merged";
+    const lastError = status === "failed" ? failureText(data) : null;
     const update = this.db.transaction(() => {
       const now = Date.now();
-      const result = this.db.prepare(`UPDATE aster_conversations SET status = ?, active_run_id = ?, updated_at = ?
+      const result = this.db.prepare(`UPDATE aster_conversations SET status = ?, active_run_id = ?, last_error = COALESCE(?, last_error), updated_at = ?
         WHERE id = ? AND active_run_id = ?`)
-        .run(status, terminal ? null : runId, now, conversationId, runId);
+        .run(status, terminal ? null : runId, lastError, now, conversationId, runId);
       if (result.changes !== 1) return false;
       this.insertEvent(conversationId, runId, "status", { status, ...data }, now);
       return true;
@@ -767,15 +827,23 @@ export class AsterStore {
   }
 
   setConversationStatus(conversationId: string, status: AsterConversationStatus, data: Record<string, unknown> = {}): boolean {
+    const lastError = status === "failed" ? failureText(data) : null;
     const update = this.db.transaction(() => {
       const now = Date.now();
-      const result = this.db.prepare("UPDATE aster_conversations SET status = ?, updated_at = ? WHERE id = ? AND active_run_id IS NULL")
-        .run(status, now, conversationId);
+      const result = this.db.prepare("UPDATE aster_conversations SET status = ?, last_error = COALESCE(?, last_error), updated_at = ? WHERE id = ? AND active_run_id IS NULL")
+        .run(status, lastError, now, conversationId);
       if (result.changes !== 1) return false;
       this.insertEvent(conversationId, null, "status", { status, ...data }, now);
       return true;
     });
     return update.immediate();
+  }
+
+  /** The sidebar title: the first line of the first user message. The first value wins. */
+  setConversationTitle(conversationId: string, text: string): void {
+    const title = conversationTitle(text);
+    if (!title) return;
+    this.db.prepare("UPDATE aster_conversations SET title = ? WHERE id = ? AND title IS NULL").run(title, conversationId);
   }
 
   /** Records a conversation's project once; the first value wins so retries can't change it. */
@@ -902,6 +970,24 @@ export class AsterStore {
     return rows.map(rowToApproval);
   }
 
+  /**
+   * The first pending approval of each conversation, in one query, so a list of
+   * conversations can say what each blocked one is waiting for without replaying events.
+   */
+  pendingApprovalSummaries(conversationIds: string[]): Map<string, AsterWaitingFor> {
+    const summaries = new Map<string, AsterWaitingFor>();
+    if (conversationIds.length === 0) return summaries;
+    const placeholders = conversationIds.map(() => "?").join(", ");
+    const rows = this.db.prepare(`SELECT conversation_id, tool_name, explanation FROM aster_approvals
+      WHERE status = 'pending' AND conversation_id IN (${placeholders}) ORDER BY created_at`)
+      .all(...conversationIds) as Array<{ conversation_id: string; tool_name: string; explanation: string }>;
+    for (const row of rows) {
+      if (summaries.has(row.conversation_id)) continue;
+      summaries.set(row.conversation_id, { tool: row.tool_name, summary: approvalSummary(row.explanation) });
+    }
+    return summaries;
+  }
+
   getConversationForApproval(approvalId: string): AsterConversation | undefined {
     const row = this.db.prepare(`SELECT c.* FROM aster_conversations c
       JOIN aster_approvals a ON a.conversation_id = c.id WHERE a.id = ?`).get(approvalId) as ConversationRow | undefined;
@@ -970,11 +1056,28 @@ export class AsterStore {
     const row = this.db.prepare("SELECT last_event_sequence FROM aster_conversations WHERE id = ?").get(conversationId) as { last_event_sequence: number } | undefined;
     if (!row) throw new Error("Conversation not found");
     const sequence = row.last_event_sequence + 1;
-    this.db.prepare("UPDATE aster_conversations SET last_event_sequence = ?, updated_at = ? WHERE id = ?").run(sequence, now, conversationId);
+    // Usage is journaled per run, so the conversation's total is kept here instead of
+    // being replayed from the event log every time a client lists conversations.
+    const costDelta = type === "usage" ? this.usageCostDelta(conversationId, runId, data) : 0;
+    this.db.prepare(`UPDATE aster_conversations
+      SET last_event_sequence = ?, updated_at = ?, last_activity_at = ?, cost_usd = ROUND(cost_usd + ?, 6) WHERE id = ?`)
+      .run(sequence, now, now, costDelta, conversationId);
     this.db.prepare(`INSERT INTO aster_events (conversation_id, sequence, run_id, event_type, data_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?)`)
       .run(conversationId, sequence, runId, type, JSON.stringify(data), now);
     return { sequence, conversationId, runId, type, data, createdAt: now };
+  }
+
+  /** How much a usage event adds to the conversation total: cumulative per run, or a delta. */
+  private usageCostDelta(conversationId: string, runId: string | null, data: Record<string, unknown>): number {
+    const cost = typeof data.costUsd === "number" && Number.isFinite(data.costUsd) && data.costUsd > 0 ? data.costUsd : 0;
+    if (cost === 0) return 0;
+    if (data.cumulative !== true) return cost;
+    const previous = this.db.prepare(`SELECT data_json FROM aster_events
+      WHERE conversation_id = ? AND run_id IS ? AND event_type = 'usage' ORDER BY sequence DESC LIMIT 1`)
+      .get(conversationId, runId) as { data_json: string } | undefined;
+    const previousCost = previous ? Number((JSON.parse(previous.data_json) as Record<string, unknown>).costUsd ?? 0) : 0;
+    return Math.max(0, cost - (Number.isFinite(previousCost) ? previousCost : 0));
   }
 }
 
@@ -985,6 +1088,28 @@ export function defaultAsterDbPath(): string {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+const MAX_TITLE_CHARS = 200;
+const MAX_ERROR_CHARS = 500;
+const MAX_APPROVAL_SUMMARY_CHARS = 300;
+
+/** The first line of a user message, trimmed: what a sidebar row shows. */
+export function conversationTitle(text: string): string {
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+  return firstLine.trim().slice(0, MAX_TITLE_CHARS);
+}
+
+/** A failed turn's reason, falling back to its code, bounded for a list response. */
+function failureText(data: Record<string, unknown>): string {
+  const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+  const code = typeof data.code === "string" ? data.code.trim() : "";
+  return (reason || code || "failed").slice(0, MAX_ERROR_CHARS);
+}
+
+/** The approval's explanation, collapsed to one bounded line. */
+function approvalSummary(explanation: string): string {
+  return explanation.replace(/\s+/g, " ").trim().slice(0, MAX_APPROVAL_SUMMARY_CHARS);
 }
 
 function newUserCode(): string {
@@ -1035,6 +1160,10 @@ function rowToConversation(row: ConversationRow): AsterConversation {
     pullRequestURL: row.pull_request_url,
     status: row.status,
     activeRunId: row.active_run_id,
+    title: row.title ?? null,
+    costUsd: row.cost_usd ?? 0,
+    lastError: row.last_error ?? null,
+    lastActivityAt: row.last_activity_at ?? row.updated_at,
     lastEventSequence: row.last_event_sequence,
     oldestEventSequence: row.oldest_event_sequence,
     createdAt: row.created_at,

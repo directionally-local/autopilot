@@ -8,7 +8,7 @@ export function getOpenApiSpec(): string {
     info: {
       title: "KimiFlare Headless Server API",
       version: "1.0.0",
-      description: "HTTP API for running KimiFlare agent sessions headlessly.",
+      description: "HTTP API for running KimiFlare agent sessions headlessly. Aster conversation responses are additive within API v1: new fields (state, title, costUsd, lastActivityAt, waitingFor, lastError) may appear, so clients must ignore fields they do not know.",
     },
     servers: [{ url: "/", description: "Local server" }],
     paths: {
@@ -363,7 +363,7 @@ export function getOpenApiSpec(): string {
           summary: "List the calling credential's conversations, newest first",
           security: [{ asterBearer: [] }],
           parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } }],
-          responses: { "200": { description: "{conversations: [...]} in the conversation metadata shape" }, "400": { description: "Invalid limit" } },
+          responses: { "200": { description: "{conversations: [...]} in the conversation metadata shape, each with a client-facing state (working, blocked, idle, done, failed), title, model, costUsd, lastActivityAt, waitingFor when blocked, and lastError when failed; no event replay per conversation" }, "400": { description: "Invalid limit" } },
         },
         post: {
           summary: "Create a persistent conversation in its own isolated Hotcell microVM",
@@ -393,7 +393,7 @@ export function getOpenApiSpec(): string {
           summary: "Get conversation status without returning model/tool history or filesystem paths",
           security: [{ asterBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-          responses: { "200": { description: "Conversation metadata and last event cursor" }, "404": { description: "Conversation not found or outside credential scope" } },
+          responses: { "200": { description: "Conversation metadata and last event cursor, including state, title, model, costUsd, lastActivityAt, waitingFor when blocked, and lastError when failed" }, "404": { description: "Conversation not found or outside credential scope" } },
         },
         delete: {
           summary: "Revoke the cell's egress tokens and destroy the conversation's Hotcell and volume (retryable)",

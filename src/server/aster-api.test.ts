@@ -566,7 +566,10 @@ describe("Aster control-plane API", () => {
       assert.equal(turn.status, 202);
       const approval = await waitForApproval(harness, conversation.conversationId);
       const waiting = await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId);
-      assert.equal((await waiting.json() as { status: string }).status, "waiting_approval");
+      const waitingBody = await waiting.json() as { status: string; state: string; waitingFor?: { tool: string; summary: string } };
+      assert.equal(waitingBody.status, "waiting_approval");
+      assert.equal(waitingBody.state, "blocked");
+      assert.deepEqual(waitingBody.waitingFor, { tool: "write", summary: "Create or replace created.txt in this workspace" });
       assert.deepEqual(harness.pushes, [{
         title: "Approval required",
         body: "write: Create or replace created.txt in this workspace",
@@ -628,10 +631,61 @@ describe("Aster control-plane API", () => {
       const turn = await request(harness, "POST", "/api/v1/conversations/" + conversation.conversationId + "/turns", { clientTurnId: "turn-failed", text: "fail" });
       assert.equal(turn.status, 202);
       await waitForStatus(harness, conversation.conversationId, "failed");
+      const failed = await (await request(harness, "GET", "/api/v1/conversations/" + conversation.conversationId)).json() as { state: string; lastError?: string };
+      assert.equal(failed.state, "failed");
+      assert.equal(failed.lastError, "test_failure");
       assert.equal(harness.pushes.length, 1);
       assert.equal(harness.pushes[0]!.conversationId, conversation.conversationId);
       assert.equal(harness.pushes[0]!.category, undefined);
       assert.equal(harness.pushes[0]!.approvalId, undefined);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("summarizes conversations for a sidebar without replaying events", async () => {
+    const harness = await createHarness("complete");
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" }, "summary-key");
+      assert.equal(created.status, 201);
+      const conversation = await created.json() as { conversationId: string; state: string; title: string | null; costUsd: number; lastActivityAt: string };
+      assert.equal(conversation.state, "idle");
+      assert.equal(conversation.title, null);
+      assert.equal(conversation.costUsd, 0);
+      assert.equal(typeof conversation.lastActivityAt, "string");
+
+      const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, {
+        clientTurnId: "summary-turn", text: "Fix the flaky test\nand keep it short",
+      });
+      assert.equal(turn.status, 202);
+      const runId = (await turn.json() as { runId: string }).runId;
+      await waitForStatus(harness, conversation.conversationId, "completed");
+
+      // The cell runtime journals usage; the summary reads the stored total, not the event log.
+      const store = new AsterStore();
+      try {
+        store.appendEvent(conversation.conversationId, runId, "usage", { inputTokens: 10, outputTokens: 2, costUsd: 0.25, cumulative: true });
+      } finally {
+        store.close();
+      }
+
+      const listed = await request(harness, "GET", "/api/v1/conversations?limit=10");
+      assert.equal(listed.status, 200);
+      const [summary] = (await listed.json() as { conversations: Array<Record<string, unknown>> }).conversations;
+      assert.equal(summary!.conversationId, conversation.conversationId);
+      assert.equal(summary!.status, "completed");
+      assert.equal(summary!.state, "done");
+      assert.equal(summary!.title, "Fix the flaky test");
+      assert.equal(summary!.model, "test/model");
+      assert.equal(summary!.costUsd, 0.25);
+      assert.equal(typeof summary!.lastActivityAt, "string");
+      assert.equal(summary!.waitingFor, undefined);
+      assert.equal(summary!.lastError, undefined);
+
+      const fetched = await (await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}`)).json() as Record<string, unknown>;
+      assert.equal(fetched.state, "done");
+      assert.equal(fetched.title, "Fix the flaky test");
+      assert.equal(fetched.costUsd, 0.25);
     } finally {
       await harness.close();
     }
