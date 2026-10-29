@@ -66,7 +66,7 @@ export function loadContextFile(cwd: string): ContextFile | null {
 export function buildStaticPrefix(opts?: Pick<SystemPromptOpts, "model" | "preferPullRequests">): string {
   const preferPr = opts?.preferPullRequests !== false;
   const prBullet = preferPr
-    ? "- Prefer creating a pull request over pushing directly to the repository's default branch. When you have changes to publish, create a feature branch, push it, and open a PR with \`github_create_pr\`. Only push directly to the default branch when the user has explicitly enabled direct pushes.\n"
+    ? "- Prefer creating a pull request over pushing directly to the repository's default branch. When you have changes to publish, create a feature branch, push it, and open a PR with \`github_create_pr\`. Never commit on the default branch: create a feature branch first (\`git switch -c <name>\`). Only push directly to the default branch when the user has explicitly enabled direct pushes.\n"
     : "";
   return `You are autopilot (formerly kimiflare), an interactive coding assistant running in the user's terminal. You act on the user's local filesystem through the tools listed below.
 

@@ -39,6 +39,10 @@ export interface ToolContext {
   /** When false (default), the bash tool blocks `git push` to the repository's
    *  default branch and directs the model to open a PR instead. */
   allowDirectPush?: boolean;
+  /** When true (default), the bash tool also blocks commit-creating git
+   *  commands (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`) and
+   *  `reset --hard` on the default branch, directing the model to branch first. */
+  preferPullRequests?: boolean;
   /** Session trace recorder for this call (set by the agent loop). Tools and
    *  the executor emit on it; absent or disabled means no-op. */
   trace?: import("../trace/recorder.js").TraceRecorder;
