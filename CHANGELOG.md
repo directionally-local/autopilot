@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.9.0](https://github.com/directionally-local/autopilot/compare/v2.8.0...v2.9.0) (2026-10-29)
+
+
+### Features
+
+* **models:** add per-model profiles and a DeepSeek V4 profile ([#1008](https://github.com/directionally-local/autopilot/issues/1008)) ([2dc3dc8](https://github.com/directionally-local/autopilot/commit/2dc3dc8bbcc3b36abedb806a12009d2a8d645be2))
+
+
+### Bug Fixes
+
+* **aster:** give cell sessions the server's catalog entry for their model ([#1014](https://github.com/directionally-local/autopilot/issues/1014)) ([db5c6f9](https://github.com/directionally-local/autopilot/commit/db5c6f979c5418d210a2f185761997593904f338)), closes [#1010](https://github.com/directionally-local/autopilot/issues/1010)
+* **aster:** open the PR when the agent commits its own work ([#1012](https://github.com/directionally-local/autopilot/issues/1012)) ([f735338](https://github.com/directionally-local/autopilot/commit/f73533845279509313b307152cd31ae482f6f5a0)), closes [#1009](https://github.com/directionally-local/autopilot/issues/1009)
+* **memory:** fit embedding inputs to the model's context window ([#1013](https://github.com/directionally-local/autopilot/issues/1013)) ([1e12abb](https://github.com/directionally-local/autopilot/commit/1e12abbaee381900a523bbb82f4f5de7b74a12d8))
+
 ## [2.8.0](https://github.com/directionally-local/autopilot/compare/v2.7.2...v2.8.0) (2026-10-29)
 
 
