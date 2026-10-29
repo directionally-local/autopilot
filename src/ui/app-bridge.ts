@@ -80,6 +80,9 @@ export interface AppSnapshot {
   permission: { tool: PermissionRequest["tool"]; args: Record<string, unknown> } | null;
   /** Open dialogs, in App's own terms. */
   modals: AppModal[];
+  /** The models the "model" picker offers, when they aren't the local catalog's
+   *  (a remote session offers only the server's). */
+  modelChoices?: ModelEntry[];
   /** `/provider`: the provider to start the connect flow at, if one was named. */
   providerSetup: { initial?: ProviderId } | null;
   resumeSessions: SessionSummary[] | null;

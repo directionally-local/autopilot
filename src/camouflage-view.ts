@@ -849,7 +849,7 @@ export class View implements AppBridge {
     switch (modal) {
       case "model":
         return want("model", async () => {
-          const models = pickableModels();
+          const models = s.modelChoices ?? pickableModels();
           const r = await this.select("Select a model", modelOptions(models, s.model), s.model, "Context · price per Mtok (input / output / cached) · type to search all models");
           a.pickModel(models.find((m) => m.id === r) ?? null);
         });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppActions, AppBridge, AppSnapshot } from "../ui/app-bridge.js";
 import { attachRemote, checkFlags, remoteHeader, type AttachRemoteFlags, type MountRemoteView } from "./attach-cli.js";
-import { laptopImagePaths, REMOTE_COMMANDS, REVOKED_MESSAGE } from "./attach-session.js";
+import { laptopImagePaths, REMOTE_COMMANDS, REVOKED_MESSAGE, serverModelEntries } from "./attach-session.js";
 import { startAsterStub, type AsterStub } from "./aster-stub.test-support.js";
 
 let stub: AsterStub;
@@ -95,6 +95,20 @@ describe("attach-remote: flags", () => {
     assert.equal(remoteHeader(c, "dl-test · o/r").title, "dl-test · o/r");
     assert.equal(remoteHeader(c, undefined).title, "autopilot · o/r");
     assert.match(remoteHeader(c, undefined).detail.join("\n"), /m\/x · o\/r · aster\/c · remote session[\s\S]*keeps running on the server/);
+  });
+
+  it("picker entries follow the server's IDs: local catalog first, then the server's metadata", () => {
+    const entries = serverModelEntries(
+      ["moonshotai/kimi-k2.6", "vendor/model-b", "vendor/bare"],
+      [{ id: "vendor/model-b", name: "Vendor: Model B", contextWindow: 200_000, inputPerMtok: 1, outputPerMtok: 2, vision: true }],
+    );
+    assert.deepEqual(entries.map((m) => m.id), ["moonshotai/kimi-k2.6", "vendor/model-b", "vendor/bare"]);
+    assert.equal(entries[0]!.name, "MoonshotAI: Kimi K2.6");
+    assert.equal(entries[1]!.name, "Vendor: Model B");
+    assert.equal(entries[1]!.contextWindow, 200_000);
+    assert.deepEqual(entries[1]!.pricing, { inputPerMtok: 1, outputPerMtok: 2 });
+    assert.equal(entries[1]!.supports.vision, true);
+    assert.equal(entries[2]!.supports.tools, true);
   });
 
   it("only absolute or ~ image paths count as laptop attachments", () => {
@@ -289,6 +303,56 @@ describe("attach-remote: session against a stub Aster server", () => {
     assert.equal(await done, 0);
   });
 
+  it("/model with no ID opens the picker on the server's models; a pick switches the next turn, Esc changes nothing", async () => {
+    stub = await startAsterStub();
+    stub.modelCatalog = [{ id: "vendor/model-b", name: "Vendor: Model B", contextWindow: 200_000, inputPerMtok: 1, outputPerMtok: 2 }];
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+    assert.deepEqual(bridge.last!.modals, []);
+
+    bridge.actions.submit("/model");
+    await waitFor(() => bridge.last?.modals.includes("model") === true, "picker open");
+    const choices = bridge.last!.modelChoices!;
+    assert.deepEqual(choices.map((m) => m.id), ["vendor/model-a", "vendor/model-b"], "only the server's models");
+    assert.equal(choices[1]!.name, "Vendor: Model B");
+
+    // Esc
+    bridge.actions.pickModel(null);
+    await waitFor(() => bridge.last?.modals.length === 0, "picker closed");
+    assert.equal(bridge.last!.modelChoices, undefined);
+    assert.equal(bridge.last!.model, "vendor/model-a");
+    assert.ok(!bridge.texts().some((t) => t.includes("The next turn uses")));
+
+    bridge.actions.submit("/model");
+    await waitFor(() => bridge.last?.modals.includes("model") === true, "picker open again");
+    bridge.actions.pickModel(bridge.last!.modelChoices![1]!);
+    await waitFor(() => bridge.last?.model === "vendor/model-b" && bridge.last.modals.length === 0, "next model shown");
+    assert.ok(bridge.texts().includes("info:The next turn uses vendor/model-b."));
+    bridge.actions.submit("use the picked model");
+    await waitFor(() => turnRequests().length === 1, "turn");
+    assert.equal(turnRequests()[0]!.body?.model, "vendor/model-b");
+
+    bridge.actions.submit("/model list");
+    await waitFor(() => bridge.texts().some((t) => t.includes("Offered by the server:")), "list");
+    assert.match(bridge.texts().join("\n"), /  vendor\/model-a\n  vendor\/model-b/);
+    assert.deepEqual(bridge.last!.modals, []);
+    assert.equal(stub.requests.filter((r) => r.path === "/api/v1/models").length, 1, "the server's list is fetched once");
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
+  it("/model falls back to the plain message when the server's models can't be fetched", async () => {
+    stub = await startAsterStub();
+    stub.modelsDown = true;
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+    bridge.actions.submit("/model");
+    await waitFor(() => bridge.texts().some((t) => t.includes("Switch with /model <id> (the server checks it")), "fallback");
+    assert.deepEqual(bridge.last!.modals, []);
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
   it("approval.required opens the permission prompt; the decision is posted", async () => {
     stub = await startAsterStub();
     stub.approvals.set("ap-1", { approvalId: "ap-1", status: "pending", tool: "edit", explanation: "Edit src/a.ts", arguments: { path: "src/a.ts" } });
@@ -344,6 +408,39 @@ describe("attach-remote through the Camouflage view (headless)", () => {
     assert.equal(status.phase, "idle");
     const todos = sent.filter((s) => s.type === "TodoListUpdate").at(-1)!.payload.todos as { title: string; status: string }[];
     assert.deepEqual(todos.map((t) => `${t.title}:${t.status}`), ["Run tests:completed", "Open PR:in_progress"]);
+    view.actions!.exit();
+    assert.equal(await done, 0);
+    view.dispose();
+  });
+
+  it("/model opens the renderer's model picker with only the server's models", async () => {
+    stub = await startAsterStub();
+    const { View } = await import("../camouflage-view.js");
+    const sent: { type: string; payload: Record<string, unknown> }[] = [];
+    const cam = { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 };
+    const lists: { prompt: string; options: { value: string }[] }[] = [];
+    let answer: { value?: string; cancelled: boolean } = { cancelled: true };
+    const sdk = {
+      permission: async () => ({ choice: "deny" }),
+      selectList: async (_cam: unknown, req: { prompt: string; options: { value: string }[] }) => (lists.push(req), { id: "", ...answer }),
+      confirm: async () => ({ id: "", cancelled: true }),
+      form: async () => ({ id: "", cancelled: true }),
+    };
+    const view = new View(cam as never, sdk as never, { commands: REMOTE_COMMANDS });
+    const { done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" }, { bridge: view });
+    await waitFor(() => !view.busy && sent.some((s) => s.type === "SlashCommandsRegistered"), "mounted");
+
+    view.actions!.submit("/model");
+    await waitFor(() => lists.length === 1, "picker");
+    assert.equal(lists[0]!.prompt, "Select a model");
+    assert.deepEqual(lists[0]!.options.map((o) => o.value).sort(), ["vendor/model-a", "vendor/model-b"]);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(lists.length, 1, "Esc doesn't reopen it");
+
+    answer = { value: "vendor/model-b", cancelled: false };
+    view.actions!.submit("/model");
+    await waitFor(() => sent.some((s) => s.type === "RuntimeError" && String(s.payload.message).includes("The next turn uses vendor/model-b.")), "switched");
+    assert.equal(lists.length, 2);
     view.actions!.exit();
     assert.equal(await done, 0);
     view.dispose();
