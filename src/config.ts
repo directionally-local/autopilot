@@ -206,6 +206,9 @@ export interface KimiConfig {
   /** Prefer creating pull requests over pushing directly to the default branch.
    *  Injected into the system prompt. Default: true. */
   preferPullRequests?: boolean;
+  /** Re-inject the live `tasks_set` plan on every request so it survives
+   *  compaction and the model does not re-plan. Default: true. */
+  planReminder?: boolean;
   /** Allow the bash tool to run `git push` directly to the repository's default
    *  branch. When false (default), such pushes are blocked and the model is
    *  directed to open a PR instead. */
@@ -457,6 +460,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     autoFreshTokenThreshold: persisted.autoFreshTokenThreshold,
     permissions: persisted.permissions,
     preferPullRequests: readBooleanEnv("PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,
+    planReminder: readBooleanEnv("PLAN_REMINDER") ?? persisted.planReminder ?? true,
     allowDirectPush: readBooleanEnv("ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
     postEditDiagnostics: readBooleanEnv("POST_EDIT_DIAGNOSTICS") ?? persisted.postEditDiagnostics ?? true,
     postEditDiagnosticsWarnings: readBooleanEnv("POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,

@@ -1042,4 +1042,131 @@ describe("runAgentTurn", () => {
     assert.doesNotMatch(systemPrompts[0]!, /session-worktree/);
     assert.match(systemPrompts[1]!, /Working directory: \/tmp\/session-worktree/);
   });
+
+  it("re-injects the live plan on the next request", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "do the thing" },
+    ];
+    const tool: ToolSpec = {
+      name: "tasks_set",
+      description: "Set the plan",
+      parameters: { type: "object", properties: { tasks: { type: "array" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    const bodies: Array<{ messages: ChatMessage[] }> = [];
+    let fetchCount = 0;
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as { messages: ChatMessage[] });
+      const encoder = new TextEncoder();
+      const first = fetchCount++ === 0;
+      const events = first
+        ? [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "tasks_set", arguments: JSON.stringify({ tasks: [{ id: "1", title: "write the fix", status: "in_progress" }] }) } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ]
+        : [{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string }, _ask: unknown, ctx: { onTasks?: (tasks: unknown[]) => void }) => {
+        ctx.onTasks?.([{ id: "1", title: "write the fix", status: "in_progress" }]);
+        return { tool_call_id: call.id, name: call.name, content: "ok", ok: true };
+      },
+    } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      intentClassification: { intent: "small_edit", rawScore: 0.5, tier: "medium", confidence: 0.5 },
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    assert.equal(bodies.length, 2);
+    assert.ok(!bodies[0]!.messages.some((m) => String(m.content).includes("Current plan:")));
+    assert.ok(bodies[1]!.messages.some((m) => String(m.content).includes("Current plan:") && String(m.content).includes("write the fix")));
+  });
+
+  it("nudges the model after repeated verification with no new edits", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "fix it" },
+    ];
+    const tool: ToolSpec = {
+      name: "bash",
+      description: "Run a command",
+      parameters: { type: "object", properties: { command: { type: "string" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    const bodies: Array<{ messages: ChatMessage[] }> = [];
+    let fetchCount = 0;
+    const commands = ["npm test", "npm run typecheck", "npm run build"];
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as { messages: ChatMessage[] });
+      const encoder = new TextEncoder();
+      const first = fetchCount++ === 0;
+      const events = first
+        ? [
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: commands.map((command, index) => ({
+                      index,
+                      id: `call-${index}`,
+                      type: "function",
+                      function: { name: "bash", arguments: JSON.stringify({ command }) },
+                    })),
+                  },
+                },
+              ],
+            },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ]
+        : [{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string }) => ({ tool_call_id: call.id, name: call.name, content: "ok", ok: true }),
+    } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      intentClassification: { intent: "small_edit", rawScore: 0.5, tier: "medium", confidence: 0.5 },
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    assert.equal(bodies.length, 2);
+    assert.ok(!bodies[0]!.messages.some((m) => String(m.content).includes("verification commands")));
+    assert.ok(bodies[1]!.messages.some((m) => String(m.content).includes("3 verification commands")));
+  });
 });

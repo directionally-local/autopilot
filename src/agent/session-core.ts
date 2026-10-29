@@ -125,7 +125,7 @@ export function describeSubagentGuidance(guidance: SubagentGuidance): string | n
 /** Turn options that come straight from config, identical for every host. */
 export function configTurnOpts(cfg: CoreConfig): Pick<
   AgentTurnOpts,
-  "coauthor" | "githubToken" | "keepLastImageTurns" | "maxTotalToolIterations" | "allowDirectPush" | "preferPullRequests" | "reasoningEffort" | "shell"
+  "coauthor" | "githubToken" | "keepLastImageTurns" | "maxTotalToolIterations" | "allowDirectPush" | "preferPullRequests" | "planReminder" | "reasoningEffort" | "shell"
 > & ReturnType<typeof llmAuthFromConfig> {
   return {
     ...llmAuthFromConfig(cfg),
@@ -138,6 +138,7 @@ export function configTurnOpts(cfg: CoreConfig): Pick<
     ...(cfg.maxTotalToolIterations !== undefined ? { maxTotalToolIterations: cfg.maxTotalToolIterations } : {}),
     allowDirectPush: cfg.allowDirectPush,
     preferPullRequests: cfg.preferPullRequests,
+    planReminder: cfg.planReminder,
     ...(cfg.reasoningEffort ? { reasoningEffort: cfg.reasoningEffort } : {}),
     ...(cfg.shell ? { shell: cfg.shell } : {}),
   };
