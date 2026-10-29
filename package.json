@@ -1,6 +1,6 @@
 {
   "name": "autopilot-ai",
-  "version": "2.6.2",
+  "version": "2.7.0",
   "description": "autopilot (formerly kimiflare): a terminal coding agent for any model with your own key: OpenRouter, Anthropic, OpenAI, Gemini, Bedrock, Vertex, Ollama and more. Per-turn cost, web search, GitHub, headless browser, LSP, MCP, local memory.",
   "keywords": [
     "autopilot",
