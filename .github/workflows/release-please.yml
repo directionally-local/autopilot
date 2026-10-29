@@ -17,8 +17,20 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # A PR opened with the default GITHUB_TOKEN is treated as a first-time
+      # contributor by this repo's approval policy, so CI on the release PR
+      # sits at "action_required" until a human approves it (see PR #995).
+      # A PAT makes the PR author a trusted collaborator, so CI runs on its own.
+      - name: Warn when no release token is configured
+        env:
+          HAS_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' || secrets.DEPS_BOT_TOKEN != '' }}
+        if: env.HAS_TOKEN != 'true'
+        run: echo "::warning::No RELEASE_PLEASE_TOKEN or DEPS_BOT_TOKEN secret; release PRs will need manual CI approval."
+
       - uses: googleapis/release-please-action@v4
         id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.DEPS_BOT_TOKEN || github.token }}
 
   # Publishing happens when release-please has just cut a release (its release
   # PR was merged), or on a manual run. Auth is npm trusted publishing (OIDC):
