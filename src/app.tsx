@@ -10,7 +10,11 @@ import {
   recallArtifacts,
   estimatePromptTokens,
 } from "./agent/artifact-compaction.js";
-import { proactiveCompactionThreshold } from "./agent/context-budget.js";
+import {
+  effectiveInputBudget,
+  hardCompactionThreshold,
+  softCompactionThreshold,
+} from "./agent/context-budget.js";
 import {
   emptySessionState,
   ArtifactStore,
@@ -670,6 +674,8 @@ function App({
     summarize: (messages, opts) => summarizeMessagesViaLlm({ ...llmAuthFromConfig(cfg!), model: cfg!.model, messages, ...opts }),
     memory: memoryManagerRef.current,
     cwd: process.cwd(),
+    budgetTokens: cfg ? effectiveInputBudget(cfg.model) : undefined,
+    hardThresholdTokens: cfg ? hardCompactionThreshold(cfg.model, { absoluteCapTokens: cfg.autoCompactCapTokens }) : undefined,
     trace: traceRef.current,
     turnId,
     notify: (kind, text) => setEvents((e) => [...e, { kind, key: mkKey(), text }]),
@@ -725,7 +731,7 @@ function App({
       if (signal.aborted) return messages;
       // Budget-aware: small-context models compact before the hard preflight
       // limit; large ones still compact at the cost-driven 80k cap.
-      if (!shouldCompact({ messages, tokenThreshold: cfg ? proactiveCompactionThreshold(cfg.model) : undefined })) return messages;
+      if (!shouldCompact({ messages, tokenThreshold: cfg ? softCompactionThreshold(cfg.model, { absoluteCapTokens: cfg.autoCompactCapTokens }) : undefined })) return messages;
 
       return compactMidTurn(messages, autoCompactionDeps(currentTurnIdRef.current), signal);
     },
@@ -1547,7 +1553,7 @@ function App({
                   setMessages: (messages) => {
                     messagesRef.current = messages;
                   },
-                  overThreshold: shouldCompact({ messages: messagesRef.current, tokenThreshold: proactiveCompactionThreshold(overrideModel ?? cfg.model) }),
+                  overThreshold: shouldCompact({ messages: messagesRef.current, tokenThreshold: softCompactionThreshold(overrideModel ?? cfg.model, { absoluteCapTokens: cfg?.autoCompactCapTokens }) }),
                   estimateTokens: estimatePromptTokens,
                   aggressiveTokenThreshold: cfg?.autoCompactTokenThreshold ?? 500_000,
                   signal: turnScope.signal,

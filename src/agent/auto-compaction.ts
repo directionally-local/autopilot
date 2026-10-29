@@ -12,6 +12,8 @@
  */
 
 import { compactMessagesViaArtifacts } from "./artifact-compaction.js";
+import { elideStaleObservations } from "./elision.js";
+import { HARD_COMPACTION_SHARE } from "./context-budget.js";
 import type { ArtifactStore, SessionState } from "./session-state.js";
 import type { ChatMessage } from "./messages.js";
 import type { CompactResult } from "./llm-summarize.js";
@@ -36,6 +38,11 @@ export interface AutoCompactionDeps {
   /** Re-anchor durable memories after compaction. */
   memory?: CompactionMemory | null;
   cwd: string;
+  /** Effective input budget for the active model. Enables budget-relative
+   *  elision before summarization; omit to keep the old behavior. */
+  budgetTokens?: number;
+  /** Hard threshold; summarization runs only above this. Defaults to 0.85 × budget. */
+  hardThresholdTokens?: number;
   trace?: TraceRecorder | null;
   turnId?: string | null;
   /** A notice for the user ("info" or a memory notice). */
@@ -62,8 +69,30 @@ export async function compactConversation(
 ): Promise<CompactionPass> {
   const keep = opts.aggressive ? { keepLastTurns: 1 } : {};
   const label = opts.aggressive ? "auto-compacted (aggressive)" : "auto-compacted";
+
+  // Phase 1: elide stale tool output before paying for a summary. The
+  // aggressive pass skips this — it is the last resort when elision was not
+  // enough.
+  let working = messages;
+  if (!opts.aggressive && deps.budgetTokens) {
+    const hard = deps.hardThresholdTokens ?? Math.floor(deps.budgetTokens * HARD_COMPACTION_SHARE);
+    const elided = elideStaleObservations(working, {
+      budgetTokens: deps.budgetTokens,
+      targetTokens: hard,
+    });
+    if (elided.elidedCount > 0) {
+      working = elided.messages;
+      deps.notify(
+        "info",
+        `elided ${elided.elidedCount} stale tool output${elided.elidedCount === 1 ? "" : "s"}: ${elided.tokensBefore.toLocaleString()} → ${elided.tokensAfter.toLocaleString()} tokens`,
+      );
+      await deps.save();
+      if (elided.tokensAfter < hard) return { messages: working, compacted: true };
+    }
+  }
+
   if (deps.compiledContext) {
-    const result = compactMessagesViaArtifacts({ messages, state: deps.getState(), store: deps.store, ...keep });
+    const result = compactMessagesViaArtifacts({ messages: working, state: deps.getState(), store: deps.store, ...keep });
     if (result.metrics.rawTurnsRemoved === 0) return { messages: result.newMessages, compacted: false };
     traceCompiledCompaction(deps.trace, result, deps.turnId ?? null);
     deps.setState(result.newState);
@@ -75,9 +104,9 @@ export async function compactConversation(
     await deps.save();
     return { messages: result.newMessages, compacted: true };
   }
-  const result = await deps.summarize(messages, { ...keep, ...(opts.signal ? { signal: opts.signal } : {}) });
+  const result = await deps.summarize(working, { ...keep, ...(opts.signal ? { signal: opts.signal } : {}) });
   if (result.replacedCount === 0) return { messages: result.newMessages, compacted: false };
-  traceLlmCompaction(deps.trace, messages, result, deps.turnId ?? null);
+  traceLlmCompaction(deps.trace, working, result, deps.turnId ?? null);
   deps.notify("info", `${label}: ${result.replacedCount} messages summarized`);
   await deps.save();
   return { messages: result.newMessages, compacted: true };

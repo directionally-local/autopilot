@@ -18,13 +18,15 @@ export const DEFAULT_MAX_COMPLETION_TOKENS = 16_384;
  *  which under-counts code- and JSON-heavy content. */
 export const BUDGET_SAFETY_MARGIN_TOKENS = 8_192;
 
-/** Proactive (cost-driven) compaction never waits past this many estimated
- *  tokens, even on very large context windows. */
+/** Legacy absolute cap. Kept for callers that still import it; budget-relative
+ *  thresholds no longer apply it unless a host opts in via `absoluteCapTokens`. */
 export const PROACTIVE_COMPACTION_CAP_TOKENS = 80_000;
 
-/** On small windows, compact proactively at this share of the input budget so
- *  a turn's growth doesn't hit the hard preflight limit first. */
-const PROACTIVE_SHARE_OF_BUDGET = 0.75;
+/** Soft threshold: elide stale tool output at this share of the input budget. */
+export const SOFT_COMPACTION_SHARE = 0.6;
+
+/** Hard threshold: summarize only when the history is still above this share. */
+export const HARD_COMPACTION_SHARE = 0.85;
 
 /** Recent turns to keep raw, tried in order until the history fits. */
 const KEEP_TURNS_LADDER = [4, 2, 1] as const;
@@ -37,12 +39,29 @@ export function effectiveInputBudget(model: string, maxCompletionTokens?: number
   return Math.max(1, contextWindow - completion - BUDGET_SAFETY_MARGIN_TOKENS);
 }
 
-/** Estimated-token level at which hosts compact between turns/iterations. */
+export interface CompactionThresholdOpts {
+  maxCompletionTokens?: number;
+  /** Optional absolute token cap (cost control). Off by default. */
+  absoluteCapTokens?: number;
+}
+
+/** Estimated-token level at which hosts elide stale tool output. */
+export function softCompactionThreshold(model: string, opts: CompactionThresholdOpts = {}): number {
+  const budget = effectiveInputBudget(model, opts.maxCompletionTokens);
+  const soft = Math.floor(budget * SOFT_COMPACTION_SHARE);
+  return opts.absoluteCapTokens ? Math.min(soft, opts.absoluteCapTokens) : soft;
+}
+
+/** Estimated-token level above which hosts summarize instead of only eliding. */
+export function hardCompactionThreshold(model: string, opts: CompactionThresholdOpts = {}): number {
+  const budget = effectiveInputBudget(model, opts.maxCompletionTokens);
+  const hard = Math.floor(budget * HARD_COMPACTION_SHARE);
+  return opts.absoluteCapTokens ? Math.min(hard, opts.absoluteCapTokens) : hard;
+}
+
+/** @deprecated Use {@link softCompactionThreshold}. Budget-relative since #947. */
 export function proactiveCompactionThreshold(model: string, maxCompletionTokens?: number): number {
-  return Math.min(
-    PROACTIVE_COMPACTION_CAP_TOKENS,
-    Math.floor(effectiveInputBudget(model, maxCompletionTokens) * PROACTIVE_SHARE_OF_BUDGET),
-  );
+  return softCompactionThreshold(model, { maxCompletionTokens });
 }
 
 /** The prompt cannot fit even after compacting everything but the active turn. */
