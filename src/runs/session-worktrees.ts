@@ -96,6 +96,9 @@ export interface SessionWorktreeOptions {
   sessionId?: () => string | null | undefined;
   /** Shown to the user in the transcript. */
   onNotice?: (text: string) => void;
+  /** Called once the session switches into its worktree (new or resumed), so
+   *  hosts can re-root services that were started at the original cwd (LSP). */
+  onActivate?: (info: SessionWorktreeInfo) => void;
   /** Override the worktree root (tests). */
   rootDir?: string;
   /** Upper bound for refreshing the default branch from origin. Default 20 s. */
@@ -261,6 +264,7 @@ export class SessionWorktree {
       const reused = sessionId ? await this.findForSession(sourceRoot, sessionId) : null;
       if (reused) {
         this.info = reused;
+        this.opts.onActivate?.(reused);
         this.pendingModelNotice =
           `[autopilot] This session works in its git worktree ${reused.cwd} (branch ${reused.branch}); ` +
           `the user's checkout at ${sourceRoot} stays untouched. Every tool call runs there.`;
@@ -281,6 +285,7 @@ export class SessionWorktree {
         fetchTimeoutMs: this.opts.fetchTimeoutMs ?? 20_000,
       });
       this.info = info;
+      this.opts.onActivate?.(info);
       this.pendingModelNotice = modelNotice(info, carried);
       this.opts.onNotice?.(userNotice(info, carried));
     } catch (error) {
