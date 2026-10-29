@@ -294,8 +294,9 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
     if (closing) return;
     const code = info?.code ?? 0;
     const signal = info?.signal ?? null;
-    if (code === 0 && !signal) {
-      // The user quit the renderer (Ctrl+C twice): end the App too.
+    if (rendererExitIsUserQuit(code, signal)) {
+      // The user quit the renderer (Ctrl+C twice, or Ctrl+C delivered as
+      // SIGINT): end the App too.
       void finish().then(() => {
         if (view.actions) return view.actions.exit();
         // Quit during first-run setup: nothing was saved, say so on the way out.
@@ -1999,6 +2000,21 @@ function listFiles(cwd: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Whether a renderer exit means the user asked to quit rather than a crash.
+ *
+ * A clean exit (code 0, no signal) is the renderer's own Ctrl+C-twice quit.
+ * SIGINT is how the terminal delivers Ctrl+C when the renderer is not in raw
+ * mode (e.g. after a `!` command or a terminal handoff): the renderer has no
+ * SIGINT handler, so it dies. Treating that as a crash made autopilot restart
+ * the renderer on every Ctrl+C, so quitting took several presses until the
+ * crash-restart budget ran out.
+ */
+export function rendererExitIsUserQuit(code: number | null, signal: NodeJS.Signals | null): boolean {
+  if (signal === "SIGINT") return true;
+  return (code ?? 0) === 0 && !signal;
 }
 
 /** The renderer owns the terminal; send stray console output to the log. */

@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View } from "./camouflage-view.js";
+import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View } from "./camouflage-view.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import { listModels } from "./models/registry.js";
 import { bashTool } from "./tools/bash.js";
@@ -40,6 +40,20 @@ describe("Camouflage event sync helpers", () => {
     assert.deepEqual(splitBangResult("Bash", "exit=1\nnot a bang command"), { output: "exit=1\nnot a bang command" });
   });
 });
+describe("rendererExitIsUserQuit", () => {
+  it("treats a clean exit and SIGINT as the user quitting", () => {
+    assert.equal(rendererExitIsUserQuit(0, null), true, "Ctrl+C twice exits cleanly");
+    assert.equal(rendererExitIsUserQuit(null, "SIGINT"), true, "Ctrl+C delivered as SIGINT is a quit, not a crash");
+  });
+
+  it("treats other signals and non-zero exits as crashes", () => {
+    assert.equal(rendererExitIsUserQuit(null, "SIGSEGV"), false);
+    assert.equal(rendererExitIsUserQuit(null, "SIGTERM"), false);
+    assert.equal(rendererExitIsUserQuit(1, null), false);
+    assert.equal(rendererExitIsUserQuit(0, "SIGKILL"), false);
+  });
+});
+
 describe("noticeSeverity (#889)", () => {
   it("shows warning-toned info events, such as a failed hook, as warnings", () => {
     assert.strictEqual(noticeSeverity({ kind: "info", key: "k", text: "hook x (PreToolUse) failed: …", tone: "warn" }), "warn");
