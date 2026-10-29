@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.7.0](https://github.com/directionally-local/autopilot/compare/v2.6.2...v2.7.0) (2026-10-29)
+
+
+### Features
+
+* add attach-remote, the interactive UI for Aster server conversations ([#982](https://github.com/directionally-local/autopilot/issues/982)) ([33e717e](https://github.com/directionally-local/autopilot/commit/33e717e6fc4f68c2471ddb1dccca689561f8a69b))
+
+
+### Bug Fixes
+
+* **aster:** start the repository-scoped GitHub proxy again, and log why provisioning fails ([#981](https://github.com/directionally-local/autopilot/issues/981)) ([c93e348](https://github.com/directionally-local/autopilot/commit/c93e3482a3118a505d4ddff38136b20d0c55f99c))
+
 ## [2.6.2](https://github.com/directionally-local/autopilot/compare/v2.6.1...v2.6.2) (2026-10-28)
 
 
