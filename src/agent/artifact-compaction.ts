@@ -27,7 +27,7 @@ export interface CompactionResult {
   metrics: CompactionMetrics;
 }
 
-interface Turn {
+export interface Turn {
   user: ChatMessage;
   assistants: ChatMessage[];
   tools: ChatMessage[];
@@ -68,7 +68,7 @@ export function estimatePromptTokens(messages: ChatMessage[]): number {
 /** Group each user message with all following messages up to the next user.
  *  Turns can contain interstitial system context and multiple assistant/tool
  *  cycles, so grouping by a fixed user → assistant → tool pattern loses data. */
-function groupIntoTurns(messages: ChatMessage[]): { prefix: ChatMessage[]; turns: Turn[] } {
+export function groupIntoTurns(messages: ChatMessage[]): { prefix: ChatMessage[]; turns: Turn[] } {
   const firstUserIndex = messages.findIndex((message) => message.role === "user");
   if (firstUserIndex === -1) return { prefix: messages, turns: [] };
 
@@ -261,17 +261,24 @@ function mergeState(state: SessionState, delta: Partial<SessionState>): SessionS
   };
 }
 
-/** Check if compaction should trigger based on thresholds. */
+/** Check if compaction should trigger based on thresholds.
+ *
+ *  Budget-relative hosts pass `tokenThreshold` from
+ *  {@link softCompactionThreshold}. The turn-count trigger is opt-in: a fixed
+ *  turn count fires long before any pressure on large-context models. */
 export function shouldCompact(opts: {
   messages: ChatMessage[];
   tokenThreshold?: number;
+  /** Opt-in turn-count trigger. Omit to rely on the token budget alone. */
   turnThreshold?: number;
 }): boolean {
-  const tokenThreshold = opts.tokenThreshold ?? 80_000;
-  const turnThreshold = opts.turnThreshold ?? 12;
   const tokens = estimatePromptTokens(opts.messages);
-  const { turns } = groupIntoTurns(opts.messages);
-  return tokens > tokenThreshold || turns.length > turnThreshold;
+  if (opts.tokenThreshold !== undefined && tokens > opts.tokenThreshold) return true;
+  if (opts.turnThreshold !== undefined) {
+    const { turns } = groupIntoTurns(opts.messages);
+    if (turns.length > opts.turnThreshold) return true;
+  }
+  return false;
 }
 
 function isCompiledStateMessage(m: ChatMessage): boolean {

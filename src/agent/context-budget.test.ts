@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   compactToFit,
   effectiveInputBudget,
+  hardCompactionThreshold,
   proactiveCompactionThreshold,
   sessionFileCompactionTarget,
+  softCompactionThreshold,
 } from "./context-budget.js";
 import { estimatePromptTokens } from "./artifact-compaction.js";
 import type { ChatMessage } from "./messages.js";
@@ -36,9 +38,19 @@ describe("context budget", () => {
     // Unknown models are inferred at a 128k window.
     assert.equal(effectiveInputBudget("unknown/model"), 128_000 - 16_384 - 8_192);
     assert.equal(effectiveInputBudget("unknown/model", 4_096), 128_000 - 4_096 - 8_192);
-    assert.equal(proactiveCompactionThreshold("unknown/model"), Math.floor((128_000 - 16_384 - 8_192) * 0.75));
-    // Large windows stay capped at the cost-driven 80k.
-    assert.equal(proactiveCompactionThreshold("moonshotai/kimi-k3"), 80_000);
+    const budget = 128_000 - 16_384 - 8_192;
+    assert.equal(softCompactionThreshold("unknown/model"), Math.floor(budget * 0.6));
+    assert.equal(hardCompactionThreshold("unknown/model"), Math.floor(budget * 0.85));
+    // The deprecated alias now follows the budget instead of the 80k cap.
+    assert.equal(proactiveCompactionThreshold("unknown/model"), softCompactionThreshold("unknown/model"));
+  });
+
+  it("scales thresholds with large windows and honors an opt-in absolute cap", () => {
+    const large = effectiveInputBudget("moonshotai/kimi-k3");
+    assert.equal(softCompactionThreshold("moonshotai/kimi-k3"), Math.floor(large * 0.6));
+    assert.ok(softCompactionThreshold("moonshotai/kimi-k3") > 80_000, "no 80k cap by default");
+    assert.equal(softCompactionThreshold("moonshotai/kimi-k3", { absoluteCapTokens: 80_000 }), 80_000);
+    assert.equal(hardCompactionThreshold("moonshotai/kimi-k3", { absoluteCapTokens: 80_000 }), 80_000);
   });
 
   it("compacts older complete turns until the history fits, keeping the active turn", () => {
