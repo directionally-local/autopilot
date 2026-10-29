@@ -1,0 +1,113 @@
+name: Eval baseline
+
+# Runs autopilot-bench on a small model matrix and uploads the summarized
+# results. This is the measurement #946 gates harness changes on: every
+# follow-up PR should compare against the latest baseline artifact.
+#
+# The run needs an OPENROUTER_API_KEY secret with a spend limit. Without it
+# the job warns and exits green, so forks and unconfigured repos stay quiet.
+# Task failures are data, not build failures: only a harness error (exit 2)
+# turns the job red.
+
+on:
+  schedule:
+    # Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      models:
+        description: Comma-separated model ids (frontier, mid, cheap/open)
+        required: false
+        default: "openai/gpt-6-luna,moonshotai/kimi-k2.6,deepseek/deepseek-v4.1-flash"
+      samples:
+        description: Runs per task
+        required: false
+        default: "1"
+      max_cost_usd:
+        description: Budget cap per model (USD)
+        required: false
+        default: "5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-baseline
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: autopilot-bench baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Check for the API key
+        id: key
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::warning::OPENROUTER_API_KEY is not set; skipping the eval run."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run baseline
+        if: steps.key.outputs.present == 'true'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MODELS: ${{ inputs.models || 'openai/gpt-6-luna,moonshotai/kimi-k2.6,deepseek/deepseek-v4.1-flash' }}
+          SAMPLES: ${{ inputs.samples || '1' }}
+          MAX_COST_USD: ${{ inputs.max_cost_usd || '5' }}
+        run: |
+          set -uo pipefail
+          mkdir -p evals/results
+          status=0
+          IFS=',' read -ra ids <<< "$MODELS"
+          for model in "${ids[@]}"; do
+            model="$(echo "$model" | xargs)"
+            [ -z "$model" ] && continue
+            slug="$(echo "$model" | tr '/:' '--')"
+            out="evals/results/run-${slug}"
+            echo "::group::eval ${model}"
+            npx tsx src/index.tsx eval run \
+              --tasks evals/tasks/autopilot-bench \
+              --config evals/configs/baseline.json \
+              --model "$model" \
+              --samples "$SAMPLES" \
+              --concurrency 2 \
+              --max-cost-usd "$MAX_COST_USD" \
+              --out "$out"
+            code=$?
+            # 1 = some tasks failed (data); 2 = harness error (build failure).
+            if [ "$code" -eq 2 ]; then status=2; fi
+            if [ -f "$out/results.jsonl" ]; then
+              npx tsx src/index.tsx eval summarize "$out/results.jsonl" \
+                --out "evals/results/$(date -u +%Y-%m-%d)-${slug}.json"
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+      - name: Upload results
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-baseline-${{ github.run_id }}
+          path: |
+            evals/results/*.json
+            evals/results/run-*/results.jsonl
+            evals/results/run-*/config.json
+          if-no-files-found: warn
+          retention-days: 30

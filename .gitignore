@@ -14,3 +14,6 @@ sessions/
 coverage/
 .kimiflare/
 changelog-*.png
+
+# raw eval output (absolute paths, traces); commit evals/results/*.json summaries only
+evals/results/run-*/
