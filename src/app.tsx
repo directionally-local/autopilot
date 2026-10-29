@@ -1484,6 +1484,9 @@ function App({
           codeMode: effectiveCodeMode,
           allowDirectPush: cfg.allowDirectPush,
           preferPullRequests: cfg.preferPullRequests,
+          lspManager: lspManagerRef.current,
+          postEditDiagnostics: cfg.postEditDiagnostics,
+          postEditDiagnosticsWarnings: cfg.postEditDiagnosticsWarnings,
           onIterationEnd,
           drainPendingInput: () =>
             pendingSteersRef.current.splice(0).map((steer) => ({ role: "user" as const, content: steer.content })),

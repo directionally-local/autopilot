@@ -206,6 +206,13 @@ export interface KimiConfig {
    *  branch. When false (default), such pushes are blocked and the model is
    *  directed to open a PR instead. */
   allowDirectPush?: boolean;
+  /** Append a compact diagnostics block to successful edit/write results.
+   *  Uses the language server when one is running, else a fast syntax check.
+   *  Default: true. */
+  postEditDiagnostics?: boolean;
+  /** Include warnings (not just errors) in the post-edit diagnostics block.
+   *  Default: false. */
+  postEditDiagnosticsWarnings?: boolean;
   /**
    * Local session tracing (docs/plans/trace-and-dataset-dev-plan.md). Off by
    * default; writes `trace.jsonl` + blobs per session under `root`
@@ -436,6 +443,8 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     permissions: persisted.permissions,
     preferPullRequests: readBooleanEnv("KIMIFLARE_PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,
     allowDirectPush: readBooleanEnv("KIMIFLARE_ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
+    postEditDiagnostics: readBooleanEnv("KIMIFLARE_POST_EDIT_DIAGNOSTICS") ?? persisted.postEditDiagnostics ?? true,
+    postEditDiagnosticsWarnings: readBooleanEnv("KIMIFLARE_POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,
     trace: resolveTraceConfig(persisted.trace),
   };
 

@@ -13,6 +13,7 @@ import { mergeReasoningDetails, sanitizeString, stableStringify, stripOldImages 
 import type { ChatMessage, ReasoningDetail, ToolCall, Usage } from "./messages.js";
 import type { Task, PlanOption, RunWaitRequest } from "../tools/registry.js";
 import type { MemoryManager } from "../memory/manager.js";
+import type { LspManager } from "../lsp/manager.js";
 import type { HybridResult } from "../memory/schema.js";
 import { hasRecalledMemory, injectRecalledMemoryOnce } from "../memory/recall-inject.js";
 import { logTurnDebug, analyzePrompt } from "../cost-debug.js";
@@ -161,6 +162,12 @@ export interface AgentTurnOpts extends LlmAuth {
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
+  /** Host language server manager, forwarded to tools for post-edit diagnostics. */
+  lspManager?: LspManager;
+  /** When false, edit/write results omit the post-edit diagnostics block. */
+  postEditDiagnostics?: boolean;
+  /** Include warnings (not just errors) in the post-edit diagnostics block. */
+  postEditDiagnosticsWarnings?: boolean;
   /** Session-start memory recall promise. If provided, awaited at turn start and injected into messages. */
   sessionStartRecall?: Promise<HybridResult[]>;
   /** Skills DB for semantic skill routing. */
@@ -1244,6 +1251,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           model: opts.model,
           allowDirectPush: opts.allowDirectPush,
           preferPullRequests: opts.preferPullRequests,
+          lspManager: opts.lspManager,
+          postEditDiagnostics: opts.postEditDiagnostics,
+          postEditDiagnosticsWarnings: opts.postEditDiagnosticsWarnings,
           runId: opts.runId,
           onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
           runsDbPath: opts.runsDbPath,

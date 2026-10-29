@@ -721,6 +721,9 @@ class InternalSession implements KimiFlareSession {
       compaction: this.compaction,
       allowDirectPush: this.config.allowDirectPush,
       preferPullRequests: this.config.preferPullRequests,
+      lspManager: this.lspManager ?? undefined,
+      postEditDiagnostics: this.config.postEditDiagnostics,
+      postEditDiagnosticsWarnings: this.config.postEditDiagnosticsWarnings,
       trace: this.trace,
       turnId,
       // Steering lands at the next tool boundary, or before the final answer

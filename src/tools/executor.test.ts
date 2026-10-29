@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert";
 import { isDiffCommand, ToolExecutor, toPermissionResult, getWorkerTools, ALL_TOOLS, sessionPermissionKey } from "./executor.js";
+import { writeTool } from "./write.js";
 import { ToolError } from "./tool-error.js";
 import type { ToolSpec, ToolContext } from "./registry.js";
 import type { PermissionAsker, PermissionDecisionResult } from "./executor.js";
@@ -682,3 +683,35 @@ void beforeEach;
 void afterEach;
 void HooksManager;
 void setSpawnHookImplForTesting;
+
+describe("ToolExecutor — post-edit diagnostics", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "exec-diag-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("appends a diagnostics block to a write result", async () => {
+    const exec = new ToolExecutor([writeTool]);
+    const res = await exec.run(
+      { id: "w1", name: "write", arguments: JSON.stringify({ path: join(dir, "bad.json"), content: "{ nope" }) },
+      allowAll,
+      { cwd: dir },
+    );
+    assert.strictEqual(res.ok, true);
+    assert.match(res.content, /<diagnostics path="bad\.json">/);
+  });
+
+  it("omits the block when postEditDiagnostics is false", async () => {
+    const exec = new ToolExecutor([writeTool]);
+    const res = await exec.run(
+      { id: "w2", name: "write", arguments: JSON.stringify({ path: join(dir, "bad.json"), content: "{ nope" }) },
+      allowAll,
+      { cwd: dir, postEditDiagnostics: false },
+    );
+    assert.strictEqual(res.ok, true);
+    assert.doesNotMatch(res.content, /<diagnostics/);
+  });
+});
