@@ -33,6 +33,8 @@ import { toolOutputCapForContextWindow } from "../tools/reducer.js";
 import { createPermissionGate } from "./permission-gate.js";
 import { compactToFit, ContextBudgetError, effectiveInputBudget, type CompactionTarget } from "./context-budget.js";
 import { withTurnDirective } from "./turn-directive.js";
+import { buildPlanReminder, withPlanReminder } from "./plan-reminder.js";
+import { classifyVerification } from "../trace/verification.js";
 import { CONTINUE_NUDGE, INCOMPLETE_THRESHOLD, shouldCheckCompletion, toolsUsedSince, type CompletionCheck } from "./completion-check.js";
 import type { Mode } from "../mode.js";
 import { createNoopRecorder, makeTurnId } from "../trace/recorder.js";
@@ -165,6 +167,8 @@ export interface AgentTurnOpts extends LlmAuth {
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
+  /** Re-inject the live `tasks_set` plan on every request (#950). Default: true. */
+  planReminder?: boolean;
   /** Interactive session's worktree controller (#962), forwarded to every tool call. */
   sessionWorktree?: SessionWorktree;
   /** Host language server manager, forwarded to tools for post-edit diagnostics. */
@@ -784,8 +788,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // the last tasks_set so we can nudge the UI forward when the model forgets.
   let currentTasks: Task[] = [];
   let mutatingToolsSinceLastTasksSet = 0;
+  /** #950: verification runs since the last edit, and the one-time nudge. */
+  let verificationRunsSinceLastEdit = 0;
+  let verificationReminder: string | undefined;
   const MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
   const AUTO_ADVANCE_THRESHOLD = 3;
+  /** #950: verification runs after the last edit before the soft nudge. */
+  const VERIFICATION_REMINDER_THRESHOLD = 3;
   const originalOnTasks = opts.callbacks.onTasks;
   const wrappedOnTasks = (tasks: Task[]) => {
     currentTasks = tasks;
@@ -920,7 +929,15 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       // Per-turn delegation guidance is request-only: it reaches the model on
       // every iteration of this turn, regardless of skill routing, and is never
       // persisted into history or the system prompt.
-      return withTurnDirective(out, delegationDirective, turnUserMessage);
+      const withDirective = withTurnDirective(out, delegationDirective, turnUserMessage);
+      // #950: keep the live plan in front of the model without another tool
+      // call. Light turns skip it; the plan is usually one step there.
+      const planReminder =
+        opts.planReminder !== false && opts.intentClassification?.tier !== "light"
+          ? buildPlanReminder(currentTasks)
+          : undefined;
+      const reminders = [planReminder, verificationReminder].filter(Boolean).join("\n");
+      return withPlanReminder(withDirective, reminders || undefined);
     };
 
     let apiMessages = buildApiMessages();
@@ -1515,6 +1532,25 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
             currentTasks = updated;
             mutatingToolsSinceLastTasksSet = 0;
             wrappedOnTasks(updated);
+          }
+        }
+      }
+
+      // #950: a model that keeps re-running tests after its last edit is
+      // burning turns. Nudge it once to finish or say what is uncertain.
+      if (!guardrailBlocked) {
+        if (tc.function.name === "write" || tc.function.name === "edit") {
+          verificationRunsSinceLastEdit = 0;
+          verificationReminder = undefined;
+        } else if (tc.function.name === "bash") {
+          const command = parseArgsObject(tc.function.arguments).command;
+          if (typeof command === "string" && classifyVerification(command)) {
+            verificationRunsSinceLastEdit++;
+            if (verificationRunsSinceLastEdit >= VERIFICATION_REMINDER_THRESHOLD && !verificationReminder) {
+              verificationReminder =
+                `<system-reminder>\nYou have run ${verificationRunsSinceLastEdit} verification commands since your last edit with no new changes. ` +
+                `Finish, or state what is still uncertain.\n</system-reminder>`;
+            }
           }
         }
       }
