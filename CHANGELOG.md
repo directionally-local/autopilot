@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.8.0](https://github.com/directionally-local/autopilot/compare/v2.7.2...v2.8.0) (2026-10-29)
+
+
+### Features
+
+* **remote:** open the model picker for /model in remote sessions ([#1007](https://github.com/directionally-local/autopilot/issues/1007)) ([96be70b](https://github.com/directionally-local/autopilot/commit/96be70bd45c4a4e1324a5fd2e67b7ff8244334d7))
+* **tools:** append post-edit diagnostics to edit/write results ([#1006](https://github.com/directionally-local/autopilot/issues/1006)) ([d897b61](https://github.com/directionally-local/autopilot/commit/d897b61684538c1747f9b54972fc169a5cf51805))
+
+
+### Bug Fixes
+
+* **ci:** create releases with GITHUB_TOKEN and PRs with the bot PAT ([#997](https://github.com/directionally-local/autopilot/issues/997)) ([f06fef8](https://github.com/directionally-local/autopilot/commit/f06fef89dc74696963b321cb3a0b3dfcc1394264))
+* **git:** block commits and history rewrites on the default branch ([#1005](https://github.com/directionally-local/autopilot/issues/1005)) ([b7e42e0](https://github.com/directionally-local/autopilot/commit/b7e42e0185ed81c8cfbc15ba34a7bc60f7ad871a))
+* **subagents:** remove abort listeners when workers finish or wake ([#1004](https://github.com/directionally-local/autopilot/issues/1004)) ([abf3ea7](https://github.com/directionally-local/autopilot/commit/abf3ea79619d22ae5f3987c247c22de1b01c7818)), closes [#967](https://github.com/directionally-local/autopilot/issues/967)
+
 ## [2.7.2](https://github.com/directionally-local/autopilot/compare/v2.7.1...v2.7.2) (2026-10-29)
 
 
