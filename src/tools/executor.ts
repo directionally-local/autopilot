@@ -555,7 +555,7 @@ export class ToolExecutor {
           ...(firePermissionHook ? { firePermissionHook } : {}),
         });
         const result = toPermissionResult(raw);
-        tr?.permission(tracePermissionDecision(result), Math.round(performance.now() - askedAt), result.feedback);
+        tr?.permission(tracePermissionDecision(result), Math.round(performance.now() - askedAt), result.feedback, true);
         if (result.decision === "deny") {
           const byHook = hookDenial as PermissionHookResult | null;
           const denied: ToolResult = byHook
@@ -913,7 +913,7 @@ class ToolTrace {
     this.trace.emit("tool_call", payload, this.turnId);
   }
 
-  permission(decision: TracePermissionDecision, latencyMs: number, feedback?: string): void {
+  permission(decision: TracePermissionDecision, latencyMs: number, feedback?: string, prompted = false): void {
     this.trace.emit(
       "permission_decision",
       {
@@ -921,6 +921,7 @@ class ToolTrace {
         decision,
         ...(feedback ? { feedback_text: feedback } : {}),
         latency_ms: latencyMs,
+        prompted,
       },
       this.turnId,
     );

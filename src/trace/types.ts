@@ -137,6 +137,10 @@ export interface PermissionDecisionPayload {
   decision: PermissionDecision;
   feedback_text?: string;
   latency_ms: number;
+  /** True when the user was actually prompted; false for automatic decisions.
+   *  Auto decisions record `latency_ms: 0`, so without this flag a trace cannot
+   *  tell "no prompt" apart from "answered instantly" (#968). */
+  prompted?: boolean;
 }
 
 export interface ToolResultPayload {

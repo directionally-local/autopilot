@@ -669,6 +669,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
             `Write and execute TypeScript code to accomplish your task.\n\n` +
             `Available APIs:\n${codeModeApiString}\n\n` +
             `Use console.log() to return results. Only console.log output is sent back to you.\n\n` +
+            `The sandbox has no Node built-ins: no require, process, fs, or imports. Only the api.* calls above are available.\n\n` +
             `IMPORTANT — explore through code, not direct tools: to read files, run shell commands, grep, or glob, ` +
             `call api.read(...), api.bash(...), api.grep(...), api.glob(...) INSIDE this code block and console.log only what you need. ` +
             `Do NOT call read/bash/grep/glob as separate tools — their full output floods your context, while here only what you log returns. ` +
