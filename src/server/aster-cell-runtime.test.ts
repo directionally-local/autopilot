@@ -29,6 +29,7 @@ interface FakeCellState {
   activeRunId?: string | null;
   promptEvents?: Array<Record<string, unknown>>;
   commitAhead?: boolean;
+  rpcs?: Array<Record<string, unknown>>;
 }
 
 function fakeSandbox(state: FakeCellState) {
@@ -72,6 +73,7 @@ function fakeSandbox(state: FakeCellState) {
       }
       if (request.method === "POST" && request.path === "/rpc") {
         const body = request.body!;
+        (state.rpcs ??= []).push(body);
         if (body.type === "new_session") { state.sessions.push(String(body.sessionId)); return respond({ type: "ok", id: body.id }); }
         if (body.type === "prompt") {
           state.prompts.push({ id: String(body.id), message: String(body.message) });
@@ -763,6 +765,29 @@ describe("Aster Hotcell runtime", () => {
     runtime.resumeTurn(turn);
     await waitFor(() => turn.finished.length > 0, 60_000);
     assert.deepEqual(turn.finished, ["failed"]);
+  });
+
+  it("hands the cell the server's catalog entry for its model, at session start and on a switch", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const entries: Record<string, unknown> = {
+      "deepseek/deepseek-v4.1-flash-1017": { id: "deepseek/deepseek-v4.1-flash-1017", contextWindow: 1_048_576, pricing: { inputPerMtok: 0.3, outputPerMtok: 1.2 }, supports: { tools: true, streaming: true } },
+    };
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells), {
+      archiveWorkspace: async () => "QUJD",
+      modelInfo: async (model) => entries[model] as never,
+    });
+    const { cellId } = await runtime.provisionConversation({
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      model: "deepseek/deepseek-v4.1-flash-1017", allowCreate: true, onCellCreated: () => {},
+    });
+    const state = [...cells.values()][0]!;
+    const started = state.rpcs!.find((rpc) => rpc.type === "new_session")!;
+    assert.deepEqual(started.modelInfo, entries["deepseek/deepseek-v4.1-flash-1017"]);
+
+    await runtime.setModel(cellId, "someone/uncatalogued");
+    const switched = state.rpcs!.find((rpc) => rpc.type === "set_model")!;
+    assert.equal(switched.modelId, "someone/uncatalogued");
+    assert.ok(!("modelInfo" in switched), "no entry, nothing sent: the cell guesses as before");
   });
 
   it("switches the cell session's model through the bridge", async () => {

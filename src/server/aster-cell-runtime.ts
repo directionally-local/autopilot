@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { Sandbox } from "@hotcell/sdk";
+import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
+import { getModel, type ModelEntry } from "../models/registry.js";
 import { getAppVersion } from "../util/version.js";
 import type { AsterApiRuntime, AsterTurnStart } from "./aster-api.js";
 import type { HotcellProvider } from "./hotcell-provider.js";
@@ -69,6 +71,12 @@ export interface AsterHotcellRuntimeOptions {
   idlePauseMs?: number;
   /** How often to look for idle cells. */
   idleSweepIntervalMs?: number;
+  /**
+   * The catalog entry for a model, handed to the cell with its session: the cell's gateway
+   * doesn't serve OpenRouter's /models, so without it the cell guesses (a 128k context).
+   * Defaults to this server's registry, then its cached OpenRouter catalog.
+   */
+  modelInfo?: (model: string) => Promise<ModelEntry | undefined>;
 }
 
 export interface AsterCellProject {
@@ -128,6 +136,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     this.pollIntervalMs = options.pollIntervalMs ?? EVENT_POLL_MS;
     this.healthTimeoutMs = options.healthTimeoutMs ?? HEALTH_TIMEOUT_MS;
     this.idlePauseMs = options.idlePauseMs ?? 0;
+    this.modelInfo = options.modelInfo ?? defaultModelInfo;
     if (this.idlePauseMs > 0) {
       const timer = setInterval(() => { void this.pauseIdleCells(this.idlePauseMs).catch(() => {}); }, options.idleSweepIntervalMs ?? 60_000);
       timer.unref();
@@ -135,6 +144,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   private readonly idlePauseMs: number;
+  private readonly modelInfo: (model: string) => Promise<ModelEntry | undefined>;
 
   /**
    * Pause running cells that have no active turn and no API activity within `idleMs`,
@@ -205,11 +215,13 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     if (input.project) await this.addNote(cell, projectNote(input.project));
     await this.installRuntime(cell);
     await this.ensureBridge(cell);
+    const modelInfo = await this.modelInfo(input.model).catch(() => undefined);
     await this.control(cell, "POST", "/rpc", {
       id: randomUUID(),
       type: "new_session",
       sessionId: input.sessionId,
       config: { model: input.model, cwd: CELL_WORKSPACE },
+      ...(modelInfo ? { modelInfo } : {}),
     });
     return { cellId: cell.getInfo().id };
   }
@@ -229,7 +241,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   /** Switch the cell session's model between turns. The bridge persists it for session restore. */
   async setModel(cellId: string, model: string): Promise<void> {
     await this.ensureReady(cellId);
-    await this.controlById(cellId, "POST", "/rpc", { id: randomUUID(), type: "set_model", modelId: model });
+    const modelInfo = await this.modelInfo(model).catch(() => undefined);
+    await this.controlById(cellId, "POST", "/rpc", { id: randomUUID(), type: "set_model", modelId: model, ...(modelInfo ? { modelInfo } : {}) });
   }
 
   /** Reinstall the runtime if the cell's image lost it and restart the bridge if it isn't running. */
@@ -914,4 +927,9 @@ function boundedToolText(text: string, limit: number): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** This server's entry for a model: its registry, else its (cached) OpenRouter catalog. */
+async function defaultModelInfo(model: string): Promise<ModelEntry | undefined> {
+  return getModel(model) ?? (await loadOpenRouterCatalog()).find((entry) => entry.id === model);
 }

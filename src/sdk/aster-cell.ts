@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { PassThrough, Writable } from "node:stream";
 import { join, resolve as resolvePath } from "node:path";
+import { registerModelHints, type ModelEntry } from "../models/registry.js";
 import { startRpcServer } from "./rpc.js";
 import type { SessionEvent } from "./types.js";
 
@@ -32,6 +33,8 @@ interface PendingRpc {
 interface BridgeState {
   sessionId: string | null;
   model?: string;
+  /** The server's catalog entry for `model`, re-registered when the session is restored. */
+  modelInfo?: ModelEntry;
   activeRunId: string | null;
   seenRunIds?: string[];
   initialized: boolean;
@@ -167,8 +170,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, state: B
       command.config = { model, mode: CELL_MODE, openrouterApiKey: apiKey };
       state.sessionId = sessionId;
       state.model = model;
+      state.modelInfo = acceptModelInfo(command.modelInfo, model);
       await persistState(state);
     }
+    delete command.modelInfo;
   }
 
   if (command.type === "prompt") {
@@ -195,6 +200,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, state: B
       return send(res, 400, { error: "invalid_model" });
     }
   }
+  const switchedModelInfo = command.type === "set_model" ? acceptModelInfo(command.modelInfo, command.modelId as string) : undefined;
+  delete command.modelInfo;
 
   try {
     const response = await sendRpc(input, pending, command);
@@ -204,6 +211,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, state: B
     }
     if (command.type === "set_model" && response.type !== "error") {
       state.model = command.modelId as string;
+      state.modelInfo = switchedModelInfo;
       await persistState(state);
     }
     return send(res, response.type === "error" ? 409 : 200, response);
@@ -213,6 +221,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, state: B
 }
 
 const ALLOWED_COMMANDS = new Set(["new_session", "prompt", "abort", "get_state", "resolve_permission", "set_model", "set_mode"]);
+
+/**
+ * The server's catalog entry for `model`, registered so the session knows the model's real
+ * context window and parameters (this cell can't load OpenRouter's catalog itself).
+ * Anything that isn't an entry for this model is ignored and the session guesses as before.
+ */
+export function acceptModelInfo(value: unknown, model: string): ModelEntry | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const entry = value as Partial<ModelEntry>;
+  const window = entry.contextWindow;
+  if (entry.id !== model || typeof window !== "number" || !Number.isInteger(window) || window < 1_000 || window > 100_000_000) return undefined;
+  if (!entry.pricing || typeof entry.pricing !== "object" || !entry.supports || typeof entry.supports !== "object") return undefined;
+  registerModelHints([entry as ModelEntry]);
+  return entry as ModelEntry;
+}
 
 async function sendRpc(input: PassThrough, pending: Map<string, PendingRpc>, command: RpcCommand): Promise<RpcOutput> {
   const response = new Promise<RpcOutput>((resolve, reject) => {
@@ -258,6 +281,7 @@ async function readState(): Promise<BridgeState> {
 async function restoreSession(input: PassThrough, pending: Map<string, PendingRpc>, state: BridgeState): Promise<void> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey || !process.env.OPENROUTER_BASE_URL || !state.sessionId || !state.model) return;
+  if (state.modelInfo) acceptModelInfo(state.modelInfo, state.model);
   const response = await sendRpc(input, pending, {
     id: crypto.randomUUID(),
     type: "new_session",
