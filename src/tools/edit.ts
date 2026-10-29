@@ -5,6 +5,7 @@ import { withFileLock } from "../util/file-lock.js";
 import { writeFileVerified } from "../util/safe-write.js";
 import { lockKeyFor } from "../util/file-lock.js";
 import { assertReadVersion, sha256 } from "./file-version.js";
+import { toolInvalidArgsError, type ToolError } from "./tool-error.js";
 
 export interface EditPair {
   old_string: string;
@@ -34,6 +35,23 @@ export function editPairs(args: Partial<Args> | Record<string, unknown>): EditPa
   return Array.isArray(a.edits) ? [...single, ...a.edits] : single;
 }
 
+/**
+ * A call that carries `path` but no replacement text: the model's
+ * old_string/new_string (or edits[]) never arrived. Long multi-line arguments
+ * are sometimes dropped in transit (seen with DeepSeek models through
+ * OpenRouter), so name exactly what is missing — the generic "pass
+ * old_string" read like a tool bug and the model retried the same call.
+ */
+function missingPayloadError(args: Partial<Args>): ToolError {
+  const present = Object.keys(args).filter((key) => key !== "path");
+  const got = present.length ? `only ${present.join(", ")}` : "no other fields";
+  const emptyEdits = Array.isArray(args.edits) && args.edits.length === 0;
+  return toolInvalidArgsError(
+    `the replacement text never arrived: this call had ${got}${emptyEdits ? " (edits[] was empty)" : ""}, so there is no old_string/new_string (or non-empty edits[]) to apply. Nothing was changed.`,
+    "Re-send the edit with the full old_string/new_string payload (or a non-empty edits[]). If the payload keeps disappearing, use write to rewrite the file or bash with a heredoc instead.",
+  );
+}
+
 /** Apply edits in order to `text`; throws (naming the failing edit) without partial results. */
 export function applyEdits(text: string, edits: EditPair[], path: string): { text: string; replaced: number } {
   let next = text;
@@ -61,6 +79,7 @@ export const editTool: ToolSpec<Args> = {
   name: "edit",
   description: [
     "Replace exact strings in a file. Either pass old_string/new_string for one replacement, or edits: [{old_string, new_string, replace_all?}] to make several replacements in the same file in one call.",
+    "The replacement text is required: a call with only path (and replace_all) is rejected without touching the file.",
     "edits are applied in order (each sees the result of the previous ones) and all-or-nothing: if any old_string is missing or ambiguous, nothing is written.",
     "Without replace_all, each old_string must appear exactly once. Read the file in this session first; re-read it after any change. Stale or unread files are rejected with a re-read suggestion. Prompts the user for permission first and shows a diff preview.",
   ].join(" "),
@@ -105,7 +124,7 @@ export const editTool: ToolSpec<Args> = {
   },
   async run(args, ctx) {
     const pairs = editPairs(args);
-    if (pairs.length === 0) throw new Error("pass old_string and new_string, or a non-empty edits[] array");
+    if (pairs.length === 0) throw missingPayloadError(args);
     const abs = resolvePath(ctx.cwd, args.path);
     // Serialize per path: concurrent edits (e.g. Promise.all inside execute_code)
     // must each see the previous edit's result, not a shared stale base image.

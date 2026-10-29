@@ -171,6 +171,28 @@ describe("edit: edits[] (several replacements in one call)", () => {
     await assert.rejects(editTool.run({ path: "a.ts", old_string: "", new_string: "z" }, ctxIn(dir)), /non-empty edits/);
   });
 
+  it("names the fields that arrived when the replacement text is missing", async () => {
+    const dir = await tmp();
+    const file = join(dir, "a.ts");
+    await writeFile(file, "a b c");
+    // The shape DeepSeek-via-OpenRouter emits when a long multi-line argument
+    // is dropped in transit: only the non-string fields survive.
+    await assert.rejects(
+      editTool.run({ path: "a.ts", replace_all: false }, ctxIn(dir)),
+      (err: unknown) => {
+        const e = err as { message: string; code?: string; suggestion?: string };
+        assert.match(e.message, /replacement text never arrived/);
+        assert.match(e.message, /only replace_all/);
+        assert.match(e.message, /Nothing was changed/);
+        assert.strictEqual(e.code, "invalid_args");
+        assert.match(e.suggestion ?? "", /Re-send the edit with the full old_string\/new_string payload/);
+        return true;
+      },
+    );
+    await assert.rejects(editTool.run({ path: "a.ts", edits: [] }, ctxIn(dir)), /edits\[\] was empty/);
+    assert.strictEqual(await readFile(file, "utf8"), "a b c");
+  });
+
   it("renders one permission diff covering every edit", () => {
     const r = editTool.render!({ path: "a.ts", edits: [{ old_string: "a", new_string: "b" }, { old_string: "c", new_string: "d" }] });
     assert.match(r.title, /\(2 edits\)$/);
