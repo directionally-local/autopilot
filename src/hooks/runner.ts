@@ -262,7 +262,13 @@ const defaultSpawn: SpawnHookImpl = (command, payloadJson, env, cwd, timeoutMs, 
       stderr += `${stderr ? "\n" : ""}spawn failed: ${err.message}`;
       finish(null);
     });
-    child.on("exit", (code) => finish(code));
+    // "exit" can fire before stdout/stderr are drained, losing the hook's last
+    // output; "close" waits for them. A hook that leaves a background process
+    // holding the pipes never closes, so finish shortly after exit regardless.
+    child.on("exit", (code) => {
+      setTimeout(() => finish(code), 250).unref();
+    });
+    child.on("close", (code) => finish(code));
     // A hook that exits without reading stdin closes the pipe; writing a
     // large payload then raises EPIPE on the stream. Swallow it: the exit
     // code is what matters.
