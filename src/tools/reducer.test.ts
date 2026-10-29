@@ -4,6 +4,8 @@ import { ToolArtifactStore } from "./artifact-store.js";
 import {
   reduceToolOutput,
   DEFAULT_REDUCER_CONFIG,
+  reducerConfigForContextWindow,
+  toolOutputCapForContextWindow,
   type ReducerConfig,
 } from "./reducer.js";
 
@@ -128,7 +130,11 @@ describe("reduceToolOutput — read", () => {
       " 10\tfunction helper() {}",
     ].join("\n");
 
-    const result = reduceToolOutput("read", raw, {}, store, DEFAULT_REDUCER_CONFIG);
+    const config: ReducerConfig = {
+      ...DEFAULT_REDUCER_CONFIG,
+      read: { ...DEFAULT_REDUCER_CONFIG.read, maxOutputChars: 20 },
+    };
+    const result = reduceToolOutput("read", raw, {}, store, config);
     assert.ok(result.content.includes("10 lines total"));
     assert.ok(result.content.includes("Imports (2):"));
     assert.ok(result.content.includes("Exports (2):"));
@@ -136,6 +142,23 @@ describe("reduceToolOutput — read", () => {
     assert.ok(result.content.includes("Classes (1):"));
     assert.ok(result.content.includes("Preview (lines 1–"));
     assert.ok(result.content.includes("output reduced"));
+    assert.ok(result.content.includes("offset=11, limit=1"));
+  });
+
+  it("returns a full file verbatim when it fits the configured context cap", () => {
+    const store = new ToolArtifactStore();
+    const raw = "  1\\t" + "x".repeat(1_000);
+    const result = reduceToolOutput("read", raw, {}, store, DEFAULT_REDUCER_CONFIG);
+    assert.strictEqual(result.content, raw);
+    assert.strictEqual(result.reducedBytes, result.rawBytes);
+  });
+
+  it("scales read output caps with model context windows", () => {
+    assert.strictEqual(toolOutputCapForContextWindow(32_000), 4_000);
+    assert.strictEqual(toolOutputCapForContextWindow(128_000), 7_680);
+    assert.strictEqual(toolOutputCapForContextWindow(1_000_000), 60_000);
+    assert.strictEqual(reducerConfigForContextWindow(1_000_000).read.maxOutputChars, 60_000);
+    assert.strictEqual(toolOutputCapForContextWindow(Number.NaN), DEFAULT_REDUCER_CONFIG.defaultMaxChars);
   });
 
   it("returns slice directly when offset/limit provided", () => {

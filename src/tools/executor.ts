@@ -24,7 +24,7 @@ import { memoryRememberTool, memoryRecallTool, memoryForgetTool } from "./memory
 import { subagentTool } from "./subagent.js";
 import { presentPlanOptionsTool } from "./plan-options.js";
 import { ToolArtifactStore } from "./artifact-store.js";
-import { reduceToolOutput, DEFAULT_REDUCER_CONFIG } from "./reducer.js";
+import { reduceToolOutput, DEFAULT_REDUCER_CONFIG, reducerConfigForContextWindow } from "./reducer.js";
 import { makeExpandArtifactTool } from "./expand-artifact.js";
 import { jobStartTool, jobStatusTool, jobLogsTool, jobCancelTool } from "./jobs.js";
 import { waitForTool } from "./wait-for.js";
@@ -356,6 +356,7 @@ export class ToolExecutor {
   private fileReadHashesBySession = new Map<string, Map<string, string>>();
   private tools: Map<string, ToolSpec>;
   private artifactStore: ToolArtifactStore;
+  private reducerConfig = DEFAULT_REDUCER_CONFIG;
   /** M6.1: when set, executor fires PreToolUse/PostToolUse around
    *  every `run` call regardless of caller (standard agent loop,
    *  code-mode sandbox, init turn, SDK, CLI print mode). */
@@ -381,6 +382,11 @@ export class ToolExecutor {
   /** Swap or detach the default trace recorder (e.g. when the TUI starts a new session). */
   setTrace(trace: TraceRecorder | null): void {
     this.trace = trace;
+  }
+
+  /** Set output limits for the model currently driving this executor. */
+  setContextWindow(contextWindow: number): void {
+    this.reducerConfig = reducerConfigForContextWindow(contextWindow);
   }
 
   list(): ToolSpec[] {
@@ -659,7 +665,7 @@ export class ToolExecutor {
         normalized.content,
         args,
         this.artifactStore,
-        DEFAULT_REDUCER_CONFIG,
+        this.reducerConfig,
       );
       const success: ToolResult = {
         tool_call_id: call.id,

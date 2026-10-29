@@ -47,6 +47,27 @@ export interface ReducerConfig {
   defaultMaxChars: number;
 }
 
+const MIN_CONTEXT_OUTPUT_CHARS = 4_000;
+const MAX_CONTEXT_OUTPUT_CHARS = 120_000;
+
+/** Convert a model context window (tokens) into a conservative tool-output cap. */
+export function toolOutputCapForContextWindow(contextWindow: number): number {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) return DEFAULT_REDUCER_CONFIG.defaultMaxChars;
+  return Math.min(MAX_CONTEXT_OUTPUT_CHARS, Math.max(MIN_CONTEXT_OUTPUT_CHARS, Math.floor(contextWindow * 0.06)));
+}
+
+export function reducerConfigForContextWindow(contextWindow: number): ReducerConfig {
+  const maxOutputChars = toolOutputCapForContextWindow(contextWindow);
+  return {
+    ...DEFAULT_REDUCER_CONFIG,
+    read: {
+      ...DEFAULT_REDUCER_CONFIG.read,
+      maxOutputChars,
+      maxSliceLines: Math.max(DEFAULT_REDUCER_CONFIG.read.maxSliceLines, Math.floor(maxOutputChars / 80)),
+    },
+  };
+}
+
 export const DEFAULT_REDUCER_CONFIG: ReducerConfig = {
   enabled: true,
   grep: {
@@ -320,7 +341,10 @@ function reduceRead(raw: string, args: Record<string, unknown>, cfg: ReducerConf
     return { body: raw, wasReduced: false };
   }
 
-  // Full file: produce structure outline
+  // Small full-file reads are more useful verbatim than as an outline.
+  if (raw.length <= cfg.maxOutputChars) return { body: raw, wasReduced: false };
+
+  // Large full files: produce a structure outline.
   const allLines = raw.split("\n");
   const totalLines = allLines.length;
 
@@ -374,7 +398,7 @@ function reduceRead(raw: string, args: Record<string, unknown>, cfg: ReducerConf
   return {
     body: parts.join("\n"),
     wasReduced: true,
-    hint: "Use expand_artifact for full file, or read with offset/limit for a specific slice.",
+    hint: `Read the next section with offset=${previewCount + 1}, limit=${Math.min(cfg.maxSliceLines, Math.max(1, totalLines - previewCount))}; use expand_artifact for the complete file.`,
   };
 }
 
