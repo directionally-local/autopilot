@@ -198,6 +198,41 @@ describe("runAgentTurn guardrails (unattended)", () => {
     assertNoDanglingToolCalls(opts.messages);
   });
 
+  it("blocks a repeat of a call that already failed on its arguments", async () => {
+    // Same arguments can never succeed, so the retry is blocked on the first
+    // repeat (not after LOOP_THRESHOLD) and the model hears the original error.
+    const model = scriptModel([SAME, SAME, { text: "changed approach" }]);
+    const runs: string[] = [];
+    const executor = {
+      list: () => [],
+      run: async (call: { id: string; name: string; arguments: string }) => {
+        runs.push(call.arguments);
+        return {
+          tool_call_id: call.id,
+          name: call.name,
+          content: "Error running probe: the replacement text never arrived",
+          ok: false,
+          errorCode: "invalid_args",
+        };
+      },
+    } as unknown as ToolExecutor;
+    const events: GuardrailEvent[] = [];
+    const toolResults: ToolResult[] = [];
+    const opts = baseOpts(executor, events);
+    opts.callbacks.onToolResult = (result) => toolResults.push(result);
+
+    await runAgentTurn(opts);
+
+    assert.strictEqual(runs.length, 1, "the identical retry must not reach the tool");
+    const blocked = toolResults.find((result) => result.guardrail);
+    assert.ok(blocked, "the retry should be blocked by the guardrail");
+    assert.match(String(blocked!.content), /already failed on its arguments/);
+    assert.match(String(blocked!.content), /the replacement text never arrived/);
+    assert.strictEqual(model.requests, 3);
+    assert.strictEqual(opts.messages.at(-1)!.content, "changed approach");
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
   it("recovers a consecutive duplicate read by returning un-reduced content", async () => {
     const raw = Array.from({ length: 100 }, (_, i) => `line ${i + 1}: source content`).join("\n");
     const forceFullReadOptions: boolean[] = [];

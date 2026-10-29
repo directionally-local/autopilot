@@ -696,6 +696,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   const recentToolCalls: string[] = [];
   const LOOP_WINDOW = 8;
   const LOOP_THRESHOLD = 2; // 3rd identical call triggers the guardrail
+  // Calls that already failed on their arguments (invalid_args). The same
+  // arguments can never succeed, so a repeat is blocked on the first retry
+  // instead of after LOOP_THRESHOLD — the model hears the original error and
+  // is told to change the call, rather than burning three identical red rows.
+  const failedArgSignatures = new Map<string, string>();
 
   // Web-fetch volume limits span the session; individual hosts are not treated
   // as loops because research often needs several pages from the same site.
@@ -1131,6 +1136,20 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           },
         };
       }
+      const priorArgFailure = failedArgSignatures.get(loopSignature);
+      if (priorArgFailure) {
+        return {
+          kind: "blocked",
+          errorCode: "invalid_args",
+          result: {
+            tool_call_id: tc.id,
+            name: tc.function.name,
+            content: `This exact call already failed on its arguments: ${priorArgFailure}\nRepeating it unchanged will fail the same way — fix the arguments (or use a different tool) before retrying.`,
+            ok: false,
+            guardrail: true,
+          },
+        };
+      }
       const repeatedCalls = recentToolCalls.filter((s) => s === loopSignature).length;
       if (
         tc.function.name === "read" &&
@@ -1414,7 +1433,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         recentToolCalls.push(loopSignature);
         if (recentToolCalls.length > LOOP_WINDOW) recentToolCalls.shift();
       }
-      if (outcome.kind === "run") extractMemories(tc, result);
+      if (outcome.kind === "run") {
+        extractMemories(tc, result);
+        if (!result.ok && result.errorCode === "invalid_args") {
+          const firstLine = result.content.split("\n").find((line) => line.trim()) ?? result.content;
+          failedArgSignatures.set(loopSignature, firstLine);
+        }
+      }
 
       // Heuristic auto-advance: several mutating tools without tasks_set
       // nudge the task list forward so the UI stays honest (unless
