@@ -55,6 +55,8 @@ export interface WorkerHandle {
 interface Entry {
   info: RunningWorker;
   controller: AbortController;
+  /** True only when the user cancelled this worker, not when the turn aborted. */
+  cancelledByUser: boolean;
 }
 
 export class WorkerRegistry {
@@ -80,21 +82,36 @@ export class WorkerRegistry {
       ...(opts.background ? { background: true } : {}),
       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     };
-    this.entries.set(info.id, { info, controller });
+    const entry: Entry = { info, controller, cancelledByUser: false };
+    this.entries.set(info.id, entry);
     this.emit();
-    const signal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
-    let cancelledByUser = false;
-    controller.signal.addEventListener("abort", () => {
-      cancelledByUser = true;
-    }, { once: true });
+    // Link the parent signal by hand instead of AbortSignal.any(): the
+    // composite signal never aborts when a worker finishes normally, so its
+    // listeners stay on the long-lived turn signal and pile up (#967).
+    let parentListener: (() => void) | undefined;
+    if (parent) {
+      if (parent.aborted) {
+        controller.abort(parent.reason);
+      } else {
+        parentListener = () => controller.abort(parent.reason);
+        parent.addEventListener("abort", parentListener, { once: true });
+      }
+    }
+    const unlinkParent = () => {
+      if (!parentListener) return;
+      parent?.removeEventListener("abort", parentListener);
+      parentListener = undefined;
+    };
+    const signal = controller.signal;
     return {
       id: info.id,
       index: info.index,
       signal,
       get cancelledByUser() {
-        return cancelledByUser;
+        return entry.cancelledByUser;
       },
       complete: (outcome) => {
+        unlinkParent();
         const done: FinishedWorker = {
           id: info.id,
           index: info.index,
@@ -102,7 +119,7 @@ export class WorkerRegistry {
           model,
           background: opts.background === true,
           ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
-          status: cancelledByUser ? "cancelled" : outcome.status,
+          status: entry.cancelledByUser ? "cancelled" : outcome.status,
           output: outcome.output,
           ...(outcome.costUsd !== undefined ? { costUsd: outcome.costUsd } : {}),
           startedAt: info.startedAt,
@@ -122,6 +139,7 @@ export class WorkerRegistry {
         }
       },
       finish: () => {
+        unlinkParent();
         if (this.entries.delete(info.id)) this.emit();
       },
     };
@@ -197,6 +215,7 @@ export class WorkerRegistry {
     );
     if (!entry || entry.info.status === "cancelling") return null;
     entry.info.status = "cancelling";
+    entry.cancelledByUser = true;
     entry.controller.abort();
     this.emit();
     return { ...entry.info };
@@ -208,6 +227,7 @@ export class WorkerRegistry {
     for (const entry of this.entries.values()) {
       if (entry.info.status === "cancelling") continue;
       entry.info.status = "cancelling";
+      entry.cancelledByUser = true;
       entry.controller.abort();
       n++;
     }

@@ -526,23 +526,33 @@ function terminalResult(
   };
 }
 
-async function acquireSlot(limit: number, signal?: AbortSignal): Promise<void> {
+export async function acquireSlot(limit: number, signal?: AbortSignal): Promise<void> {
   const cap = Math.max(1, Math.min(MAX_PARALLEL_WORKERS, Math.floor(limit) || 1));
   if (runningWorkers < cap) {
     runningWorkers++;
     return;
   }
   await new Promise<void>((resolvePromise, reject) => {
+    let settled = false;
+    // A waiter woken by releaseSlot() resolves without the abort event ever
+    // firing, so `{ once: true }` alone leaves its listener on the (long-lived)
+    // turn signal. Remove it explicitly on every exit path (#967).
+    const cleanup = () => {
+      signal?.removeEventListener("abort", wake);
+      const index = workerQueue.indexOf(wake);
+      if (index >= 0) workerQueue.splice(index, 1);
+    };
     const wake = () => {
+      if (settled) return;
       if (signal?.aborted) {
-        const index = workerQueue.indexOf(wake);
-        if (index >= 0) workerQueue.splice(index, 1);
+        settled = true;
+        cleanup();
         reject(new Error("Hotcell worker cancelled while waiting for a slot."));
         return;
       }
       if (runningWorkers < cap) {
-        const index = workerQueue.indexOf(wake);
-        if (index >= 0) workerQueue.splice(index, 1);
+        settled = true;
+        cleanup();
         runningWorkers++;
         resolvePromise();
       }
@@ -552,7 +562,7 @@ async function acquireSlot(limit: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function releaseSlot(): void {
+export function releaseSlot(): void {
   runningWorkers = Math.max(0, runningWorkers - 1);
   for (const wake of workerQueue.slice()) wake();
 }

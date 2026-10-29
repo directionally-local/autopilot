@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { WorkerRegistry } from "./worker-registry.js";
 
 describe("WorkerRegistry", () => {
@@ -13,6 +14,18 @@ describe("WorkerRegistry", () => {
     b.finish(); // idempotent
     assert.equal(registry.list().length, 0);
     assert.equal(registry.start("research C", "m").index, 1);
+  });
+
+  it("removes parent abort listeners when workers finish (#967)", () => {
+    const registry = new WorkerRegistry();
+    const turn = new AbortController();
+    const handles = Array.from({ length: 50 }, (_, i) => registry.start(`task ${i}`, "m", turn.signal));
+    assert.equal(getEventListeners(turn.signal, "abort").length, 50);
+    for (const handle of handles) {
+      handle.complete({ status: "done", output: "ok" });
+      handle.finish();
+    }
+    assert.equal(getEventListeners(turn.signal, "abort").length, 0);
   });
 
   it("cancels one worker without touching the others or the parent", () => {
