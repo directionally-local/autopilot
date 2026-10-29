@@ -381,6 +381,8 @@ function App({
   );
   const sessionStartRecallRef = useRef<Promise<import("./memory/schema.js").HybridResult[]> | null>(null);
   const kimiMdStaleNudgedRef = useRef(false);
+  /** Show the "subagents unavailable" line once per session (#966). */
+  const hotcellNoticeShownRef = useRef(false);
   /** Trace turn id of the turn in flight (set by processMessage). */
   const currentTurnIdRef = useRef<string | null>(null);
   /** Set when the next submitted message is the feedback typed into a permission deny box. */
@@ -1425,6 +1427,10 @@ function App({
       const delegationGuidance = policy.guidance;
       const guidanceText = describeSubagentGuidance(delegationGuidance);
       if (guidanceText) setEvents((events) => [...events, { kind: "info", key: mkKey(), text: guidanceText }]);
+      if (policy.readinessNotice && !hotcellNoticeShownRef.current) {
+        hotcellNoticeShownRef.current = true;
+        setEvents((events) => [...events, { kind: "info", key: mkKey(), text: policy.readinessNotice! }]);
+      }
       const turnTools = policy.tools;
       void recordSubagentEvent({
         kind: "turn",
