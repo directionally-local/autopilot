@@ -30,6 +30,9 @@ const GIT = `git -C ${CELL_WORKSPACE} -c user.name=Autopilot -c user.email=autop
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/;
 const FULL_COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const LOCAL_CHANGES_PATCH = `${CELL_STATE_DIR}/local-changes.patch`;
+// Where a code conversation's own work starts: the clone (and the client's local changes,
+// if any). Commits after it are the agent's. The clone has no origin/<base> ref to compare to.
+const START_REF = "refs/aster/start";
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
 const MAX_TOOL_INPUT_CHARS = 2_000;
 const MAX_CHECKPOINTS = 100;
@@ -575,12 +578,17 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     return result.exitCode === 0;
   }
 
+  /**
+   * Whether the agent committed anything itself: commits after the clone's start ref. Cells
+   * cloned before that ref existed fall back to origin/<base>, when the clone has it.
+   */
   private async hasCommitsAhead(cellId: string, baseBranch: string): Promise<boolean> {
     if (!BRANCH_RE.test(baseBranch)) return false;
     const cell = await this.provider.getCell(cellId);
     const base = `origin/${shellQuote(baseBranch)}`;
     const result = await cell.exec(
-      `if ${GIT} rev-parse --verify ${base} >/dev/null 2>&1; then ${GIT} rev-list --count ${base}..HEAD; else printf '0\\n'; fi`,
+      `if ${GIT} rev-parse --verify -q ${START_REF} >/dev/null; then ${GIT} rev-list --count ${START_REF}..HEAD; ` +
+      `elif ${GIT} rev-parse --verify ${base} >/dev/null 2>&1; then ${GIT} rev-list --count ${base}..HEAD; else printf '0\\n'; fi`,
     );
     return result.exitCode === 0 && Number(result.stdout.trim()) > 0;
   }
@@ -644,6 +652,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
       );
       if (applied.exitCode !== 0) throw new Error("patch_apply_failed");
     }
+    const marked = await cell.exec(`${GIT} update-ref ${START_REF} HEAD`);
+    if (marked.exitCode !== 0) throw new Error("repository_clone_failed");
     await cell.exec(`touch ${CELL_STATE_DIR}/.seeded`);
   }
 
