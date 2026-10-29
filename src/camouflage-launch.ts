@@ -9,6 +9,7 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 /** Platforms camouflage-tui publishes a prebuilt renderer for (its scripts/install.js). */
@@ -28,7 +29,11 @@ export interface RendererDiagnosis {
   /** Root of the installed camouflage-tui package, or null when it isn't installed. */
   packageDir: string | null;
   packageVersion: string | null;
-  /** The package-local renderer the SDK runs (`<packageDir>/bin/camouflage-tui`). */
+  /**
+   * The renderer the SDK runs: the platform package's binary
+   * (`camouflage-tui-<platform>-<arch>`, camouflage-tui 2.10+), else the
+   * package-local `<packageDir>/bin/camouflage-tui` older versions download.
+   */
   packageBin: string | null;
   packageBinExists: boolean;
   /** CAMOUFLAGE_BIN, when set. */
@@ -49,6 +54,17 @@ export interface DiagnoseDeps {
   packageDir?: () => string | null;
   isExecutable?: (path: string) => boolean;
   readFile?: (path: string) => string;
+  /** The platform package's renderer, resolved from camouflage-tui, or null when it isn't installed. */
+  platformBin?: (packageDir: string, platform: string, arch: string) => string | null;
+}
+
+function defaultPlatformBin(packageDir: string, platform: string, arch: string): string | null {
+  try {
+    const executable = platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui";
+    return createRequire(join(packageDir, "package.json")).resolve(`camouflage-tui-${platform}-${arch}/${executable}`);
+  } catch {
+    return null;
+  }
 }
 
 function defaultPackageDir(): string | null {
@@ -99,7 +115,10 @@ export function diagnoseRenderer(deps: DiagnoseDeps = {}): RendererDiagnosis {
     } catch {
       // unreadable package.json: the version is just unknown
     }
-    packageBin = join(packageDir, "bin", platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui");
+    const platformBin = (deps.platformBin ?? defaultPlatformBin)(packageDir, platform, arch);
+    packageBin = platformBin && isExecutable(platformBin)
+      ? platformBin
+      : join(packageDir, "bin", platform === "win32" ? "camouflage-tui.exe" : "camouflage-tui");
   }
   const installErrorPath = join(deps.home ?? homedir(), ".camouflage", "install-error.txt");
   let installError: string | null = null;
