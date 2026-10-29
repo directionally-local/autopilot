@@ -5,7 +5,7 @@ This guide sets up `autopilot serve` as a long-lived service for [unattended run
 ## 1. Host and user
 
 ```sh
-# Node.js 20+ and the tools runs typically need
+# Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (package.json engines) and the tools runs typically need
 sudo apt-get update && sudo apt-get install -y git sqlite3 restic curl
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
 

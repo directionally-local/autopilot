@@ -161,9 +161,9 @@ export interface KimiConfig {
   lspEnabled?: boolean;
   /** LSP server configurations. */
   lspServers?: Record<string, LspServerConfig>;
-  /** Enable cost attribution by task type. Default: false. Once stable for 2 releases, consider defaulting to true. */
+  /** Enable cost attribution by task type. Default: true. */
   costAttribution?: boolean;
-  /** Enable @ file mention picker in chat input. Default: false. */
+  /** Enable @ file mention picker in chat input. Default: true. */
   filePicker?: boolean;
   /** URL of the remote orchestrator Worker. */
   remoteWorkerUrl?: string;
