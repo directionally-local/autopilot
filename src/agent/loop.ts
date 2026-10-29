@@ -26,6 +26,7 @@ import type { SemanticSkillRoutingResult } from "../skills/types.js";
 import type Database from "better-sqlite3";
 import { buildSystemPrompt, buildSessionPrefix } from "./system-prompt.js";
 import { getModelOrInfer } from "../models/registry.js";
+import { toolOutputCapForContextWindow } from "../tools/reducer.js";
 import { createPermissionGate } from "./permission-gate.js";
 import { compactToFit, ContextBudgetError, effectiveInputBudget, type CompactionTarget } from "./context-budget.js";
 import { withTurnDirective } from "./turn-directive.js";
@@ -265,10 +266,6 @@ function isHighSignalMemory(memory: {
   );
 }
 
-/** Max characters for a single tool result message before truncation.
- *  ~10k chars ≈ 2,500 tokens — generous but prevents runaway growth. */
-const MAX_TOOL_CONTENT_CHARS = 10_000;
-
 /** When Code Mode is on, these context-heavy IO tools must be called via
  *  api.<tool>() inside execute_code (so only console.log output returns to
  *  context) rather than as direct tools (whose full output floods the prompt).
@@ -357,6 +354,8 @@ interface TurnTrace {
 }
 
 export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
+  opts.executor.setContextWindow?.(getModelOrInfer(opts.model).contextWindow);
+
   // Observability (#871): SessionStart once per session, and model usage /
   // tool results as OpenTelemetry events when an OTLP endpoint is set.
   const provider = providerPresetOf(llmAuthOf(opts)).id;
@@ -417,6 +416,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
 }
 
 async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<void> {
+  const maxToolContentChars = toolOutputCapForContextWindow(getModelOrInfer(opts.model).contextWindow);
   const turnStart = tr.startedAt;
   const { trace, turnId } = tr;
   const notifyGuardrail = (ev: GuardrailEvent): void => {
@@ -1177,9 +1177,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     };
 
     const truncate = (tc: ToolCall, content: string, artifactId?: string): string => {
-      if (content.length <= MAX_TOOL_CONTENT_CHARS) return content;
+      if (content.length <= maxToolContentChars) return content;
       const rawBytes = content.length;
-      const reduced = content.slice(0, MAX_TOOL_CONTENT_CHARS) + `\n\n[truncated: ${rawBytes - MAX_TOOL_CONTENT_CHARS} chars omitted]`;
+      const reduced = content.slice(0, maxToolContentChars) + `\n\n[truncated: ${rawBytes - maxToolContentChars} chars omitted]`;
       opts.callbacks.onTruncation?.({ tool: tc.function.name, toolCallId: tc.id, rawBytes, reducedBytes: reduced.length, ...(artifactId ? { artifactId } : {}) });
       return reduced;
     };
