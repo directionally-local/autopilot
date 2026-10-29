@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Merge queues re-run CI on the synthetic merge commit; without this the
+  # required checks never report and the queue stalls.
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -14,19 +17,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The job name is what the dependency auto-merge workflow waits on.
+  # The job name is what the dependency auto-merge workflow waits on and what
+  # branch protection requires. Renaming it silently breaks both.
   check:
     name: typecheck, test, build (Node ${{ matrix.node-version }})
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: the label migrates to Ubuntu 26 from
+    # October 2026, and a silent runner change should not be able to turn a
+    # green main red.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         node-version: ["22", "24", "26"]
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
           check-latest: true
@@ -38,6 +45,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Live tests (e.g. src/agent/openrouter.live.test.ts) self-skip unless
+      # KIMIFLARE_LIVE_TESTS=1 and a key are present, so CI never spends money.
       - name: Test
         run: npm test
 
