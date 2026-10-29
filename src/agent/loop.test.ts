@@ -4,6 +4,7 @@ import { runAgentTurn } from "./loop.js";
 import { ToolExecutor as RealToolExecutor, type ToolExecutor, type PermissionRequest } from "../tools/executor.js";
 import type { ChatMessage } from "./messages.js";
 import type { RunWaitRequest, ToolSpec } from "../tools/registry.js";
+import type { SessionWorktree } from "../runs/session-worktrees.js";
 import { secureSandboxUnavailableReason } from "../code-mode/sandbox.js";
 
 const sandboxUnavailableReason = await secureSandboxUnavailableReason();
@@ -970,5 +971,75 @@ describe("runAgentTurn", () => {
       callbacks: { askPermission: async () => "allow" },
     });
     assert.ok(bodies[0]!.messages.some((m) => m.role === "system" && String(m.content).includes("Launch one subagent per part.")));
+  });
+
+  it("points the system prompt at the session worktree once it is active", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "original prompt" },
+      { role: "user", content: "edit the file" },
+    ];
+    const tool: ToolSpec = {
+      name: "edit",
+      description: "Edit a file",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    const worktree = {
+      active: null as null | { cwd: string },
+      noteUserMessage: () => {},
+      route: async (name: string, args: Record<string, unknown>, cwd: string) => ({ cwd, args }),
+      afterTool: () => {},
+      carryReadSnapshots: () => {},
+    } as unknown as SessionWorktree;
+    const setActive = (cwd: string): void => {
+      Object.defineProperty(worktree, "active", { value: { cwd }, configurable: true });
+    };
+
+    const systemPrompts: string[] = [];
+    let fetchCount = 0;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: ChatMessage[] };
+      systemPrompts.push(String(body.messages[0]?.content ?? ""));
+      const encoder = new TextEncoder();
+      const first = fetchCount++ === 0;
+      const events = first
+        ? [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "edit", arguments: JSON.stringify({ path: "a.ts" }) } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ]
+        : [{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string }) => {
+        setActive("/tmp/session-worktree");
+        return { tool_call_id: call.id, name: call.name, content: "ok", ok: true };
+      },
+    } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      sessionWorktree: worktree,
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    assert.equal(systemPrompts.length, 2);
+    assert.doesNotMatch(systemPrompts[0]!, /session-worktree/);
+    assert.match(systemPrompts[1]!, /Working directory: \/tmp\/session-worktree/);
   });
 });

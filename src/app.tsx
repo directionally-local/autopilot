@@ -441,6 +441,17 @@ function App({
       enabled: () => cfgRef.current?.sessionWorktrees !== false,
       sessionId: () => sessionIdRef.current,
       onNotice: (text) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]),
+      // #962: the language servers were started at the original checkout. Once
+      // the session moves into its worktree, start a set rooted there so
+      // post-edit diagnostics and the lsp_* tools resolve worktree files.
+      onActivate: (info) => {
+        const current = cfgRef.current;
+        if (!current?.lspEnabled || !current.lspServers) return;
+        for (const [name, server] of Object.entries(current.lspServers)) {
+          if (server.enabled === false) continue;
+          void lspManagerRef.current.startServer(name, server, info.path).catch(() => undefined);
+        }
+      },
     });
   }
 

@@ -31,6 +31,7 @@ import type { PermissionDecision, PermissionRequest } from "../tools/executor.js
 import type { ChatMessage, ContentPart } from "../agent/messages.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "../sessions.js";
 import { sessionFileCompactionTarget } from "../agent/context-budget.js";
+import { SessionWorktree } from "../runs/session-worktrees.js";
 import { logger } from "../util/logger.js";
 import { createSseStream, type SseClient } from "./sse.js";
 import { getOpenApiSpec } from "./openapi.js";
@@ -91,6 +92,8 @@ interface ActiveSession {
   nextTurnId?: string;
   /** Turn id of the last turn that ran, for next-message outcome signals. */
   lastTurnId?: string;
+  /** #962: code changes go to a session worktree, never the user's checkout. */
+  worktree?: SessionWorktree;
 }
 
 /** Create the session trace and record `session_start`; a no-op recorder when tracing is off. */
@@ -757,7 +760,9 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       // Delete session
       if (sessionMatch && method === "DELETE") {
         const sessionId = sessionMatch[1]!;
+        const removed = activeSessions.get(sessionId);
         activeSessions.delete(sessionId);
+        void removed?.worktree?.release().catch(() => null);
         try {
           const { unlink } = await import("node:fs/promises");
           await unlink(resolve(sessionsDir(), `${sessionId}.json`));
@@ -922,6 +927,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
     stopDecisions();
     for (const [, active] of activeSessions) {
       active.shuttingDown = true;
+      void active.worktree?.release().catch(() => null);
       if (active.trace?.enabled) active.trace.emit("session_end", { reason: "exit" }, null);
       active.controller?.abort(new Error("server_shutdown"));
       for (const client of active.sseClients) {
@@ -1115,6 +1121,16 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
 
   // Archived turns land on the session file, so every save below persists them.
   const compaction = sessionFileCompactionTarget(sessionFile);
+  // #962: code changes go to a session worktree, never the user's checkout.
+  active.worktree ??= new SessionWorktree({
+    sourceCwd: sessionFile.cwd,
+    enabled: () => config.sessionWorktrees !== false,
+    sessionId: () => sessionFile.id,
+    onNotice: (text) => {
+      for (const client of active.sseClients) client.send("notice", { message: text });
+    },
+  });
+  active.worktree.noteUserMessage(lastUserText(messages));
   const turnId = active.nextTurnId ?? makeTurnId();
   active.nextTurnId = undefined;
   active.lastTurnId = turnId;
@@ -1137,6 +1153,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         messages,
         executor,
         cwd: sessionFile.cwd,
+        sessionWorktree: active.worktree,
         signal: controller.signal,
         toolLimitBehavior: "continue",
         codeMode: false,
@@ -1168,6 +1185,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig,
         executor,
         ...(active.hooks ? { hooks: active.hooks } : {}),
         cwd: sessionFile.cwd,
+        sessionWorktree: active.worktree,
         signal: controller.signal,
         codeMode: config.codeMode,
         allowDirectPush: config.allowDirectPush,

@@ -460,7 +460,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     allowDirectPush: readBooleanEnv("ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
     postEditDiagnostics: readBooleanEnv("POST_EDIT_DIAGNOSTICS") ?? persisted.postEditDiagnostics ?? true,
     postEditDiagnosticsWarnings: readBooleanEnv("POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,
-    sessionWorktrees: persisted.sessionWorktrees ?? true,
+    sessionWorktrees: readBooleanEnv("SESSION_WORKTREES") ?? persisted.sessionWorktrees ?? true,
     trace: resolveTraceConfig(persisted.trace),
   };
 

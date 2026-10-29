@@ -256,6 +256,20 @@ describe("SessionWorktree", () => {
     assert.equal((await listSessionWorktrees(f.repo, f.worktrees)).length, 1);
   });
 
+  it("calls onActivate once the worktree is in use", async () => {
+    const f = await fixture();
+    const exec = new ToolExecutor(ALL_TOOLS);
+    const activated: string[] = [];
+    const { c } = controller(f.repo, f.worktrees, { onActivate: (info) => activated.push(info.path) });
+
+    await run(exec, c, f.repo, "write", { path: "a.txt", content: "a\n" });
+    assert.deepEqual(activated, [c.active!.path]);
+
+    // Later mutating calls reuse the worktree; they do not re-activate it.
+    await run(exec, c, f.repo, "write", { path: "b.txt", content: "b\n" });
+    assert.equal(activated.length, 1);
+  });
+
   it("offers cleanup at session end without deleting", async () => {
     const f = await fixture();
     const exec = new ToolExecutor(ALL_TOOLS);
