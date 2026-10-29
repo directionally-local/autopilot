@@ -209,6 +209,11 @@ export interface KimiConfig {
    *  branch. When false (default), such pushes are blocked and the model is
    *  directed to open a PR instead. */
   allowDirectPush?: boolean;
+  /** Interactive sessions in a git repository make their code changes in a
+   *  git worktree of their own (created on the first mutating tool call, on a
+   *  new branch), never in the user's checkout. `/settings worktrees off`
+   *  works in place. Default: true. */
+  sessionWorktrees?: boolean;
   /** Append a compact diagnostics block to successful edit/write results.
    *  Uses the language server when one is running, else a fast syntax check.
    *  Default: true. */
@@ -449,6 +454,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
     allowDirectPush: readBooleanEnv("KIMIFLARE_ALLOW_DIRECT_PUSH") ?? persisted.allowDirectPush ?? false,
     postEditDiagnostics: readBooleanEnv("KIMIFLARE_POST_EDIT_DIAGNOSTICS") ?? persisted.postEditDiagnostics ?? true,
     postEditDiagnosticsWarnings: readBooleanEnv("KIMIFLARE_POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,
+    sessionWorktrees: persisted.sessionWorktrees ?? true,
     trace: resolveTraceConfig(persisted.trace),
   };
 

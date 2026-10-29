@@ -1149,6 +1149,9 @@ async function main() {
         },
       },
     );
+    // #962: offer cleanup of the session worktrees this run used; never delete them here.
+    const { sessionWorktreeExitNotes } = await import("./runs/session-worktrees.js");
+    for (const note of await sessionWorktreeExitNotes().catch(() => [])) process.stderr.write(`${note}\n`);
     if (outcome.gaveUp) {
       logger.error("camouflage.crash_gave_up", { error: outcome.lastError.message, sessionId: outcome.sessionId, crashes: outcome.crashes });
       process.stderr.write(crashGiveUpMessage(outcome));

@@ -36,7 +36,7 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - src/memory/ — local SQLite-backed cross-session memory and retrieval. The repository-scoped database defaults to .kimiflare/memory.db (configurable); memory tools expose remember, recall, and forget.
 - src/lsp/, src/mcp/ — Language Server Protocol and Model Context Protocol integrations.
 - src/sdk/, src/server/ — programmatic session SDK and RPC/server integration.
-- src/runs/, src/jobs/ — durable run/job lifecycle and unattended execution.
+- src/runs/, src/jobs/ — durable run/job lifecycle and unattended execution; src/runs/session-worktrees.ts gives each interactive session its own git worktree (created on the first mutating tool call, listed and cleaned with /worktrees).
 - src/trace/ — opt-in local session tracing (KIMIFLARE_TRACE=1): append-only trace.jsonl plus content-addressed blobs per session, redacted at write time; see docs/plans/trace-and-dataset-dev-plan.md.
 - src/transcript/ — Claude Code-format JSONL transcript (<sessionsDir>/<id>.jsonl) appended from runAgentTurn; hook payloads point transcript_path at it (transcript_format "claude-jsonl"); KIMIFLARE_TRANSCRIPT=0 turns it off.
 - src/eval/, evals/ — headless eval runner (`autopilot eval run` / `autopilot eval compare`): runs the agent on a task set under a harness config and compares arms with a paired McNemar test; evals/tasks/autopilot-bench holds 20 tasks mined from this repo's merged PRs (recipe in evals/README.md).

@@ -66,6 +66,10 @@ export interface ToolContext {
   approvedSensitiveReason?: string;
   /** Per-session sha256 snapshots recorded by read and checked by edit/write. */
   fileReadHashes?: Map<string, string>;
+  /** Interactive session's worktree controller (#962). The executor routes
+   *  every call through it: the first mutating call creates the worktree,
+   *  later calls run in it. Absent: tools work in `cwd` as given. */
+  sessionWorktree?: import("../runs/session-worktrees.js").SessionWorktree;
 }
 
 export interface ToolRender {
