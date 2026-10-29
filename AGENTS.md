@@ -59,6 +59,8 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - Keep `.github/workflows/ci.yml`'s Node matrix aligned with the supported lines in `package.json`'s `engines`. Do not add an unsupported Node major to CI unless support is intentionally restored and installation, tests, and build pass on it.
 - Mark behaviour changes that can silently break existing users (hook semantics, config paths, CLI flags, API responses) as breaking: `feat!:`/`fix!:` plus a `BREAKING CHANGE:` footer with the migration, so release-please surfaces them.
 - Use Conventional Commits. Do not bump the root package version manually; release-please manages releases. The active workflows publish npm releases and deploy docs/ to GitHub Pages.
+- **Versioning: merge the release PR when it is worth a version, not when a PR merges.** release-please opens a release PR on every push to main; leave it open until it has at least three user-visible changes (`feat:`/`fix:`/`perf:`) or an urgent fix (security, broken install, data loss). Never merge it for a single PR. Do not open extra release PRs by hand.
+- **Reserve `feat:` for user-visible features.** Internal work uses `refactor:`, `test:`, `docs:`, `ci:`, `build:`, or `chore:` — release-please hides those and they do not bump the version. `fix:` and `perf:` bump patch; `feat:` bumps minor. A change that only reorganizes code, adds tests, or updates docs is not a feature.
 - Never commit secrets or user state. .kimiflare/, ~, .config/, sessions/, and coverage output are ignored; config and historical user data remain under the legacy kimiflare paths for compatibility.
 
 ## Context file behavior
