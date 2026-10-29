@@ -27,10 +27,25 @@ jobs:
         if: env.HAS_TOKEN != 'true'
         run: echo "::warning::No RELEASE_PLEASE_TOKEN or DEPS_BOT_TOKEN secret; release PRs will need manual CI approval."
 
-      - uses: googleapis/release-please-action@v4
+      # Creating a GitHub release needs Contents: write. The bot PAT is scoped
+      # to Pull requests: write (it only merges dependency PRs), so it cannot
+      # create releases: doing both with it fails with "Resource not accessible
+      # by personal access token" (run 40832224466). Split the two: the
+      # workflow's own GITHUB_TOKEN creates the release, and the PAT only opens
+      # the next release PR so CI runs on it without manual approval.
+      - name: Create the release
+        uses: googleapis/release-please-action@v4
         id: release
         with:
+          token: ${{ github.token }}
+          skip-github-pull-request: true
+
+      - name: Open the next release PR
+        uses: googleapis/release-please-action@v4
+        id: pr
+        with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.DEPS_BOT_TOKEN || github.token }}
+          skip-github-release: true
 
   # Publishing happens when release-please has just cut a release (its release
   # PR was merged), or on a manual run. Auth is npm trusted publishing (OIDC):
