@@ -67,6 +67,11 @@ describe("activity adapters", () => {
     assert.equal(activityFromJob(job("completed")).stoppable, false);
   });
 
+  it("previews a long multi-line job command instead of showing it verbatim", () => {
+    const command = ["for r in 1 2 3; do", ...Array.from({ length: 13 }, (_, i) => `  echo ${i}`), "done"].join("\n");
+    assert.equal(activityFromJob(job("running", { command })).title, "for r in 1 2 3; do … +14 lines");
+  });
+
   it("recognizes jobs that still need host polling", () => {
     assert.equal(isActiveJob(job("starting")), true);
     assert.equal(isActiveJob(job("running")), true);

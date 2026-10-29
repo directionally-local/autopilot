@@ -1,5 +1,6 @@
 import type { RunningWorker } from "../tools/worker-registry.js";
 import type { JobRecord } from "../jobs/manager.js";
+import { previewCommand } from "../util/command-preview.js";
 
 /** Activity payload understood by camouflage-tui's inline protocol. */
 export interface ActivityItem {
@@ -36,7 +37,7 @@ export function activityFromJob(job: JobRecord): ActivityItem {
   return {
     id: job.id,
     kind: "job",
-    title: job.command,
+    title: previewCommand(job.command, 100),
     status,
     stoppable: job.status === "starting" || job.status === "running",
     ...(summary ? { summary } : {}),
