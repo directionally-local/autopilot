@@ -8,6 +8,7 @@ import type { UpdateCheckResult } from "./util/update-check.js";
 import { getAppVersion } from "./util/version.js";
 import { runPrintMode } from "./print-mode.js";
 import { registerEvalCommand } from "./eval/cli.js";
+import { registerInsightsCommand } from "./insights/cli.js";
 import type { PrintFormat } from "./print-mode.js";
 import type { InteractiveResumeRequest } from "./interactive-resume.js";
 
@@ -230,6 +231,7 @@ program
     await gracefulExit(code);
   });
 registerEvalCommand(program);
+registerInsightsCommand(program);
 
 const asterCommand = program.command("aster").description("Manage the Aster mobile API");
 asterCommand

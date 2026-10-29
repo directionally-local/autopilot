@@ -525,6 +525,16 @@ Tracing is off by default. Turn it on for one run with `KIMIFLARE_TRACE=1`, or a
 
 Large bodies are stored once, by hash, next to the trace. Likely secrets are redacted before anything is written, nothing is uploaded, and a single session stops recording at 200 MB.
 
+### Insights
+
+`autopilot insights` aggregates your traces into one row per model: requests per user message, parallel-call share, bash share and bash-as-read share, tool failure rate by error code, guardrail hits, cache hit rate, redundant reads and cost. It is how model profiles are tuned — a profile is only changed when these numbers (and an eval comparison) say it helps.
+
+```sh
+autopilot insights                       # every traced session under the trace root
+autopilot insights --since 2026-10-01    # recent sessions only
+autopilot insights --model deepseek/deepseek-v4.1-flash --json
+```
+
 ### Local history
 
 Autopilot never deletes your saved sessions or traces on its own; they are yours to analyze. Once they pass 1 GB, a new session mentions how much space they take. To see where they live, or to free space:

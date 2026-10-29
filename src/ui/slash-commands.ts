@@ -42,6 +42,7 @@ import {
   getSessionGenerations,
 } from "../usage-tracker.js";
 import { listModels, getModelOrInfer, migrateLegacyModelId, vendorOf, isFreeModel, type ModelEntry } from "../models/registry.js";
+import { modelProfileId } from "../models/profile.js";
 import { validateModelId } from "../agent/client.js";
 import { getShellCommand } from "../tools/bash.js";
 import {
@@ -727,6 +728,8 @@ const handleModel: Handler = (ctx, rest, arg) => {
   }
   const entry = getModelOrInfer(id);
   const known = listModels().some((m) => m.id === id);
+  const profile = modelProfileId(id);
+  const profileNote = profile ? ` · profile ${profile}` : "";
   setCfg((prev) => {
     if (!prev) return prev;
     const updated = { ...prev, model: id };
@@ -740,11 +743,11 @@ const handleModel: Handler = (ctx, rest, arg) => {
       key: mkKey(),
       text: known
         ? ctx.busy
-          ? `model selected: ${id}. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
-          : `model switched: ${cfg?.model ? `${cfg.model} → ` : ""}${id}. Your next message will use this model; conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
+          ? `model selected: ${id}${profileNote}. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
+          : `model switched: ${cfg?.model ? `${cfg.model} → ` : ""}${id}${profileNote}. Your next message will use this model; conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
         : ctx.busy
-          ? `model selected: ${id} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.`
-          : `model selected: ${id} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. Your next message will use this model; conversation history is kept.`,
+          ? `model selected: ${id}${profileNote} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.`
+          : `model selected: ${id}${profileNote} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. Your next message will use this model; conversation history is kept.`,
     },
   ]);
   return true;
