@@ -1,9 +1,10 @@
 import { readdir, stat, readFile } from "node:fs/promises";
 import { join, basename, extname } from "node:path";
+import { legacyProjectDir, projectDir } from "../util/app-dirs.js";
 
 export interface DiscoveredFile {
   filePath: string;
-  source: "agents" | "agents-md" | "github" | "kimiflare";
+  source: "agents" | "agents-md" | "github" | "autopilot" | "kimiflare";
 }
 
 const SKILL_EXTENSIONS = new Set([".md"]);
@@ -45,7 +46,8 @@ async function scanSkillDir(dirPath: string, source: DiscoveredFile["source"]): 
  * 1. .agents/skills/*.md
  * 2. AGENTS.md
  * 3. .github/skills/*.md
- * 4. .kimiflare/skills/*.md
+ * 4. .autopilot/skills/*.md
+ * 5. .kimiflare/skills/*.md (pre-rename location, still read)
  */
 export async function discoverSkills(cwd: string): Promise<DiscoveredFile[]> {
   const agentsSkills = await scanSkillDir(join(cwd, ".agents", "skills"), "agents");
@@ -53,11 +55,12 @@ export async function discoverSkills(cwd: string): Promise<DiscoveredFile[]> {
     ? [{ filePath: join(cwd, "AGENTS.md"), source: "agents-md" }]
     : [];
   const githubSkills = await scanSkillDir(join(cwd, ".github", "skills"), "github");
-  const kimiflareSkills = await scanSkillDir(join(cwd, ".kimiflare", "skills"), "kimiflare");
+  const autopilotSkills = await scanSkillDir(join(projectDir(cwd), "skills"), "autopilot");
+  const kimiflareSkills = await scanSkillDir(join(legacyProjectDir(cwd), "skills"), "kimiflare");
 
   // Deduplicate by skill name (derived from filename or section heading).
   // We defer name extraction to the parser; here we just order by priority.
-  const ordered = [...agentsSkills, ...agentsMd, ...githubSkills, ...kimiflareSkills];
+  const ordered = [...agentsSkills, ...agentsMd, ...githubSkills, ...autopilotSkills, ...kimiflareSkills];
   return ordered;
 }
 

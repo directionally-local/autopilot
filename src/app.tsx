@@ -121,6 +121,7 @@ import {
   mkKey,
   replaceUserPromptEvent,
 } from "./ui/app-helpers.js";
+import { projectDirsToRead } from "./util/app-dirs.js";
 
 /** The TUI's config is exactly the loaded config. */
 export type Cfg = KimiConfig;
@@ -2126,7 +2127,7 @@ function App({
       lsp: {
         servers: cfg?.lspServers ?? {},
         scope: lspScope,
-        hasProjectDir: existsSync(join(process.cwd(), ".kimiflare")),
+        hasProjectDir: projectDirsToRead(process.cwd()).length > 0,
       },
     });
   });

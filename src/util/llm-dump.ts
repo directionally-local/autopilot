@@ -1,9 +1,9 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import type { ChatMessage, ReasoningDetail, ToolDef, Usage } from "../agent/messages.js";
 import { approxTokens } from "../agent/artifact-compaction.js";
 import { readEnv } from "./env.js";
+import { configPath } from "./app-dirs.js";
 
 /**
  * Debug-only recorder for the *complete* payload KimiFlare sends to the LLM,
@@ -39,11 +39,10 @@ export function isLlmDumpEnabled(): boolean {
 function defaultDumpRoot(): string {
   const override = readEnv("DUMP_LLM_DIR");
   if (override && override.trim()) return override;
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "llm-dumps");
+  return configPath("llm-dumps");
 }
 
-/** Per-session output directory, e.g. ~/.config/kimiflare/llm-dumps/<session>/. */
+/** Per-session output directory, e.g. ~/.config/autopilot/llm-dumps/<session>/. */
 export function dumpDir(sessionId?: string | null): string {
   return join(defaultDumpRoot(), sessionId && sessionId.trim() ? sessionId : "nosession");
 }

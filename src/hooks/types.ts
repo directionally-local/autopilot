@@ -95,8 +95,9 @@ export interface HookConfig {
   source?: "global" | "project" | "recommended";
 }
 
-/** Shape of `~/.config/kimiflare/settings.json` and the
- *  `.kimiflare/settings.json` project file. Only the `hooks` key is
+/** Shape of `~/.config/autopilot/settings.json` and the
+ *  `.autopilot/settings.json` project file (and their legacy kimiflare
+ *  counterparts). Only the `hooks` key is
  *  meaningful here; future settings (M6.2 pattern allowlists, etc.)
  *  will add sibling keys. */
 export interface KimiflareSettings {

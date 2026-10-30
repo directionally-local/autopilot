@@ -271,4 +271,19 @@ describe("loadCustomCommands", () => {
       await cleanup();
     }
   });
+
+  it("reads .autopilot/commands and the legacy .kimiflare/commands; .autopilot wins", async () => {
+    const { cwd, cleanup } = await setup();
+    try {
+      await writeCmd(join(cwd, ".kimiflare", "commands"), "old.md", "OLD\n");
+      await writeCmd(join(cwd, ".kimiflare", "commands"), "both.md", "---\ndescription: legacy\n---\nLEGACY\n");
+      await writeCmd(join(cwd, ".autopilot", "commands"), "both.md", "---\ndescription: new\n---\nNEW\n");
+      const r = await loadCustomCommands(cwd);
+      assert.deepEqual(r.commands.map((c) => c.name), ["both", "old"]);
+      assert.equal(r.commands[0]!.description, "new");
+      assert.equal(r.warnings.length, 0);
+    } finally {
+      await cleanup();
+    }
+  });
 });

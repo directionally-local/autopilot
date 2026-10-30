@@ -1081,7 +1081,7 @@ export class View implements AppBridge {
     const where = await this.select(
       "Save to",
       [
-        { value: "project", label: "Project", description: ".kimiflare/commands in this repo" },
+        { value: "project", label: "Project", description: ".autopilot/commands in this repo" },
         { value: "global", label: "Global", description: "available in every project" },
       ],
       initial?.source ?? "project",

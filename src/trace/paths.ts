@@ -5,19 +5,18 @@
  *   <root>/<session_id>/blobs/<sha256>
  *
  * Root resolution: `KIMIFLARE_TRACE_DIR` env, then the configured
- * `trace.root`, then `${XDG_DATA_HOME:-~/.local/share}/kimiflare/traces`.
+ * `trace.root`, then `${XDG_DATA_HOME:-~/.local/share}/autopilot/traces`.
  */
 
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { readEnv } from "../util/env.js";
+import { dataPath } from "../util/app-dirs.js";
 
 export const TRACE_FILE_NAME = "trace.jsonl";
 export const BLOBS_DIR_NAME = "blobs";
 
 export function defaultTraceRoot(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare", "traces");
+  return dataPath("traces");
 }
 
 /** Resolve the trace root, honouring the env override and the config value in that order. */

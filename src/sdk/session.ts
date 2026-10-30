@@ -3,7 +3,6 @@ import { endSession } from "../hooks/session-lifecycle.js";
 import { submitUserPrompt, PromptBlockedError } from "../hooks/prompt-submit.js";
 import { registerSessionForExit } from "./process-exit.js";
 import { resolve } from "node:path";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "../agent/loop.js";
@@ -34,10 +33,14 @@ import { createDefaultPermissionHandler } from "./permissions.js";
 import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
 import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
+import { dataPath, migrateLegacyDirs } from "../util/app-dirs.js";
 
 export async function createAgentSession(
   opts: CreateSessionOptions,
 ): Promise<{ session: KimiFlareSession }> {
+  // Same one-time move of the pre-rename kimiflare dirs as the CLI (silent:
+  // an embedding host owns stderr).
+  migrateLegacyDirs();
   const config = await resolveSdkConfig(opts);
   // Model capabilities/pricing come from the active provider's catalog
   // (cached on disk; a failed fetch falls back to the cache or seed list).
@@ -59,7 +62,7 @@ export async function createAgentSession(
   const memoryEnabled = opts.memoryEnabled ?? config.memoryEnabled ?? false;
   if (memoryEnabled) {
     const dbPath =
-      config.memoryDbPath ?? join(homedir(), ".local", "share", "kimiflare", "memory.db");
+      config.memoryDbPath ?? dataPath("memory.db");
     memoryManager = new MemoryManager({
       dbPath,
       ...llmAuthFromConfig(config),

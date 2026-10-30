@@ -18,10 +18,10 @@ describe("trace paths", () => {
     }
   });
 
-  it("defaults to XDG_DATA_HOME/kimiflare/traces", () => {
+  it("defaults to XDG_DATA_HOME/autopilot/traces", () => {
     process.env.XDG_DATA_HOME = "/data";
-    assert.strictEqual(defaultTraceRoot(), join("/data", "kimiflare", "traces"));
-    assert.strictEqual(traceRoot(), join("/data", "kimiflare", "traces"));
+    assert.strictEqual(defaultTraceRoot(), join("/data", "autopilot", "traces"));
+    assert.strictEqual(traceRoot(), join("/data", "autopilot", "traces"));
   });
 
   it("prefers the env override, then the configured root", () => {

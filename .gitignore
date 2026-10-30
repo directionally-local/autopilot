@@ -13,6 +13,7 @@ dist/
 sessions/
 coverage/
 .kimiflare/
+.autopilot/
 changelog-*.png
 
 # raw eval output (absolute paths, traces); commit evals/results/*.json summaries only

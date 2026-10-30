@@ -8,16 +8,16 @@
  *  - `GET /models`: the full `vendor/model` catalog.
  *
  * Neither needs a key. The merged list is cached to disk
- * (`~/.config/kimiflare/requesty-models.json`) and a stale cache is preferred
+ * (`~/.config/autopilot/requesty-models.json`) and a stale cache is preferred
  * over an empty list when the network is down.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { dirname } from "node:path";
 import { registerRequestyModels, type ModelEntry } from "./registry.js";
 import { fetchWithNetworkRetry } from "./openrouter.js";
 import { requestyUrl } from "./requesty.js";
+import { configPath } from "../util/app-dirs.js";
 
 /** Bump when the cached shape changes, so an old cache is refetched. */
 const CACHE_VERSION = 2;
@@ -52,8 +52,7 @@ export interface RequestyCatalog {
 }
 
 function catalogCachePath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "requesty-models.json");
+  return configPath("requesty-models.json");
 }
 
 /**

@@ -16,7 +16,7 @@ function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(value), "utf8");
 }
-const statePath = () => join(xdg, "kimiflare", "state.json");
+const statePath = () => join(xdg, "autopilot", "state.json");
 
 beforeEach(() => {
   savedXdg = process.env.XDG_CONFIG_HOME;

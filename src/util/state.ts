@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { configPath } from "./app-dirs.js";
 
 export interface StateFile {
   creatorMessageSeenVersion?: string;
@@ -12,8 +12,7 @@ export interface StateFile {
 }
 
 function statePath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "state.json");
+  return configPath("state.json");
 }
 
 export async function readState(): Promise<StateFile> {

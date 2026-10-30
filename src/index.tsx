@@ -1,3 +1,4 @@
+import "./util/migrate-on-start.js";
 import { Command, Option } from "commander";
 import { logger } from "./util/logger.js";
 import { loadConfig, type KimiConfig } from "./config.js";
@@ -85,7 +86,7 @@ program
       console.error(
         "Cost attribution is disabled. Enable it with:\n" +
           "  KIMI_COST_ATTRIBUTION=1 autopilot cost\n" +
-          "Or add costAttribution: true to ~/.config/kimiflare/config.json",
+          "Or add costAttribution: true to ~/.config/autopilot/config.json",
       );
       process.exit(1);
     }

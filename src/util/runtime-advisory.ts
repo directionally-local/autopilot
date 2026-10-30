@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { configPath } from "./app-dirs.js";
 
 /**
  * CVE-2026-111497 ("Node2Shell"): an out-of-bounds write in the Brotli
@@ -67,8 +67,7 @@ export function assertSafeRuntimeForUntrustedFetch(tool: string): void {
 const WARN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function warnCachePath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "runtime-advisory.json");
+  return configPath("runtime-advisory.json");
 }
 
 export interface WarnRuntimeAdvisoryOptions {

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { access, chmod, mkdir, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { dataDir } from "../util/app-dirs.js";
 
 export interface RunWorktree {
   runId: string;
@@ -78,8 +78,7 @@ export class RunWorktreeManager {
 }
 
 function defaultWorktreesDir(): string {
-  const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(dataHome, "autopilot", "worktrees");
+  return join(dataDir(), "worktrees");
 }
 
 function isOutside(path: string): boolean {

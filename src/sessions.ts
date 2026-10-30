@@ -1,10 +1,10 @@
 import { readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage } from "./agent/messages.js";
 import { repairDanglingToolCalls } from "./agent/messages.js";
 import type { SessionState, SerializedArtifact } from "./agent/session-state.js";
 import { listFilesByMtime, pruneFiles } from "./storage-limits.js";
+import { dataPath } from "./util/app-dirs.js";
 
 export interface SessionSummary {
   id: string;
@@ -50,8 +50,7 @@ export interface SessionFile {
 }
 
 export function sessionsDir(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare", "sessions");
+  return dataPath("sessions");
 }
 
 function sanitize(text: string): string {

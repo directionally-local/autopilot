@@ -1,9 +1,9 @@
 import { SqliteDatabase } from "../util/sqlite.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunWorktree } from "./worktrees.js";
+import { stateDir } from "../util/app-dirs.js";
 
 export type RunStatus = "queued" | "running" | "waiting" | "needs_input" | "completed" | "failed" | "cancelled" | "interrupted_unknown";
 export type RunEventType = "state" | "tool_intent" | "tool_result" | "usage" | "checkpoint" | "decision";
@@ -803,8 +803,7 @@ export class RunStore {
 }
 
 function defaultRunsDbPath(): string {
-  const root = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
-  return process.env.AUTOPILOT_RUNS_DB || join(root, "autopilot", "runs.db");
+  return process.env.AUTOPILOT_RUNS_DB || join(stateDir(), "runs.db");
 }
 
 function validateOptionalPositiveInteger(name: string, value: number | null, minimum = 1): void {

@@ -2,7 +2,7 @@
  * Trust for project-local files that make Autopilot run commands.
  *
  * A repository can ship `.autopilot/settings.json` (hooks, run through a
- * shell) and `.kimiflare/lsp.json` (language servers, spawned at startup).
+ * shell) and `.autopilot/lsp.json` (language servers, spawned at startup).
  * Loading them unconditionally meant cloning a repository and starting
  * Autopilot in it ran whatever the repository chose. They now load only when
  * the user has trusted that file's exact bytes: the trust store records a
@@ -16,9 +16,9 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { logger } from "./logger.js";
+import { configDir } from "./app-dirs.js";
 
 export const TRUST_PROJECT_ENV = "AUTOPILOT_TRUST_PROJECT";
 
@@ -28,12 +28,8 @@ interface TrustStore {
   files: Record<string, string>;
 }
 
-function configHome(): string {
-  return process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-}
-
 export function trustStorePath(): string {
-  return join(configHome(), "autopilot", "trusted-project-files.json");
+  return join(configDir(), "trusted-project-files.json");
 }
 
 /** True when the operator opted every project file into trust via env. */

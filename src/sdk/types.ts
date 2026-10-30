@@ -10,7 +10,7 @@ export type { ChatMessage, ToolSpec, Task, KimiConfig, PermissionRequest, Permis
 export interface CreateSessionOptions {
   /** Working directory for the agent. Defaults to process.cwd(). */
   cwd?: string;
-  /** Override config. If omitted, loads from ~/.config/kimiflare/config.json */
+  /** Override config. If omitted, loads from ~/.config/autopilot/config.json */
   config?: Partial<KimiConfig>;
   /** Session ID for persistence. If omitted, creates a new session. */
   sessionId?: string;

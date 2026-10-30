@@ -92,7 +92,7 @@ describe("logTurnDebug", () => {
       const pending = logTurnDebug(ctx);
       process.env.XDG_DATA_HOME = join(root, "elsewhere-never-created");
       await pending;
-      const line = readFileSync(join(root, "kimiflare", "cost-debug.jsonl"), "utf8").trim();
+      const line = readFileSync(join(root, "autopilot", "cost-debug.jsonl"), "utf8").trim();
       assert.strictEqual(JSON.parse(line).sessionId, "s1");
     } finally {
       if (prev === undefined) delete process.env.XDG_DATA_HOME;

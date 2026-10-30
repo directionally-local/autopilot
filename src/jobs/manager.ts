@@ -1,9 +1,9 @@
 import { SqliteDatabase } from "../util/sqlite.js";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync, existsSync, statSync, closeSync, appendFileSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { stateDir } from "../util/app-dirs.js";
 
 export type JobStatus = "starting" | "running" | "cancelling" | "completed" | "failed" | "timed_out" | "cancelled" | "unknown";
 export type JobStream = "stdout" | "stderr";
@@ -386,8 +386,7 @@ export class JobManager {
 }
 
 function defaultJobDbPath(): string {
-  const root = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
-  return process.env.AUTOPILOT_JOBS_DB || join(root, "autopilot", "jobs.db");
+  return process.env.AUTOPILOT_JOBS_DB || join(stateDir(), "jobs.db");
 }
 
 function isProcessGroupAlive(pgid: number): boolean {

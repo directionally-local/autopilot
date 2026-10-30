@@ -32,8 +32,8 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - src/models/ — model catalogs (OpenRouter live catalog, Requesty, models.dev for other hosted providers with a bundled snapshot, Ollama/LM Studio discovery), capabilities, and pricing.
 - src/tools/ — tool schemas, implementations, permissions, output reduction, and dispatch (executor.ts).
 - src/init/ — /init project discovery and AGENTS.md prompt generation.
-- src/skills/ — skill discovery/routing; supports .agents/skills/, AGENTS.md, .github/skills/, and .kimiflare/skills/.
-- src/memory/ — local SQLite-backed cross-session memory and retrieval. The repository-scoped database defaults to .kimiflare/memory.db (configurable); memory tools expose remember, recall, and forget.
+- src/skills/ — skill discovery/routing; supports .agents/skills/, AGENTS.md, .github/skills/, .autopilot/skills/ and the legacy .kimiflare/skills/.
+- src/memory/ — local SQLite-backed cross-session memory and retrieval. The repository-scoped database defaults to .autopilot/memory.db (an existing .kimiflare/memory.db is still used; configurable); memory tools expose remember, recall, and forget.
 - src/lsp/, src/mcp/ — Language Server Protocol and Model Context Protocol integrations.
 - src/sdk/, src/server/ — programmatic session SDK and RPC/server integration.
 - src/runs/, src/jobs/ — durable run/job lifecycle and unattended execution.
@@ -61,7 +61,7 @@ Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:
 - Use Conventional Commits. Do not bump the root package version manually; release-please manages releases. The active workflows publish npm releases and deploy docs/ to GitHub Pages.
 - **Versioning: merge the release PR when it is worth a version, not when a PR merges.** release-please opens a release PR on every push to main; leave it open until it has at least three user-visible changes (`feat:`/`fix:`/`perf:`) or an urgent fix (security, broken install, data loss). Never merge it for a single PR. Do not open extra release PRs by hand.
 - **Reserve `feat:` for user-visible features.** Internal work uses `refactor:`, `test:`, `docs:`, `ci:`, `build:`, or `chore:` — release-please hides those and they do not bump the version. `fix:` and `perf:` bump patch; `feat:` bumps minor. A change that only reorganizes code, adds tests, or updates docs is not a feature.
-- Never commit secrets or user state. .kimiflare/, ~, .config/, sessions/, and coverage output are ignored; config and historical user data remain under the legacy kimiflare paths for compatibility.
+- Never commit secrets or user state. .autopilot/, .kimiflare/, ~, .config/, sessions/, and coverage output are ignored. User-level directories come only from src/util/app-dirs.ts (`~/.config/autopilot`, `~/.local/share/autopilot`, `~/.local/state/autopilot`, project `.autopilot/`); never build a `kimiflare` path elsewhere. Legacy kimiflare directories are moved there once at startup and left as symlinks; project `.kimiflare/` is only read.
 
 ## Context file behavior
 

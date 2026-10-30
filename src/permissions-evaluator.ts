@@ -1,7 +1,7 @@
 /**
  * Config-based permission rule evaluator for headless/CI mode.
  *
- * Rules are defined in ~/.config/kimiflare/config.json as:
+ * Rules are defined in ~/.config/autopilot/config.json as:
  * {
  *   "permissions": {
  *     "bash": { "**\/test\/\*\*": "allow", "**": "ask" },

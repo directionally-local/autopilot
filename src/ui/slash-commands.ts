@@ -1346,7 +1346,7 @@ const handleMcp: Handler = (ctx, _rest, arg) => {
     if (servers.length === 0) {
       setEvents((e) => [
         ...e,
-        { kind: "info", key: mkKey(), text: "no MCP servers connected — add them to ~/.config/kimiflare/config.json" },
+        { kind: "info", key: mkKey(), text: "no MCP servers connected — add them to ~/.config/autopilot/config.json" },
       ]);
     } else {
       const lines = servers.map((s) => `  ${s.name} (${s.type}) — ${s.toolCount} tool${s.toolCount === 1 ? "" : "s"}`);
@@ -1414,7 +1414,7 @@ const handleLsp: Handler = (ctx, _rest, arg) => {
     const scopeText =
       lspScope === "project" && lspProjectPath
         ? `project scope: ${lspProjectPath}`
-        : "global scope: ~/.config/kimiflare/config.json";
+        : "global scope: ~/.config/autopilot/config.json";
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: scopeText }]);
     return true;
   }
