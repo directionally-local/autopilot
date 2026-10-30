@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "../util/sqlite.js";
 import {
   openMemoryDb,
   closeMemoryDb,
@@ -16,7 +16,7 @@ const ZERO = new Float32Array(768);
 
 describe("memory db", () => {
   let tmpDir: string;
-  let db: Database.Database;
+  let db: SqliteDatabase;
 
   before(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), "kimiflare-memory-db-test-"));
