@@ -153,6 +153,14 @@ const EDIT_TOOL: ToolSpec = {
   run: async () => "ok",
 };
 
+const BASH_TOOL: ToolSpec = {
+  name: "bash",
+  description: "Run a command.",
+  parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+  needsPermission: false,
+  run: async () => "ok",
+};
+
 /** Executor that records the `readRepeat` page it was asked to serve. */
 function pagingExecutor(): { executor: ToolExecutor; readRepeats: number[] } {
   const readRepeats: number[] = [];
@@ -387,6 +395,38 @@ describe("runAgentTurn guardrails (unattended)", () => {
     // Read-only loop: a summary, never a crash.
     assert.deepStrictEqual(events.map((e) => e.kind), ["loop_recovery"]);
     assert.strictEqual(opts.messages.at(-1)!.content, "Switching to offset/limit.");
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("does not treat a repeat separated by another call as a loop", async () => {
+    // "edit, test, edit, test" is re-verification after progress, not
+    // thrashing. Only a run of identical calls is a loop.
+    const verify = { tool: "bash", args: { command: "npm test" } };
+    const edit = { tool: "edit", args: { path: "src/a.ts", old_string: "a", new_string: "b" } };
+    const model = scriptModel([verify, edit, verify, edit, verify, { text: "All green." }]);
+    const { executor, runs } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { tools: [BASH_TOOL, EDIT_TOOL] });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(events, []);
+    assert.strictEqual(runs.length, 5, "every verification run must reach the tool");
+    assert.strictEqual(model.requests, 6);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("still blocks a run of identical calls with nothing in between", async () => {
+    const verify = { tool: "bash", args: { command: "npm test" } };
+    const model = scriptModel([verify, verify, verify, { text: "changed approach" }]);
+    const { executor, runs } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { tools: [BASH_TOOL] });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(events.map((e) => e.kind), ["loop_recovery"]);
+    assert.strictEqual(runs.length, 2, "the third identical call is blocked");
     assertNoDanglingToolCalls(opts.messages);
   });
 

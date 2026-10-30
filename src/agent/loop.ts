@@ -1215,7 +1215,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           },
         };
       }
-      const repeatedCalls = recentToolCalls.filter((s) => s === loopSignature).length;
+      // Only a run of identical calls is a loop. A repeat separated by a
+      // different call is re-verification after progress — "edit, test, edit,
+      // test", or CI polling interleaved with git commands — not thrashing.
+      let repeatedCalls = 0;
+      for (let i = recentToolCalls.length - 1; i >= 0 && recentToolCalls[i] === loopSignature; i--) {
+        repeatedCalls++;
+      }
       if (tc.function.name === "read") {
         // A repeated full-file read is not a loop: the reducer answered the
         // first one with an outline, so the model is asking for content it
