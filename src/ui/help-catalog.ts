@@ -149,5 +149,5 @@ export const CATEGORIES: Category[] = [
 export const SINGLE_COMMANDS: CommandItem[] = [
   { command: "/reasoning", description: "toggle show/hide model reasoning" },
   { command: "/help", description: "show this menu" },
-  { command: "/exit", description: "exit autopilot (formerly kimiflare)" },
+  { command: "/exit", description: "exit autopilot (formerly kimiflare); typing exit on its own also works" },
 ];
