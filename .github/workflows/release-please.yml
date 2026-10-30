@@ -88,7 +88,10 @@ jobs:
           if npm view --prefer-online "$NAME@$VERSION" version >/dev/null 2>&1; then
             echo "$NAME@$VERSION is already on npm."
           else
-            npm publish --access public
+            # --tag latest is explicit: npm refuses to apply "latest" implicitly
+          # when a higher version already exists (e.g. after a bad major was
+          # published and then rolled back), and the update check reads /latest.
+          npm publish --access public --tag latest
           fi
 
           # npm now processes new versions before serving them ("may take a few
