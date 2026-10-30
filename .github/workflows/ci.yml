@@ -52,3 +52,48 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # A `!` in the commit type or a `BREAKING CHANGE:` footer makes
+  # release-please bump the major version. On this repo that is almost never
+  # intended (see the accidental 4.0.0 in #1044), so require an explicit
+  # `release:major` label before a PR may carry one.
+  release-guard:
+    name: no accidental major bump
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check commit messages for breaking-change markers
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if [[ ",$LABELS," == *",release:major,"* ]]; then
+            echo "release:major label present; breaking changes are allowed."
+            exit 0
+          fi
+
+          bad=0
+          while IFS= read -r sha; do
+            subject=$(git log -1 --format=%s "$sha")
+            body=$(git log -1 --format=%b "$sha")
+            if [[ "$subject" =~ ^[a-zA-Z]+(\([^\)]*\))?!: ]]; then
+              echo "::error::$sha has a breaking-change subject: $subject"
+              bad=1
+            elif grep -qiE '^BREAKING[ -]CHANGE:' <<<"$body"; then
+              echo "::error::$sha has a BREAKING CHANGE footer: $subject"
+              bad=1
+            fi
+          done < <(git rev-list "$BASE_SHA..$HEAD_SHA")
+
+          if [[ $bad -ne 0 ]]; then
+            echo "::error::This PR would bump the major version. Add the 'release:major' label if that is intended, or reword the commit without '!' / 'BREAKING CHANGE:'."
+            exit 1
+          fi
+          echo "No breaking-change markers."
+
