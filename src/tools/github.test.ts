@@ -378,4 +378,56 @@ describe("github_update_pr", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  for (const draft of [true, false]) {
+    for (const scenario of ["error", "unchanged", "missing result", "missing node", "success", "already set"]) {
+      it(`${draft ? "draft" : "ready"}: ${scenario}`, async () => {
+        const originalFetch = globalThis.fetch;
+        const requests: string[] = [];
+        const mutation = draft ? "convertPullRequestToDraft" : "markPullRequestReadyForReview";
+        globalThis.fetch = async (input, init) => {
+          const url = input.toString();
+          requests.push(`${init?.method ?? "GET"} ${url}`);
+          if (url.endsWith("/graphql")) {
+            const request = JSON.parse(init?.body as string);
+            assert.match(request.query, new RegExp(mutation));
+            assert.deepEqual(request.variables, { id: "PR_1" });
+            const payload = scenario === "error"
+              ? { errors: [{ message: "Resource not accessible by integration" }] }
+              : { data: { [mutation]: scenario === "missing result" ? null : {
+                  pullRequest: { isDraft: scenario === "unchanged" ? !draft : draft },
+                } } };
+            return Response.json(payload);
+          }
+          // GitHub ignores the unsupported REST draft field, even with HTTP 200.
+          return Response.json({
+            node_id: scenario === "missing node" ? undefined : "PR_1",
+            draft: scenario === "already set" ? draft : !draft,
+          });
+        };
+        try {
+          const run = () => githubUpdatePrTool.run(
+            { owner: "owner", repo: "repo", number: 42, draft, force: true },
+            { cwd: "/tmp" },
+          );
+          if (scenario === "success" || scenario === "already set") {
+            const result = await run() as ToolOutput;
+            assert.match(result.content, scenario === "already set"
+              ? /already/ : draft ? /converted to draft/ : /marked ready for review/);
+          } else {
+            await assert.rejects(run, scenario === "error"
+              ? /Resource not accessible by integration/
+              : scenario === "missing node" ? /node ID/ : /draft state/i);
+          }
+          assert.ok(requests.every((request) => !request.startsWith("PATCH ")));
+          if (scenario === "already set" || scenario === "missing node") {
+            assert.equal(requests.length, 1);
+          }
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      });
+    }
+  }
+
 });
