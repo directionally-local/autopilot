@@ -177,7 +177,7 @@ describe("ToolExecutor — typed error classification", () => {
     assert.strictEqual(ran, false);
   });
 
-  it("returns un-reduced content for a repeated read recovery", async () => {
+  it("serves a repeated read as the next page of the raw file", async () => {
     const raw = Array.from(
       { length: 100 },
       (_, i) => `${String(i + 1).padStart(4)}\t${"source content ".repeat(8)}`,
@@ -193,11 +193,19 @@ describe("ToolExecutor — typed error classification", () => {
     assert.ok(initial.content.includes("File: 100 lines total"));
     assert.ok(initial.content.includes("output reduced"));
 
-    const recovered = await exec.run(call, allowAll, ctx, undefined, { forceFullRead: true });
-    assert.ok(recovered.content.startsWith("Repeated identical read detected."));
-    assert.ok(recovered.content.includes("100\tsource content"));
-    assert.ok(!recovered.content.includes("output reduced"));
-    assert.strictEqual(recovered.reducedBytes, Buffer.byteLength(recovered.content, "utf8"));
+    const firstPage = await exec.run(call, allowAll, ctx, undefined, { readRepeat: 1 });
+    assert.ok(firstPage.content.startsWith("Repeated identical read detected."));
+    assert.ok(firstPage.content.includes("1\tsource content"));
+    assert.ok(!firstPage.content.includes("output reduced"));
+    assert.strictEqual(firstPage.reducedBytes, Buffer.byteLength(firstPage.content, "utf8"));
+
+    // Each repeat moves forward through the file instead of repeating page 1.
+    const secondPage = await exec.run(call, allowAll, ctx, undefined, { readRepeat: 2 });
+    assert.match(secondPage.content, /^Continuing large\.ts: characters 4001–8000 of \d+/);
+    assert.ok(!secondPage.content.includes("output reduced"));
+
+    const lastPage = await exec.run(call, allowAll, ctx, undefined, { readRepeat: 4 });
+    assert.ok(lastPage.content.includes("100\tsource content"));
   });
 
   it("classifies unknown tool name as 'not_found'", async () => {

@@ -417,7 +417,7 @@ export class ToolExecutor {
     askPermission: PermissionAsker,
     ctx: ToolContext,
     onFileChange?: (path: string, content: string) => void,
-    options?: { forceFullRead?: boolean },
+    options?: { readRepeat?: number },
   ): Promise<ToolResult> {
     const trace = ctx.trace ?? this.trace;
     if (!trace?.enabled) return this.runInner(call, askPermission, ctx, onFileChange, null, options);
@@ -433,7 +433,7 @@ export class ToolExecutor {
     ctx: ToolContext,
     onFileChange: ((path: string, content: string) => void) | undefined,
     tr: ToolTrace | null,
-    options?: { forceFullRead?: boolean },
+    options?: { readRepeat?: number },
   ): Promise<ToolResult> {
     // `spawn_worker` was renamed to `subagent`; resumed sessions and models
     // primed by old history may still emit the old name.
@@ -681,17 +681,18 @@ export class ToolExecutor {
         return diffResult;
       }
 
-      const forceFullRead = options?.forceFullRead === true && call.name === "read";
+      const readRepeat = call.name === "read" ? Math.max(0, options?.readRepeat ?? 0) : 0;
       const reduced = reduceToolOutput(
         call.name,
         modelContent,
         args,
         this.artifactStore,
-        forceFullRead ? { ...this.reducerConfig, enabled: false } : this.reducerConfig,
+        readRepeat > 0 ? { ...this.reducerConfig, enabled: false } : this.reducerConfig,
       );
-      const content = forceFullRead
-        ? `Repeated identical read detected. Returning the un-reduced file content; if it is still truncated, request a specific offset/limit slice.\n\n${reduced.content}`
-        : reduced.content;
+      const content =
+        readRepeat > 0
+          ? readPage(reduced.content, readRepeat, this.reducerConfig.read.maxOutputChars, args)
+          : reduced.content;
       // #1001: models that read files through bash get one line pointing at
       // the read tool. Appended after reduction so it survives truncation.
       const readHint =
@@ -1013,6 +1014,27 @@ export function isDiffCommand(cmd: string): boolean {
   if (/^git\s+log(?:\s|$)/.test(trimmed) && hasPatchFlag) return true;
   if (/^git\s+stash\s+show(?:\s|$)/.test(trimmed) && hasPatchFlag) return true;
   return false;
+}
+
+/**
+ * A repeated full-file read is served as the next page of the raw file rather
+ * than the same outline again. The reducer answered the first read with an
+ * outline, so a model that asks again is asking for content it never got;
+ * each repeat has to move forward or the turn dead-ends in the loop guardrail.
+ */
+function readPage(raw: string, page: number, cap: number, args: Record<string, unknown>): string {
+  const total = raw.length;
+  const start = (page - 1) * cap;
+  if (start >= total) {
+    return `You have already read this file in full (${total} characters). Use offset/limit to read a specific region.`;
+  }
+  const end = Math.min(start + cap, total);
+  const path = typeof args.path === "string" ? args.path : "this file";
+  const header =
+    page === 1
+      ? "Repeated identical read detected. Returning the un-reduced file content; if it is still truncated, request a specific offset/limit slice."
+      : `Continuing ${path}: characters ${start + 1}–${end} of ${total}. Use offset/limit to jump to a specific region.`;
+  return `${header}\n\n${raw.slice(start, end)}`;
 }
 
 function normalizeToolOutput(result: string | ToolOutput): ToolOutput {

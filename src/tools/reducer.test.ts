@@ -145,6 +145,36 @@ describe("reduceToolOutput — read", () => {
     assert.ok(result.content.includes("offset=11, limit=1"));
   });
 
+  it("outlines declarations in languages the JS patterns miss", () => {
+    const store = new ToolArtifactStore();
+    const raw = [
+      "  1\tuse crate::blocks::{Block, GroupBlock};",
+      "  2\t",
+      "  3\tpub struct Session {",
+      "  4\t    open_group: Option<u64>,",
+      "  5\t}",
+      "  6\t",
+      "  7\timpl Session {",
+      "  8\t    pub fn open_group(&mut self) {}",
+      "  9\t}",
+      " 10\t",
+      " 11\tfn helper() {}",
+    ].join("\n");
+
+    const config: ReducerConfig = {
+      ...DEFAULT_REDUCER_CONFIG,
+      read: { ...DEFAULT_REDUCER_CONFIG.read, maxOutputChars: 20 },
+    };
+    const result = reduceToolOutput("read", raw, {}, store, config);
+    assert.ok(result.content.includes("Imports (1):"));
+    assert.ok(result.content.includes("1: use crate::blocks"));
+    assert.ok(result.content.includes("Declarations (4):"));
+    assert.ok(result.content.includes("3: pub struct Session {"));
+    assert.ok(result.content.includes("7: impl Session {"));
+    assert.ok(result.content.includes("8: pub fn open_group"));
+    assert.ok(result.content.includes("11: fn helper() {}"));
+  });
+
   it("returns a full file verbatim when it fits the configured context cap", () => {
     const store = new ToolArtifactStore();
     const raw = "  1\\t" + "x".repeat(1_000);
