@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { githubReadPrTool, githubReadIssueTool, githubReadCodeTool, githubCreatePrTool, githubFetch } from "./github.js";
+import { githubReadPrTool, githubReadIssueTool, githubReadCodeTool, githubCreatePrTool, githubPrChecksTool, githubUpdatePrTool, githubFetch } from "./github.js";
 import type { ToolOutput } from "./registry.js";
 
 describe("GitHub CLI fallback", () => {
@@ -211,6 +211,169 @@ describe("github_create_pr", () => {
       )) as ToolOutput;
       assert.ok(result.content.includes("Failed to create PR"));
       assert.ok(result.content.includes("No commits between main and feat"));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+
+describe("github_create_pr draft default", () => {
+  it("opens PRs as drafts by default and points at the CI check", async () => {
+    const originalFetch = globalThis.fetch;
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = async (_input, init) => {
+      body = JSON.parse((init as RequestInit).body as string);
+      return new Response(
+        JSON.stringify({ number: 7, title: "T", html_url: "https://github.com/o/r/pull/7", state: "open", draft: true }),
+        { status: 201 },
+      );
+    };
+    try {
+      const result = (await githubCreatePrTool.run(
+        { owner: "o", repo: "r", title: "T", head: "feat", base: "main" },
+        { cwd: "/tmp" },
+      )) as ToolOutput;
+      assert.equal(body.draft, true);
+      assert.match(result.content, /\(draft\)/);
+      assert.match(result.content, /github_pr_checks/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("github_pr_checks", () => {
+  const prPayload = {
+    html_url: "https://github.com/owner/repo/pull/42",
+    draft: true,
+    head: { sha: "abc123def4567890", ref: "feat" },
+    base: { ref: "main" },
+  };
+
+  function mockChecks(handlers: { checkRuns: () => unknown; statuses?: () => unknown }) {
+    return async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/pulls/42")) return new Response(JSON.stringify(prPayload), { status: 200 });
+      if (url.includes("/check-runs")) return new Response(JSON.stringify(handlers.checkRuns()), { status: 200 });
+      if (url.includes("/status")) return new Response(JSON.stringify(handlers.statuses?.() ?? { statuses: [] }), { status: 200 });
+      return new Response("not found", { status: 404 });
+    };
+  }
+
+  it("summarizes failing, pending, and passing checks", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockChecks({
+      checkRuns: () => ({
+        check_runs: [
+          { name: "test", status: "completed", conclusion: "failure", details_url: "https://ci/test", output: { summary: "1 failing test" } },
+          { name: "lint", status: "completed", conclusion: "success" },
+          { name: "build", status: "in_progress", conclusion: null },
+        ],
+      }),
+      statuses: () => ({ statuses: [{ context: "deploy", state: "pending" }] }),
+    });
+    try {
+      const result = (await githubPrChecksTool.run({ owner: "owner", repo: "repo", number: 42 }, { cwd: "/tmp" })) as ToolOutput;
+      assert.match(result.content, /CI: 1 failing, 2 pending, 1 passed/);
+      assert.match(result.content, /✗ test — failure — 1 failing test/);
+      assert.match(result.content, /Do not mark the PR ready/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("polls until the checks finish when wait_seconds is set", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = mockChecks({
+      checkRuns: () => {
+        calls++;
+        return calls === 1
+          ? { check_runs: [{ name: "test", status: "in_progress", conclusion: null }] }
+          : { check_runs: [{ name: "test", status: "completed", conclusion: "success" }] };
+      },
+    });
+    try {
+      const result = (await githubPrChecksTool.run(
+        { owner: "owner", repo: "repo", number: 42, wait_seconds: 2, poll_interval_seconds: 1 },
+        { cwd: "/tmp" },
+      )) as ToolOutput;
+      assert.ok(calls >= 2);
+      assert.match(result.content, /All checks passed/);
+      assert.match(result.content, /Waited 1s/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("github_update_pr", () => {
+  function mockPr(conclusion: string) {
+    return async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.endsWith("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/pulls/42")) {
+        return new Response(
+          JSON.stringify({
+            node_id: "PR_1",
+            draft: true,
+            html_url: "https://github.com/owner/repo/pull/42",
+            head: { sha: "abc", ref: "feat" },
+            base: { ref: "main" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/check-runs")) {
+        return new Response(
+          JSON.stringify({ check_runs: [{ name: "test", status: "completed", conclusion }] }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/status")) return new Response(JSON.stringify({ statuses: [] }), { status: 200 });
+      void init;
+      return new Response("{}", { status: 200 });
+    };
+  }
+
+  it("refuses to mark a PR ready while checks are failing", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockPr("failure");
+    try {
+      const result = (await githubUpdatePrTool.run(
+        { owner: "owner", repo: "repo", number: 42, draft: false },
+        { cwd: "/tmp" },
+      )) as ToolOutput;
+      assert.match(result.content, /Refusing to mark PR #42 ready/);
+      assert.match(result.content, /test/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("marks a green PR ready for review", async () => {
+    const originalFetch = globalThis.fetch;
+    let graphqlQuery = "";
+    const base = mockPr("success");
+    globalThis.fetch = async (input, init) => {
+      if (input.toString().endsWith("/graphql")) {
+        graphqlQuery = JSON.parse((init as RequestInit).body as string).query;
+      }
+      return base(input, init);
+    };
+    try {
+      const result = (await githubUpdatePrTool.run(
+        { owner: "owner", repo: "repo", number: 42, draft: false },
+        { cwd: "/tmp" },
+      )) as ToolOutput;
+      assert.match(graphqlQuery, /markPullRequestReadyForReview/);
+      assert.match(result.content, /marked ready for review/);
     } finally {
       globalThis.fetch = originalFetch;
     }

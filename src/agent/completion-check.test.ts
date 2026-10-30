@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { completionCheckFromConfig, createJevCompletionCheck, shouldCheckCompletion, toolsUsedSince } from "./completion-check.js";
+import { completionCheckFromConfig, createJevCompletionCheck, prCiNudge, shouldCheckCompletion, toolsUsedSince } from "./completion-check.js";
 import type { JevQuestion } from "./jev.js";
 import type { ChatMessage } from "./messages.js";
 
@@ -51,5 +51,48 @@ describe("completion check", () => {
       { role: "tool", tool_call_id: "1", content: "x" },
     ];
     assert.deepEqual(toolsUsedSince(messages, user), ["read", "edit"]);
+  });
+});
+
+
+describe("prCiNudge", () => {
+  const user: ChatMessage = { role: "user", content: "ship it" };
+  const created = (content: string): ChatMessage[] => [
+    user,
+    { role: "assistant", content: null, tool_calls: [{ id: "1", type: "function", function: { name: "github_create_pr", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "1", name: "github_create_pr", content },
+  ];
+  const checked = (content: string): ChatMessage => ({ role: "tool", tool_call_id: "2", name: "github_pr_checks", content });
+
+  it("nudges when a PR was created but CI was never checked", () => {
+    const nudge = prCiNudge(created("Created PR #42: Add feature"), user);
+    assert.match(nudge!, /never checked its CI/);
+  });
+
+  it("ignores turns that did not create a PR", () => {
+    assert.equal(prCiNudge(created("Failed to create PR: nope"), user), null);
+  });
+
+  it("nudges while checks are still pending", () => {
+    const messages = [...created("Created PR #42: Add feature"), checked("PR #42 — CI: 0 failing, 2 pending, 1 passed")];
+    assert.match(prCiNudge(messages, user)!, /still running/);
+  });
+
+  it("stays quiet once every check passed", () => {
+    const messages = [...created("Created PR #42: Add feature"), checked("PR #42 — CI: 0 failing, 0 pending, 3 passed")];
+    assert.equal(prCiNudge(messages, user), null);
+  });
+
+  it("nudges when a fix was pushed after the last check", () => {
+    const messages: ChatMessage[] = [
+      ...created("Created PR #42: Add feature"),
+      checked("PR #42 — CI: 1 failing, 0 pending, 2 passed"),
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "3", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "git push origin feat" }) } }],
+      },
+    ];
+    assert.match(prCiNudge(messages, user)!, /pushed a fix/);
   });
 });
