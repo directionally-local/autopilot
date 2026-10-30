@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.0.4](https://github.com/directionally-local/autopilot/compare/v3.0.3...v3.0.4) (2026-10-30)
+
+
+### Bug Fixes
+
+* **agent:** only a run of identical calls counts as a loop ([#1072](https://github.com/directionally-local/autopilot/issues/1072)) ([63aeceb](https://github.com/directionally-local/autopilot/commit/63aeceb0ea449fc00bf49b33e2907dc03b58f644))
+* **agent:** page repeated reads per file and reset the cursor after an edit ([#1071](https://github.com/directionally-local/autopilot/issues/1071)) ([12cd422](https://github.com/directionally-local/autopilot/commit/12cd4228c4d7a6c82774adaf7b76509f386199f0))
+* **memory:** make recall task-aware and stop dropping memory metadata ([#1066](https://github.com/directionally-local/autopilot/issues/1066)) ([39d610e](https://github.com/directionally-local/autopilot/commit/39d610e5914c01fa4449d6500ff0e6e749bfbd3a))
+* **ui:** keep the turn going after a `!` command ([#1065](https://github.com/directionally-local/autopilot/issues/1065)) ([8be0038](https://github.com/directionally-local/autopilot/commit/8be00388c98fa6422bbf5df86fe314ebbf08110c))
+
 ## [3.0.3](https://github.com/directionally-local/autopilot/compare/v3.0.2...v3.0.3) (2026-10-30)
 
 
