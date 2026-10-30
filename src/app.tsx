@@ -79,6 +79,7 @@ import {
   type InterruptDeps,
 } from "./ui/input-handlers.js";
 import { dispatchSlashCommand, type SlashContext, executeFreshStart } from "./ui/slash-commands.js";
+import { isExitCommand } from "./ui/exit-command.js";
 import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
 import { switchedMessage } from "./providers/connect.js";
@@ -1725,6 +1726,12 @@ function App({
     (full: string, display?: string) => {
       const trimmedFull = full.trim();
       const trimmedDisplay = (display ?? full).trim() || trimmedFull;
+      // Bare `exit` quits, exactly like `/exit`. Only the whole input counts,
+      // so a sentence that happens to contain the word still goes to the model.
+      if (isExitCommand(trimmedFull)) {
+        void lspManagerRef.current.stopAll().finally(() => exit());
+        return;
+      }
       const busyNow = busyRef.current || supervisorRef.current.isRunning;
       const editTarget = latestPromptRef.current;
       const decision = decideSubmit(trimmedFull, trimmedDisplay, {
@@ -1822,7 +1829,7 @@ function App({
           return;
       }
     },
-    [processMessage, handleSlash, queue, history, historyIndex, events],
+    [processMessage, handleSlash, queue, history, historyIndex, events, exit],
   );
   submitRef.current = submit;
 
