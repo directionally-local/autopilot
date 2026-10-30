@@ -840,21 +840,20 @@ async function setDraftState(
   };
   if (pr.draft === draft) return { changed: false };
 
-  if (pr.node_id) {
-    const mutation = draft ? "convertPullRequestToDraft" : "markPullRequestReadyForReview";
-    try {
-      await githubGraphql(
-        `mutation($id: ID!) { ${mutation}(input: { pullRequestId: $id }) { pullRequest { isDraft } } }`,
-        { id: pr.node_id },
-        token,
-      );
-      return { changed: true };
-    } catch {
-      /* fall back to the REST draft field below */
-    }
+  if (!pr.node_id) {
+    throw new Error(`Cannot change draft state for PR #${number}: GitHub returned no node ID.`);
   }
 
-  await githubPost(`/repos/${owner}/${repo}/pulls/${number}`, { draft }, token, "PATCH");
+  const mutation = draft ? "convertPullRequestToDraft" : "markPullRequestReadyForReview";
+  const data = await githubGraphql(
+    `mutation($id: ID!) { ${mutation}(input: { pullRequestId: $id }) { pullRequest { isDraft } } }`,
+    { id: pr.node_id },
+    token,
+  );
+  const result = data[mutation] as { pullRequest?: { isDraft?: boolean } } | null | undefined;
+  if (result?.pullRequest?.isDraft !== draft) {
+    throw new Error(`GitHub did not confirm the requested draft state for PR #${number}.`);
+  }
   return { changed: true };
 }
 
