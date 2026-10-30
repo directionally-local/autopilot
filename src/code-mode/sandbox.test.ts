@@ -130,6 +130,15 @@ describe("buildFallbackWarning", () => {
     assert.ok(msg.includes("npm install isolated-vm"));
   });
 
+  it("explains a blocked install script when no native build exists for this Node", () => {
+    const msg = buildFallbackWarning(
+      "No native build was found for platform=linux arch=x64 runtime=node abi=140 uv=1 libc=glibc node=26.12.1\n    loaded from: /usr/lib/node_modules/autopilot-ai/node_modules/isolated-vm",
+    );
+    assert.ok(msg.startsWith("Code Mode is off"));
+    assert.ok(msg.includes("no prebuilt binary"));
+    assert.ok(msg.includes("npm config set allow-scripts=isolated-vm"));
+  });
+
   it("suggests rebuild for native binding errors", () => {
     const msg = buildFallbackWarning("bindings failed to load .node file");
     assert.ok(msg.includes("native bindings are incompatible"));

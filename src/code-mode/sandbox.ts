@@ -296,7 +296,13 @@ export function buildFallbackWarning(errMessage: string): string {
   let reason: string;
   let fix: string;
 
-  if (errMessage.includes("Cannot find module") || errMessage.includes("isolated-vm")) {
+  if (errMessage.includes("No native build was found")) {
+    // node-gyp-build: the package is installed but has neither a prebuilt
+    // binary for this Node/platform nor one its install script built —
+    // npm 11+/12 block dependency install scripts unless allowed.
+    reason = "The optional dependency `isolated-vm` has no prebuilt binary for this Node version and platform, and its install script did not run (npm blocks dependency install scripts unless allowed).";
+    fix = "Allow its install script and reinstall: `npm config set allow-scripts=isolated-vm`, then `npm install -g autopilot-ai` (or use Node 22 or 24, which have prebuilt binaries).";
+  } else if (errMessage.includes("Cannot find module") || errMessage.includes("isolated-vm")) {
     reason = "The optional dependency `isolated-vm` is not installed.";
     fix = "Run `npm install isolated-vm` in your project (or `npm install -g isolated-vm` if Autopilot is installed globally).";
   } else if (errMessage.includes("bindings") || errMessage.includes(".node")) {

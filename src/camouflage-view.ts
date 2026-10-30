@@ -28,7 +28,7 @@ import { configPath, hasLegacyCloudflareConfig, loadConfig, readPersistedConfig,
 import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from "./camouflage-onboarding.js";
 import { onShutdown } from "./util/exit.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
-import { resolveProviderKey } from "./providers/resolve.js";
+import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
   chatgptSignIn,
   commitProvider,
@@ -175,7 +175,8 @@ export interface CamouflageSessionViewOpts {
   version: string;
   header: { title: string; detail: string[] };
   commands: RegisteredSlashCommand[];
-  run: (bridge: AppBridge) => Promise<void>;
+  /** Gets the View (an AppBridge, plus the setup screens `autopilot connect` runs without an App). */
+  run: (bridge: View) => Promise<void>;
 }
 
 /** How the session ended: normally, or before it began because first-run setup was cancelled or failed. */
@@ -192,7 +193,7 @@ export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | n
 
 export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSessionViewOpts): Promise<CamouflageViewResult> {
   const custom = "run" in input ? input : null;
-  const opts: CamouflageViewOpts = custom ? { cfg: null, version: custom.version, runApp: (bridge) => custom.run(bridge) } : (input as CamouflageViewOpts);
+  const opts: CamouflageViewOpts = custom ? { cfg: null, version: custom.version, runApp: (bridge) => custom.run(bridge as View) } : (input as CamouflageViewOpts);
   const sdk = await loadSdk();
   // Fail before mounting when the renderer certainly can't run (a postinstall
   // that silently left bin/ empty on an unsupported platform, a bad
@@ -1229,8 +1230,8 @@ export class View implements AppBridge {
    */
   private async providerSetup(initial?: ProviderId): Promise<void> {
     const cfg = await loadConfig().catch(() => null);
-    const id = await this.connectAndPickModel({ cfg, initial, firstRun: false });
-    if (id) this.actions?.providerSwitched(id);
+    const saved = await this.connectAndPickModel({ cfg, initial, firstRun: false });
+    if (saved) this.actions?.providerSwitched(saved.id);
   }
 
   /**
@@ -1249,22 +1250,79 @@ export class View implements AppBridge {
     this.cam.send("Splash", { text: lines.join("\n") });
   }
 
-  /** Provider list → connect → model → save. The saved provider, or null if cancelled. */
+  /**
+   * `autopilot connect`: the first-run steps with no App to start afterwards.
+   * `exclude` leaves providers out of the list (those a key gateway can't
+   * proxy, for `--state-file`). Null when the user backs out.
+   */
+  async connectSetup(o: { exclude?: ReadonlySet<ProviderId>; initial?: ProviderId } = {}): Promise<ConnectOutcome | null> {
+    const cfg = (await loadConfig().catch(() => null)) ?? (await readPersistedConfig().catch(() => null));
+    return this.connectAndPickModel({ cfg, firstRun: false, standalone: true, title: "Connect a model provider", ...o });
+  }
+
+  /**
+   * `autopilot connect --model-only`: keep the active provider, verify its
+   * saved credentials (which loads its catalog), pick a model and save it.
+   */
+  async pickModelOnly(): Promise<ConnectOutcome | null> {
+    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    const cfg = await loadConfig().catch(() => null);
+    const active = resolveActiveProvider(cfg);
+    const { id, preset } = active;
+    const key = active.apiKey;
+    if (!key && (preset.keyRequired || id === "openrouter")) {
+      say(`${preset.name} isn't connected yet — run \`autopilot connect\` without --model-only first.`, "error");
+      return null;
+    }
+    const source: KeySource = key ? (preset.apiKeyEnv.some((n) => process.env[n]?.trim()) ? "env" : "config") : "none";
+    const baseUrl = id === "custom" ? active.baseUrl : cfg?.providers?.[id]?.baseUrl;
+    say(key ? `Checking the key with ${preset.name}…` : `Connecting to ${preset.name}…`);
+    const res = await verifyProvider(id, key, source, baseUrl);
+    if (!res.ok) {
+      say(res.message, "error");
+      return null;
+    }
+    say(`✓ ${describeConnection(res.connection)}`);
+    const current = cfg?.model ?? "";
+    const modelId = await this.select(
+      `Pick a ${preset.name} model`,
+      modelOptions(pickableModels(), current),
+      current || undefined,
+      "Context · price per Mtok (input / output / cached) · type to search · Esc to keep the current model",
+    );
+    if (modelId === null) return null;
+    try {
+      const saved = await commitProvider(res.connection, modelId);
+      say(`✓ Saved to ${configPath()}.`);
+      return { id, connection: res.connection, model: modelId, cfg: saved };
+    } catch (e) {
+      say(`Couldn't save the config: ${(e as Error).message}`, "error");
+      return null;
+    }
+  }
+
+  /** Provider list → connect → model → save. What was saved, or null if cancelled. */
   private async connectAndPickModel(o: {
     cfg: Partial<Cfg> | null;
     initial?: ProviderId;
     firstRun: boolean;
     upgrading?: boolean;
-  }): Promise<ProviderId | null> {
+    /** No App follows (`autopilot connect`): confirm the save the way first run does. */
+    standalone?: boolean;
+    /** Providers to leave out of the list. */
+    exclude?: ReadonlySet<ProviderId>;
+    /** The list's title, instead of the first-run / switch one. */
+    title?: string;
+  }): Promise<ConnectOutcome | null> {
     const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
     const { cfg, firstRun } = o;
     let id: ProviderId | undefined = o.initial;
     for (;;) {
       if (!id) {
-        const rows = providerRows(cfg, { markActive: !firstRun, upgrading: o.upgrading });
+        const rows = providerRows(cfg, { markActive: !firstRun, upgrading: o.upgrading }).filter((row) => !o.exclude?.has(row.id));
         const current = rows.find((r) => r.active)?.id;
         const r = await this.select(
-          firstRun ? "Choose where your models run" : "Switch provider",
+          o.title ?? (firstRun ? "Choose where your models run" : "Switch provider"),
           rows.map((row) => ({
             value: row.id,
             label: row.name,
@@ -1302,8 +1360,9 @@ export class View implements AppBridge {
         id = undefined;
         continue;
       }
+      let saved: Cfg;
       try {
-        await commitProvider(connection, modelId);
+        saved = await commitProvider(connection, modelId);
       } catch (e) {
         say(`Couldn't save the config: ${(e as Error).message}`, "error");
         // On first run there is no session to fall back to: try again.
@@ -1311,7 +1370,8 @@ export class View implements AppBridge {
         return null;
       }
       if (firstRun) say(`✓ Saved to ${configPath()}. Switch provider any time with /provider, model with /model.`);
-      return id;
+      else if (o.standalone) say(`✓ Saved to ${configPath()}.`);
+      return { id, connection, model: modelId, cfg: saved };
     }
   }
 
@@ -1646,6 +1706,16 @@ function runShell(command: string): Promise<{ ok: boolean; output: string }> {
     child.on("close", (code) => resolve({ ok: code === 0, output: out || (code === 0 ? "" : `Exit code: ${code}`) }));
     child.on("error", (err) => resolve({ ok: false, output: err.message }));
   });
+}
+
+/** What the provider setup screens saved: for `/provider`, first run and `autopilot connect`. */
+export interface ConnectOutcome {
+  id: ProviderId;
+  /** The credentials the provider was verified with. */
+  connection: Connection;
+  model: string;
+  /** The config as saved. */
+  cfg: Cfg;
 }
 
 type PickOption = { value: string; label: string; description?: string; section?: string; columns?: string[]; state?: "on" | "off"; keywords?: string };
