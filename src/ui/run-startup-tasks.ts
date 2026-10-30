@@ -20,6 +20,7 @@ import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
 import { loadCustomCommands } from "../commands/loader.js";
 import { MemoryManager } from "../memory/manager.js";
 import { getMemoryDb, openMemoryDb } from "../memory/db.js";
+import { resolveRepoRoot } from "../memory/repo-root.js";
 import { indexSkills, initSkillsSchema } from "../skills/index.js";
 
 import { RETENTION } from "../storage-limits.js";
@@ -69,7 +70,8 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
 
   // Initialize memory manager if enabled
   if (cfg.memoryEnabled) {
-    const dbPath = cfg.memoryDbPath ?? join(process.cwd(), ".kimiflare", "memory.db");
+    const repoRoot = resolveRepoRoot(process.cwd());
+    const dbPath = cfg.memoryDbPath ?? join(repoRoot, ".kimiflare", "memory.db");
     const manager = new MemoryManager({
       dbPath,
       ...auth,
@@ -85,7 +87,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
     memoryManagerRef.current = manager;
 
     // Run cleanup and backfill on startup
-    void manager.cleanup(process.cwd()).then((result) => {
+    void manager.cleanup(repoRoot).then((result) => {
       const total = result.oldDeleted + result.excessDeleted + result.duplicatesMerged;
       if (total > 0) {
         setEvents((e) => [
@@ -94,7 +96,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
         ]);
       }
     });
-    void manager.backfill(process.cwd()).then((fixed) => {
+    void manager.backfill(repoRoot).then((fixed) => {
       if (fixed > 0) {
         setEvents((e) => [
           ...e,
@@ -108,13 +110,13 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
     // happen inside runAgentTurn so they are covered by the turn's abort signal.
     const cwd = process.cwd();
     sessionStartRecallRef.current = (query: string) =>
-      manager.recall({ text: query || cwd, repoPath: cwd, limit: 5 });
+      manager.recall({ text: query || cwd, repoPath: repoRoot, limit: 5 });
 
     // Session-start drift check (Trigger A): if a project context file exists and high-signal
     // memories have been learned since the last refresh, mark as stale.
-    if (["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(cwd, name)))) {
-      const lastRefresh = manager.getLastKimiMdRefreshTime(cwd);
-      const driftCount = manager.countHighSignalMemoriesSince(cwd, lastRefresh);
+    if (["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(repoRoot, name)))) {
+      const lastRefresh = manager.getLastKimiMdRefreshTime(repoRoot);
+      const driftCount = manager.countHighSignalMemoriesSince(repoRoot, lastRefresh);
       if (driftCount >= 5) {
         setKimiMdStale(true);
       }
@@ -125,7 +127,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   }
 
   // Initialize skills index (independent of memory feature flag)
-  const skillDbPath = cfg.memoryDbPath ?? join(process.cwd(), ".kimiflare", "memory.db");
+  const skillDbPath = cfg.memoryDbPath ?? join(resolveRepoRoot(process.cwd()), ".kimiflare", "memory.db");
   const skillDb = getMemoryDb() ?? openMemoryDb(skillDbPath);
   initSkillsSchema(skillDb);
   void indexSkills({

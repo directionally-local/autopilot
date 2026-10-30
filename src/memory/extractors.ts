@@ -10,6 +10,7 @@ import { isAbsolute, relative } from "node:path";
 import { runKimi } from "../agent/client.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { MemoryCategory } from "./schema.js";
+import { redactSecrets } from "./redact.js";
 
 export interface ExtractorContext {
   /** Arguments passed to the tool (e.g. old_string, new_string, path). */
@@ -76,6 +77,18 @@ function normalizeFile(file: string, cwd?: string): string {
   return rel.startsWith("..") ? file : rel;
 }
 
+const LOW_SIGNAL_DIR =
+  /(^|\/)(node_modules|dist|build|out|coverage|\.next|\.nuxt|\.astro|__pycache__|\.venv|venv|target|vendor)\//i;
+const LOW_SIGNAL_FILE =
+  /(\.(test|spec|snap|min)\.(ts|tsx|js|jsx|mjs|cjs|json|css|map)$|\.d\.ts$|(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|Cargo\.lock|poetry\.lock|composer\.lock)$|\.(snap|map)$)/i;
+
+/** True for paths whose edits are implementation detail rather than durable
+ *  project knowledge: tests, snapshots, lockfiles, generated output. */
+export function isLowSignalPath(filePath: string): boolean {
+  const p = filePath.replace(/\\/g, "/");
+  return LOW_SIGNAL_DIR.test(p) || LOW_SIGNAL_FILE.test(p);
+}
+
 const EDIT_SYNTHESIS_SYSTEM = `You summarize a SINGLE code edit. Write ONE concise sentence (max 20 words) describing exactly what changed.
 
 Rules:
@@ -127,14 +140,14 @@ async function synthesizeEditEvent(
   if (!llmOpts) return null;
 
   const pairs = editPairs(toolArgs);
-  const oldString = pairs.map((p) => p.old_string).join("\n…\n");
-  const newString = pairs.map((p) => p.new_string).join("\n…\n");
-  const fullContent = typeof toolArgs.content === "string" ? toolArgs.content : "";
+  const oldString = redactSecrets(pairs.map((p) => p.old_string).join("\n…\n"));
+  const newString = redactSecrets(pairs.map((p) => p.new_string).join("\n…\n"));
+  const fullContent = redactSecrets(typeof toolArgs.content === "string" ? toolArgs.content : "");
 
   const isWrite = toolName === "write";
   const before = isWrite ? "(new file)" : truncate(oldString, 600);
   const after = isWrite ? truncate(fullContent, 600) : truncate(newString, 600);
-  const intent = assistantMessage ? assistantMessage.slice(-300).trim() : "";
+  const intent = redactSecrets(assistantMessage ? assistantMessage.slice(-300).trim() : "");
 
   const changeContext = `File: ${file}\nTool: ${toolName}\n\nBefore:\n${before}\n\nAfter:\n${after}${intent ? `\n\nContext: ${intent}` : ""}`;
 
@@ -248,7 +261,7 @@ export const EXTRACTORS: Extractor[] = [
   },
   {
     id: "edit_event",
-    match: (tool, file) => (tool === "edit" || tool === "write") && !!file,
+    match: (tool, file) => (tool === "edit" || tool === "write") && !!file && !isLowSignalPath(file),
     extract: async (_content, file, ctx) => {
       if (!file) return null;
       const rel = normalizeFile(file, ctx?.cwd);

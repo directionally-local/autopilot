@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { EXTRACTORS, stripLineNumbers } from "./extractors.js";
+import { EXTRACTORS, isLowSignalPath, stripLineNumbers } from "./extractors.js";
 
 function extractor(id: string) {
   const found = EXTRACTORS.find((e) => e.id === id);
@@ -63,5 +63,35 @@ describe("deterministic extractors", () => {
     assert.ok(rel && abs);
     assert.strictEqual(rel.topicKey, abs.topicKey);
     assert.deepStrictEqual(abs.relatedFiles, ["src/app.tsx"]);
+  });
+});
+
+describe("isLowSignalPath", () => {
+  it("skips tests, snapshots, lockfiles, and generated output", () => {
+    for (const p of [
+      "src/app.test.ts",
+      "src/app.spec.tsx",
+      "src/__snapshots__/app.snap",
+      "package-lock.json",
+      "pnpm-lock.yaml",
+      "dist/index.js",
+      "node_modules/react/index.js",
+      "src/types.d.ts",
+      "public/app.min.js",
+    ]) {
+      assert.strictEqual(isLowSignalPath(p), true, p);
+    }
+  });
+
+  it("keeps source, config, and docs", () => {
+    for (const p of ["src/app.tsx", "src/config.ts", "README.md", "docs/architecture.md", "package.json"]) {
+      assert.strictEqual(isLowSignalPath(p), false, p);
+    }
+  });
+
+  it("does not match the edit_event extractor for low-signal files", () => {
+    const edit = extractor("edit_event");
+    assert.strictEqual(edit.match("edit", "src/app.test.ts"), false);
+    assert.strictEqual(edit.match("edit", "src/app.tsx"), true);
   });
 });
