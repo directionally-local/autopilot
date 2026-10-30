@@ -6,6 +6,7 @@
 
 import { editPairs } from "../tools/edit.js";
 import { pickLlmAuth, type LlmAuth } from "../agent/llm-auth.js";
+import { isAbsolute, relative } from "node:path";
 import { runKimi } from "../agent/client.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { MemoryCategory } from "./schema.js";
@@ -13,6 +14,8 @@ import type { MemoryCategory } from "./schema.js";
 export interface ExtractorContext {
   /** Arguments passed to the tool (e.g. old_string, new_string, path). */
   toolArgs?: Record<string, unknown>;
+  /** Working directory, used to normalize absolute paths to repo-relative ones. */
+  cwd?: string;
   /** The assistant message that triggered this tool call. */
   assistantMessage?: string;
   /** LLM opts for synthesis (credentials + model). */
@@ -58,6 +61,19 @@ function safeJsonParse<T>(text: string): T | null {
 function truncate(str: string, max: number): string {
   if (str.length <= max) return str;
   return str.slice(0, max) + "…";
+}
+
+/** Strip the read tool's "  12\t" line-number prefix so JSON files parse. */
+export function stripLineNumbers(content: string): string {
+  return content.replace(/^\s*\d+\t/gm, "");
+}
+
+/** Prefer a repo-relative path so the same file edited via absolute and
+ *  relative paths maps to one topic key. */
+function normalizeFile(file: string, cwd?: string): string {
+  if (!cwd || !isAbsolute(file)) return file;
+  const rel = relative(cwd, file);
+  return rel.startsWith("..") ? file : rel;
 }
 
 const EDIT_SYNTHESIS_SYSTEM = `You summarize a SINGLE code edit. Write ONE concise sentence (max 20 words) describing exactly what changed.
@@ -179,7 +195,7 @@ export const EXTRACTORS: Extractor[] = [
     id: "package_json",
     match: (tool, file) => tool === "read" && /package\.json$/.test(file || ""),
     extract: (content, file) => {
-      const pkg = safeJsonParse<Record<string, unknown>>(content);
+      const pkg = safeJsonParse<Record<string, unknown>>(stripLineNumbers(content));
       if (!pkg) return null;
       const deps = Object.keys((pkg.dependencies as Record<string, unknown>) || {}).slice(0, 10);
       const devDeps = Object.keys((pkg.devDependencies as Record<string, unknown>) || {}).slice(0, 5);
@@ -197,7 +213,7 @@ export const EXTRACTORS: Extractor[] = [
     id: "tsconfig",
     match: (tool, file) => tool === "read" && /tsconfig.*\.json$/.test(file || ""),
     extract: (content, file) => {
-      const ts = safeJsonParse<Record<string, unknown>>(content);
+      const ts = safeJsonParse<Record<string, unknown>>(stripLineNumbers(content));
       if (!ts) return null;
       const opts = (ts.compilerOptions as Record<string, unknown>) || {};
       return {
@@ -212,17 +228,21 @@ export const EXTRACTORS: Extractor[] = [
   {
     id: "entry_point",
     match: (tool, file) => tool === "read" && /src\/(index|main)\.(ts|tsx|js|jsx)$/.test(file || ""),
-    extract: (content, file) => {
+    extract: (content, file, ctx) => {
       const exports = content.match(/export\s+(?:default\s+)?(?:function|class|const|interface|type)\s+(\w+)/g);
       const exportNames = exports
         ? exports.map((e) => e.split(/\s+/).pop()).filter((n): n is string => !!n).slice(0, 5)
         : [];
+      const rel = file ? normalizeFile(file, ctx?.cwd) : file;
+      const safeKey = (rel || "unknown").replace(/[^a-zA-Z0-9]/g, "_");
       return {
-        content: `Entry point ${file} exports: ${exportNames.join(", ") || "default export or side effects"}.`,
+        content: `Entry point ${rel} exports: ${exportNames.join(", ") || "default export or side effects"}.`,
         category: "fact",
         importance: 3,
-        topicKey: "project_entry_point",
-        relatedFiles: file ? [file] : undefined,
+        // One key per entry point. A single shared key made every entry point
+        // supersede the previous one (112 stored, 1 active in kimi-code).
+        topicKey: `project_entry_point_${safeKey}`,
+        relatedFiles: rel ? [rel] : undefined,
       };
     },
   },
@@ -231,12 +251,13 @@ export const EXTRACTORS: Extractor[] = [
     match: (tool, file) => (tool === "edit" || tool === "write") && !!file,
     extract: async (_content, file, ctx) => {
       if (!file) return null;
-      const safeKey = file.replace(/[^a-zA-Z0-9]/g, "_");
+      const rel = normalizeFile(file, ctx?.cwd);
+      const safeKey = rel.replace(/[^a-zA-Z0-9]/g, "_");
 
       // Try LLM synthesis when we have context
       if (ctx?.llmOpts && (ctx.toolArgs || ctx.assistantMessage)) {
         const summary = await synthesizeEditEvent(
-          file,
+          rel,
           ctx.toolArgs?._toolName as string || "edit",
           ctx.toolArgs || {},
           ctx.assistantMessage,
@@ -248,18 +269,18 @@ export const EXTRACTORS: Extractor[] = [
             category: "event",
             importance: 3,
             topicKey: `event_edit_${safeKey}`,
-            relatedFiles: [file],
+            relatedFiles: [rel],
           };
         }
       }
 
       // Fallback to deterministic low-signal memory
       return {
-        content: `File modified: ${file}.`,
+        content: `File modified: ${rel}.`,
         category: "event",
         importance: 2,
         topicKey: `event_edit_${safeKey}`,
-        relatedFiles: [file],
+        relatedFiles: [rel],
       };
     },
   },

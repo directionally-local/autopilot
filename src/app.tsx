@@ -381,6 +381,7 @@ function App({
     [],
   );
   const sessionStartRecallRef = useRef<Promise<import("./memory/schema.js").HybridResult[]> | null>(null);
+  const sessionStartRecallRef = useRef<((query: string) => Promise<import("./memory/schema.js").HybridResult[]>) | null>(null);
   const kimiMdStaleNudgedRef = useRef(false);
   /** Show the "subagents unavailable" line once per session (#966). */
   const hotcellNoticeShownRef = useRef(false);

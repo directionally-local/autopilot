@@ -102,14 +102,15 @@ function gatherGitEvidence(): string {
 async function gatherMemoryEvidence(
   manager: MemoryManager,
   enabled: boolean,
+  query: string,
   signal?: AbortSignal,
 ): Promise<string> {
   if (!enabled) return "";
   try {
     const cwd = process.cwd();
-    const results = await manager.recall({ text: cwd, repoPath: cwd, limit: 10 });
+    const results = await manager.recall({ text: query || cwd, repoPath: cwd, limit: 10 });
     const highSignal = results.filter((r) =>
-      ["edit_event", "task", "instruction"].includes(r.memory.category),
+      ["event", "task", "instruction"].includes(r.memory.category),
     );
     if (highSignal.length === 0) return "";
     const synthesized = await manager.synthesizeRecalled(highSignal, signal);
@@ -164,7 +165,7 @@ export async function generateContinuationSummary(
   const recentAssistant = extractRecentAssistantMessages(messages);
   const gitEvidence = gatherGitEvidence();
   const memoryEvidence = opts.memoryManager
-    ? await gatherMemoryEvidence(opts.memoryManager, opts.memoryEnabled ?? false, opts.signal)
+    ? await gatherMemoryEvidence(opts.memoryManager, opts.memoryEnabled ?? false, goal ?? "", opts.signal)
     : "";
 
   const evidenceParts: string[] = [];

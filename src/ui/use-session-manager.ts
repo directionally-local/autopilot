@@ -322,7 +322,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         if (manager) {
           try {
             const cwd = process.cwd();
-            const results = await manager.recall({ text: cwd, repoPath: cwd, limit: 5 });
+            // Use the session title (derived from the first user message) so
+            // recall is task-relevant instead of matching every row via cwd.
+            const results = await manager.recall({ text: file.title || cwd, repoPath: cwd, limit: 5 });
             if (results.length > 0) {
               const text = await manager.synthesizeRecalled(results);
               injectRecalledMemoryOnce(d.messagesRef.current, text);

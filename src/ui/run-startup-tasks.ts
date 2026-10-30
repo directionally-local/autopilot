@@ -32,7 +32,7 @@ export interface RunStartupTasksDeps {
   setEvents: SetEvents;
   mkKey: () => string;
   memoryManagerRef: React.MutableRefObject<MemoryManager | null>;
-  sessionStartRecallRef: React.MutableRefObject<Promise<HybridResult[]> | null>;
+  sessionStartRecallRef: React.MutableRefObject<((query: string) => Promise<HybridResult[]>) | null>;
   setKimiMdStale: (v: boolean) => void;
   customCommandsRef: React.MutableRefObject<CustomCommand[]>;
   setCustomCommandsVersion: React.Dispatch<React.SetStateAction<number>>;
@@ -103,11 +103,12 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
       }
     });
 
-    // Fire session-start recall in the background so results are ready by the
-    // time the first turn starts. Synthesis and injection happen inside
-    // runAgentTurn so they are covered by the turn's abort signal.
+    // Defer session-start recall until the first turn so it can query with the
+    // user's actual prompt instead of the cwd path. Synthesis and injection
+    // happen inside runAgentTurn so they are covered by the turn's abort signal.
     const cwd = process.cwd();
-    sessionStartRecallRef.current = manager.recall({ text: cwd, repoPath: cwd, limit: 5 });
+    sessionStartRecallRef.current = (query: string) =>
+      manager.recall({ text: query || cwd, repoPath: cwd, limit: 5 });
 
     // Session-start drift check (Trigger A): if a project context file exists and high-signal
     // memories have been learned since the last refresh, mark as stale.

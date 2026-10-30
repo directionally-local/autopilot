@@ -174,8 +174,8 @@ export interface AgentTurnOpts extends LlmAuth {
   postEditDiagnostics?: boolean;
   /** Include warnings (not just errors) in the post-edit diagnostics block. */
   postEditDiagnosticsWarnings?: boolean;
-  /** Session-start memory recall promise. If provided, awaited at turn start and injected into messages. */
-  sessionStartRecall?: Promise<HybridResult[]>;
+  /** Session-start memory recall factory. Called at turn start with the user's prompt so recall is task-relevant, then injected into messages. */
+  sessionStartRecall?: (query: string) => Promise<HybridResult[]>;
   /** Skills DB for semantic skill routing. */
   skillsDb?: SqliteDatabase;
   /** Config for skill routing. */
@@ -556,7 +556,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   const recallPromise: Promise<{ text: string; count: number } | null> =
     opts.sessionStartRecall && opts.memoryManager && !hasRecalledMemory(opts.messages)
       ? (async () => {
-          const results = await opts.sessionStartRecall!;
+          const results = await opts.sessionStartRecall!(lastUserPrompt || opts.cwd);
           if (results.length === 0 || !opts.memoryManager) return null;
           const text = await opts.memoryManager.synthesizeRecalled(results, opts.signal);
           return { text, count: results.length };
@@ -1433,6 +1433,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
             const memory = await extractor.extract(result.content, filePath, {
               toolArgs: { ...toolArgs, _toolName: tc.function.name },
               assistantMessage,
+              cwd: opts.cwd,
               llmOpts: { ...llmOpts, signal: opts.signal },
             });
             if (!memory) return;
@@ -1445,6 +1446,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
               opts.signal,
               undefined,
               memory.topicKey,
+              memory.relatedFiles,
             );
             // Drift detection, sliding window: fire `onKimiMdStale` when
             // >=DRIFT_THRESHOLD high-signal memories land within DRIFT_WINDOW

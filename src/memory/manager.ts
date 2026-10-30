@@ -201,7 +201,8 @@ export class MemoryManager {
     sessionId: string,
     signal?: AbortSignal,
     agentRole?: string,
-    topicKey?: string
+    topicKey?: string,
+    relatedFiles?: string[]
   ): Promise<{ id: string; superseded?: string[] }> {
     if (!this.db) throw new Error("Memory DB not open");
 
@@ -252,6 +253,7 @@ export class MemoryManager {
       importance: Math.max(1, Math.min(5, importance)),
       topicKey: resolvedTopicKey ?? undefined,
       agentRole,
+      relatedFiles,
     };
 
     const memory = insertMemory(this.db, input, embedding, vector);
