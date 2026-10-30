@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.2](https://github.com/directionally-local/autopilot/compare/v3.1.1...v3.1.2) (2026-10-30)
+
+
+### Bug Fixes
+
+* verify GitHub pull request draft transitions ([#1085](https://github.com/directionally-local/autopilot/issues/1085)) ([2399e30](https://github.com/directionally-local/autopilot/commit/2399e3071d8633a04fcd23aec82c206a5bed94bc))
+
 ## [3.1.1](https://github.com/directionally-local/autopilot/compare/v3.1.0...v3.1.1) (2026-10-30)
 
 
