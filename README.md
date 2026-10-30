@@ -87,6 +87,8 @@ npx autopilot-ai
 
 Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (earlier releases have the Brotli bug CVE-2026-111497, and `web_fetch` refuses to run on them).
 
+If npm warns that it blocked `isolated-vm`'s install script, nothing is broken: `isolated-vm` is an optional dependency that ships prebuilt binaries for Node 22 and 24, and on a Node version without one Autopilot runs with Code Mode's sandbox off and tells you once per session how to build it.
+
 To pick up an earlier conversation, run `autopilot resume <id>` (the exact command is printed when you exit), `autopilot resume` to choose one from this directory, or `autopilot -c` for the most recent one. Inside autopilot, `/resume` does the same.
 
 ### Providers
@@ -120,6 +122,7 @@ To pick up an earlier conversation, run `autopilot resume <id>` (the exact comma
 
 - **First run** asks which provider to use; providers with a key already in your environment are offered first and used without saving the key.
 - **Switch any time** with `/provider <id> [key]` (`/provider` lists them and where each key comes from), or from the CLI: `autopilot auth <id>` (saves a key and makes it active), `autopilot auth use <id>`, `autopilot auth status`. For one run, set `AUTOPILOT_PROVIDER=<id>`.
+- **`autopilot connect`** runs the first-run screens on their own — the searchable provider list, key entry checked with the provider, then its live model list — and saves the choice, so a plain `autopilot` uses it. Installers and scripts can hand setup to it instead of asking for a key themselves: `--state-file <path>` writes the result (`provider`, `name`, `baseUrl`, `apiKey`, `apiKeyEnv`, `keyRequired`, `model`, `authHeader`, `authFormat`) as JSON readable by you only, and hides providers a plain key gateway cannot proxy (Copilot, ChatGPT, Vertex, Bedrock, Azure, Workers AI). `--model-only` keeps the active provider and only changes the model. Exits 0 when saved, 1 when cancelled, 2 on a usage error.
 - **Everything follows the provider**: chat, compaction and memory side-calls, memory/skill embeddings, the model picker (each provider's own catalog — models.dev for hosted providers, live discovery for Ollama and LM Studio), pricing, error messages and the status page link. Nothing is sent to OpenRouter while another provider is active.
 - **OpenRouter-only features** switch off on other providers: billed-cost confirmation (elsewhere `/cost` shows estimates from the provider's published prices), Hotcell subagents, and the Jev completion/triage checks.
 - **Embeddings**: providers without an embeddings API (Anthropic, DeepSeek, Moonshot, Kimi Code, the Coding Plan, LM Studio) keep memory working through text and topic-key recall. To keep vector recall, set `"embeddingProvider": "openai"` (or `AUTOPILOT_EMBEDDING_PROVIDER`) with that provider's key, or `memoryEmbeddingModel`.

@@ -570,6 +570,50 @@ program
     await runShutdownTasks();
   });
 
+program
+  .command("connect")
+  .description(
+    "Connect a model provider and pick a model with the same screens as the first run: a searchable provider list, " +
+      "key entry checked with the provider, then its live model list. The choice is saved to Autopilot's config, so a plain `autopilot` uses it. " +
+      "For installers: --state-file writes the provider, base URL, key, model and auth header as JSON (mode 0600) and hides providers a plain key gateway cannot proxy; " +
+      "--model-only keeps the active provider and only changes the model. Exits 0 when saved, 1 when cancelled, 2 on a usage error.",
+  )
+  .option("--state-file <path>", "write the connection as JSON here, readable by you only (parent directories are created)")
+  .option("--model-only", "keep the active provider; only pick and save a model")
+  .action(async (cmdOpts: { stateFile?: string; modelOnly?: boolean }) => {
+    const { runConnectCommand } = await import("./connect-command.js");
+    const { CONNECT_EXIT } = await import("./providers/connect-state.js");
+    const { gracefulExit, installExitHandlers } = await import("./util/exit.js");
+    installExitHandlers({ exitCode: () => CONNECT_EXIT.cancelled });
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("autopilot connect: needs a terminal (TTY) for the provider and model screens.\n");
+      await gracefulExit(CONNECT_EXIT.usage);
+    }
+    const { runCamouflageView } = await import("./camouflage-view.js");
+    const { CamouflageCrashed, CamouflageUnavailable } = await import("./camouflage-launch.js");
+    const code = await runConnectCommand(cmdOpts, {
+      mount: (run) =>
+        runCamouflageView({
+          version: getAppVersion(),
+          header: { title: `autopilot ${getAppVersion()}`, detail: ["Connect a model provider", "Billed to your own account with that provider · Esc to cancel"] },
+          commands: [],
+          run,
+        }).then(() => undefined),
+    }).catch(async (err: unknown) => {
+      if (err instanceof CamouflageUnavailable) {
+        process.stderr.write(err.message);
+        return CONNECT_EXIT.usage;
+      }
+      if (err instanceof CamouflageCrashed) {
+        process.stderr.write(`autopilot connect: the renderer stopped (${err.message}); nothing was saved. Run it again.\n`);
+        return CONNECT_EXIT.cancelled;
+      }
+      process.stderr.write(`autopilot connect: ${err instanceof Error ? err.message : String(err)}\n`);
+      return CONNECT_EXIT.cancelled;
+    });
+    await gracefulExit(code);
+  });
+
 const authCommand = program
   .command("auth")
   .description("Connect an LLM provider (or GitHub); `autopilot auth status` lists providers")
