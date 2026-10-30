@@ -719,6 +719,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   const recentToolCalls: string[] = [];
   const LOOP_WINDOW = 8;
   const LOOP_THRESHOLD = 2; // 3rd identical call triggers the guardrail
+  // Per-turn page cursor for repeated whole-file reads, keyed by path. The
+  // cursor used to be derived from `recentToolCalls`, so any unrelated call in
+  // between reset the count and the model was handed the same outline again —
+  // it saw no progress and repeated until the guardrail blocked it. A monotonic
+  // per-file cursor always moves forward, and it is cleared when that file is
+  // edited so "edit, then re-read to verify" is never treated as a repeat.
+  const readPages = new Map<string, number>();
   // Calls that already failed on their arguments (invalid_args). The same
   // arguments can never succeed, so a repeat is blocked on the first retry
   // instead of after LOOP_THRESHOLD — the model hears the original error and
@@ -1209,7 +1216,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         };
       }
       const repeatedCalls = recentToolCalls.filter((s) => s === loopSignature).length;
-      if (tc.function.name === "read" && repeatedCalls >= 1 && repeatedCalls <= MAX_READ_PAGES) {
+      if (tc.function.name === "read") {
         // A repeated full-file read is not a loop: the reducer answered the
         // first one with an outline, so the model is asking for content it
         // never got. Serve the next page instead of blocking, so every repeat
@@ -1217,7 +1224,34 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         // repeat and falls through to the guardrail below.
         const readArgs = parseArgsObject(tc.function.arguments);
         const hasSlice = typeof readArgs.offset === "number" || typeof readArgs.limit === "number";
-        if (!hasSlice) return { kind: "run", readRepeat: repeatedCalls };
+        const readPath = typeof readArgs.path === "string" ? readArgs.path : "";
+        if (!hasSlice && readPath) {
+          const served = readPages.get(readPath) ?? 0;
+          if (served === 0) {
+            // First read of this file: the reducer's outline. Start the cursor.
+            // The cursor, not the window count, governs whole-file reads, so a
+            // re-read after an edit is never mistaken for a repeat.
+            readPages.set(readPath, 1);
+            return { kind: "run" };
+          } else if (served <= MAX_READ_PAGES) {
+            readPages.set(readPath, served + 1);
+            return { kind: "run", readRepeat: served };
+          } else {
+            return {
+              kind: "blocked",
+              errorCode: "read_exhausted",
+              result: {
+                tool_call_id: tc.id,
+                name: "read",
+                content:
+                  `You have already been served ${MAX_READ_PAGES} pages of ${readPath} this turn, so repeating the whole-file read returns nothing new. ` +
+                  `Read a specific region with offset/limit, or edit the file and read it again.`,
+                ok: false,
+                guardrail: true,
+              },
+            };
+          }
+        }
       }
       if (repeatedCalls >= LOOP_THRESHOLD) {
         return {
@@ -1501,6 +1535,14 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       }
       if (outcome.kind === "run") {
         extractMemories(tc, result);
+        // A successful edit/write invalidates the read cursor for that file:
+        // the edit tool's staleness check requires a fresh read before the next
+        // edit, and that re-read has to be served rather than blocked as a
+        // repeat of the reads that preceded the change.
+        if (result.ok && (tc.function.name === "edit" || tc.function.name === "write")) {
+          const touched = parseArgsObject(tc.function.arguments).path;
+          if (typeof touched === "string") readPages.delete(touched);
+        }
         if (!result.ok && result.errorCode === "invalid_args") {
           const firstLine = result.content.split("\n").find((line) => line.trim()) ?? result.content;
           failedArgSignatures.set(loopSignature, firstLine);

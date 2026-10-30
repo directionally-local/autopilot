@@ -141,6 +141,46 @@ const READ_TOOL: ToolSpec = {
   run: async () => "ok",
 };
 
+const EDIT_TOOL: ToolSpec = {
+  name: "edit",
+  description: "Edit a file.",
+  parameters: {
+    type: "object",
+    properties: { path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" } },
+    required: ["path", "old_string", "new_string"],
+  },
+  needsPermission: false,
+  run: async () => "ok",
+};
+
+/** Executor that records the `readRepeat` page it was asked to serve. */
+function pagingExecutor(): { executor: ToolExecutor; readRepeats: number[] } {
+  const readRepeats: number[] = [];
+  const executor = {
+    list: () => [],
+    run: async (
+      call: { id: string; name: string; arguments: string },
+      _ask: unknown,
+      _ctx: unknown,
+      _onFileChange: unknown,
+      options?: { readRepeat?: number },
+    ) => {
+      if (call.name === "read") {
+        const repeat = options?.readRepeat ?? 0;
+        readRepeats.push(repeat);
+        return {
+          tool_call_id: call.id,
+          name: call.name,
+          content: repeat > 0 ? `page ${repeat}` : "File outline: preview only",
+          ok: true,
+        };
+      }
+      return { tool_call_id: call.id, name: call.name, content: "ok", ok: true };
+    },
+  } as unknown as ToolExecutor;
+  return { executor, readRepeats };
+}
+
 describe("runAgentTurn guardrails (unattended)", () => {
   let originalFetch: typeof globalThis.fetch;
   before(() => {
@@ -270,6 +310,83 @@ describe("runAgentTurn guardrails (unattended)", () => {
     assert.deepStrictEqual(readRepeats, [0, 1, 2, 3]);
     assert.deepStrictEqual(events, []);
     assert.strictEqual(model.requests, 5);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("keeps paging a repeated read when other calls are interleaved", async () => {
+    // The page cursor is per file, not a sliding-window count: an unrelated
+    // call in between must not reset it and hand back the same outline again.
+    const { executor, readRepeats } = pagingExecutor();
+    const model = scriptModel([
+      { tool: "read", args: { path: "src/large.rs" } },
+      SAME,
+      { tool: "read", args: { path: "src/large.rs" } },
+      SAME,
+      { tool: "read", args: { path: "src/large.rs" } },
+      { text: "Read enough." },
+    ]);
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { tools: [{ ...READ_TOOL, isReadOnly: true }, PROBE_TOOL] });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(readRepeats, [0, 1, 2], "each repeat must advance a page");
+    assert.deepStrictEqual(events, []);
+    assert.strictEqual(model.requests, 6);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("serves a re-read after an edit instead of blocking it", async () => {
+    // The edit tool's staleness check tells the model to read the file again.
+    // That re-read must be served, not counted as a repeat of the reads that
+    // preceded the change.
+    const { executor, readRepeats } = pagingExecutor();
+    const model = scriptModel([
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "edit", args: { path: "src/large.rs", old_string: "a", new_string: "b" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { text: "Verified the edit." },
+    ]);
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, {
+      tools: [{ ...READ_TOOL, isReadOnly: true }, EDIT_TOOL],
+    });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(readRepeats, [0, 1, 2, 3, 0], "the post-edit read starts a fresh cursor");
+    assert.deepStrictEqual(events, []);
+    assert.strictEqual(model.requests, 7);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("blocks a whole-file read once its pages are exhausted, with an actionable message", async () => {
+    const { executor, readRepeats } = pagingExecutor();
+    const model = scriptModel([
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { text: "Switching to offset/limit." },
+    ]);
+    const events: GuardrailEvent[] = [];
+    const toolResults: ToolResult[] = [];
+    const opts = baseOpts(executor, events, { tools: [{ ...READ_TOOL, isReadOnly: true }] });
+    opts.callbacks.onToolResult = (result) => toolResults.push(result);
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(readRepeats, [0, 1, 2, 3], "only the pages that exist are served");
+    const blocked = toolResults.find((result) => result.guardrail);
+    assert.ok(blocked, "the exhausted read should be blocked");
+    assert.match(String(blocked!.content), /offset\/limit/);
+    // Read-only loop: a summary, never a crash.
+    assert.deepStrictEqual(events.map((e) => e.kind), ["loop_recovery"]);
+    assert.strictEqual(opts.messages.at(-1)!.content, "Switching to offset/limit.");
     assertNoDanglingToolCalls(opts.messages);
   });
 
