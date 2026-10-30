@@ -18,6 +18,7 @@ describe("user shell prompt gating", () => {
     const p = buildSessionPrefix({ cwd: "/tmp", tools: [], model: "m" });
     assert.ok(p.includes("Commands the user runs with `!`"));
     assert.ok(p.includes("! gh auth login"));
+    assert.ok(p.includes("the turn continues automatically"));
   });
 });
 
