@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { assertAsterWorkspacePath, containsLikelyProviderSecret, createAsterTools, redactLikelySecrets } from "./aster-tools.js";
+import { assertAsterWorkspacePath, containsLikelyProviderSecret, createAsterTools, findLikelyProviderSecret, redactLikelySecrets } from "./aster-tools.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -27,6 +27,24 @@ describe("Aster workspace tool policy", () => {
     assert.equal(await assertAsterWorkspacePath(root, "src/new.ts", true), join(root, "src", "new.ts"));
     const tools = createAsterTools(root);
     assert.deepEqual(tools.map((tool) => tool.name), ["read", "write", "edit"]);
+  });
+
+  it("says where a patch's key is, never what it is", () => {
+    const patch = [
+      "diff --git a/src/laptop/connect.test.ts b/src/laptop/connect.test.ts",
+      "--- a/src/laptop/connect.test.ts",
+      "+++ b/src/laptop/connect.test.ts",
+      "@@ -10,3 +10,4 @@",
+      " const a = 1;",
+      '+const apiKey = "sk-deepseek-1234567890abcdefghij";',
+      " const b = 2;",
+    ].join("\n");
+    assert.deepEqual(findLikelyProviderSecret(patch), { file: "src/laptop/connect.test.ts", line: 11, pattern: "provider key (sk-…)" });
+    // A context line is already in the repository the server clones: it isn't the user's change.
+    assert.equal(findLikelyProviderSecret(patch.replace("+const apiKey", " const apiKey")), undefined);
+    // Text that isn't a diff has no location.
+    assert.deepEqual(findLikelyProviderSecret("key: ghp_0123456789abcdefghijklmnop"), { pattern: "GitHub token (ghp_…)" });
+    assert.equal(findLikelyProviderSecret("nothing to see here"), undefined);
   });
 
   it("detects and redacts common provider tokens", () => {

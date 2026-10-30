@@ -27,6 +27,7 @@ import type { CustomCommand, CommandSource } from "./commands/types.js";
 import { configPath, hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type ReasoningEffort } from "./config.js";
 import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from "./camouflage-onboarding.js";
 import { onShutdown } from "./util/exit.js";
+import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
@@ -205,6 +206,8 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
     // The SDK downloads the missing binary once before giving up.
     process.stderr.write(`autopilot: the Camouflage renderer is missing (${diagnosis.packageBin}); downloading it…\n`);
   }
+  // A pty that reports 0×0 draws nothing useful; the renderer assumes 80×24, and this says why.
+  warnIfNoTerminalSize();
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
   try {

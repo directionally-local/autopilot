@@ -899,6 +899,16 @@ describe("Aster device pairing and remote runs", () => {
       assert.deepEqual(await errorCode({ ...run, baseCommit, patch: 42 }), { status: 400, code: "invalid_patch" });
       assert.deepEqual(await errorCode({ workspaceId: "default", model: "test/model", kind: "chat", baseCommit }), { status: 400, code: "unsupported_field" });
 
+      // A key-shaped local change: refused, with where it is and never the key itself.
+      const secretPatch = "diff --git a/src/laptop/connect.test.ts b/src/laptop/connect.test.ts\n--- a/src/laptop/connect.test.ts\n+++ b/src/laptop/connect.test.ts\n@@ -10,3 +10,4 @@\n const a = 1;\n+const apiKey = \"sk-deepseek-1234567890abcdefghij\";\n const b = 2;\n";
+      const refused = await request(harness, "POST", "/api/v1/conversations", { ...run, baseCommit, patch: secretPatch });
+      assert.equal(refused.status, 400);
+      const refusal = await refused.json() as { error: { code: string; message: string } };
+      assert.equal(refusal.error.code, "patch_contains_secret");
+      assert.match(refusal.error.message, /src\/laptop\/connect\.test\.ts:11/);
+      assert.match(refusal.error.message, /provider key/);
+      assert.ok(!refusal.error.message.includes("sk-deepseek"), "the message never quotes the key");
+
       const listed = await request(harness, "GET", "/api/v1/conversations?limit=10");
       assert.equal(listed.status, 200);
       const runs = (await listed.json() as { conversations: Array<{ conversationId: string; repository: string; branch: string; status: string }> }).conversations;
