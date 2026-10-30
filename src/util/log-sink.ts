@@ -33,6 +33,19 @@ function defaultLogDir(): string {
 let overrideDir: string | null = null;
 let currentStream: WriteStream | null = null;
 let currentDate: string | null = null; // YYYY-MM-DD this stream targets
+/** Streams ended (on rotation or disable) whose writes may still be in flight. */
+const closing = new Set<Promise<void>>();
+
+/** End a stream and remember when it has really closed, so a flush can wait for it. */
+function retire(stream: WriteStream): void {
+  const closed = new Promise<void>((resolve) => {
+    stream.once("close", resolve);
+    stream.once("error", () => resolve());
+    stream.end();
+  });
+  closing.add(closed);
+  void closed.then(() => closing.delete(closed));
+}
 
 /** Detect if we're running under Node's test runner so unit tests don't
  *  pollute the user's real `~/.config/autopilot/logs/` directory. */
@@ -60,7 +73,7 @@ export function logPathFor(date: Date = new Date()): string {
 /** Override the log directory. Test-only escape hatch. */
 export function setLogDirForTesting(dir: string | null): void {
   if (currentStream) {
-    currentStream.end();
+    retire(currentStream);
     currentStream = null;
     currentDate = null;
   }
@@ -70,7 +83,7 @@ export function setLogDirForTesting(dir: string | null): void {
 /** Disable the file sink entirely (e.g. for unit tests). */
 export function setLogSinkEnabled(enabled: boolean): void {
   if (!enabled && currentStream) {
-    currentStream.end();
+    retire(currentStream);
     currentStream = null;
     currentDate = null;
   }
@@ -82,13 +95,13 @@ export function setLogSinkEnabled(enabled: boolean): void {
  *  file after a write — `setLogSinkEnabled(false)` returns synchronously
  *  but the stream's actual flush is async. */
 export async function flushAndCloseForTesting(): Promise<void> {
-  if (!currentStream) return;
-  const s = currentStream;
-  currentStream = null;
-  currentDate = null;
-  await new Promise<void>((resolve) => {
-    s.end(() => resolve());
-  });
+  if (currentStream) {
+    retire(currentStream);
+    currentStream = null;
+    currentDate = null;
+  }
+  // Includes streams retired earlier by a date rotation: their last lines may still be in flight.
+  await Promise.all([...closing]);
 }
 
 export function isLogSinkEnabled(): boolean {
@@ -101,7 +114,7 @@ function ensureStream(now: Date): WriteStream | null {
   if (currentStream && currentDate === dateKey) return currentStream;
   // Rotate on date change (UTC).
   if (currentStream) {
-    currentStream.end();
+    retire(currentStream);
     currentStream = null;
   }
   try {
