@@ -11,9 +11,9 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fetchGenerationSnapshot, type SessionUsage, type TurnCost, type UsageLog } from "./usage-tracker.js";
+import { dataPath } from "./util/app-dirs.js";
 
 export interface VerifyField {
   name: "input" | "output" | "cached" | "cost";
@@ -41,8 +41,7 @@ export interface VerifyResult {
 const COST_EPSILON = 1e-8;
 
 function usagePath(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare", "usage.json");
+  return dataPath("usage.json");
 }
 
 async function loadSessions(): Promise<SessionUsage[]> {

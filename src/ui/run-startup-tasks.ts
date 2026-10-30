@@ -25,6 +25,7 @@ import { indexSkills, initSkillsSchema } from "../skills/index.js";
 
 import { RETENTION } from "../storage-limits.js";
 import type { HybridResult } from "../memory/schema.js";
+import { projectPath } from "../util/app-dirs.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -71,7 +72,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   // Initialize memory manager if enabled
   if (cfg.memoryEnabled) {
     const repoRoot = resolveRepoRoot(process.cwd());
-    const dbPath = cfg.memoryDbPath ?? join(repoRoot, ".kimiflare", "memory.db");
+    const dbPath = cfg.memoryDbPath ?? projectPath(repoRoot, "memory.db");
     const manager = new MemoryManager({
       dbPath,
       ...auth,
@@ -127,7 +128,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   }
 
   // Initialize skills index (independent of memory feature flag)
-  const skillDbPath = cfg.memoryDbPath ?? join(resolveRepoRoot(process.cwd()), ".kimiflare", "memory.db");
+  const skillDbPath = cfg.memoryDbPath ?? projectPath(resolveRepoRoot(process.cwd()), "memory.db");
   const skillDb = getMemoryDb() ?? openMemoryDb(skillDbPath);
   initSkillsSchema(skillDb);
   void indexSkills({

@@ -122,16 +122,16 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
     hook: {
       id: "audit-tool-calls",
       command:
-        'mkdir -p ~/.local/state/kimiflare && ' +
+        'mkdir -p ~/.local/state/autopilot && ' +
         'printf "%s\\t%s\\t%s\\t%s\\n" ' +
         '"$(date -u +%Y-%m-%dT%H:%M:%SZ)" ' +
         '"$KIMIFLARE_HOOK_SESSION_ID" ' +
         '"$KIMIFLARE_HOOK_TOOL" ' +
         '"$KIMIFLARE_HOOK_RESULT_OK" ' +
-        '>> ~/.local/state/kimiflare/tool-audit.log',
+        '>> ~/.local/state/autopilot/tool-audit.log',
       enabled: false,
       description:
-        "Append every tool call (timestamp / session / tool / ok) to ~/.local/state/kimiflare/tool-audit.log.",
+        "Append every tool call (timestamp / session / tool / ok) to ~/.local/state/autopilot/tool-audit.log.",
     },
   },
 ];
@@ -140,7 +140,9 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
  * Commands that earlier releases wrote for the recommended PreToolUse
  * guards. They blocked with `exit 1`, which now fails open, so the loader
  * swaps them for the current `exit 2` command when it finds one verbatim
- * in a settings file. Keyed by the old command string.
+ * in a settings file. The audit hook moved its log from the pre-rename
+ * `~/.local/state/kimiflare` to `~/.local/state/autopilot`. Keyed by the
+ * old command string.
  */
 export const LEGACY_RECOMMENDED_COMMANDS: ReadonlyMap<string, string> = new Map([
   [
@@ -151,6 +153,16 @@ export const LEGACY_RECOMMENDED_COMMANDS: ReadonlyMap<string, string> = new Map(
   [
     'case "$KIMIFLARE_HOOK_PATH" in *.git/*|.git/*) ' + 'echo "blocked: cannot edit files inside .git/"; exit 1;; esac',
     getRecommendedHook("block-git-internals")!.hook.command,
+  ],
+  [
+    'mkdir -p ~/.local/state/kimiflare && ' +
+      'printf "%s\\t%s\\t%s\\t%s\\n" ' +
+      '"$(date -u +%Y-%m-%dT%H:%M:%SZ)" ' +
+      '"$KIMIFLARE_HOOK_SESSION_ID" ' +
+      '"$KIMIFLARE_HOOK_TOOL" ' +
+      '"$KIMIFLARE_HOOK_RESULT_OK" ' +
+      '>> ~/.local/state/kimiflare/tool-audit.log',
+    getRecommendedHook("audit-tool-calls")!.hook.command,
   ],
 ]);
 

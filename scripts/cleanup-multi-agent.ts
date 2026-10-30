@@ -1,11 +1,10 @@
 #!/usr/bin/env tsx
 /**
  * Audit and clean up leftover multi-agent Cloudflare primitives.
- * Reads credentials from ~/.config/kimiflare/config.json
+ * Reads credentials from ~/.config/autopilot/config.json
  */
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { configPath } from "../src/util/app-dirs.js";
 
 const CF_API = "https://api.cloudflare.com/client/v4";
 
@@ -15,8 +14,7 @@ interface Config {
 }
 
 async function loadConfig(): Promise<Config | null> {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  const path = join(xdg, "kimiflare", "config.json");
+  const path = configPath("config.json");
   try {
     const raw = await readFile(path, "utf8");
     return JSON.parse(raw) as Config;

@@ -1,12 +1,12 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, createWriteStream, readdirSync, statSync, unlinkSync } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { readEnv } from "./env.js";
+import { configPath } from "./app-dirs.js";
 
 /**
  * File sink for structured logs (M5.1). Writes JSONL lines to
- * `~/.config/kimiflare/logs/<YYYY-MM-DD>.jsonl`, one file per day,
+ * `~/.config/autopilot/logs/<YYYY-MM-DD>.jsonl`, one file per day,
  * with a 7-day retention window pruned on startup.
  *
  * Design notes:
@@ -27,8 +27,7 @@ import { readEnv } from "./env.js";
 const RETENTION_DAYS = 7;
 
 function defaultLogDir(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "logs");
+  return configPath("logs");
 }
 
 let overrideDir: string | null = null;
@@ -36,7 +35,7 @@ let currentStream: WriteStream | null = null;
 let currentDate: string | null = null; // YYYY-MM-DD this stream targets
 
 /** Detect if we're running under Node's test runner so unit tests don't
- *  pollute the user's real `~/.config/kimiflare/logs/` directory. */
+ *  pollute the user's real `~/.config/autopilot/logs/` directory. */
 function isInNodeTestContext(): boolean {
   if (process.env.NODE_TEST_CONTEXT) return true;
   if (process.env.NODE_ENV === "test") return true;

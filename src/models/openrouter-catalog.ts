@@ -6,16 +6,16 @@
  *
  * `GET https://openrouter.ai/api/v1/models` requires no authentication to list models
  * (auth is only needed for the chat-completions call itself). The response is cached
- * to disk (`~/.config/kimiflare/openrouter-models.json`, same directory as config.json)
+ * to disk (`~/.config/autopilot/openrouter-models.json`, same directory as config.json)
  * so a network blip or an offline session still has a model list to work with — the
  * stale cache is preferred over an empty list.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { dirname } from "node:path";
 import { registerOpenRouterModels, type ModelEntry } from "./registry.js";
 import { fetchWithNetworkRetry, openRouterUrl } from "./openrouter.js";
+import { configPath } from "../util/app-dirs.js";
 
 /** Bump when the cached `ModelEntry` shape changes, so an old cache is refetched. */
 const CACHE_VERSION = 4;
@@ -47,8 +47,7 @@ interface OpenRouterModelsResponse {
 }
 
 function catalogCachePath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "openrouter-models.json");
+  return configPath("openrouter-models.json");
 }
 
 /** OpenRouter prices per-token as a decimal string (e.g. "0.0000008"); we store USD/Mtok. */

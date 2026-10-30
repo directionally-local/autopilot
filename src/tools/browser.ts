@@ -121,7 +121,7 @@ export const browserFetchTool: ToolSpec<Args> = {
 
       let screenshotPath: string | undefined;
       if (args.screenshot) {
-        screenshotPath = join(tmpdir(), `kimiflare-browser-${Date.now()}.png`);
+        screenshotPath = join(tmpdir(), `autopilot-browser-${Date.now()}.png`);
         await mkdir(dirname(screenshotPath), { recursive: true });
         await page.screenshot({ path: screenshotPath, fullPage: true });
       }

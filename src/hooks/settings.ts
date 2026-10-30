@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { logger } from "../util/logger.js";
+import { configDir, legacyConfigDirs, legacyProjectDir, projectDir } from "../util/app-dirs.js";
 import { isProjectFileTrusted, readProjectFile, trustProjectFiles } from "../util/project-trust.js";
 import { LEGACY_RECOMMENDED_COMMANDS } from "./recommended.js";
 import {
@@ -21,31 +21,27 @@ import {
 // event) replaces an earlier one. New hooks are written to the autopilot
 // paths; enabling/disabling an existing hook edits the file it lives in.
 
-function configHome(): string {
-  return process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-}
-
 /** Canonical global settings file (`$XDG_CONFIG_HOME/autopilot/settings.json`,
  *  default `~/.config/autopilot/settings.json`). New global hooks go here. */
 export function globalSettingsPath(): string {
-  return join(configHome(), "autopilot", "settings.json");
+  return join(configDir(), "settings.json");
 }
 
 /** Canonical per-project settings file (`<cwd>/.autopilot/settings.json`).
  *  New project hooks go here. */
 export function projectSettingsPath(cwd: string): string {
-  return join(cwd, ".autopilot", "settings.json");
+  return join(projectDir(cwd), "settings.json");
 }
 
 /** Legacy global settings file (`$XDG_CONFIG_HOME/kimiflare/settings.json`).
  *  Still read; existing hooks in it are edited in place. */
 export function legacyGlobalSettingsPath(): string {
-  return join(configHome(), "kimiflare", "settings.json");
+  return join(legacyConfigDirs()[0]!, "settings.json");
 }
 
 /** Legacy per-project settings file (`<cwd>/.kimiflare/settings.json`). */
 export function legacyProjectSettingsPath(cwd: string): string {
-  return join(cwd, ".kimiflare", "settings.json");
+  return join(legacyProjectDir(cwd), "settings.json");
 }
 
 export interface HookSettingsLocation {
@@ -61,12 +57,23 @@ export interface HookSettingsLocation {
  * project autopilot.
  */
 export function hookSettingsLocations(cwd: string): HookSettingsLocation[] {
-  return [
+  const all: HookSettingsLocation[] = [
     { scope: "global", legacy: true, path: legacyGlobalSettingsPath() },
     { scope: "global", legacy: false, path: globalSettingsPath() },
     { scope: "project", legacy: true, path: legacyProjectSettingsPath(cwd) },
     { scope: "project", legacy: false, path: projectSettingsPath(cwd) },
   ];
+  // After the one-time directory migration the legacy config dir is a
+  // symlink to the autopilot one: read that file once, as the canonical one.
+  return all.filter((loc, i) => !(loc.legacy && sameFile(loc.path, all[i + 1]!.path)));
+}
+
+function sameFile(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
 }
 
 function readSettingsFile(path: string): KimiflareSettings | null {

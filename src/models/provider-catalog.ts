@@ -16,12 +16,12 @@
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { dirname } from "node:path";
 import { registerProviderModels, type ModelEntry } from "./registry.js";
 import { MODELS_DEV_SNAPSHOT } from "./models-dev-snapshot.js";
 import { PROVIDER_PRESETS, type ProviderId } from "../providers/presets.js";
 import { getUserAgent } from "../util/version.js";
+import { configPath } from "../util/app-dirs.js";
 
 export const MODELS_DEV_URL = "https://models.dev/api.json";
 const CACHE_VERSION = 1;
@@ -90,8 +90,7 @@ export function mapModelsDevProvider(p: ModelsDevProvider): ModelEntry[] {
 }
 
 function cachePath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "models-dev.json");
+  return configPath("models-dev.json");
 }
 
 interface CacheFile {

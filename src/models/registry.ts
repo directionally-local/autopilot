@@ -163,7 +163,7 @@ export function activeProviderCatalog(): string | null {
   return providerCatalogId;
 }
 
-/** Register or replace entries from a user-supplied config (e.g. ~/.kimiflare/models.json). */
+/** Register or replace entries from a user-supplied config (e.g. ~/.config/autopilot/models.json). */
 export function registerUserModels(entries: ModelEntry[]): void {
   userOverrides = new Map(entries.map((m) => [m.id, m]));
 }

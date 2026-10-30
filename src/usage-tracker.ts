@@ -1,5 +1,4 @@
 import { readFile, rename } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -10,6 +9,7 @@ import { calculateCost } from "./pricing.js";
 import { fetchWithNetworkRetry, openRouterHeaders, openRouterUrl } from "./models/openrouter.js";
 import { RETENTION } from "./storage-limits.js";
 import { recoverJsonPrefix, withFileLock, writeFileAtomic } from "./util/atomic-file.js";
+import { dataPath } from "./util/app-dirs.js";
 
 const LOG_VERSION = 1;
 
@@ -130,17 +130,12 @@ export interface UsageLog {
   sessions: SessionUsage[];
 }
 
-function usageDir(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare");
-}
-
 function usagePath(): string {
-  return join(usageDir(), "usage.json");
+  return dataPath("usage.json");
 }
 
 function historyPath(): string {
-  return join(usageDir(), "history.jsonl");
+  return dataPath("history.jsonl");
 }
 
 function today(): string {

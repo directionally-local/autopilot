@@ -3,8 +3,6 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import type { KimiConfig } from "../config.js";
 import type { SessionUsage, UsageLog } from "../usage-tracker.js";
 import { buildReport } from "./report.js";
@@ -13,6 +11,7 @@ import { reconcileWithOpenRouter } from "./reconcile.js";
 import { activeOpenRouterKey } from "../agent/llm-auth.js";
 import { classifyFromSessionFile } from "./classify-from-session.js";
 import type { TaskCategory } from "./types.js";
+import { dataPath } from "../util/app-dirs.js";
 
 interface CostCommandOptions {
   week?: boolean;
@@ -26,13 +25,8 @@ interface CostCommandOptions {
   config: KimiConfig;
 }
 
-function usageDir(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare");
-}
-
 function usagePath(): string {
-  return join(usageDir(), "usage.json");
+  return dataPath("usage.json");
 }
 
 function today(): string {

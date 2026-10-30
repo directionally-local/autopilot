@@ -27,7 +27,7 @@ describe("OpenRouter cost confirmation", () => {
   }
 
   async function readSession(dir: string, id: string) {
-    const log = JSON.parse(await readFile(join(dir, "kimiflare", "usage.json"), "utf8")) as UsageLog;
+    const log = JSON.parse(await readFile(join(dir, "autopilot", "usage.json"), "utf8")) as UsageLog;
     return log.sessions.find((s) => s.id === id)!;
   }
 
@@ -127,7 +127,7 @@ describe("Persistent history.jsonl", () => {
         undefined,
       );
 
-      const historyRaw = await readFile(join(dir, "kimiflare", "history.jsonl"), "utf8");
+      const historyRaw = await readFile(join(dir, "autopilot", "history.jsonl"), "utf8");
       const lines = historyRaw.trim().split("\n");
       assert.strictEqual(lines.length, 1);
       assert.ok(lines[0]);
@@ -166,7 +166,7 @@ describe("Persistent history.jsonl", () => {
         undefined,
       );
 
-      const historyRaw = await readFile(join(dir, "kimiflare", "history.jsonl"), "utf8");
+      const historyRaw = await readFile(join(dir, "autopilot", "history.jsonl"), "utf8");
       const lines = historyRaw.trim().split("\n");
       assert.strictEqual(lines.length, 1);
       assert.ok(lines[0]);

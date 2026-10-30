@@ -1,8 +1,8 @@
 import { SqliteDatabase } from "../util/sqlite.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { stateDir } from "../util/app-dirs.js";
 
 export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve" | "pairing:approve";
 export type AsterConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "merged";
@@ -979,8 +979,7 @@ export class AsterStore {
 }
 
 export function defaultAsterDbPath(): string {
-  const root = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
-  return process.env.AUTOPILOT_ASTER_DB || join(root, "autopilot", "aster.db");
+  return process.env.AUTOPILOT_ASTER_DB || join(stateDir(), "aster.db");
 }
 
 function hashToken(token: string): string {

@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { logger } from "../util/logger.js";
+import { dataPath } from "../util/app-dirs.js";
 
 /**
  * Local, append-only record of subagent usage, so "how often do subagents
@@ -26,8 +26,7 @@ export type SubagentEvent =
     };
 
 export function subagentStatsPath(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare", "subagents.jsonl");
+  return dataPath("subagents.jsonl");
 }
 
 /** Best effort: stats must never break a turn. */

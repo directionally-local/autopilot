@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { HotcellProcessRunner } from "./hotcell-worker.js";
+import { configPath } from "../util/app-dirs.js";
 
 /**
  * Cache of the subagent runtime (the Autopilot CLI installed for Linux) as a
@@ -20,8 +20,7 @@ interface CacheFile {
 }
 
 export function workerCachePath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "hotcell-worker-cache.json");
+  return configPath("hotcell-worker-cache.json");
 }
 
 async function readCache(): Promise<CacheFile> {

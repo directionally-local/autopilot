@@ -1,10 +1,10 @@
 import { appendFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ChatMessage, Usage } from "./agent/messages.js";
 import type { ToolResult } from "./tools/executor.js";
 import { rotateJsonl, RETENTION } from "./storage-limits.js";
 import { logger } from "./util/logger.js";
+import { dataPath } from "./util/app-dirs.js";
 
 const LOG_VERSION = 1;
 
@@ -78,11 +78,6 @@ export interface CostDebugEntry {
   memoryRecalled?: boolean;
 }
 
-function debugDir(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare");
-}
-
 function now(): string {
   return new Date().toISOString();
 }
@@ -145,8 +140,8 @@ export function buildToolStats(results: ToolResult[]): ToolByteStats[] {
 export async function logCostDebug(entry: CostDebugEntry): Promise<void> {
   // Resolve the location once, so a changed XDG_DATA_HOME mid-write can't
   // send the append to a directory that was never created.
-  const dir = debugDir();
-  const path = join(dir, "cost-debug.jsonl");
+  const path = dataPath("cost-debug.jsonl");
+  const dir = dirname(path);
   await mkdir(dir, { recursive: true });
   await rotateJsonl(path, RETENTION.costDebugMaxBytes, RETENTION.costDebugRotations);
   await appendFile(path, JSON.stringify(entry) + "\n", "utf8");

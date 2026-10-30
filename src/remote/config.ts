@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { configDir } from "../util/app-dirs.js";
 
 /** A paired Autopilot server. The token is an Aster client credential, never a provider key. */
 export interface RemoteServer {
@@ -21,8 +21,7 @@ export const REMOTE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 export function remotesPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.AUTOPILOT_REMOTES_FILE) return env.AUTOPILOT_REMOTES_FILE;
-  const configHome = env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config");
-  return join(configHome, "autopilot", "remotes.json");
+  return join(configDir(env), "remotes.json");
 }
 
 export async function loadRemotes(path = remotesPath()): Promise<RemoteServer[]> {

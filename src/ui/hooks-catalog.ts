@@ -31,11 +31,11 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
     `npx --no-install prettier --write "$AUTOPILOT_HOOK_PATH" 2>/dev/null || true`,
     ``,
     `# Log every tool call to an audit file:`,
-    `echo "$(date -u +%FT%TZ) $AUTOPILOT_HOOK_TOOL $AUTOPILOT_HOOK_RESULT_OK" >> ~/.local/state/kimiflare/tool-audit.log`,
+    `echo "$(date -u +%FT%TZ) $AUTOPILOT_HOOK_TOOL $AUTOPILOT_HOOK_RESULT_OK" >> ~/.local/state/autopilot/tool-audit.log`,
   ],
   PostToolUseFailure: [
     `# Log failed tool calls with their error:`,
-    `jq -c '{tool: .tool_name, error: .error}' >> ~/.local/state/kimiflare/tool-failures.log`,
+    `jq -c '{tool: .tool_name, error: .error}' >> ~/.local/state/autopilot/tool-failures.log`,
   ],
   PermissionRequest: [
     `# Never let the agent touch .env files, without asking you:`,
@@ -49,7 +49,7 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
     `jq -r .prompt | grep -qiv password || { echo "no passwords in prompts" >&2; exit 2; }`,
     ``,
     `# Log every prompt with its tier:`,
-    `echo "[$AUTOPILOT_HOOK_TIER] $(jq -r .prompt)" >> ~/.local/state/kimiflare/prompts.log`,
+    `echo "[$AUTOPILOT_HOOK_TIER] $(jq -r .prompt)" >> ~/.local/state/autopilot/prompts.log`,
   ],
   Stop: [
     `# Terminal bell when the agent finishes:`,
@@ -60,15 +60,15 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
   ],
   PreCompact: [
     `# Snapshot the session file before compaction shrinks it:`,
-    `mkdir -p ~/snapshots && cp ~/.config/kimiflare/sessions/$AUTOPILOT_HOOK_SESSION_ID.json ~/snapshots/`,
+    `mkdir -p ~/snapshots && cp ~/.local/share/autopilot/sessions/$AUTOPILOT_HOOK_SESSION_ID.json ~/snapshots/`,
   ],
   SessionStart: [
     `# Record session starts:`,
-    `echo "$(date -u +%FT%TZ) start $AUTOPILOT_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
+    `echo "$(date -u +%FT%TZ) start $AUTOPILOT_HOOK_SESSION_ID" >> ~/.local/state/autopilot/sessions.log`,
   ],
   SessionEnd: [
     `# Record session ends:`,
-    `echo "$(date -u +%FT%TZ) end $AUTOPILOT_HOOK_SESSION_ID" >> ~/.local/state/kimiflare/sessions.log`,
+    `echo "$(date -u +%FT%TZ) end $AUTOPILOT_HOOK_SESSION_ID" >> ~/.local/state/autopilot/sessions.log`,
   ],
 };
 

@@ -86,7 +86,7 @@ describe("SDK session turn lifecycle", () => {
   }
 
   async function savedMessages(id: string): Promise<ChatMessage[]> {
-    const file = JSON.parse(await readFile(join(process.env.XDG_DATA_HOME!, "kimiflare", "sessions", `${id}.json`), "utf8"));
+    const file = JSON.parse(await readFile(join(process.env.XDG_DATA_HOME!, "autopilot", "sessions", `${id}.json`), "utf8"));
     return file.messages as ChatMessage[];
   }
 

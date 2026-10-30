@@ -1,5 +1,4 @@
 import { readFile, mkdir, writeFile, chmod } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { isProviderId, PROVIDER_PRESETS, type ProviderId } from "./providers/presets.js";
 import { isProviderUsable, noteActiveProvider, resolveActiveProvider, resolveProviderId, type ProviderSettings } from "./providers/resolve.js";
@@ -7,6 +6,7 @@ import { migrateLegacyModelId } from "./models/registry.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
 import { readEnv } from "./util/env.js";
+import { configPath as userConfigPath } from "./util/app-dirs.js";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 export const EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high"];
@@ -135,7 +135,7 @@ export interface KimiConfig {
   maxTotalToolIterations?: number;
   /** Enable local structured memory (SQLite + embeddings). */
   memoryEnabled?: boolean;
-  /** Path to memory database. Defaults to .kimiflare/memory.db in repo root, or ~/.local/share/kimiflare/memory.db. */
+  /** Path to memory database. Defaults to .autopilot/memory.db in repo root (an existing .kimiflare/memory.db is still used), or ~/.local/share/autopilot/memory.db. */
   memoryDbPath?: string;
   /** Max age of memories in days before cleanup. Default: 90. */
   memoryMaxAgeDays?: number;
@@ -223,7 +223,7 @@ export interface KimiConfig {
   /**
    * Local session tracing (docs/plans/trace-and-dataset-dev-plan.md). Off by
    * default; writes `trace.jsonl` + blobs per session under `root`
-   * (default `${XDG_DATA_HOME:-~/.local/share}/kimiflare/traces`).
+   * (default `${XDG_DATA_HOME:-~/.local/share}/autopilot/traces`).
    * Env: KIMIFLARE_TRACE=1|0, KIMIFLARE_TRACE_DIR=<path>.
    */
   trace?: TraceConfig;
@@ -248,8 +248,7 @@ export function plumbingModelOf(cfg: Pick<KimiConfig, "plumbingModel" | "model">
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
 
 export function configPath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "config.json");
+  return userConfigPath("config.json");
 }
 
 function readReasoningEffortEnv(): ReasoningEffort | undefined {

@@ -3,20 +3,14 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import type { UsageLog, SessionUsage } from "../usage-tracker.js";
 import { buildReport } from "./report.js";
 import { renderTerminal } from "./renderer.js";
 import { classifyFromSessionFile } from "./classify-from-session.js";
-
-function usageDir(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare");
-}
+import { dataPath } from "../util/app-dirs.js";
 
 function usagePath(): string {
-  return join(usageDir(), "usage.json");
+  return dataPath("usage.json");
 }
 
 function today(): string {

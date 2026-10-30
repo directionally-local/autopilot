@@ -4,7 +4,7 @@
  * Three sinks, all independent:
  *   1. **stderr** (gated by `KIMIFLARE_LOG_LEVEL`, default `off`) — for
  *      interactive debugging. Tail with `2>&1 | jq` from a dev shell.
- *   2. **file** (`~/.config/kimiflare/logs/<date>.jsonl`, default ON;
+ *   2. **file** (`~/.config/autopilot/logs/<date>.jsonl`, default ON;
  *      disable with `KIMIFLARE_LOG_SINK=off`) — for post-hoc analysis,
  *      shipped in M5.1. Always-on so the data exists even when the TUI
  *      is silent.

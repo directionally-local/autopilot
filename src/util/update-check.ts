@@ -1,8 +1,8 @@
 import { readFile, writeFile, mkdir, access } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getUserAgent, PACKAGE_NAME } from "./version.js";
+import { configPath } from "./app-dirs.js";
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const NPM_REGISTRY = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
@@ -23,8 +23,7 @@ export interface OptionalDepCheckResult {
 }
 
 function cachePath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "update-check.json");
+  return configPath("update-check.json");
 }
 
 async function findPackageJson(startDir: string): Promise<{ path: string; version: string } | null> {

@@ -4,13 +4,12 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type { ChatMessage, ToolCall } from "../agent/messages.js";
 import { classifySession } from "./heuristic.js";
+import { dataPath } from "../util/app-dirs.js";
 
 function sessionsDir(): string {
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(xdg, "kimiflare", "sessions");
+  return dataPath("sessions");
 }
 
 interface ParsedToolCall {

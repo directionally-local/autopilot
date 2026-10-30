@@ -1,5 +1,4 @@
 import { open, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { MODES, type Mode } from "../mode.js";
 import { glob } from "../util/glob.js";
@@ -7,16 +6,22 @@ import { EFFORTS, type ReasoningEffort } from "../config.js";
 import { isPathOutside } from "../util/paths.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import type { CommandSource, CustomCommand, LoadResult } from "./types.js";
+import { configPath, legacyProjectDir, projectDir } from "../util/app-dirs.js";
 
 const MAX_COMMAND_FILE_BYTES = 256 * 1024;
 
+/** Where new project commands are saved (`.autopilot/commands`). */
 export function projectCommandsDir(cwd: string = process.cwd()): string {
-  return join(cwd, ".kimiflare", "commands");
+  return join(projectDir(cwd), "commands");
+}
+
+/** Pre-rename project commands (`.kimiflare/commands`): still read. */
+export function legacyProjectCommandsDir(cwd: string = process.cwd()): string {
+  return join(legacyProjectDir(cwd), "commands");
 }
 
 export function globalCommandsDir(): string {
-  const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdg, "kimiflare", "commands");
+  return configPath("commands");
 }
 
 export async function loadCustomCommands(
@@ -27,6 +32,7 @@ export async function loadCustomCommands(
 
   const sources: Array<{ dir: string; source: CommandSource }> = [
     { dir: globalCommandsDir(), source: "global" },
+    { dir: legacyProjectCommandsDir(cwd), source: "project" },
     { dir: projectCommandsDir(cwd), source: "project" },
   ];
 

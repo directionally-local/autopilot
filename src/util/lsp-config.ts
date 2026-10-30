@@ -2,9 +2,9 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import type { KimiConfig, LspServerConfig } from "../config.js";
+import { legacyProjectDir, projectDir, PROJECT_DIR_NAME } from "./app-dirs.js";
 import { isProjectFileTrusted, readProjectFile, trustProjectFiles } from "./project-trust.js";
 
-const PROJECT_CONFIG_DIR = ".kimiflare";
 const PROJECT_LSP_FILE = "lsp.json";
 
 export interface ResolvedLspConfig {
@@ -22,15 +22,16 @@ function isGitRoot(dir: string): boolean {
 }
 
 /**
- * Walk up from cwd looking for .kimiflare/lsp.json.
+ * Walk up from cwd looking for .autopilot/lsp.json (or the pre-rename
+ * .kimiflare/lsp.json, read when the new one is absent).
  * Stops at git root or filesystem root.
  */
 export function findProjectLspConfigPath(cwd: string): string | null {
   let current = cwd;
   while (true) {
-    const candidate = join(current, PROJECT_CONFIG_DIR, PROJECT_LSP_FILE);
-    if (existsSync(candidate)) {
-      return candidate;
+    for (const dir of [projectDir(current), legacyProjectDir(current)]) {
+      const candidate = join(dir, PROJECT_LSP_FILE);
+      if (existsSync(candidate)) return candidate;
     }
     if (isGitRoot(current)) {
       return null;
@@ -66,7 +67,7 @@ export async function loadProjectLspConfig(cwd: string): Promise<Partial<Pick<Ki
 
 async function ensureGitignore(cwd: string): Promise<void> {
   const gitignorePath = join(cwd, ".gitignore");
-  const entry = `${PROJECT_CONFIG_DIR}/${PROJECT_LSP_FILE}`;
+  const entry = `${PROJECT_DIR_NAME}/${PROJECT_LSP_FILE}`;
   try {
     const content = await readFile(gitignorePath, "utf8");
     if (content.includes(entry)) return;
@@ -80,7 +81,7 @@ export async function saveProjectLspConfig(
   cwd: string,
   cfg: Partial<Pick<KimiConfig, "lspEnabled" | "lspServers">>,
 ): Promise<string> {
-  const dir = join(cwd, PROJECT_CONFIG_DIR);
+  const dir = projectDir(cwd);
   await mkdir(dir, { recursive: true });
   const path = join(dir, PROJECT_LSP_FILE);
   await writeFile(path, JSON.stringify(cfg, null, 2), "utf8");

@@ -35,6 +35,16 @@ function makeTmpDir(): string {
 }
 
 describe("findProjectLspConfigPath", () => {
+  it("prefers .autopilot/lsp.json over the legacy .kimiflare one", async () => {
+    const root = makeTmpDir();
+    for (const name of [".autopilot", ".kimiflare"]) {
+      await mkdir(join(root, name), { recursive: true });
+      await writeFile(join(root, name, "lsp.json"), "{}", "utf8");
+    }
+    assert.strictEqual(findProjectLspConfigPath(root), join(root, ".autopilot", "lsp.json"));
+    await rm(root, { recursive: true });
+  });
+
   it("finds config in cwd", async () => {
     const root = makeTmpDir();
     const dir = join(root, ".kimiflare");
@@ -110,18 +120,18 @@ describe("saveProjectLspConfig", () => {
       lspEnabled: true,
       lspServers: { ts: { command: ["tsserver"] } },
     });
-    assert.strictEqual(path, join(root, ".kimiflare", "lsp.json"));
+    assert.strictEqual(path, join(root, ".autopilot", "lsp.json"));
     const gitignore = await readFile(join(root, ".gitignore"), "utf8");
-    assert.ok(gitignore.includes(".kimiflare/lsp.json"));
+    assert.ok(gitignore.includes(".autopilot/lsp.json"));
     await rm(root, { recursive: true });
   });
 
   it("does not duplicate gitignore entry", async () => {
     const root = makeTmpDir();
-    await writeFile(join(root, ".gitignore"), ".kimiflare/lsp.json\n", "utf8");
+    await writeFile(join(root, ".gitignore"), ".autopilot/lsp.json\n", "utf8");
     await saveProjectLspConfig(root, { lspEnabled: true });
     const gitignore = await readFile(join(root, ".gitignore"), "utf8");
-    const matches = gitignore.match(/\.kimiflare\/lsp\.json/g);
+    const matches = gitignore.match(/\.autopilot\/lsp\.json/g);
     assert.strictEqual(matches?.length, 1);
     await rm(root, { recursive: true });
   });

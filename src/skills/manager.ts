@@ -3,16 +3,21 @@ import { dirname, join } from "node:path";
 import { parseFrontmatter } from "../util/frontmatter.js";
 import type { Skill } from "./types.js";
 import { loadSkillsFromDir } from "./loader.js";
+import { configPath, legacyProjectDir, projectDir } from "../util/app-dirs.js";
 
 export interface SkillDirInfo {
+  /** Where new project skills are created (`.autopilot/skills`). */
   projectDir: string;
+  /** Pre-rename project skills (`.kimiflare/skills`): still listed. */
+  legacyProjectDir: string;
   globalDir: string;
 }
 
 export function getSkillDirs(cwd: string): SkillDirInfo {
   return {
-    projectDir: join(cwd, ".kimiflare", "skills"),
-    globalDir: join(process.env.HOME ?? "", ".config", "kimiflare", "skills"),
+    projectDir: join(projectDir(cwd), "skills"),
+    legacyProjectDir: join(legacyProjectDir(cwd), "skills"),
+    globalDir: configPath("skills"),
   };
 }
 
@@ -21,11 +26,13 @@ export async function listAllSkills(cwd: string): Promise<{
   global: Skill[];
 }> {
   const dirs = getSkillDirs(cwd);
-  const [project, global] = await Promise.all([
+  const [project, legacy, global] = await Promise.all([
     loadSkillsFromDir(dirs.projectDir).catch(() => [] as Skill[]),
+    loadSkillsFromDir(dirs.legacyProjectDir).catch(() => [] as Skill[]),
     loadSkillsFromDir(dirs.globalDir).catch(() => [] as Skill[]),
   ]);
-  return { project, global };
+  const seen = new Set(project.map((s) => s.name));
+  return { project: [...project, ...legacy.filter((s) => !seen.has(s.name))], global };
 }
 
 export interface CreateSkillOptions {

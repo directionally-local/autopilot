@@ -35,7 +35,7 @@ describe("cost on providers without cost confirmation", () => {
     // deepseek-flash: $0.15 in, $0.003 cached, $0.60 out per Mtok.
     const usage = { prompt_tokens: 1_000_000, completion_tokens: 100_000, total_tokens: 1_100_000, prompt_tokens_details: { cached_tokens: 800_000 } };
     await recordUsage("s-deepseek", usage, undefined, "deepseek-flash");
-    const log = JSON.parse(await readFile(join(dir, "kimiflare", "usage.json"), "utf8")) as UsageLog;
+    const log = JSON.parse(await readFile(join(dir, "autopilot", "usage.json"), "utf8")) as UsageLog;
     const s = log.sessions.find((x) => x.id === "s-deepseek")!;
     const expected = 0.2 * 0.15 + 0.8 * 0.003 + 0.1 * 0.6;
     assert.ok(Math.abs(s.cost - expected) < 1e-9, `cost ${s.cost} ≈ ${expected}`);
