@@ -1,0 +1,51 @@
+name: dependency floors
+
+# Fails when one of our own packages has a newer release than the floor in
+# package.json allows. Dependabot moves these within a day; this makes the
+# drift visible the moment it exists, so a first run can't fail on a pin that
+# was already stale.
+#
+# Runs daily, on demand, and on any PR that touches package.json. A scheduled
+# failure also opens (or updates) an issue, so it is actionable rather than a
+# red X in the Actions tab.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths: [package.json]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Compare our own packages' floors with npm
+        run: node scripts/check-dependency-floors.mjs
+
+      - name: Open or update an issue when a floor is stale
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="A dependency floor is below the latest release"
+          report=$(node scripts/check-dependency-floors.mjs 2>&1 || true)
+          existing=$(gh issue list -R "$REPO" --state open --search "$title in:title" \
+            --json number,title --jq '.[] | select(.title == "'"$title"'") | .number' | head -n1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$REPO" --body "Still stale as of $(date -u +%Y-%m-%d)."$'\n\n'"\`\`\`"$'\n'"$report"$'\n'"\`\`\`"
+          else
+            gh issue create -R "$REPO" --title "$title" \
+              --body "One of our own packages has a newer release than \`package.json\` allows, so a lockfile can hold a version that predates a fix we depend on."$'\n\n'"\`\`\`"$'\n'"$report"$'\n'"\`\`\`"$'\n\n'"Dependabot raises the floor daily; trigger it by hand from **Insights → Dependency graph → Dependabot** if you need it now."
+          fi
