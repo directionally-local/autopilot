@@ -25,6 +25,12 @@ export interface RemoteEvent {
   data: Record<string, unknown>;
 }
 
+/** GET /models' `provider`: the LLM provider the server's cells talk to. */
+export interface RemoteProviderInfo {
+  id: string;
+  name: string;
+}
+
 /** One entry of GET /models' `catalog` (empty for a server with a fixed model list). */
 export interface RemoteModelInfo {
   id: string;
@@ -122,10 +128,27 @@ export class RemoteClient {
     return (await this.modelCatalog()).models;
   }
 
-  /** The model IDs a conversation may use, with whatever metadata the server has for them. */
-  async modelCatalog(): Promise<{ models: string[]; catalog: RemoteModelInfo[] }> {
-    const body = await this.request<{ models: string[]; catalog?: RemoteModelInfo[] }>("GET", "/models");
-    return { models: body.models, catalog: body.catalog ?? [] };
+  /**
+   * The model IDs a conversation may use, with whatever metadata the server has for them;
+   * `provider` and `defaultModel` are absent from servers that predate them.
+   */
+  async modelCatalog(): Promise<{ models: string[]; catalog: RemoteModelInfo[]; provider?: RemoteProviderInfo; defaultModel?: string }> {
+    const body = await this.request<{ models: string[]; catalog?: RemoteModelInfo[]; provider?: RemoteProviderInfo; defaultModel?: string }>("GET", "/models");
+    return {
+      models: body.models,
+      catalog: body.catalog ?? [],
+      ...(body.provider ? { provider: body.provider } : {}),
+      ...(body.defaultModel ? { defaultModel: body.defaultModel } : {}),
+    };
+  }
+
+  /** A chat conversation: a sandbox in the workspace with no repository, branch or pull request. */
+  createChatConversation(input: { workspaceId: string; model: string; idempotencyKey: string }): Promise<RemoteConversation> {
+    const { idempotencyKey, ...body } = input;
+    return this.withRetries(() => this.request("POST", "/conversations", {
+      body: { ...body, kind: "chat" },
+      headers: { "Idempotency-Key": idempotencyKey },
+    }));
   }
 
   createCodeConversation(input: {

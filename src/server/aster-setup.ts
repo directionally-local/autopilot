@@ -3,12 +3,17 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, link, mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
-import { loadAsterServerConfig, localAsterConfigPath, type AsterServerConfig, type AsterWorkspace } from "./aster-workspaces.js";
+import { isProviderId, PROVIDER_IDS } from "../providers/presets.js";
+import { loadAsterServerConfig, localAsterConfigPath, providerConfig, type AsterServerConfig, type AsterWorkspace } from "./aster-workspaces.js";
 
 export interface WriteLocalAsterConfigOptions {
   workspacePaths: string[];
-  /** An empty list selects the live OpenRouter model catalog. */
+  /** An empty list selects the provider's live model catalog. */
   models?: string[];
+  /** Provider preset id for the `provider` block (default: none written, meaning OpenRouter). */
+  provider?: string;
+  /** Overrides the preset's base URL in the `provider` block. */
+  baseUrl?: string;
   configPath?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -33,6 +38,14 @@ export async function setupLocalAsterConfig(
     throw new Error("models must contain at most 100 non-empty IDs of at most 200 characters");
   }
 
+  const providerId = options.provider?.trim().toLowerCase();
+  if (providerId !== undefined && !isProviderId(providerId)) {
+    throw new Error(`unknown provider ${JSON.stringify(options.provider)}; one of: ${PROVIDER_IDS.join(", ")}`);
+  }
+  if (options.baseUrl !== undefined && providerId === undefined) throw new Error("--base-url needs --provider");
+  // Validate the block the same way the server will read it, before anything is written.
+  if (providerId !== undefined) providerConfig(providerId, options.baseUrl?.trim() || undefined);
+
   const requestedWorkspaces = await createWorkspaceEntries(options.workspacePaths);
   const env = options.env ?? process.env;
   const requestedPath = options.configPath?.trim() || env.AUTOPILOT_ASTER_CONFIG?.trim() || localAsterConfigPath(env);
@@ -51,7 +64,8 @@ export async function setupLocalAsterConfig(
   }
 
   const config = {
-    models: models.length > 0 ? models : "openrouter",
+    ...(providerId !== undefined ? { provider: { id: providerId, ...(options.baseUrl?.trim() ? { baseUrl: options.baseUrl.trim() } : {}) } } : {}),
+    models: models.length > 0 ? models : "catalog",
     workspaces: requestedWorkspaces,
   };
   const directory = dirname(path);

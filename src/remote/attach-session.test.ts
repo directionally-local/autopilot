@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppActions, AppBridge, AppSnapshot } from "../ui/app-bridge.js";
 import { attachRemote, checkFlags, remoteHeader, type AttachRemoteFlags, type MountRemoteView } from "./attach-cli.js";
-import { laptopImagePaths, REMOTE_COMMANDS, REVOKED_MESSAGE, serverModelEntries } from "./attach-session.js";
+import { connectionNote, laptopImagePaths, REMOTE_COMMANDS, REVOKED_MESSAGE, serverModelEntries } from "./attach-session.js";
 import { startAsterStub, type AsterStub } from "./aster-stub.test-support.js";
 
 let stub: AsterStub;
@@ -76,11 +76,31 @@ const turnRequests = () => stub.requests.filter((r) => r.method === "POST" && r.
 describe("attach-remote: flags", () => {
   it("needs --conversation, or --workspace/--repo/--model", () => {
     assert.equal(checkFlags({ conversation: "abc" }), "reconnect");
-    assert.equal(checkFlags({ workspace: "w", repo: "o/r", model: "m" }), "create");
+    assert.equal(checkFlags({ workspace: "w", repo: "o/r", model: "m" }), "create-code");
+    assert.equal(checkFlags({ workspace: "w", kind: "code", repo: "o/r", model: "m" }), "create-code");
     assert.throws(() => checkFlags({}), /missing: --workspace, --repo, --model/);
     assert.throws(() => checkFlags({ conversation: "a", repo: "o/r" }), /don't combine/);
+    assert.throws(() => checkFlags({ conversation: "a", kind: "chat" }), /don't combine/);
     assert.throws(() => checkFlags({ workspace: "w", repo: "o/r", model: "m", patchFile: "p" }), /needs --base-commit/);
     assert.throws(() => checkFlags({ workspace: "w", repo: "o/r", model: "m", baseCommit: "abc" }), /40-character/);
+  });
+
+  it("--kind chat needs only --workspace and --model, and refuses repository flags", () => {
+    assert.equal(checkFlags({ workspace: "w", kind: "chat", model: "m" }), "create-chat");
+    assert.equal(checkFlags({ workspace: "w", kind: "Chat", model: "m" }), "create-chat");
+    assert.throws(() => checkFlags({ workspace: "w", kind: "chat" }), /missing: --model/);
+    assert.throws(() => checkFlags({ kind: "chat", model: "m" }), /missing: --workspace/);
+    assert.throws(() => checkFlags({ workspace: "w", kind: "chat", model: "m", repo: "o/r" }), /--kind chat has no repository; drop --repo/);
+    assert.throws(() => checkFlags({ workspace: "w", kind: "chat", model: "m", baseCommit: "a".repeat(40), patchFile: "p" }), /drop --base-commit, --patch-file/);
+    assert.throws(() => checkFlags({ workspace: "w", kind: "pair", model: "m" }), /--kind must be "code"/);
+  });
+
+  it("the first transcript line is Connected for a new or empty conversation, Reconnected only with history", () => {
+    const c = { conversationId: "c0ffee00-1234", workspaceId: "w", model: "m/x", status: "ready", activeRunId: null, lastEventId: 1, createdAt: "", updatedAt: "", branch: "aster/c0ffee00" };
+    assert.match(connectionNote(c, true), /^Connected to conversation c0ffee00 · branch aster\/c0ffee00, created on the server just now/);
+    assert.match(connectionNote(c, false), /^Connected to conversation c0ffee00 · branch aster\/c0ffee00\. Nothing has happened in it yet/);
+    assert.match(connectionNote({ ...c, lastEventId: 7 }, false), /^Reconnected to conversation c0ffee00 .*Earlier output follows/);
+    assert.match(connectionNote({ ...c, activeRunId: "run-1" }, false), /^Reconnected/, "a turn is already running: its output is earlier output");
   });
 
   it("refuses to run without the URL and token in the environment", async () => {
@@ -90,11 +110,16 @@ describe("attach-remote: flags", () => {
     assert.match(errors.join(""), /AUTOPILOT_REMOTE_TOKEN is not set/);
   });
 
-  it("header uses --title, else the repository", () => {
+  it("header uses --title, else the repository; a chat conversation shows its workspace instead", () => {
     const c = { conversationId: "c", workspaceId: "w", model: "m/x", status: "ready", activeRunId: null, lastEventId: 0, createdAt: "", updatedAt: "", repository: "o/r", branch: "aster/c" };
     assert.equal(remoteHeader(c, "dl-test · o/r").title, "dl-test · o/r");
     assert.equal(remoteHeader(c, undefined).title, "autopilot · o/r");
     assert.match(remoteHeader(c, undefined).detail.join("\n"), /m\/x · o\/r · aster\/c · remote session[\s\S]*keeps running on the server/);
+
+    const chat = { ...c, kind: "chat" as const, repository: null, branch: null };
+    assert.equal(remoteHeader(chat, undefined, "Default workspace").title, "autopilot · Default workspace");
+    assert.equal(remoteHeader(chat, undefined).title, "autopilot · w", "the workspace id when its title is unknown");
+    assert.match(remoteHeader(chat, undefined, "Default workspace").detail[0]!, /^m\/x · Default workspace · remote session$/);
   });
 
   it("picker entries follow the server's IDs: local catalog first, then the server's metadata", () => {
@@ -154,6 +179,41 @@ describe("attach-remote: session against a stub Aster server", () => {
     assert.equal(await done, 0);
     assert.match(errors.join(""), /Detached from conversation .*keeps running on the server/);
     assert.ok(!errors.join("").includes("diff --git"), "the patch is never logged");
+  });
+
+  it("creates a chat conversation without a repository, titled by its workspace, and never shows a PR", async () => {
+    stub = await startAsterStub();
+    const stateFile = join(dir, "chat-state.json");
+    const { bridge, done, errors, header } = await attach({ workspace: "default", kind: "chat", model: "vendor/model-a", stateFile });
+
+    const create = stub.requests.find((r) => r.method === "POST" && r.path === "/api/v1/conversations")!;
+    assert.deepEqual(create.body, { workspaceId: "default", model: "vendor/model-a", kind: "chat" }, "no repository fields");
+    assert.equal(header()?.title, "autopilot · Default workspace");
+    assert.match(header()?.detail[0] ?? "", /^vendor\/model-a · Default workspace · remote session$/);
+    const [id] = [...stub.conversations.keys()];
+    assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")), { conversationId: id, branch: null, repository: null });
+
+    await waitFor(() => !!bridge.last && !bridge.last.turnRunning, "caught up");
+    assert.match(bridge.texts()[0]!, /^info:Connected to conversation .*created on the server just now/);
+    assert.ok(!bridge.texts()[0]!.includes("branch"), "a chat has no branch to mention");
+    bridge.actions.submit("what can you do here?");
+    await waitFor(() => turnRequests().length === 1 && bridge.last?.turnRunning === false && bridge.texts().some((t) => t.startsWith("assistant:")), "turn");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(!bridge.texts().some((t) => t.includes("Pull request")), "no pull request for a chat");
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+    assert.match(errors.join(""), /Detached from conversation/);
+  });
+
+  it("reconnecting to a conversation nothing has happened in says Connected, not Reconnected", async () => {
+    stub = await startAsterStub();
+    stub.seed({ conversationId: "22222222-bbbb", status: "ready" }, [{ type: "conversation.created", data: {} }]);
+    const { bridge, done } = await attach({ conversation: "22222222-bbbb" });
+    await waitFor(() => !!bridge.last && !bridge.last.turnRunning, "caught up");
+    assert.match(bridge.texts()[0]!, /^info:Connected to conversation 22222222 · branch aster\/22222222\. Nothing has happened in it yet/);
+    assert.ok(!bridge.texts().some((t) => t.includes("Earlier output follows")));
+    bridge.actions.exit();
+    assert.equal(await done, 0);
   });
 
   it("reconnect replays history from event 0, then follows live; the PR is shown once", async () => {

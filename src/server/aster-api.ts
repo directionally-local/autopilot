@@ -12,8 +12,8 @@ import { RunWorktreeManager } from "../runs/worktrees.js";
 import { loadSession, saveSession, sessionsDir, type SessionFile } from "../sessions.js";
 import { getAppVersion } from "../util/version.js";
 import { AsterStore, type AsterConversationProject, type AsterConversation, type AsterConversationStatus, type AsterPrincipal, type AsterScope } from "./aster-store.js";
-import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, type AsterServerConfig } from "./aster-workspaces.js";
-import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
+import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, type AsterProviderConfig } from "./aster-workspaces.js";
+import { isSelectableModel, modelsResponse } from "./aster-models.js";
 import type { AsterArtifact, AsterCellProject } from "./aster-cell-runtime.js";
 import { AsterGitHub, AsterGitHubError, REPOSITORY_FULL_NAME_RE } from "./aster-github.js";
 import { AsterMemory } from "./aster-memory.js";
@@ -61,7 +61,7 @@ export interface AsterTurnStart {
 }
 
 export interface AsterApiRuntime {
-  provisionConversation?: (input: { conversationId: string; sessionId: string; cellName: string; workspaceId: string; workspaceRoot: string; model: string; allowCreate: boolean; onCellCreated: (cellId: string) => void; project?: AsterCellProject }) => Promise<{ cellId: string }>;
+  provisionConversation?: (input: { conversationId: string; sessionId: string; cellName: string; workspaceId: string; workspaceRoot: string; model: string; provider: AsterProviderConfig; allowCreate: boolean; onCellCreated: (cellId: string) => void; project?: AsterCellProject }) => Promise<{ cellId: string }>;
   findConversationCell?: (conversationId: string) => Promise<{ cellId: string } | undefined>;
   destroyCell?: (cellId: string) => Promise<void>;
   pauseCell?: (cellId: string) => Promise<void>;
@@ -81,17 +81,6 @@ export interface AsterCheckpointInfo {
   id: string;
   message: string;
   createdAt: string;
-}
-
-interface AsterModelInfo {
-  id: string;
-  name?: string;
-  contextWindow?: number;
-  inputPerMtok?: number;
-  outputPerMtok?: number;
-  created?: number;
-  reasoning?: boolean;
-  vision?: boolean;
 }
 
 interface AsterWaiter {
@@ -207,7 +196,7 @@ export class AsterApi {
           service: "autopilot",
           apiVersion: "v1",
           serviceVersion: getAppVersion(),
-          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "patch-upload", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "openrouter" ? ["model-catalog"] : [])],
+          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "patch-upload", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "catalog" ? ["model-catalog"] : [])],
         });
       }
 
@@ -222,9 +211,9 @@ export class AsterApi {
 
       if (path === `${API_PREFIX}/models` && method === "GET") {
         if (!this.hasScope(principal, "models:read")) return sendError(res, 403, "insufficient_scope", "Credential lacks model/read scope");
-        const models = await selectableModels(config);
-        if (models.length === 0) return sendError(res, 503, "model_catalog_unavailable", "The model catalog is unavailable; try again shortly");
-        return json(res, 200, { models: models.map((model) => model.id), catalog: models });
+        const models = await modelsResponse(config);
+        if (models.models.length === 0) return sendError(res, 503, "model_catalog_unavailable", "The model catalog is unavailable; try again shortly");
+        return json(res, 200, models);
       }
 
       if (path === `${API_PREFIX}/conversations` && method === "POST") {
@@ -271,7 +260,7 @@ export class AsterApi {
         const changes = typeof body.baseCommit === "string"
           ? { baseCommit: body.baseCommit, ...(typeof body.patch === "string" && body.patch ? { patch: body.patch } : {}) }
           : undefined;
-        return await this.createConversation(res, store, principal, workspace, body.model, idempotencyKey, kind, body.repository as string | undefined, changes);
+        return await this.createConversation(res, store, principal, workspace, body.model, config.provider, idempotencyKey, kind, body.repository as string | undefined, changes);
       }
 
       if (path === `${API_PREFIX}/conversations` && method === "GET") {
@@ -648,6 +637,7 @@ export class AsterApi {
     principal: AsterPrincipal,
     workspace: { id: string; displayName: string; rootPath: string },
     model: string,
+    provider: AsterProviderConfig,
     idempotencyKey: string,
     kind?: "chat" | "code",
     repository?: string,
@@ -734,6 +724,7 @@ export class AsterApi {
         workspaceId: workspace.id,
         workspaceRoot: workspace.rootPath,
         model,
+        provider,
         allowCreate,
         onCellCreated: (cellId) => store.setCellId(mapping.conversationId, cellId),
         ...(project ? { project } : {}),
@@ -1380,33 +1371,6 @@ function publicApproval(approval: import("./aster-store.js").AsterApproval): Rec
     expiresAt: new Date(approval.expiresAt).toISOString(),
     decision: approval.decision,
   };
-}
-
-/**
- * Models a conversation may use. With the OpenRouter catalog, only tool-calling models
- * are offered: the cell agent needs tools to do anything.
- */
-async function selectableModels(config: AsterServerConfig): Promise<AsterModelInfo[]> {
-  if (config.modelCatalog === "fixed") return config.models.map((id) => ({ id }));
-  const catalog = await loadOpenRouterCatalog();
-  return catalog
-    .filter((model) => model.supports.tools)
-    .map((model) => ({
-      id: model.id,
-      ...(model.name ? { name: model.name } : {}),
-      contextWindow: model.contextWindow,
-      inputPerMtok: model.pricing.inputPerMtok,
-      outputPerMtok: model.pricing.outputPerMtok,
-      ...(model.created !== undefined ? { created: model.created } : {}),
-      reasoning: model.supports.reasoning,
-      vision: model.supports.vision === true,
-    }));
-}
-
-async function isSelectableModel(config: AsterServerConfig, model: string): Promise<boolean> {
-  if (!model.trim() || model.length > 200) return false;
-  if (config.modelCatalog === "fixed") return config.models.includes(model);
-  return (await selectableModels(config)).some((entry) => entry.id === model);
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {

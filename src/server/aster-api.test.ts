@@ -709,14 +709,41 @@ describe("Aster chat/code projects, GitHub, and artifacts", () => {
 });
 
 describe("Aster model catalog, model switching, and checkpoints", () => {
+  it("names a non-OpenRouter provider in /models and hands it to cell provisioning", async () => {
+    const harness = await createHarness("complete", { provider: { id: "deepseek", models: ["deepseek-v4-pro", "deepseek-flash"] } });
+    try {
+      const models = await request(harness, "GET", "/api/v1/models");
+      assert.equal(models.status, 200);
+      assert.deepEqual(await models.json(), {
+        models: ["deepseek-v4-pro", "deepseek-flash"],
+        catalog: [{ id: "deepseek-v4-pro" }, { id: "deepseek-flash" }],
+        provider: { id: "deepseek", name: "DeepSeek" },
+        defaultModel: "deepseek-v4-pro",
+      });
+      const health = await (await request(harness, "GET", "/api/v1/health")).json() as { capabilities: string[] };
+      assert.ok(!health.capabilities.includes("model-catalog"), "a fixed list is not a live catalog");
+
+      assert.equal((await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "moonshotai/kimi-k2.6" })).status, 400, "OpenRouter ids aren't selectable here");
+      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "deepseek-flash" });
+      assert.equal(created.status, 201);
+      assert.deepEqual(harness.provisionedProviders, ["deepseek"]);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("offers the tool-capable OpenRouter catalog and switches models between turns", async () => {
     const harness = await createHarness("complete", { openRouterCatalog: true });
     try {
       const models = await request(harness, "GET", "/api/v1/models");
       assert.equal(models.status, 200);
-      const body = await models.json() as { models: string[]; catalog: Array<{ id: string; contextWindow: number }> };
+      const body = await models.json() as { models: string[]; catalog: Array<{ id: string; contextWindow: number }>; provider: { id: string; name: string }; defaultModel: string };
       assert.deepEqual(body.models, ["test/model", "vendor/other-model"]);
       assert.equal(body.catalog[0]!.contextWindow, 200_000);
+      assert.deepEqual(body.provider, { id: "openrouter", name: "OpenRouter" });
+      assert.equal(body.defaultModel, "test/model", "the preset default isn't offered, so the first selectable model");
+      const health = await (await request(harness, "GET", "/api/v1/health")).json() as { capabilities: string[] };
+      assert.ok(health.capabilities.includes("model-catalog"));
 
       const rejected = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "vendor/no-tools" });
       assert.equal(rejected.status, 400);
@@ -905,6 +932,7 @@ interface Harness {
   modelSwitches: Array<{ cellId: string; model: string }>;
   restores: Array<{ cellId: string; checkpointId: string }>;
   provisionedProjects: Array<unknown>;
+  provisionedProviders: string[];
   createdRepositories: string[];
   pullRequestCreates: Array<{ repository: string; title: string; body: string; head: string; base: string }>;
   pullRequestChecks: string[];
@@ -913,7 +941,7 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function createHarness(mode: "complete" | "hang" | "approval" | "fail", options: { openRouterCatalog?: boolean; pushConfigured?: boolean } = {}): Promise<Harness> {
+async function createHarness(mode: "complete" | "hang" | "approval" | "fail", options: { openRouterCatalog?: boolean; pushConfigured?: boolean; provider?: { id: string; models: string[] } } = {}): Promise<Harness> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-api-")));
   tempDirs.push(root);
   const workspaceRoot = join(root, "workspace");
@@ -931,7 +959,8 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const runsDb = join(root, "state", "runs.db");
   const configPath = join(root, "aster.json");
   await writeFile(configPath, JSON.stringify({
-    models: options.openRouterCatalog ? "openrouter" : ["test/model"],
+    ...(options.provider ? { provider: { id: options.provider.id } } : {}),
+    models: options.provider ? options.provider.models : options.openRouterCatalog ? "openrouter" : ["test/model"],
     approvalTtlMs: 1500,
     workspaces: [{ id: "default", displayName: "Default workspace", rootPath: workspaceRoot }],
   }));
@@ -976,6 +1005,7 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const modelSwitches: Array<{ cellId: string; model: string }> = [];
   const restores: Array<{ cellId: string; checkpointId: string }> = [];
   const provisionedProjects: Array<unknown> = [];
+  const provisionedProviders: string[] = [];
   const createdRepositories: string[] = [];
   const pullRequestCreates: Array<{ repository: string; title: string; body: string; head: string; base: string }> = [];
   const pullRequestChecks: string[] = [];
@@ -1019,6 +1049,7 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as KimiConfig, {
     provisionConversation: async (input) => {
       provisionedProjects.push(input.project);
+      provisionedProviders.push(input.provider.id);
       input.onCellCreated(`cell-${input.conversationId}`);
       return { cellId: `cell-${input.conversationId}` };
     },
@@ -1070,6 +1101,7 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     modelSwitches,
     restores,
     provisionedProjects,
+    provisionedProviders,
     createdRepositories,
     pullRequestCreates,
     pullRequestChecks,

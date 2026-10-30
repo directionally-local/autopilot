@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, localAsterConfigPath, resolveAsterServerConfigPath } from "./aster-workspaces.js";
+import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, localAsterConfigPath, parseProvider, resolveAsterServerConfigPath } from "./aster-workspaces.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -23,6 +23,8 @@ describe("Aster workspace registry", () => {
 
     const config = await loadAsterServerConfig(configPath);
     assert.deepEqual(config.models, ["provider/model-a"]);
+    assert.equal(config.modelCatalog, "fixed");
+    assert.equal(config.provider.id, "openrouter", "no provider block means OpenRouter, as before the block existed");
     assert.deepEqual(config.workspaces.map(({ id, displayName }) => ({ id, displayName })), [{ id: "default", displayName: "My project" }]);
     assert.equal(config.workspaces[0]?.rootPath, await realpath(workspaceRoot));
     assert.equal(findAsterWorkspace(config, "default")?.displayName, "My project");
@@ -51,6 +53,50 @@ describe("Aster workspace registry", () => {
     const configPath = join(root, "aster.json");
     await writeFile(configPath, JSON.stringify({ models: ["provider/model-a"], workspaces: [{ id: "gone", displayName: "Gone", rootPath: join(root, "gone") }] }));
     await assert.rejects(loadAsterServerConfig(configPath), AsterConfigError);
+  });
+});
+
+describe("Aster provider configuration", () => {
+  it("keeps every existing aster.json working: no provider is OpenRouter and models \"openrouter\" is the live catalog", async () => {
+    const root = await fixture();
+    const workspaceRoot = join(root, "repo");
+    await mkdir(workspaceRoot);
+    const configPath = join(root, "aster.json");
+    await writeFile(configPath, JSON.stringify({ models: "openrouter", workspaces: [{ id: "default", displayName: "P", rootPath: workspaceRoot }] }));
+    const config = await loadAsterServerConfig(configPath);
+    assert.equal(config.modelCatalog, "catalog");
+    assert.deepEqual(config.models, []);
+    assert.deepEqual(config.provider, { id: "openrouter", name: "OpenRouter", apiKeyEnv: "OPENROUTER_API_KEY", keyRequired: true, defaultModel: "moonshotai/kimi-k2.6" });
+  });
+
+  it("reads a provider block, filling the base URL and key env from the preset", async () => {
+    const root = await fixture();
+    const workspaceRoot = join(root, "repo");
+    await mkdir(workspaceRoot);
+    const configPath = join(root, "aster.json");
+    const workspaces = [{ id: "default", displayName: "P", rootPath: workspaceRoot }];
+    await writeFile(configPath, JSON.stringify({ provider: { id: "deepseek" }, models: "catalog", workspaces }));
+    const deepseek = await loadAsterServerConfig(configPath);
+    assert.equal(deepseek.modelCatalog, "catalog");
+    assert.deepEqual(deepseek.provider, { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", keyRequired: true, defaultModel: "deepseek-v4-pro" });
+
+    await writeFile(configPath, JSON.stringify({ provider: { id: "ollama", baseUrl: "http://gpu-box:11434/v1/" }, models: ["qwen3:32b"], workspaces }));
+    const ollama = await loadAsterServerConfig(configPath);
+    assert.equal(ollama.modelCatalog, "fixed", "a fixed list works for any provider");
+    assert.deepEqual(ollama.models, ["qwen3:32b"]);
+    assert.deepEqual(ollama.provider, { id: "ollama", name: "Ollama", baseUrl: "http://gpu-box:11434/v1", apiKeyEnv: "OLLAMA_API_KEY", keyRequired: false });
+
+    assert.equal(parseProvider({ id: "openai", apiKeyEnv: "ASTER_OPENAI_KEY" }).apiKeyEnv, "ASTER_OPENAI_KEY");
+  });
+
+  it("rejects unknown providers, bad URLs and key env names, and a custom endpoint without a URL", () => {
+    assert.throws(() => parseProvider({ id: "not-a-provider" }), AsterConfigError);
+    assert.throws(() => parseProvider("deepseek"), AsterConfigError);
+    assert.throws(() => parseProvider({ id: "deepseek", baseUrl: "api.deepseek.com" }), AsterConfigError);
+    assert.throws(() => parseProvider({ id: "deepseek", baseUrl: "ftp://api.deepseek.com" }), AsterConfigError);
+    assert.throws(() => parseProvider({ id: "deepseek", apiKeyEnv: "not an env name" }), AsterConfigError);
+    assert.throws(() => parseProvider({ id: "custom" }), /needs provider.baseUrl/);
+    assert.equal(parseProvider({ id: "custom", baseUrl: "https://llm.example.com/v1" }).apiKeyEnv, "AUTOPILOT_API_KEY");
   });
 });
 

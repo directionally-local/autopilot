@@ -46,6 +46,30 @@ test("provisions a bounded private microVM with per-model gateway egress", async
   assert.equal("ports" in (fake.options ?? {}), false);
 });
 
+test("the egress route follows the configured provider, and a route the daemon lacks fails closed", async () => {
+  const fake = new FakeHotcellClient();
+  fake.egressProviders = ["openrouter", "deepseek", "ollama", "github", "github-git"];
+  const provider = new HotcellProvider(config, () => fake);
+  await provider.createConversationCell({ conversationId: CONVERSATION_ID, workspaceId: "work", model: "deepseek-v4-pro", provider: "deepseek", kind: "code" });
+  assert.deepEqual(fake.options?.egress, { providers: ["deepseek", "github", "github-git"], models: ["deepseek-v4-pro"], spendCapUsd: 10, ttlMs: 86_400_000 });
+
+  const keyless = new FakeHotcellClient();
+  keyless.egressProviders = ["ollama"];
+  await new HotcellProvider(config, () => keyless).createConversationCell({ conversationId: CONVERSATION_ID, workspaceId: "work", model: "qwen3:32b", provider: "ollama", kind: "chat" });
+  assert.deepEqual(keyless.options?.egress, { providers: ["ollama"], models: ["qwen3:32b"], spendCapUsd: 10, ttlMs: 86_400_000 });
+
+  const missing = new FakeHotcellClient();
+  await assert.rejects(
+    () => new HotcellProvider(config, () => missing).createConversationCell({ conversationId: CONVERSATION_ID, workspaceId: "work", model: "deepseek-v4-pro", provider: "deepseek" }),
+    (error: unknown) => error instanceof HotcellProviderError && error.code === "hotcell_egress_unavailable" && /"deepseek"/.test(error.message),
+  );
+  assert.equal(missing.creates, 0);
+  await assert.rejects(
+    () => new HotcellProvider(config, () => missing).createConversationCell({ conversationId: CONVERSATION_ID, workspaceId: "work", model: "m", provider: "Deep Seek" }),
+    (error: unknown) => error instanceof HotcellProviderError && error.code === "invalid_provisioning_input",
+  );
+});
+
 test("retry adopts the existing labeled cell instead of creating a second one", async () => {
   const fake = new FakeHotcellClient();
   const provider = new HotcellProvider(config, () => fake);
@@ -132,6 +156,7 @@ test("destroy revokes every scoped token before deleting the volume and is idemp
 class FakeHotcellClient implements HotcellClientPort {
   auth = true;
   drivers = ["applevz", "firecracker"];
+  egressProviders = ["openrouter"];
   creates = 0;
   attachments = 0;
   destroyed = 0;
@@ -161,7 +186,7 @@ class FakeHotcellClient implements HotcellClientPort {
     return {
       auth: this.auth,
       drivers: this.drivers,
-      egressProviders: ["openrouter"],
+      egressProviders: this.egressProviders,
     } as Awaited<ReturnType<HotcellClientPort["info"]>>;
   }
 }
