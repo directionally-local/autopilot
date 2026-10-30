@@ -135,7 +135,8 @@ export function formatBangContext(r: BangResult): string {
         : "(no output)";
   return (
     "[The user ran this shell command themselves with `!` in the autopilot prompt. " +
-    "This is context for you, not a new request.]\n" +
+    "Its output is below. If it unblocks what you were doing, carry on from here; " +
+    "otherwise just acknowledge it briefly.]\n" +
     `$ ${r.command}\n(${status})\n${body}`
   );
 }

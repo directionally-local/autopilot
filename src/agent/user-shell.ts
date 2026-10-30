@@ -33,7 +33,7 @@ Your \`bash\` tool has no terminal: stdin is closed and there is no TTY, so anyt
 - one of your bash calls failed with a "not logged in", "authentication required", "not a tty", or "terminal required" error, or timed out waiting for input
 - the user declined permission for a command but still wants it run
 
-Prefer non-interactive flags when they exist (\`--yes\`, \`-m\`, \`--with-token\` reading an env var, \`CI=1\`) and run the command yourself. Don't suggest \`!\` for commands your bash tool can run. When you do suggest it, give the exact line to type (e.g. "run \`! gh auth login\` in the prompt, then tell me when you're done") and stop; the output will appear in the conversation.`;
+Prefer non-interactive flags when they exist (\`--yes\`, \`-m\`, \`--with-token\` reading an env var, \`CI=1\`) and run the command yourself. Don't suggest \`!\` for commands your bash tool can run. When you do suggest it, give the exact line to type (e.g. "run \`! gh auth login\` in the prompt") and stop; when the user runs it, its output is added to the conversation and the turn continues automatically, so carry on from there.`;
 
 const AUTH_OR_TTY_OUTPUT: RegExp[] = [
   /not logged in(?:to)?\b/i,

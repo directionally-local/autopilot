@@ -1131,10 +1131,10 @@ function App({
     [cfg, setCfg, setEvents, setShowLspWizard],
   );
 
-  // `! <command>`: run it in the user's terminal, show the output, and share
-  // it with the model as context for the next turn.
+  // `! <command>`: run it in the user's terminal, show the output, and return
+  // the context message the turn continues with (null for a bare `!`).
   const runUserShellCommand = useCallback(
-    async (command: string, display: string, queuedKey?: string) => {
+    async (command: string, display: string, queuedKey?: string): Promise<string | null> => {
       if (queuedKey) {
         setEvents((evts) =>
           evts.map((e) => (e.kind === "user" && e.key === queuedKey ? { ...e, text: display, queued: false } : e)),
@@ -1151,7 +1151,7 @@ function App({
             text: "usage: ! <command> — runs in your terminal (logins and prompts work); the output is shared with the agent",
           },
         ]);
-        return;
+        return null;
       }
       const result = await runBangCommand(command, process.cwd());
       const id = `bang_${mkKey()}`;
@@ -1169,10 +1169,9 @@ function App({
           render: { title: `! ${command}`.slice(0, 120) },
         },
       ]);
-      messagesRef.current.push({ role: "user", content: sanitizeString(formatBangContext(result)) });
-      await saveSessionSafe();
+      return sanitizeString(formatBangContext(result));
     },
-    [mkKey, saveSessionSafe],
+    [mkKey],
   );
 
   const processMessage = useCallback(
@@ -1201,11 +1200,17 @@ function App({
       let overrideModel: string | undefined;
       let overrideEffort: ReasoningEffort | undefined;
 
+      // `! <command>`: run it in the user's terminal, then carry on with the
+      // turn so the model can act on the output (e.g. `! npm login`, then
+      // publish). A bare `!` only prints usage.
+      let bangContext: string | null = null;
       const bangCommand = parseBangCommand(trimmed);
       if (bangCommand !== null) {
-        await runUserShellCommand(bangCommand, display, opts?.queuedKeys?.[0]);
-        endTurn();
-        return;
+        bangContext = await runUserShellCommand(bangCommand, display, opts?.queuedKeys?.[0]);
+        if (bangContext === null) {
+          endTurn();
+          return;
+        }
       }
 
       if (trimmed.startsWith("/")) {
@@ -1233,23 +1238,31 @@ function App({
         }
       }
 
-      const { content, images, errors: imageErrors, notices: imageNotices } = await buildPromptContent(trimmed, (path) =>
-        encodeImageFile(path, { maxEdge: cfg.imageMaxEdge, quality: cfg.imageQuality }),
-      );
+      // A `!` command's output is already the user message: don't re-scan it
+      // for @mentions or image paths.
+      const { content, images, errors: imageErrors, notices: imageNotices } =
+        bangContext !== null
+          ? { content: bangContext, images: [] as string[], errors: [] as string[], notices: [] as string[] }
+          : await buildPromptContent(trimmed, (path) =>
+              encodeImageFile(path, { maxEdge: cfg.imageMaxEdge, quality: cfg.imageQuality }),
+            );
       for (const text of imageErrors) setEvents((es) => [...es, { kind: "error", key: mkKey(), text }]);
       for (const text of imageNotices) setEvents((es) => [...es, { kind: "info", key: mkKey(), text }]);
 
-      if (opts?.queuedKeys && opts.queuedKeys.length > 0) {
-        const queuedKeys = new Set(opts.queuedKeys);
-        setEvents((evts) =>
-          evts.map((e) =>
-            e.kind === "user" && queuedKeys.has(e.key)
-              ? { ...e, images: images.length > 0 ? images : e.images, queued: false }
-              : e,
-          ),
-        );
-      } else {
-        setEvents((e) => [...e, { kind: "user", key: opts?.eventKey ?? mkKey(), text: display, images: images.length > 0 ? images : undefined }]);
+      // A `!` command already added its own user event.
+      if (bangContext === null) {
+        if (opts?.queuedKeys && opts.queuedKeys.length > 0) {
+          const queuedKeys = new Set(opts.queuedKeys);
+          setEvents((evts) =>
+            evts.map((e) =>
+              e.kind === "user" && queuedKeys.has(e.key)
+                ? { ...e, images: images.length > 0 ? images : e.images, queued: false }
+                : e,
+            ),
+          );
+        } else {
+          setEvents((e) => [...e, { kind: "user", key: opts?.eventKey ?? mkKey(), text: display, images: images.length > 0 ? images : undefined }]);
+        }
       }
 
       // LSP nudge: if user references code files and LSP is not configured
@@ -1269,16 +1282,20 @@ function App({
       // user-message content (post slash / custom command expansion), with
       // the session id created first so the first prompt carries it. A
       // vetoing hook cancels the turn before any LLM call.
-      const promptGate = await submitUserPrompt({
-        hooks: hooksManagerRef.current,
-        sessionId: ensureSessionId(trimmed),
-        cwd: process.cwd(),
-        prompt: opts?.userPromptForHooks ?? display,
-        tier: classification.tier,
-        resumed: messagesRef.current.some((m) => m.role === "assistant"),
-        model: overrideModel ?? cfg.model,
-        auth: llmAuthFromConfig(cfg),
-      });
+      // A `!` command isn't a user prompt: no UserPromptSubmit hook for it.
+      const promptGate =
+        bangContext !== null
+          ? { blocked: false as const }
+          : await submitUserPrompt({
+              hooks: hooksManagerRef.current,
+              sessionId: ensureSessionId(trimmed),
+              cwd: process.cwd(),
+              prompt: opts?.userPromptForHooks ?? display,
+              tier: classification.tier,
+              resumed: messagesRef.current.some((m) => m.role === "assistant"),
+              model: overrideModel ?? cfg.model,
+              auth: llmAuthFromConfig(cfg),
+            });
       if (promptGate.blocked) {
         setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `hook blocked the prompt: ${promptGate.reason}` }]);
         endTurn();

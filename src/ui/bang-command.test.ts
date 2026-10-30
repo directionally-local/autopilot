@@ -84,6 +84,8 @@ describe("formatBangContext", () => {
   it("frames the output as user-run context with the exit status", () => {
     const text = formatBangContext({ command: "gh auth login", exitCode: 0, signal: null, output: "Logged in" });
     assert.ok(text.includes("ran this shell command themselves"));
+    assert.ok(text.includes("carry on from here"));
+    assert.ok(!text.includes("not a new request"));
     assert.ok(text.includes("$ gh auth login\n(exit code 0)\nLogged in"));
   });
 
