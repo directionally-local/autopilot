@@ -79,6 +79,60 @@ export function toolsUsedSince(messages: ChatMessage[], turnUser: ChatMessage | 
     .flatMap((m) => (m.role === "assistant" ? (m.tool_calls ?? []).map((c) => c.function.name) : []));
 }
 
+/** Deterministic nudge: a PR opened this turn is not done until its CI has
+ *  been verified. Fires when the agent created a PR but never checked CI, when
+ *  the last check run was still pending (CI takes minutes) and the agent
+ *  stopped anyway, or when it pushed a fix after the last check. Returns the
+ *  nudge text, or null when there is nothing left to verify. */
+export function prCiNudge(messages: ChatMessage[], turnUser: ChatMessage | undefined): string | null {
+  const start = turnUser ? messages.indexOf(turnUser) : -1;
+  const turn = messages.slice(start + 1);
+  const created: string[] = [];
+  let lastChecks: string | null = null;
+  let pushedSinceCheck = false;
+
+  for (const m of turn) {
+    if (m.role === "assistant") {
+      for (const call of m.tool_calls ?? []) {
+        if (call.function.name === "bash" && /\bgit\s+push\b/.test(call.function.arguments ?? "")) {
+          if (lastChecks !== null) pushedSinceCheck = true;
+        }
+      }
+      continue;
+    }
+    if (m.role !== "tool") continue;
+    const text = typeof m.content === "string" ? m.content : "";
+    if (m.name === "github_create_pr") {
+      const match = text.match(/Created PR #(\d+)/);
+      if (match) created.push(`#${match[1]}`);
+    } else if (m.name === "github_pr_checks") {
+      lastChecks = text;
+      pushedSinceCheck = false;
+    }
+  }
+
+  if (created.length === 0) return null;
+  const prs = created.join(", ");
+  const waitHint =
+    "Call github_pr_checks with wait_seconds: 300 to wait for the checks, fix any failure, push, and re-check. " +
+    "Mark the PR ready with github_update_pr (draft: false) only once every check is green.";
+
+  if (lastChecks === null) {
+    return `You opened ${prs} but never checked its CI. ${waitHint}`;
+  }
+  if (pushedSinceCheck) {
+    return `You pushed a fix to ${prs} after the last CI check, so its current state is unknown. ${waitHint}`;
+  }
+  const pending = /CI: [^\n]*?\b([1-9]\d*) pending/.exec(lastChecks);
+  if (pending) {
+    return `CI for ${prs} was still running when you stopped (${pending[1]} pending). ${waitHint}`;
+  }
+  if (/CI: no checks reported/.test(lastChecks)) {
+    return `No CI checks had reported for ${prs} when you stopped. Call github_pr_checks again with wait_seconds: 300 to wait for them; if the repository has no CI, mark the PR ready with github_update_pr (draft: false).`;
+  }
+  return null;
+}
+
 /** The check for a session, or undefined when unavailable or turned off. */
 export function completionCheckFromConfig(cfg: Parameters<typeof activeOpenRouterKey>[0] & { completionCheck?: boolean }): CompletionCheck | undefined {
   // Jev is OpenRouter's Decisions API: off whenever OpenRouter isn't the active provider.

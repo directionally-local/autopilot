@@ -34,7 +34,7 @@ import { compactToFit, ContextBudgetError, effectiveInputBudget, type Compaction
 import { withTurnDirective } from "./turn-directive.js";
 import { buildPlanReminder, withPlanReminder } from "./plan-reminder.js";
 import { classifyVerification } from "../trace/verification.js";
-import { CONTINUE_NUDGE, INCOMPLETE_THRESHOLD, shouldCheckCompletion, toolsUsedSince, type CompletionCheck } from "./completion-check.js";
+import { CONTINUE_NUDGE, INCOMPLETE_THRESHOLD, prCiNudge, shouldCheckCompletion, toolsUsedSince, type CompletionCheck } from "./completion-check.js";
 import type { Mode } from "../mode.js";
 import { createNoopRecorder, makeTurnId } from "../trace/recorder.js";
 import { beginGitDelta } from "../trace/git-delta.js";
@@ -217,7 +217,9 @@ export type GuardrailEvent =
   /** `maxTotalToolIterations` was reached; the turn ends with a summary. */
   | { kind: "limit_ceiling"; message: string; totalIterations: number }
   /** The turn was about to end unfinished; the agent was told to continue. */
-  | { kind: "completion_nudge"; message: string; probability: number };
+  | { kind: "completion_nudge"; message: string; probability: number }
+  /** A PR was opened this turn but its CI was never verified; the agent was told to check it. */
+  | { kind: "pr_ci_nudge"; message: string };
 
 /** Automatic loop recoveries granted per turn before the turn is wrapped up. */
 export const MAX_LOOP_RECOVERIES = 1;
@@ -747,6 +749,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   let loopExhausted = false;
   let loopRecoveries = 0;
   let completionNudges = 0;
+  let prCiNudges = 0;
   // Set when a guardrail decides the turn must end: the next request is a
   // final, tool-free summary and the turn finishes after it.
   let finalizeReason: "loop" | "limit_ceiling" | null = null;
@@ -1107,6 +1110,21 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       // Input that arrived while the model was writing its answer must be
       // answered in this turn, not silently carried into the next one.
       if (appendPendingInput() > 0) continue;
+      // A PR opened this turn is not finished until its CI is verified. This
+      // is deterministic (no model call) so a slow CI run cannot be skipped.
+      if (prCiNudges < 1) {
+        const nudge = prCiNudge(opts.messages, turnUserMessage);
+        if (nudge) {
+          prCiNudges++;
+          logger.info("turn:pr_ci_nudge", { sessionId: opts.sessionId });
+          opts.messages.push({ role: "system", content: nudge });
+          notifyGuardrail({
+            kind: "pr_ci_nudge",
+            message: "A PR was opened without verifying CI — asked the agent to check it.",
+          });
+          continue;
+        }
+      }
       // Stopped after only planning or announcing next steps? Ask the agent
       // to continue instead of leaving the user to type "go on". Once per turn.
       if (opts.completionCheck && completionNudges < 1) {
