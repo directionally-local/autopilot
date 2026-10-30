@@ -1,5 +1,27 @@
 # Changelog
 
+## [3.0.3](https://github.com/directionally-local/autopilot/compare/v3.0.2...v3.0.3) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* the `sessionWorktrees` config option, the KIMIFLARE_SESSION_WORKTREES / AUTOPILOT_SESSION_WORKTREES env vars and the `/worktrees` command are gone; sessions no longer create worktrees.
+
+### Features
+
+* add autopilot connect for installers that hand setup to Autopilot ([#1056](https://github.com/directionally-local/autopilot/issues/1056)) ([5e1c53a](https://github.com/directionally-local/autopilot/commit/5e1c53aacec46a1373c32d1f90a6f4126e0dc903))
+* **aster:** run cells on any provider preset; chat sessions in attach-remote ([#1057](https://github.com/directionally-local/autopilot/issues/1057)) ([00caecd](https://github.com/directionally-local/autopilot/commit/00caecdbcb85fe6f60833eeea001ad93743b4dd7))
+* exit autopilot by typing bare `exit` ([#1060](https://github.com/directionally-local/autopilot/issues/1060)) ([f23176d](https://github.com/directionally-local/autopilot/commit/f23176d732403f53a5392c26a941b78287aafc4d))
+* keep PRs in draft until CI is green and verify checks automatically ([#1061](https://github.com/directionally-local/autopilot/issues/1061)) ([3e7d207](https://github.com/directionally-local/autopilot/commit/3e7d2075c2aa11fd8946e0bc3c16b75b21f18b3e))
+
+
+### Bug Fixes
+
+* **agent:** page repeated reads instead of stopping the turn ([#1059](https://github.com/directionally-local/autopilot/issues/1059)) ([6d6abc4](https://github.com/directionally-local/autopilot/commit/6d6abc472ae52d6f451e9ff8dbd6185d55cbb130))
+* **aster:** say where a patch key is, and assume 80x24 with no terminal size ([#1058](https://github.com/directionally-local/autopilot/issues/1058)) ([a2baf4e](https://github.com/directionally-local/autopilot/commit/a2baf4ee9407721dce44a72e89b2a04e79dfc829))
+* **camouflage:** treat a renderer SIGINT as a user quit, not a crash ([#1045](https://github.com/directionally-local/autopilot/issues/1045)) ([06417d2](https://github.com/directionally-local/autopilot/commit/06417d22495c5185a3e80604a7e7ae76cf66e5c2))
+* remove session worktrees; sessions edit in place again ([#1040](https://github.com/directionally-local/autopilot/issues/1040)) ([1deb7ed](https://github.com/directionally-local/autopilot/commit/1deb7ed71e5019512dbe66aaf7e3d9a27ab8848b))
+
 ## [3.0.2](https://github.com/directionally-local/autopilot/compare/v3.0.1...v3.0.2) (2026-10-29)
 
 
