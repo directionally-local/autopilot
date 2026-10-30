@@ -18,9 +18,9 @@ export interface StubConversation {
   model: string;
   status: string;
   activeRunId: string | null;
-  kind: "code";
-  repository: string;
-  branch: string;
+  kind: "chat" | "code";
+  repository: string | null;
+  branch: string | null;
   pullRequestURL?: string;
   createdAt: string;
   updatedAt: string;
@@ -145,6 +145,9 @@ export async function startAsterStub(): Promise<AsterStub> {
     const fail = (status: number, code: string, message = code) => json(status, { error: { code, message } });
     if (req.headers.authorization !== `Bearer ${token}` || stub.revoked) return fail(401, "unauthorized", "Invalid or expired credential");
 
+    if (path === "/api/v1/workspaces" && method === "GET") {
+      return json(200, { workspaces: [{ id: "default", displayName: "Default workspace" }] });
+    }
     if (path === "/api/v1/models" && method === "GET") {
       if (stub.modelsDown) return fail(503, "model_catalog_unavailable");
       return json(200, { models: ["vendor/model-a", "vendor/model-b"], catalog: stub.modelCatalog });
@@ -152,7 +155,12 @@ export async function startAsterStub(): Promise<AsterStub> {
     if (path === "/api/v1/conversations" && method === "POST") {
       if (!req.headers["idempotency-key"]) return fail(400, "idempotency_key_required");
       const id = `c0ffee00-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
-      stub.seed({ conversationId: id, model: String(body?.model), repository: String(body?.repository), status: "ready", workspaceId: String(body?.workspaceId) });
+      if (body?.kind === "chat") {
+        if (body.repository !== undefined) return fail(400, "unsupported_field");
+        stub.seed({ conversationId: id, model: String(body.model), kind: "chat", repository: null, branch: null, status: "ready", workspaceId: String(body.workspaceId) });
+      } else {
+        stub.seed({ conversationId: id, model: String(body?.model), repository: String(body?.repository), status: "ready", workspaceId: String(body?.workspaceId) });
+      }
       stub.append(id, { type: "conversation.created", data: { conversationId: id } });
       return json(201, publicConversation(stub.conversations.get(id)!));
     }
@@ -185,7 +193,7 @@ export async function startAsterStub(): Promise<AsterStub> {
           if (c.activeRunId !== runId) return;
           c.activeRunId = null;
           c.status = "completed";
-          c.pullRequestURL ??= `https://github.com/${c.repository}/pull/7`;
+          if (c.repository) c.pullRequestURL ??= `https://github.com/${c.repository}/pull/7`;
           stub.append(c.conversationId, { type: "completed", data: {} });
         };
         if (stub.holdTerminal) held.push(finish);

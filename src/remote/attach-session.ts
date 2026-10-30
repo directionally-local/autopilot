@@ -140,12 +140,7 @@ export class RemoteAttachSession {
     this.newId = opts.newId ?? (() => randomUUID());
     this.model = opts.conversation.model;
     this.replayUntil = opts.conversation.lastEventId;
-    const short = opts.conversation.conversationId.slice(0, 8);
-    this.note(
-      opts.created
-        ? `Started conversation ${short} on the server${opts.conversation.branch ? ` · branch ${opts.conversation.branch}` : ""}. The agent runs in a sandbox there.`
-        : `Reconnected to conversation ${short}${opts.conversation.branch ? ` · branch ${opts.conversation.branch}` : ""}. Earlier output follows (the server's log keeps the agent's side, not your past messages).`,
-    );
+    this.note(connectionNote(opts.conversation, opts.created === true));
     if (opts.conversation.activeRunId) this.state.running = true;
   }
 
@@ -592,6 +587,19 @@ export class RemoteAttachSession {
       if (this.bridge) this.bridge.sync(this.snapshot());
     });
   }
+}
+
+/**
+ * The first line of the transcript. A conversation this attach created, or one with no
+ * output yet (its log holds only `conversation.created`), is "Connected": there is no
+ * earlier output to announce. Only a conversation with history is "Reconnected".
+ */
+export function connectionNote(conversation: RemoteConversation, created: boolean): string {
+  const short = conversation.conversationId.slice(0, 8);
+  const branch = conversation.branch ? ` · branch ${conversation.branch}` : "";
+  if (created) return `Connected to conversation ${short}${branch}, created on the server just now. The agent runs in a sandbox there.`;
+  if (conversation.lastEventId <= 1 && !conversation.activeRunId) return `Connected to conversation ${short}${branch}. Nothing has happened in it yet; the agent runs in a sandbox on the server.`;
+  return `Reconnected to conversation ${short}${branch}. Earlier output follows (the server's log keeps the agent's side, not your past messages).`;
 }
 
 /** Absolute (or ~) image paths: files only this laptop has. */

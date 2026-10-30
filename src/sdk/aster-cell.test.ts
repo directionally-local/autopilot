@@ -5,7 +5,7 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { cellSessionConfig, normalizeGatewayBaseUrl } from "./aster-cell.js";
+import { cellProviderFromEnv, cellSessionConfig, normalizeGatewayBaseUrl } from "./aster-cell.js";
 import { startRpcServer } from "./rpc.js";
 
 test("appends /v1 to the Hotcell gateway base URL exactly once", () => {
@@ -13,6 +13,28 @@ test("appends /v1 to the Hotcell gateway base URL exactly once", () => {
   assert.equal(normalizeGatewayBaseUrl("http://host.docker.internal:4752/openrouter/"), "http://host.docker.internal:4752/openrouter/v1");
   assert.equal(normalizeGatewayBaseUrl("https://openrouter.ai/api/v1"), "https://openrouter.ai/api/v1");
   assert.equal(normalizeGatewayBaseUrl(undefined), undefined);
+});
+
+test("the cell follows the provider the server configured, or OpenRouter from the daemon's own injection", () => {
+  const openrouter = cellProviderFromEnv({ OPENROUTER_BASE_URL: "http://gw:4752/openrouter", OPENROUTER_API_KEY: "or-token" });
+  assert.deepEqual(openrouter, { id: "openrouter", baseUrl: "http://gw:4752/openrouter/v1", apiKey: "or-token", ready: true });
+  assert.deepEqual(cellSessionConfig("moonshotai/kimi-k2.6", openrouter), { model: "moonshotai/kimi-k2.6", mode: "auto", openrouterApiKey: "or-token" });
+  assert.equal(cellProviderFromEnv({ OPENROUTER_BASE_URL: "http://gw:4752/openrouter" }).ready, false, "OpenRouter needs its token");
+
+  // A DeepSeek cell: the server set AUTOPILOT_PROVIDER, AUTOPILOT_BASE_URL and the preset's key env to the egress token.
+  const deepseek = cellProviderFromEnv({ AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://gw:4752/deepseek", DEEPSEEK_API_KEY: "egress-token", OPENROUTER_API_KEY: "ignored" });
+  assert.deepEqual(deepseek, { id: "deepseek", baseUrl: "http://gw:4752/deepseek", apiKey: "egress-token", ready: true });
+  assert.deepEqual(cellSessionConfig("deepseek-v4-pro", deepseek), {
+    model: "deepseek-v4-pro", mode: "auto", provider: "deepseek", providers: { deepseek: { baseUrl: "http://gw:4752/deepseek", apiKey: "egress-token" } },
+  });
+  assert.equal(cellProviderFromEnv({ AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://gw:4752/deepseek" }).ready, false, "DeepSeek needs a key");
+
+  // A keyless Ollama cell is ready with the gateway URL alone.
+  const ollama = cellProviderFromEnv({ AUTOPILOT_PROVIDER: "ollama", AUTOPILOT_BASE_URL: "http://gw:4752/ollama/v1/" });
+  assert.deepEqual(ollama, { id: "ollama", baseUrl: "http://gw:4752/ollama/v1", ready: true });
+  assert.deepEqual(cellSessionConfig("qwen3:32b", ollama), { model: "qwen3:32b", mode: "auto", provider: "ollama", providers: { ollama: { baseUrl: "http://gw:4752/ollama/v1" } } });
+
+  assert.equal(cellProviderFromEnv({ AUTOPILOT_PROVIDER: "not-a-provider", OPENROUTER_BASE_URL: "http://gw/openrouter", OPENROUTER_API_KEY: "k" }).id, "openrouter", "unknown ids fall back to OpenRouter");
 });
 
 test("registers the server's entry for the session's model, so the cell knows its real context window", async () => {
@@ -104,7 +126,7 @@ test("a cell session's edits land in the cell's clone, where the runtime commits
 
     // The same commands the bridge sends.
     const sessionId = crypto.randomUUID();
-    const created = await rpc({ id: crypto.randomUUID(), type: "new_session", cwd: workspace, sessionId, config: cellSessionConfig("moonshotai/kimi-k2.6", "sk-or-test-cell") });
+    const created = await rpc({ id: crypto.randomUUID(), type: "new_session", cwd: workspace, sessionId, config: cellSessionConfig("moonshotai/kimi-k2.6", cellProviderFromEnv()) });
     assert.equal(created?.type, "ok", created?.error);
     const turn = await rpc({ id: crypto.randomUUID(), type: "prompt", message: "write the fix", options: { mode: "auto" } });
     assert.equal(turn?.type, "ok", turn?.error);

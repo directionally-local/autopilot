@@ -1,12 +1,13 @@
 /**
- * `autopilot attach-remote`: open the interactive UI on a code conversation
- * that runs in a sandbox on an Aster server (see docs/aster-api.md,
- * "Interactive client").
+ * `autopilot attach-remote`: open the interactive UI on a conversation that
+ * runs in a sandbox on an Aster server (see docs/aster-api.md, "Interactive
+ * client").
  *
  * The server and credential come from AUTOPILOT_REMOTE_URL and
  * AUTOPILOT_REMOTE_TOKEN, never argv. Either reconnect with --conversation,
- * or create a conversation with --workspace/--repo/--model (plus
- * --base-commit/--patch-file for uncommitted local work).
+ * or create a conversation with --workspace/--model: a code conversation
+ * (the default) also needs --repo (plus --base-commit/--patch-file for
+ * uncommitted local work); `--kind chat` opens a sandbox with no repository.
  */
 
 import { randomUUID } from "node:crypto";
@@ -19,6 +20,8 @@ import { describeRemoteFailure, REMOTE_COMMANDS, RemoteAttachSession, writeState
 export interface AttachRemoteFlags {
   conversation?: string;
   workspace?: string;
+  /** "code" (default) clones --repo; "chat" is a repository-less sandbox. */
+  kind?: string;
   repo?: string;
   model?: string;
   baseCommit?: string;
@@ -47,27 +50,43 @@ const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export class AttachUsageError extends Error {}
 
+export type AttachMode = "reconnect" | "create-code" | "create-chat";
+
 /** Validate the flag combination before touching the network. */
-export function checkFlags(flags: AttachRemoteFlags): "reconnect" | "create" {
-  const createFlags = [flags.workspace, flags.repo, flags.model, flags.baseCommit, flags.patchFile].some((v) => v !== undefined);
+export function checkFlags(flags: AttachRemoteFlags): AttachMode {
+  const createFlags = [flags.workspace, flags.kind, flags.repo, flags.model, flags.baseCommit, flags.patchFile].some((v) => v !== undefined);
   if (flags.conversation !== undefined) {
-    if (createFlags) throw new AttachUsageError("--conversation reconnects to an existing conversation; don't combine it with --workspace/--repo/--model/--base-commit/--patch-file");
+    if (createFlags) throw new AttachUsageError("--conversation reconnects to an existing conversation; don't combine it with --workspace/--kind/--repo/--model/--base-commit/--patch-file");
     if (!flags.conversation.trim()) throw new AttachUsageError("--conversation needs an ID");
     return "reconnect";
   }
+  const kind = flags.kind?.trim().toLowerCase() ?? "code";
+  if (kind !== "code" && kind !== "chat") throw new AttachUsageError('--kind must be "code" (default) or "chat"');
+  if (kind === "chat") {
+    const missing = (["workspace", "model"] as const).filter((k) => !flags[k]);
+    if (missing.length) throw new AttachUsageError(`Pass --conversation <id>, or --workspace and --model to start a chat (missing: ${missing.map((m) => `--${m}`).join(", ")})`);
+    const codeOnly = ([["repo", flags.repo], ["base-commit", flags.baseCommit], ["patch-file", flags.patchFile]] as const).filter(([, v]) => v !== undefined).map(([name]) => `--${name}`);
+    if (codeOnly.length) throw new AttachUsageError(`--kind chat has no repository; drop ${codeOnly.join(", ")} or use --kind code`);
+    return "create-chat";
+  }
   const missing = (["workspace", "repo", "model"] as const).filter((k) => !flags[k]);
-  if (missing.length) throw new AttachUsageError(`Pass --conversation <id>, or --workspace, --repo and --model to start one (missing: ${missing.map((m) => `--${m}`).join(", ")})`);
+  if (missing.length) throw new AttachUsageError(`Pass --conversation <id>, or --workspace, --repo and --model to start one (missing: ${missing.map((m) => `--${m}`).join(", ")}; --kind chat needs no --repo)`);
   if (!REPO_RE.test(flags.repo!)) throw new AttachUsageError("--repo must be owner/name");
   if (flags.baseCommit !== undefined && !SHA_RE.test(flags.baseCommit)) throw new AttachUsageError("--base-commit must be a full 40-character commit SHA");
   if (flags.patchFile !== undefined && flags.baseCommit === undefined) throw new AttachUsageError("--patch-file needs --base-commit (the commit the patch applies to)");
-  return "create";
+  return "create-code";
 }
 
-/** The UI header: --title, else the repository; the second line says where the agent runs. */
-export function remoteHeader(conversation: RemoteConversation, title: string | undefined): { title: string; detail: string[] } {
-  const where = [conversation.model, conversation.repository, conversation.branch].filter(Boolean).join(" · ");
+/**
+ * The UI header: --title, else the repository (code) or the workspace's title (chat); the
+ * second line says where the agent runs.
+ */
+export function remoteHeader(conversation: RemoteConversation, title: string | undefined, workspaceTitle?: string): { title: string; detail: string[] } {
+  const chat = conversation.kind === "chat" || (!conversation.repository && conversation.kind !== "code");
+  const place = chat ? workspaceTitle?.trim() || conversation.workspaceId : conversation.repository;
+  const where = [conversation.model, chat ? place : conversation.repository, chat ? undefined : conversation.branch].filter(Boolean).join(" · ");
   return {
-    title: title?.trim() || `autopilot · ${conversation.repository ?? "remote"}`,
+    title: title?.trim() || `autopilot · ${place || "remote"}`,
     detail: [
       `${where ? `${where} · ` : ""}remote session`,
       "/ for commands · Esc cancels the turn · Ctrl-D detaches (it keeps running on the server)",
@@ -80,7 +99,7 @@ export async function attachRemote(flags: AttachRemoteFlags, deps: AttachRemoteD
   const env = deps.env ?? process.env;
   const err = deps.err ?? ((text: string) => process.stderr.write(text));
   const newId = deps.newId ?? (() => randomUUID());
-  let mode: "reconnect" | "create";
+  let mode: AttachMode;
   let client: RemoteClient;
   try {
     mode = checkFlags(flags);
@@ -98,6 +117,12 @@ export async function attachRemote(flags: AttachRemoteFlags, deps: AttachRemoteD
   try {
     if (mode === "reconnect") {
       conversation = await client.getConversation(flags.conversation!.trim());
+    } else if (mode === "create-chat") {
+      conversation = await client.createChatConversation({
+        workspaceId: flags.workspace!,
+        model: flags.model!,
+        idempotencyKey: `attach-${newId()}`,
+      });
     } else {
       // Read here and handed straight to the request; never logged.
       const patch = flags.patchFile !== undefined ? await readFile(flags.patchFile, "utf8") : undefined;
@@ -116,14 +141,21 @@ export async function attachRemote(flags: AttachRemoteFlags, deps: AttachRemoteD
     return 1;
   }
 
+  // Chat conversations are titled by their workspace; the list is cheap and best-effort.
+  let workspaceTitle: string | undefined;
+  if (conversation.kind === "chat" || (!conversation.repository && conversation.kind !== "code")) {
+    workspaceTitle = (await client.workspaces().catch(() => []))
+      .find((workspace) => workspace.id === conversation.workspaceId)?.displayName;
+  }
+
   let outcome = { kind: "detached" } as AttachOutcome;
   let first = true;
   await deps.mount({
-    header: remoteHeader(conversation, flags.title),
+    header: remoteHeader(conversation, flags.title, workspaceTitle),
     commands: REMOTE_COMMANDS,
     // Called again with a fresh view if the renderer crashes: replay and follow again.
     run: async (bridge) => {
-      const session = new RemoteAttachSession({ client, conversation, newId, created: mode === "create" && first });
+      const session = new RemoteAttachSession({ client, conversation, newId, created: mode !== "reconnect" && first });
       first = false;
       outcome = await session.run(bridge);
     },

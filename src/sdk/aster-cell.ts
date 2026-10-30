@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { PassThrough, Writable } from "node:stream";
 import { join, resolve as resolvePath } from "node:path";
 import { registerModelHints, type ModelEntry } from "../models/registry.js";
+import { getPreset, isProviderId, type ProviderId } from "../providers/presets.js";
 import { startRpcServer } from "./rpc.js";
 import type { SessionEvent } from "./types.js";
 
@@ -21,11 +22,46 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const CELL_MODE = "auto";
 
 /**
+ * The LLM provider this cell reaches through its Hotcell gateway route, read from the env
+ * the Aster server (AUTOPILOT_PROVIDER, AUTOPILOT_BASE_URL, the preset's key env holding
+ * the egress token) or, for OpenRouter, the daemon itself (OPENROUTER_BASE_URL/_API_KEY) set.
+ */
+export interface CellProvider {
+  id: ProviderId;
+  baseUrl?: string;
+  apiKey?: string;
+  /** True once the session can be created: a gateway URL, and a key unless the provider needs none. */
+  ready: boolean;
+}
+
+export function cellProviderFromEnv(env: NodeJS.ProcessEnv = process.env): CellProvider {
+  const requested = env.AUTOPILOT_PROVIDER?.trim().toLowerCase();
+  const id: ProviderId = isProviderId(requested) ? requested : "openrouter";
+  if (id === "openrouter") {
+    const baseUrl = normalizeGatewayBaseUrl(env.OPENROUTER_BASE_URL);
+    const apiKey = env.OPENROUTER_API_KEY?.trim() || undefined;
+    return { id, ...(baseUrl ? { baseUrl } : {}), ...(apiKey ? { apiKey } : {}), ready: !!baseUrl && !!apiKey };
+  }
+  const preset = getPreset(id);
+  const baseUrl = env.AUTOPILOT_BASE_URL?.trim().replace(/\/+$/, "") || undefined;
+  const apiKey = preset.apiKeyEnv.map((name) => env[name]?.trim()).find(Boolean);
+  return { id, ...(baseUrl ? { baseUrl } : {}), ...(apiKey ? { apiKey } : {}), ready: !!baseUrl && (!!apiKey || !preset.keyRequired) };
+}
+
+/**
  * The session config every cell `new_session` gets. The session edits /workspace in place:
  * that clone is what the runtime checkpoints, pushes as `aster/<id>` and opens the PR from.
+ * The provider's gateway URL and token travel in the config as well as the env, so the
+ * session follows them even when the SDK resolves its provider from config alone.
  */
-export function cellSessionConfig(model: string, apiKey: string): Record<string, unknown> {
-  return { model, mode: CELL_MODE, openrouterApiKey: apiKey };
+export function cellSessionConfig(model: string, provider: CellProvider): Record<string, unknown> {
+  if (provider.id === "openrouter") return { model, mode: CELL_MODE, openrouterApiKey: provider.apiKey };
+  return {
+    model,
+    mode: CELL_MODE,
+    provider: provider.id,
+    providers: { [provider.id]: { ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}), ...(provider.apiKey ? { apiKey: provider.apiKey } : {}) } },
+  };
 }
 
 type RpcCommand = { id: string; type: string; [key: string]: unknown };
@@ -58,6 +94,7 @@ export function normalizeGatewayBaseUrl(value: string | undefined): string | und
 
 export async function startAsterCellBridge(port = 31417): Promise<ReturnType<typeof createServer>> {
   process.env.HOME = HOME;
+  // OpenRouter's module reads OPENROUTER_BASE_URL itself; give it the `/v1` form once.
   const gatewayBaseUrl = normalizeGatewayBaseUrl(process.env.OPENROUTER_BASE_URL);
   if (gatewayBaseUrl) process.env.OPENROUTER_BASE_URL = gatewayBaseUrl;
   await mkdir(HOME, { recursive: true, mode: 0o700 });
@@ -172,10 +209,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, state: B
     if (!state.initialized) {
       const config = command.config && typeof command.config === "object" ? command.config as Record<string, unknown> : {};
       const model = typeof config.model === "string" ? config.model : "";
-      const apiKey = process.env.OPENROUTER_API_KEY;
-      if (!model || !apiKey || !process.env.OPENROUTER_BASE_URL) return send(res, 503, { error: "scoped_openrouter_gateway_unavailable" });
+      const provider = cellProviderFromEnv();
+      if (!model || !provider.ready) return send(res, 503, { error: "scoped_provider_gateway_unavailable" });
       command.cwd = "/workspace";
-      command.config = cellSessionConfig(model, apiKey);
+      command.config = cellSessionConfig(model, provider);
       state.sessionId = sessionId;
       state.model = model;
       state.modelInfo = acceptModelInfo(command.modelInfo, model);
@@ -287,15 +324,15 @@ async function readState(): Promise<BridgeState> {
 }
 
 async function restoreSession(input: PassThrough, pending: Map<string, PendingRpc>, state: BridgeState): Promise<void> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey || !process.env.OPENROUTER_BASE_URL || !state.sessionId || !state.model) return;
+  const provider = cellProviderFromEnv();
+  if (!provider.ready || !state.sessionId || !state.model) return;
   if (state.modelInfo) acceptModelInfo(state.modelInfo, state.model);
   const response = await sendRpc(input, pending, {
     id: crypto.randomUUID(),
     type: "new_session",
     cwd: "/workspace",
     sessionId: state.sessionId,
-    config: cellSessionConfig(state.model, apiKey),
+    config: cellSessionConfig(state.model, provider),
   }).catch(() => undefined);
   state.initialized = response?.type === "ok";
   await persistState(state);

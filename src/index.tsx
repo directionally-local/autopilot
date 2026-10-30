@@ -183,8 +183,9 @@ program
       "Reads AUTOPILOT_REMOTE_URL and AUTOPILOT_REMOTE_TOKEN from the environment. Quitting detaches; the conversation keeps running.",
   )
   .option("--conversation <id>", "reconnect to this conversation (replays its history, then follows it live)")
-  .option("--workspace <id>", "start a new code conversation in this server workspace")
-  .option("--repo <owner/name>", "with --workspace: the GitHub repository to clone")
+  .option("--workspace <id>", "start a new conversation in this server workspace")
+  .option("--kind <kind>", "with --workspace: \"code\" (clones --repo; default) or \"chat\" (a sandbox without a repository)")
+  .option("--repo <owner/name>", "with --workspace: the GitHub repository to clone (code conversations)")
   .option("--model <id>", "with --workspace: the model to start with")
   .option("--base-commit <sha>", "with --workspace: start from this commit (full SHA)")
   .option("--patch-file <path>", "with --base-commit: a git diff --binary of uncommitted changes to apply first")
@@ -200,7 +201,7 @@ program
     // may attach those flags there, so read them from the merged globals.
     const all = command.optsWithGlobals() as Record<string, unknown>;
     const flags: import("./remote/attach-cli.js").AttachRemoteFlags = {};
-    for (const key of ["conversation", "workspace", "repo", "model", "baseCommit", "patchFile", "stateFile", "title"] as const) {
+    for (const key of ["conversation", "workspace", "kind", "repo", "model", "baseCommit", "patchFile", "stateFile", "title"] as const) {
       if (typeof all[key] === "string") flags[key] = all[key];
     }
     const code = await attachRemote(flags, {
@@ -238,19 +239,27 @@ asterCommand
   .command("setup")
   .description("Configure Aster for one or more local Git workspaces")
   .requiredOption("-w, --workspace <path>", "Local Git repository root (repeatable)", (value, previous: string[] = []) => [...previous, value])
+  .option("--provider <id>", "LLM provider cells use (a provider preset id, e.g. deepseek, ollama); default OpenRouter")
+  .option("--base-url <url>", "with --provider: its API base URL instead of the preset's")
   .option("--json", "Print the selected workspace IDs as JSON")
-  .action(async (options: { workspace: string[]; json?: boolean }) => {
+  .action(async (options: { workspace: string[]; provider?: string; baseUrl?: string; json?: boolean }) => {
     const { setupLocalAsterConfig } = await import("./server/aster-setup.js");
     try {
-      const setup = await setupLocalAsterConfig({ workspacePaths: options.workspace });
+      const setup = await setupLocalAsterConfig({
+        workspacePaths: options.workspace,
+        ...(options.provider ? { provider: options.provider } : {}),
+        ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      });
       const result = {
         configPath: setup.path,
+        provider: setup.config.provider.id,
         workspaces: setup.selectedWorkspaces.map(({ id, displayName, rootPath }) => ({ id, displayName, rootPath })),
       };
       if (options.json) {
         console.log(JSON.stringify(result));
       } else {
         console.log(`Aster config: ${setup.path}`);
+        console.log(`Provider: ${setup.config.provider.name}`);
         for (const workspace of result.workspaces) console.log(`Workspace: ${workspace.id} · ${workspace.displayName}`);
       }
     } catch (error) {

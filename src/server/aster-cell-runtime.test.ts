@@ -4,9 +4,10 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { AsterHotcellRuntime } from "./aster-cell-runtime.js";
+import { AsterHotcellRuntime, cellProviderEnv } from "./aster-cell-runtime.js";
 import type { HotcellProvider } from "./hotcell-provider.js";
 import type { AsterTurnStart } from "./aster-api.js";
+import { providerConfig } from "./aster-workspaces.js";
 
 const CONTROL_PREFIX = "node --input-type=module";
 const INSTALLED_RUNTIME_PACKAGE = "/opt/autopilot/node_modules/autopilot-ai/package.json";
@@ -32,6 +33,14 @@ interface FakeCellState {
   rpcs?: Array<Record<string, unknown>>;
   /** Every control request fails, as if the cell were gone. */
   unreachable?: boolean;
+  /** Sandbox-level env set through setEnvVars. */
+  envVars?: Record<string, string>;
+  /** What listEgressTokens answers: the daemon-minted token(s) and the gateway routes. */
+  egress?: { tokens: Array<{ token: string }>; providers: Array<{ name: string; baseUrl: string }> };
+  /** Env each started process received. */
+  processEnvs?: Array<Record<string, string> | undefined>;
+  /** The createConversationCell input that made this cell. */
+  createInput?: Record<string, unknown>;
 }
 
 function fakeSandbox(state: FakeCellState) {
@@ -128,7 +137,8 @@ function fakeSandbox(state: FakeCellState) {
     },
     mkdir: async () => {},
     listProcesses: async () => state.processes.map((proc, index) => ({ ...proc, procId: `proc-${index}`, pid: 1, exitCode: null, startedAt: "", logPath: "" })),
-    startProcess: async (command: string) => {
+    startProcess: async (command: string, options?: { env?: Record<string, string> }) => {
+      (state.processEnvs ??= []).push(options?.env);
       state.processes.push({ command, status: "running" });
       return { procId: `proc-${state.processes.length}`, pid: 1, command, status: "running" as const, exitCode: null, startedAt: "", logPath: "" };
     },
@@ -139,8 +149,13 @@ function fakeSandbox(state: FakeCellState) {
     destroy: async () => { state.destroyed = true; },
     pause: async () => { state.paused++; },
     start: async () => { state.started++; },
-    listEgressTokens: async () => ({ tokens: [], providers: [] }),
+    listEgressTokens: async () => state.egress ?? { tokens: [], providers: [] },
     revokeEgressToken: async () => {},
+    setEnvVars: async (env: Record<string, string>) => {
+      state.envVars = { ...(state.envVars ?? {}), ...env };
+      return state.envVars;
+    },
+    getEnvVars: async () => state.envVars ?? {},
   };
 }
 
@@ -189,7 +204,7 @@ function emptyCellState(id = "real-cell"): FakeCellState {
   };
 }
 
-function fakeProvider(cells: Map<string, FakeCellState>): HotcellProvider {
+function fakeProvider(cells: Map<string, FakeCellState>, defaults: Pick<FakeCellState, "egress"> = {}): HotcellProvider {
   let next = 0;
   return {
     findConversationCell: async (conversationId: string) => {
@@ -203,6 +218,8 @@ function fakeProvider(cells: Map<string, FakeCellState>): HotcellProvider {
         id: `fake-cell-${++next}`,
         files: new Map(), processes: [], sessions: [], prompts: [], aborts: 0, events: [],
         destroyed: false, paused: 0, started: 0,
+        ...(defaults.egress ? { egress: defaults.egress } : {}),
+        createInput: input as unknown as Record<string, unknown>,
       };
       cells.set(input.conversationId, state);
       return fakeSandbox(state);
@@ -274,6 +291,56 @@ describe("Aster Hotcell runtime", () => {
     assert.deepEqual(state.sessions, ["s-1", "s-1"]); // new_session is idempotent in the bridge
     assert.equal(state.processes.length, 1);
     assert.ok(!state.prompts.some((prompt) => prompt.message.length > 0)); // provisioning never sends prompts
+  });
+
+  it("configures a DeepSeek cell's Autopilot for the provider's gateway route with the cell's egress token", async () => {
+    const cells = new Map<string, FakeCellState>();
+    const egress = { tokens: [{ token: "egress-token-1" }], providers: [{ name: "deepseek", baseUrl: "http://host.docker.internal:4752/deepseek/" }] };
+    const runtime = new AsterHotcellRuntime(fakeProvider(cells, { egress }), { archiveWorkspace: async () => "QUJD" });
+    const conversationId = crypto.randomUUID();
+    const created = await runtime.provisionConversation({
+      conversationId, sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      model: "deepseek-v4-pro", provider: providerConfig("deepseek"), allowCreate: true, onCellCreated: () => {},
+    });
+    const state = [...cells.values()].find((cell) => cell.id === created.cellId)!;
+    assert.equal(state.createInput?.provider, "deepseek", "the cell's egress route is the provider's");
+    const expected = { AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://host.docker.internal:4752/deepseek", DEEPSEEK_API_KEY: "egress-token-1" };
+    assert.deepEqual(state.envVars, expected, "DeepSeek's API lives at its origin, so the gateway URL gets no /v1");
+    assert.deepEqual(state.processEnvs?.[0], { ...expected, HOME: "/workspace/.aster/home" }, "the bridge gets the sandbox env explicitly");
+    assert.ok(!state.commands?.some((command) => command.includes("egress-token-1")), "the token never appears in an exec command");
+  });
+
+  it("configures a keyless Ollama cell without a key env and keeps OpenRouter on the daemon's own injection", async () => {
+    const ollamaCells = new Map<string, FakeCellState>();
+    const egress = { tokens: [], providers: [{ name: "ollama", baseUrl: "http://host.docker.internal:4752/ollama" }] };
+    const ollama = new AsterHotcellRuntime(fakeProvider(ollamaCells, { egress }), { archiveWorkspace: async () => "QUJD" });
+    const base = { sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo", allowCreate: true, onCellCreated: () => {} };
+    const created = await ollama.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "qwen3:32b", provider: providerConfig("ollama") });
+    const state = [...ollamaCells.values()].find((cell) => cell.id === created.cellId)!;
+    assert.deepEqual(state.envVars, { AUTOPILOT_PROVIDER: "ollama", AUTOPILOT_BASE_URL: "http://host.docker.internal:4752/ollama/v1" });
+
+    const openrouterCells = new Map<string, FakeCellState>();
+    const openrouter = new AsterHotcellRuntime(fakeProvider(openrouterCells), { archiveWorkspace: async () => "QUJD" });
+    const orCreated = await openrouter.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "test/model", provider: providerConfig("openrouter") });
+    const orState = [...openrouterCells.values()].find((cell) => cell.id === orCreated.cellId)!;
+    assert.equal(orState.envVars, undefined, "OPENROUTER_BASE_URL/_API_KEY come from the daemon, as before");
+    assert.equal(orState.createInput?.provider, "openrouter");
+
+    // A route the daemon doesn't offer fails provisioning instead of leaving a cell that can't reach a model.
+    const missing = new AsterHotcellRuntime(fakeProvider(new Map(), { egress: { tokens: [{ token: "t" }], providers: [{ name: "openrouter", baseUrl: "http://gw/openrouter" }] } }), { archiveWorkspace: async () => "QUJD" });
+    await assert.rejects(
+      missing.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "deepseek-v4-pro", provider: providerConfig("deepseek") }),
+      /hotcell_egress_route_missing/,
+    );
+  });
+
+  it("derives the cell's base URL from the gateway route plus the preset's path", () => {
+    const token = "egress-token";
+    assert.deepEqual(cellProviderEnv(providerConfig("openai"), "http://gw:4752/openai", token), { AUTOPILOT_PROVIDER: "openai", AUTOPILOT_BASE_URL: "http://gw:4752/openai/v1", OPENAI_API_KEY: token });
+    assert.deepEqual(cellProviderEnv(providerConfig("deepseek"), "http://gw:4752/deepseek", token), { AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://gw:4752/deepseek", DEEPSEEK_API_KEY: token });
+    assert.deepEqual(cellProviderEnv(providerConfig("lmstudio"), "http://gw:4752/lmstudio", undefined), { AUTOPILOT_PROVIDER: "lmstudio", AUTOPILOT_BASE_URL: "http://gw:4752/lmstudio/v1" });
+    // An explicit aster.json base URL contributes its path too (a self-hosted gateway under /api/v1).
+    assert.equal(cellProviderEnv(providerConfig("custom", "https://llm.example.com/api/v1", "LLM_KEY"), "http://gw:4752/custom", token).AUTOPILOT_BASE_URL, "http://gw:4752/custom/api/v1");
   });
 
   it("refreshes an older cell runtime locally and restarts its bridge without npm", async () => {
@@ -414,23 +481,40 @@ describe("Aster Hotcell runtime", () => {
       const conversation = {
         id: "conv-commits", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/12345678", pullRequestNumber: null,
       } as never;
-      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(emptyCellState(), root), { pollIntervalMs: 5 });
+      const state = emptyCellState();
+      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
       let published = 0;
 
-      // Only the client's local changes so far: nothing of the agent's to publish.
-      const idle = fakeTurn({ cellId: "real-cell", conversation, userText: "look around", githubProxy, beforeFinish: async () => { published++; } });
+      // The agent only talked (a greeting, an answer): no repository work was asked for, so
+      // the turn doesn't announce that none was published.
+      const greeting = fakeTurn({ cellId: "real-cell", conversation, userText: "hello", githubProxy, beforeFinish: async () => { published++; } });
+      runtime.startTurn(greeting);
+      await waitFor(() => greeting.finished.length > 0);
+      assert.equal(published, 0);
+      assert.deepEqual(greeting.finished, ["completed"]);
+      assert.ok(!greeting.events.some((event) => event.type === "outcome"), "a tool-free reply gets no outcome line");
+
+      // The agent looked around with tools and changed nothing: only the client's local
+      // changes exist, nothing of the agent's to publish, and the turn says so.
+      state.promptEvents = [
+        { type: "tool.start", toolName: "bash", toolCallId: "c1", args: { command: "ls" } },
+        { type: "tool.result", toolName: "bash", toolCallId: "c1", result: "README.md" },
+        { type: "message.delta", text: "Nothing to change." },
+      ];
+      const idle = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 2, userText: "look around", githubProxy, beforeFinish: async () => { published++; } });
       runtime.startTurn(idle);
       await waitFor(() => idle.finished.length > 0);
       assert.equal(published, 0);
       assert.deepEqual(idle.finished, ["completed"]);
       assert.ok(idle.events.some((event) => event.type === "outcome" && /no pull request was opened/.test(String(event.data?.summary))));
+      state.promptEvents = undefined;
 
       // The agent commits its work itself, leaving nothing uncommitted for a checkpoint.
       writeFileSync(join(root, "design.md"), "the plan\n");
       git("add design.md");
       git("commit -q -m 'docs: the plan'");
-      const committed = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 2, userText: "write the plan", githubProxy, beforeFinish: async () => { published++; } });
+      const committed = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 6, userText: "write the plan", githubProxy, beforeFinish: async () => { published++; } });
       runtime.startTurn(committed);
       await waitFor(() => committed.finished.length > 0);
       assert.ok(!committed.events.some((event) => event.type === "checkpoint.created"));

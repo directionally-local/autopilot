@@ -4,7 +4,8 @@
  * request credentials.
  *
  * Precedence:
- *   1. AUTOPILOT_PROVIDER env (an explicit override)
+ *   1. AUTOPILOT_PROVIDER env (an explicit override; with AUTOPILOT_BASE_URL also
+ *      set, that URL replaces the preset's base URL, e.g. a gateway in front of it)
  *   2. KIMIFLARE_BASE_URL env (a host app embedding Autopilot owns routing)
  *   3. `provider` in config
  *   4. legacy inference for configs written before `provider` existed:
@@ -109,7 +110,12 @@ export function resolveActiveProvider(
   } else if (id === "bedrock") {
     const settings = cfg?.providers?.bedrock;
     baseUrl = nonEmpty(settings?.baseUrl) ?? bedrockBase(bedrockRegion(settings, env));
-  } else if (id !== "openrouter" && id !== "requesty") baseUrl = fillPlaceholders(nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? preset.baseUrl, cfg, env);
+  } else if (id !== "openrouter" && id !== "requesty") {
+    // AUTOPILOT_PROVIDER + AUTOPILOT_BASE_URL route a preset through another endpoint (a
+    // gateway such as Hotcell's). Without AUTOPILOT_PROVIDER the URL alone means "custom".
+    const envBaseUrl = isProviderId(nonEmpty(env.AUTOPILOT_PROVIDER)?.toLowerCase()) ? nonEmpty(readEnv("BASE_URL", env)) : undefined;
+    baseUrl = fillPlaceholders(envBaseUrl ?? nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? preset.baseUrl, cfg, env);
+  }
   return { id, preset, ...(baseUrl ? { baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
 }
 

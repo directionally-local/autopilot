@@ -24,7 +24,9 @@ describe("local Aster setup", () => {
     assert.equal(first.selectedWorkspaces.length, 1);
     assert.equal(first.selectedWorkspaces[0]?.id, "aster-project");
     assert.equal(first.selectedWorkspaces[0]?.rootPath, await realpath(repository));
-    assert.equal(first.config.modelCatalog, "openrouter");
+    assert.equal(first.config.modelCatalog, "catalog");
+    assert.equal(first.config.provider.id, "openrouter");
+    assert.equal(JSON.parse(await readFile(first.path, "utf8")).provider, undefined, "no block is written for the default provider");
 
     const fileMode = (await stat(first.path)).mode & 0o777;
     assert.equal(fileMode, 0o600);
@@ -50,6 +52,26 @@ describe("local Aster setup", () => {
       /already exists.*does not include.*left unchanged/,
     );
     assert.equal(await readFile(configPath, "utf8"), original);
+  });
+
+  it("writes the provider block for --provider, with an optional base URL override", async () => {
+    const root = await fixture();
+    const repository = await gitRepository(root, "repo");
+    const configPath = join(root, "aster.json");
+    const setup = await setupLocalAsterConfig({ workspacePaths: [repository], provider: "deepseek", configPath });
+    assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).provider, { id: "deepseek" });
+    assert.equal(setup.config.provider.baseUrl, "https://api.deepseek.com");
+    assert.equal(setup.config.modelCatalog, "catalog");
+
+    const withUrl = join(root, "ollama.json");
+    const ollama = await setupLocalAsterConfig({ workspacePaths: [repository], provider: "ollama", baseUrl: "http://gpu-box:11434/v1", models: ["qwen3:32b"], configPath: withUrl });
+    assert.deepEqual(JSON.parse(await readFile(withUrl, "utf8")).provider, { id: "ollama", baseUrl: "http://gpu-box:11434/v1" });
+    assert.equal(ollama.config.provider.baseUrl, "http://gpu-box:11434/v1");
+    assert.deepEqual(ollama.config.models, ["qwen3:32b"]);
+
+    await assert.rejects(setupLocalAsterConfig({ workspacePaths: [repository], provider: "acme-llm", configPath: join(root, "x.json") }), /unknown provider "acme-llm"/);
+    await assert.rejects(setupLocalAsterConfig({ workspacePaths: [repository], baseUrl: "https://x", configPath: join(root, "y.json") }), /--base-url needs --provider/);
+    await assert.rejects(setupLocalAsterConfig({ workspacePaths: [repository], provider: "custom", configPath: join(root, "z.json") }), /needs provider.baseUrl/);
   });
 
   it("rejects a subdirectory instead of silently widening the workspace root", async () => {

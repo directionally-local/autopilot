@@ -93,13 +93,16 @@ export class HotcellProvider {
     conversationId: string;
     workspaceId: string;
     model: string;
+    /** Hotcell egress route (named after Autopilot's provider preset id); default "openrouter". */
+    provider?: string;
     /** "code" cells also get GitHub (API and git) through the credential gateway. */
     kind?: "chat" | "code";
     /** Code cells using Aster's repository-scoped GitHub proxy skip Hotcell's GitHub gateway. */
     githubViaProxy?: boolean;
     env?: Record<string, string>;
   }): Promise<Sandbox> {
-    if (!isUuid(input.conversationId) || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(input.workspaceId) || !input.model.trim()) {
+    const provider = input.provider ?? "openrouter";
+    if (!isUuid(input.conversationId) || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(input.workspaceId) || !input.model.trim() || !/^[a-z][a-z0-9-]{0,63}$/.test(provider)) {
       throw new HotcellProviderError("Invalid Hotcell conversation provisioning input", "invalid_provisioning_input");
     }
 
@@ -111,8 +114,8 @@ export class HotcellProvider {
     if (!info.drivers.includes(this.config.driver)) {
       throw new HotcellProviderError("Configured Hotcell driver is unavailable", "hotcell_driver_unavailable");
     }
-    if (!info.egressProviders.includes("openrouter")) {
-      throw new HotcellProviderError("Hotcell OpenRouter credential gateway is unavailable", "hotcell_egress_unavailable");
+    if (!info.egressProviders.includes(provider)) {
+      throw new HotcellProviderError(`Hotcell credential gateway has no "${provider}" egress route`, "hotcell_egress_unavailable");
     }
     if (input.kind === "code" && !input.githubViaProxy && !info.egressProviders.includes("github")) {
       throw new HotcellProviderError("Hotcell GitHub credential gateway is unavailable", "hotcell_github_unavailable");
@@ -130,7 +133,7 @@ export class HotcellProvider {
       pidsLimit: this.config.pidsLimit,
       egressSpendCapUsd: this.config.spendCapUsd,
       egress: {
-        providers: input.kind === "code" && !input.githubViaProxy ? ["openrouter", "github", "github-git"] : ["openrouter"],
+        providers: input.kind === "code" && !input.githubViaProxy ? [provider, "github", "github-git"] : [provider],
         ...(this.config.anyModel ? {} : { models: [input.model] }),
         spendCapUsd: this.config.spendCapUsd,
         ttlMs: this.config.tokenTtlMs,
