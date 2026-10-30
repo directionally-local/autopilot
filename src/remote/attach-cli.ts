@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { AppBridge } from "../ui/app-bridge.js";
-import { RemoteClient, type RemoteConversation } from "./client.js";
+import { RemoteApiError, RemoteClient, type RemoteConversation } from "./client.js";
 import { normalizeServerUrl } from "./config.js";
 import { describeRemoteFailure, REMOTE_COMMANDS, RemoteAttachSession, writeStateFile, type AttachOutcome } from "./attach-session.js";
 
@@ -49,6 +49,12 @@ const SHA_RE = /^[0-9a-f]{40}$/i;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export class AttachUsageError extends Error {}
+
+/**
+ * Exit codes. `patchContainsSecret` is its own so a caller (dl) can tell "your local changes
+ * hold a key" from any other failure and offer to start without them.
+ */
+export const ATTACH_EXIT = { ok: 0, error: 1, patchContainsSecret: 3 } as const;
 
 export type AttachMode = "reconnect" | "create-code" | "create-chat";
 
@@ -138,7 +144,7 @@ export async function attachRemote(flags: AttachRemoteFlags, deps: AttachRemoteD
     if (flags.stateFile) await writeStateFile(flags.stateFile, conversation);
   } catch (error) {
     err(`autopilot attach-remote: ${describeRemoteFailure(error)}\n`);
-    return 1;
+    return error instanceof RemoteApiError && error.code === "patch_contains_secret" ? ATTACH_EXIT.patchContainsSecret : ATTACH_EXIT.error;
   }
 
   // Chat conversations are titled by their workspace; the list is cheap and best-effort.

@@ -87,6 +87,8 @@ export function describeRemoteFailure(error: unknown): string {
   if (error instanceof RemoteApiError) {
     if (error.status === 401) return REVOKED_MESSAGE;
     if (error.code === "conversation_not_found") return "the server has no such conversation for this credential (it may have been deleted).";
+    // The server's message already names the file, line and pattern; a code suffix would only bury it.
+    if (error.code === "patch_contains_secret") return error.message;
     return `${error.message} (${error.code})`;
   }
   return error instanceof Error ? error.message : String(error);

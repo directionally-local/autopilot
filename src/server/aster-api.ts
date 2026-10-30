@@ -20,7 +20,7 @@ import { AsterMemory } from "./aster-memory.js";
 import { AsterGitHubProxy, createAsterGitHubGrantToken } from "./aster-github-proxy.js";
 import { AsterPush } from "./aster-push.js";
 import { handleAsterPairing, PairingRequestError } from "./aster-pairing.js";
-import { containsLikelyProviderSecret, createAsterTools, redactLikelySecrets, assertAsterCellPath } from "./aster-tools.js";
+import { containsLikelyProviderSecret, createAsterTools, findLikelyProviderSecret, redactLikelySecrets, assertAsterCellPath } from "./aster-tools.js";
 
 const API_PREFIX = "/api/v1";
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -241,8 +241,13 @@ export class AsterApi {
         if (body.patch !== undefined && (typeof body.patch !== "string" || body.patch.length > MAX_PATCH_CHARS)) {
           return sendError(res, 400, "invalid_patch", "patch must be a git diff of at most 3 MiB");
         }
-        if (typeof body.patch === "string" && containsLikelyProviderSecret(body.patch)) {
-          return sendError(res, 400, "patch_contains_secret", "The patch looks like it contains a provider API key; remove it and retry");
+        if (typeof body.patch === "string") {
+          // Say where, never what: the message mustn't become the leak it warns about.
+          const secret = findLikelyProviderSecret(body.patch);
+          if (secret) {
+            const where = secret.file ? `${secret.file}${secret.line !== undefined ? `:${secret.line}` : ""}` : "the patch";
+            return sendError(res, 400, "patch_contains_secret", `Your local changes include something that looks like an API key (${secret.pattern}) at ${where}; remove it and retry`);
+          }
         }
         if (typeof body.workspaceId !== "string" || !principal.workspaceIds.includes(body.workspaceId)) {
           return sendError(res, 403, "workspace_forbidden", "Workspace ID is not in this credential's scope");
