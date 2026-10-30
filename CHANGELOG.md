@@ -22,11 +22,6 @@
 * **camouflage:** treat a renderer SIGINT as a user quit, not a crash ([#1045](https://github.com/directionally-local/autopilot/issues/1045)) ([06417d2](https://github.com/directionally-local/autopilot/commit/06417d22495c5185a3e80604a7e7ae76cf66e5c2))
 * remove session worktrees; sessions edit in place again ([#1040](https://github.com/directionally-local/autopilot/issues/1040)) ([1deb7ed](https://github.com/directionally-local/autopilot/commit/1deb7ed71e5019512dbe66aaf7e3d9a27ab8848b))
 
-
-### Chores
-
-* undo the accidental 4.0.0 release ([#1062](https://github.com/directionally-local/autopilot/issues/1062)) ([a78cb46](https://github.com/directionally-local/autopilot/commit/a78cb460dbcaf5ab680fcfd6f7bc3635f0ad5897))
-
 ## [3.0.2](https://github.com/directionally-local/autopilot/compare/v3.0.1...v3.0.2) (2026-10-29)
 
 
