@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Memory Audit — Autopilot</title>
+<style>
+  :root{
+    --bg:#080b10; --panel:#0f141c; --panel2:#141b25; --border:#1f2937;
+    --text:#e6edf3; --muted:#8b98a9; --teal:#2dd4bf; --amber:#fbbf24;
+    --red:#f87171; --blue:#60a5fa; --purple:#a78bfa; --green:#34d399;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; color:var(--text);
+    background:
+      radial-gradient(1100px 520px at 18% -8%, #12202a 0%, transparent 62%),
+      radial-gradient(900px 500px at 92% 4%, #1a1426 0%, transparent 55%),
+      var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Inter,Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:52px 24px 84px}
+  .eyebrow{font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--teal);font-weight:800}
+  h1{font-size:clamp(34px,5vw,58px);line-height:1.03;margin:14px 0 18px;letter-spacing:-.035em;font-weight:800}
+  h1 .dim{color:#7d8b9d}
+  h1 .red{color:var(--red)}
+  .lede{font-size:18px;line-height:1.62;color:#b6c2d1;max-width:860px;margin:0}
+  .lede b{color:#e6edf3}
+  .verdict{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:34px 0 6px}
+  .v{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--border);border-radius:14px;padding:18px 20px}
+  .v .tag{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .v .big{font-size:21px;font-weight:800;margin:7px 0 5px;letter-spacing:-.02em}
+  .v p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:26px 0 4px}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 15px}
+  .kpi .n{font-size:29px;font-weight:800;letter-spacing:-.035em;line-height:1}
+  .kpi .n small{font-size:14px;font-weight:700;color:var(--muted);letter-spacing:0}
+  .kpi .l{font-size:12px;color:#c9d4e2;margin-top:7px;line-height:1.35}
+  .kpi .s{font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.35}
+  .kpi.r .n{color:var(--red)} .kpi.a .n{color:var(--amber)} .kpi.t .n{color:var(--teal)} .kpi.b .n{color:var(--blue)}
+  section{margin-top:58px}
+  h2{font-size:26px;letter-spacing:-.025em;margin:8px 0 8px;font-weight:800}
+  .sub{color:var(--muted);font-size:14.5px;line-height:1.65;max-width:900px;margin:0 0 20px}
+  .sub b{color:#c9d4e2}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:22px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .timeline{position:relative;display:grid;grid-template-columns:repeat(6,1fr);gap:12px;padding-top:30px}
+  .timeline:before{content:"";position:absolute;left:0;right:0;top:9px;height:2px;background:linear-gradient(90deg,var(--teal),var(--amber),var(--red));opacity:.45}
+  .tl{position:relative;padding-top:16px}
+  .tl:before{content:"";position:absolute;top:-25px;left:0;width:12px;height:12px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 4px rgba(45,212,191,.14)}
+  .tl.warn:before{background:var(--amber);box-shadow:0 0 0 4px rgba(251,191,36,.14)}
+  .tl.bad:before{background:var(--red);box-shadow:0 0 0 4px rgba(248,113,113,.14)}
+  .tl .d{font-size:10.5px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;font-weight:700}
+  .tl .t{font-size:13.5px;font-weight:700;margin:5px 0 4px;line-height:1.3}
+  .tl .x{font-size:12px;color:var(--muted);line-height:1.45}
+  .months{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;align-items:end;height:150px;margin-top:28px;padding-top:14px;border-top:1px solid var(--border)}
+  .month{display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%;gap:6px}
+  .month .bar{width:100%;max-width:48px;border-radius:4px 4px 0 0;background:linear-gradient(180deg,var(--teal),rgba(45,212,191,.22));min-height:2px}
+  .month.zero .bar{background:rgba(248,113,113,.45);height:2px!important}
+  .month .lbl{font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;font-weight:700}
+  .month .v{font-size:10.5px;color:#c9d4e2;font-variant-numeric:tabular-nums}
+  .funnel{display:flex;flex-direction:column;gap:11px}
+  .frow{display:grid;grid-template-columns:230px 1fr 96px;gap:14px;align-items:center}
+  .frow .lab{font-size:13px;color:#c9d4e2;line-height:1.3}
+  .frow .lab small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+  .frow .bar{height:26px;border-radius:6px;background:linear-gradient(90deg,rgba(45,212,191,.9),rgba(45,212,191,.28));min-width:3px}
+  .frow .val{font-size:13px;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+  .frow.hot .bar{background:linear-gradient(90deg,rgba(248,113,113,.95),rgba(248,113,113,.3))}
+  .frow.hot .val{color:var(--red);font-weight:700}
+  .fnote{font-size:11.5px;color:#6f8095;margin-top:14px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);padding:10px 8px;border-bottom:1px solid var(--border);font-weight:700;white-space:nowrap}
+  td{padding:9px 8px;border-bottom:1px solid rgba(31,41,55,.55);vertical-align:middle}
+  tr:hover td{background:rgba(255,255,255,.018)}
+  .num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  .proj{font-weight:600;color:#dbe6f3}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;padding:3px 7px;border-radius:999px;white-space:nowrap}
+  .pill.g{background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.25)}
+  .pill.a{background:rgba(251,191,36,.12);color:var(--amber);border:1px solid rgba(251,191,36,.25)}
+  .pill.r{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.25)}
+  .pill.b{background:rgba(96,165,250,.12);color:var(--blue);border:1px solid rgba(96,165,250,.25)}
+  .pill.p{background:rgba(167,139,250,.12);color:var(--purple);border:1px solid rgba(167,139,250,.25)}
+  .code{background:#070a0f;border:1px solid var(--border);border-radius:12px;padding:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.65;color:#c9d4e2;overflow:auto}
+  .code .k{color:var(--purple)} .code .s{color:var(--teal)} .code .c{color:#5b6b7f} .code .r{color:var(--red)} .code .y{color:var(--amber)}
+  .result{display:flex;flex-direction:column;gap:9px}
+  .result .row{display:flex;gap:10px;align-items:flex-start;font-size:12.5px;line-height:1.45}
+  .result .tag{flex:0 0 auto;font-size:9.5px;font-weight:800;padding:2px 6px;border-radius:4px;background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.2);letter-spacing:.04em}
+  .result .txt{color:#c9d4e2}
+  .result .txt code{font-family:ui-monospace,monospace;font-size:11.5px;color:#9fb0c4}
+  .callout{border-left:3px solid var(--red);background:rgba(248,113,113,.06);border-radius:0 10px 10px 0;padding:12px 14px;font-size:12.5px;color:#d7c2c2;line-height:1.55;margin-top:14px}
+  .callout b{color:#ffd7d7}
+  .opps{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .opp{background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--teal);border-radius:14px;padding:20px}
+  .opp.p0{border-left-color:var(--red)} .opp.p1{border-left-color:var(--amber)} .opp.p2{border-left-color:var(--blue)} .opp.p3{border-left-color:var(--purple)}
+  .opp .top{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  .opp h3{font-size:15.5px;margin:0;letter-spacing:-.015em;line-height:1.3}
+  .opp .why{color:#b6c2d1;font-size:12.5px;line-height:1.58;margin:10px 0}
+  .opp .why b{color:#e6edf3}
+  .opp .fix{font-size:12px;color:var(--muted);line-height:1.6}
+  .opp .fix b{color:#dbe6f3}
+  .opp .meta{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}
+  .opp .refs{margin-top:10px;font-family:ui-monospace,monospace;font-size:10.5px;color:#6f8095;line-height:1.5}
+  .changes{margin:10px 0 0;padding-left:18px;color:#b6c2d1;font-size:12.5px;line-height:1.7}
+  .changes li{margin-bottom:6px}
+  .changes code{font-family:ui-monospace,monospace;font-size:11.5px;color:#9fb0c4}
+  .targets{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .target{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px}
+  .target .name{font-size:12.5px;font-weight:700;margin-bottom:7px;color:#dbe6f3}
+  .target .now{font-size:11.5px;color:var(--red);line-height:1.45}
+  .target .goal{font-size:11.5px;color:var(--green);line-height:1.45;margin-top:3px}
+  footer{margin-top:66px;padding-top:20px;border-top:1px solid var(--border);color:#6f8095;font-size:11.5px;line-height:1.75}
+  footer b{color:#9fb0c4}
+  .src{display:inline-flex;gap:6px;align-items:center;font-size:10.5px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:4px 9px;margin-top:18px}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--red);display:inline-block}
+  @media(max-width:980px){
+    .kpis{grid-template-columns:repeat(3,1fr)}
+    .verdict{grid-template-columns:1fr}
+    .grid2,.grid3,.opps,.targets{grid-template-columns:1fr}
+    .timeline{grid-template-columns:1fr 1fr}
+    .frow{grid-template-columns:150px 1fr 76px}
+  }
+  @media(max-width:620px){
+    .kpis{grid-template-columns:1fr 1fr}
+    .timeline{grid-template-columns:1fr}
+    .wrap{padding:36px 16px 64px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Autopilot · Agent Memory Audit · 30 Oct 2026</div>
+  <h1>2,007 memories.<br/><span class="dim">8 useful ones.</span> <span class="red">0 recalled.</span></h1>
+  <p class="lede">
+    Agent memory is <b>built, wired, and documented</b> — SQLite + embeddings, hybrid retrieval, auto-extraction,
+    supersession, cleanup, plan memory. But it is <b>switched off in every recent session</b>, and when it was on,
+    it mostly stored edit logs. The model has already tried to use it twice this week and got
+    <b>“Memory is not enabled.”</b> back as a successful tool result.
+  </p>
+  <div class="src"><span class="dot"></span> 39 memory DBs · 116 traced sessions · 187 Oct sessions · source at b49a2b5</div>
+
+  <div class="verdict">
+    <div class="v">
+      <div class="tag">Built</div>
+      <div class="big">A real memory system</div>
+      <p>Hybrid FTS + vector + exact + topic-key retrieval, LLM synthesis, secret redaction, supersession, dedup, cleanup, plan memory, drift detection.</p>
+    </div>
+    <div class="v">
+      <div class="tag">Wired</div>
+      <div class="big">Tools + prompt + startup</div>
+      <p>Memory tools are always advertised. Session-start recall, auto-extraction, and /memory are all connected to the agent loop.</p>
+    </div>
+    <div class="v">
+      <div class="tag">Dormant</div>
+      <div class="big">Off by default, off in practice</div>
+      <p>0 of 116 traced sessions had memory enabled. Last write: 9 Jul 2026 — 113 days ago. 24 of 39 DBs are empty.</p>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi r"><div class="n">0<small>/116</small></div><div class="l">recent sessions with memory on</div><div class="s">Oct 2026 traces</div></div>
+    <div class="kpi t"><div class="n">2,007</div><div class="l">memories stored across 15 projects</div><div class="s">Apr 30 – Jul 9</div></div>
+    <div class="kpi a"><div class="n">80<small>%</small></div><div class="l">are “File modified” fallback rows</div><div class="s">1,610 of 2,007</div></div>
+    <div class="kpi r"><div class="n">0.4<small>%</small></div><div class="l">unique high-signal memories</div><div class="s">8 of 2,007</div></div>
+    <div class="kpi r"><div class="n">0</div><div class="l">instruction/preference memories ever recalled</div><div class="s">accessed_at never moved</div></div>
+    <div class="kpi a"><div class="n">113<small>d</small></div><div class="l">since the last memory write</div><div class="s">9 Jul → 30 Oct</div></div>
+  </div>
+
+  <section>
+    <div class="eyebrow">Timeline</div>
+    <h2>It worked for ten weeks, then went silent</h2>
+    <p class="sub">Memory shipped in April, was briefly default-on in May, then reverted to opt-in. Writes continued while the flag was set, peaked in May, and stopped abruptly on 9 July — while you kept running ~187 sessions in October alone.</p>
+    <div class="card">
+      <div class="timeline">
+        <div class="tl"><div class="d">26 Apr</div><div class="t">Feature ships</div><div class="x">Local structured memory: SQLite + embeddings.</div></div>
+        <div class="tl"><div class="d">30 Apr</div><div class="t">First memory</div><div class="x">8 rows in April. The system starts recording.</div></div>
+        <div class="tl warn"><div class="d">11–12 May</div><div class="t">Default on, then reverted</div><div class="x">Default true for one day; reverted to opt-in via /memory.</div></div>
+        <div class="tl"><div class="d">May–Jun</div><div class="t">Peak usage</div><div class="x">1,316 rows in May, 507 in June. 175 sessions write memories.</div></div>
+        <div class="tl bad"><div class="d">8–9 Jul</div><div class="t">Last cleanup, last write</div><div class="x">Cleanup runs 8 Jul. Final memory lands 9 Jul.</div></div>
+        <div class="tl bad"><div class="d">Aug–Oct</div><div class="t">Silence</div><div class="x">0 writes. 187 sessions in October; 0 of 116 traced had memory on.</div></div>
+      </div>
+      <div class="months">
+        <div class="month"><div class="v">8</div><div class="bar" style="height:2px"></div><div class="lbl">Apr</div></div>
+        <div class="month"><div class="v">1,316</div><div class="bar" style="height:100px"></div><div class="lbl">May</div></div>
+        <div class="month"><div class="v">507</div><div class="bar" style="height:38px"></div><div class="lbl">Jun</div></div>
+        <div class="month"><div class="v">176</div><div class="bar" style="height:13px"></div><div class="lbl">Jul</div></div>
+        <div class="month zero"><div class="v">0</div><div class="bar"></div><div class="lbl">Aug</div></div>
+        <div class="month zero"><div class="v">0</div><div class="bar"></div><div class="lbl">Sep</div></div>
+        <div class="month zero"><div class="v">0</div><div class="bar"></div><div class="lbl">Oct</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">The funnel</div>
+    <h2>From 2,007 rows to 8 durable facts</h2>
+    <p class="sub">Most of the archive is edit-log noise. Supersession hides 72% of rows; 85% of what remains is the deterministic “File modified” fallback. Only 20 active rows are durable knowledge, and only 8 are unique across all projects.</p>
+    <div class="card">
+      <div class="funnel">
+        <div class="frow"><div class="lab">Stored memories<span class="muted">all rows, all projects</span></div><div class="bar" style="width:100%"></div><div class="val">2,007</div></div>
+        <div class="frow"><div class="lab">Active<span class="muted">not superseded, not forgotten</span></div><div class="bar" style="width:28%"></div><div class="val">562 · 28%</div></div>
+        <div class="frow"><div class="lab">Non-fallback<span class="muted">LLM-synthesized or user-stored</span></div><div class="bar" style="width:19.8%"></div><div class="val">397 · 20%</div></div>
+        <div class="frow"><div class="lab">Active non-fallback<span class="muted">survives supersession</span></div><div class="bar" style="width:4.2%"></div><div class="val">84 · 4.2%</div></div>
+        <div class="frow"><div class="lab">Durable knowledge<span class="muted">facts + instructions + plans</span></div><div class="bar" style="width:1%"></div><div class="val">20 · 1.0%</div></div>
+        <div class="frow hot"><div class="lab">Unique high-signal<span class="muted">deduped across projects</span></div><div class="bar" style="width:0.4%"></div><div class="val">8 · 0.4%</div></div>
+      </div>
+      <div class="fnote">Linear scale; percentages are of all 2,007 rows. The last bar is 0.4% wide — that is the point. Active categories: event 521 (93%), fact 25 (4.4%), instruction 10 (1.8%), task 6 (1.1%), preference 0.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">By project</div>
+    <h2>Where the memories live — and how little gets recalled</h2>
+    <p class="sub">Fifteen projects have data. The two biggest (kimi-code and autopilot) show the two failure modes: kimi-code recalls arbitrary edit logs; autopilot recalls nothing because its rows are still keyed to the old <code>kimiflare</code> path.</p>
+    <div class="card" style="padding:8px 14px 14px">
+      <table>
+        <thead><tr>
+          <th>Project</th><th class="num">Total</th><th class="num">Active</th><th class="num">Fallback</th><th class="num">Recalled</th><th class="num">High-signal</th><th class="num">Sessions</th><th>Last write</th>
+        </tr></thead>
+        <tbody>
+          <tr><td class="proj">kimi-code</td><td class="num">755</td><td class="num">152</td><td class="num">574 · 76%</td><td class="num">13 · 1.7%</td><td class="num">7</td><td class="num">59</td><td class="muted">8 Jul</td></tr>
+          <tr><td class="proj">kimi-code-clone-1</td><td class="num">354</td><td class="num">114</td><td class="num">268 · 76%</td><td class="num">17 · 4.8%</td><td class="num">3</td><td class="num">24</td><td class="muted">8 Jul</td></tr>
+          <tr><td class="proj">autopilot</td><td class="num">269</td><td class="num">79</td><td class="num">243 · 90%</td><td class="num">43 · 16%</td><td class="num">0</td><td class="num">19</td><td class="muted">9 Jul</td></tr>
+          <tr><td class="proj">kimi-code-clone-2</td><td class="num">156</td><td class="num">55</td><td class="num">133 · 85%</td><td class="num">8 · 5.1%</td><td class="num">2</td><td class="num">26</td><td class="muted">8 Jul</td></tr>
+          <tr><td class="proj">kimi-code-clone-3</td><td class="num">145</td><td class="num">35</td><td class="num">123 · 85%</td><td class="num">15 · 10%</td><td class="num">2</td><td class="num">19</td><td class="muted">8 Jul</td></tr>
+          <tr><td class="proj">kimiflare-web/remote/worker</td><td class="num">99</td><td class="num">30</td><td class="num">61 · 62%</td><td class="num">0 · 0%</td><td class="num">0</td><td class="num">13</td><td class="muted">5 May</td></tr>
+          <tr><td class="proj">voice-everywhere</td><td class="num">87</td><td class="num">24</td><td class="num">86 · 99%</td><td class="num">15 · 17%</td><td class="num">0</td><td class="num">3</td><td class="muted">29 Jun</td></tr>
+          <tr><td class="proj">cf-ai-friend</td><td class="num">60</td><td class="num">33</td><td class="num">60 · 100%</td><td class="num">6 · 10%</td><td class="num">0</td><td class="num">3</td><td class="muted">29 Jun</td></tr>
+          <tr><td class="proj">kimiflare-cloud</td><td class="num">45</td><td class="num">18</td><td class="num">29 · 64%</td><td class="num">20 · 44%</td><td class="num">0</td><td class="num">2</td><td class="muted">9 Jul</td></tr>
+          <tr><td class="proj">glia/glia-core</td><td class="num">20</td><td class="num">7</td><td class="num">20 · 100%</td><td class="num">5 · 25%</td><td class="num">0</td><td class="num">2</td><td class="muted">16 Jun</td></tr>
+          <tr><td class="proj">slack-agents</td><td class="num">10</td><td class="num">8</td><td class="num">10 · 100%</td><td class="num">5 · 50%</td><td class="num">0</td><td class="num">1</td><td class="muted">16 Jun</td></tr>
+          <tr><td class="proj">intel-deploy ×3</td><td class="num">6</td><td class="num">6</td><td class="num">3 · 50%</td><td class="num">0 · 0%</td><td class="num">0</td><td class="num">3</td><td class="muted">28 Jun</td></tr>
+          <tr><td class="proj">sbx</td><td class="num">1</td><td class="num">1</td><td class="num">0 · 0%</td><td class="num">1 · 100%</td><td class="num">0</td><td class="num">1</td><td class="muted">15 Jun</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="fnote">“Recalled” = rows whose accessed_at moved after creation. Across all projects: 148 of 2,007 (7.4%). In kimi-code: 13 of 755 (1.7%), and all 13 are “File modified” rows.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Root cause</div>
+    <h2>Why recall returns noise — or nothing</h2>
+    <p class="sub">Session-start recall asks the database for memories matching <b>the current working directory</b>. The FTS index includes <code>repo_path</code>, so the path matches every row in that repo. The top five are whatever the index returns first — almost always edit logs.</p>
+    <div class="grid2">
+      <div class="card">
+        <div class="code"><span class="c">// src/ui/run-startup-tasks.ts:103</span>
+sessionStartRecallRef.current =
+  manager.<span class="k">recall</span>({ <span class="y">text</span>: cwd, <span class="y">repoPath</span>: cwd, <span class="y">limit</span>: 5 });
+
+<span class="c">// src/memory/db.ts:37 — repo_path is searchable</span>
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  content, category, <span class="r">repo_path</span>, content=<span class="s">'memories'</span>
+);</div>
+        <div class="callout"><b>Result:</b> the cwd query matches 151 active rows in kimi-code and 111 in clone-1. The top five are all “File modified: …”. In autopilot it matches <b>0</b> rows, because the rows are still keyed to <code>/Users/sinameraji/kimiflare</code> after the rename.</div>
+      </div>
+      <div class="card">
+        <div class="eyebrow" style="color:var(--red)">Actual top 5 · kimi-code</div>
+        <div class="result" style="margin-top:12px">
+          <div class="row"><span class="tag">EVENT</span><span class="txt">File modified: /Users/sinameraji/kimi-code/KIMI.md.</span></div>
+          <div class="row"><span class="tag">EVENT</span><span class="txt">KIMI.md refreshed for /Users/sinameraji/kimi-code</span></div>
+          <div class="row"><span class="tag">EVENT</span><span class="txt">File modified: /Users/sinameraji/kimi-code/package.json.</span></div>
+          <div class="row"><span class="tag">EVENT</span><span class="txt">File modified: /Users/sinameraji/kimi-code/src/config.ts.</span></div>
+          <div class="row"><span class="tag">EVENT</span><span class="txt">File modified: /Users/sinameraji/kimi-code/web/index.html.</span></div>
+        </div>
+        <div class="callout" style="border-left-color:var(--amber);background:rgba(251,191,36,.06);color:#d8c9a8"><b>And the valuable rows?</b> 0 instruction or preference memories have ever been recalled. The 13 non-event recalls are all “Entry point … exports” boilerplate.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Wired vs. firing</div>
+    <h2>Most of the system never runs</h2>
+    <p class="sub">The feature has 17 moving parts. Two fire in practice (auto-extraction and, when enabled, session-start recall), and both are degraded. Several paths are dead code or only exercised by tests.</p>
+    <div class="card" style="padding:8px 14px 14px">
+      <table>
+        <thead><tr><th>Capability</th><th>Wired</th><th>Fires?</th><th>Evidence</th></tr></thead>
+        <tbody>
+          <tr><td class="proj">Auto-extract edits</td><td><span class="pill g">yes</span></td><td><span class="pill a">yes, noisy</span></td><td class="muted">1,610 fallback rows; 5–7 model calls per edit</td></tr>
+          <tr><td class="proj">LLM edit synthesis</td><td><span class="pill g">yes</span></td><td><span class="pill a">sometimes</span></td><td class="muted">397 non-fallback rows; mostly “added import…”</td></tr>
+          <tr><td class="proj">Session-start recall</td><td><span class="pill g">yes</span></td><td><span class="pill r">no</span></td><td class="muted">0/116 sessions; query = cwd</td></tr>
+          <tr><td class="proj">Hybrid retrieval</td><td><span class="pill g">yes</span></td><td><span class="pill a">partial</span></td><td class="muted">exact channel dead: 0 rows with related_files</td></tr>
+          <tr><td class="proj">Recall synthesis</td><td><span class="pill g">yes</span></td><td><span class="pill r">no</span></td><td class="muted">no recall results to synthesize</td></tr>
+          <tr><td class="proj">memory_remember</td><td><span class="pill g">yes</span></td><td><span class="pill r">1 call, failed</span></td><td class="muted">“Memory is not enabled.” returned as ok:true</td></tr>
+          <tr><td class="proj">memory_recall</td><td><span class="pill g">yes</span></td><td><span class="pill r">1 call, failed</span></td><td class="muted">same 22-byte response</td></tr>
+          <tr><td class="proj">memory_forget</td><td><span class="pill g">yes</span></td><td><span class="pill r">0 calls</span></td><td class="muted">recall output has no IDs to forget</td></tr>
+          <tr><td class="proj">Plan memory</td><td><span class="pill g">yes</span></td><td><span class="pill a">plan mode only</span></td><td class="muted">6 task rows; zero-embedding, exact-key only</td></tr>
+          <tr><td class="proj">Supersession</td><td><span class="pill g">yes</span></td><td><span class="pill r">over-fires</span></td><td class="muted">72% superseded; 41 topic keys with multiple active rows</td></tr>
+          <tr><td class="proj">Dedup / cleanup</td><td><span class="pill g">yes</span></td><td><span class="pill a">ran 8 Jul</span></td><td class="muted">would delete 100% of rows today (90-day cutoff)</td></tr>
+          <tr><td class="proj">Drift detection</td><td><span class="pill g">yes</span></td><td><span class="pill r">no</span></td><td class="muted">only when memory enabled</td></tr>
+          <tr><td class="proj">Subagent memory context</td><td><span class="pill a">partial</span></td><td><span class="pill r">never</span></td><td class="muted">memoryContext is never populated</td></tr>
+          <tr><td class="proj">Pre-read files from memory</td><td><span class="pill g">yes</span></td><td><span class="pill r">never</span></td><td class="muted">only called from tests</td></tr>
+          <tr><td class="proj">Role-scoped recall</td><td><span class="pill g">yes</span></td><td><span class="pill r">never</span></td><td class="muted">agent_role is null on 2,004/2,007 rows</td></tr>
+          <tr><td class="proj">Secret redaction</td><td><span class="pill g">yes</span></td><td><span class="pill g">works</span></td><td class="muted">default on</td></tr>
+          <tr><td class="proj">Embeddings / backfill</td><td><span class="pill g">yes</span></td><td><span class="pill g">works</span></td><td class="muted">0 unvectorized rows</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">High-leverage opportunities</div>
+    <h2>What to fix, in order</h2>
+    <p class="sub">Ranked by impact on whether memory actually helps. The first two are urgent: one makes the feature reachable, the other prevents the first enable from deleting the entire archive.</p>
+    <div class="opps">
+
+      <div class="opp p0">
+        <div class="top"><h3>Turn it on — or make “off” explicit</h3><span class="pill r">P0</span></div>
+        <div class="why">Memory is opt-in and nobody opted in. <b>0 of 116</b> traced sessions had it enabled. The model tried twice this week — a recall about a Node version decision and a preference about draft PRs — and both got <b>“Memory is not enabled.”</b> as a successful tool result. The README still advertises memory as a headline feature.</div>
+        <div class="fix"><b>Fix:</b> default <code>memoryEnabled</code> to true for the TUI (keep <code>/memory off</code>), or add a first-run prompt. Gate the memory tools and the system-prompt bullet on the flag. Return <code>ok:false</code> when disabled. Add a status-bar indicator.</div>
+        <div class="meta"><span class="pill g">Impact: high</span><span class="pill b">Effort: S</span></div>
+        <div class="refs">src/config.ts:377 · src/tools/executor.ts:50 · src/agent/system-prompt.ts:83 · src/tools/memory.ts:47</div>
+      </div>
+
+      <div class="opp p0">
+        <div class="top"><h3>Don’t wipe the archive on first enable</h3><span class="pill r">P0</span></div>
+        <div class="why">Cleanup deletes by age regardless of importance. The 90-day cutoff is <b>1 Aug 2026</b>; every one of the <b>2,007</b> rows is older, including all <b>14</b> high-signal rows. Enabling memory today runs cleanup on startup and deletes <b>100%</b> of the archive before recall can use it.</div>
+        <div class="fix"><b>Fix:</b> protect <code>importance &gt;= 4</code>, <code>instruction</code>, and <code>preference</code> from age deletion. Run a dry-run/migration before the first cleanup. Make age deletion opt-in. Add a schema version and a backup step.</div>
+        <div class="meta"><span class="pill r">Impact: critical</span><span class="pill b">Effort: S–M</span></div>
+        <div class="refs">src/memory/cleanup.ts:54 · src/memory/db.ts:365 · src/ui/run-startup-tasks.ts:81</div>
+      </div>
+
+      <div class="opp p1">
+        <div class="top"><h3>Recall the task, not the path</h3><span class="pill a">P1</span></div>
+        <div class="why">Session-start and resume recall use <code>text: cwd</code>. Because FTS indexes <code>repo_path</code>, the path matches every row in the repo; the top five are arbitrary edit logs. After the rename, autopilot matches <b>0</b> rows. The result is noise or nothing — never the instruction you actually need.</div>
+        <div class="fix"><b>Fix:</b> query with the first user message, session title, or recent high-signal memories. Scope FTS <code>MATCH</code> to the content column. Add an importance + recency prior. Exclude <code>event</code> rows from default recall.</div>
+        <div class="meta"><span class="pill g">Impact: high</span><span class="pill b">Effort: S–M</span></div>
+        <div class="refs">src/ui/run-startup-tasks.ts:103 · src/ui/use-session-manager.ts:369 · src/memory/db.ts:37 · src/memory/retrieval.ts:70</div>
+      </div>
+
+      <div class="opp p1">
+        <div class="top"><h3>Give a repo a stable identity</h3><span class="pill a">P1</span></div>
+        <div class="why">Memories are keyed by absolute <code>cwd</code>. The <code>kimiflare → autopilot</code> rename orphaned <b>269</b> memories (still keyed to <code>/Users/sinameraji/kimiflare</code>). Monorepo subdirs fragment (<code>kimiflare-cloud/worker</code> 0 vs <code>kimiflare-cloud</code> 45; <code>glia/glia-core</code> 20 vs <code>glia</code> 0). Autopilot’s own worktrees would each get a fresh DB.</div>
+        <div class="fix"><b>Fix:</b> resolve the git root / common dir or remote URL as the repo identity. Migrate old <code>repo_path</code> values. Use one DB per repo root, not per cwd. Normalize paths before storing.</div>
+        <div class="meta"><span class="pill g">Impact: high</span><span class="pill b">Effort: M</span></div>
+        <div class="refs">src/ui/run-startup-tasks.ts:66 · src/tools/memory.ts:60 · src/memory/manager.ts:208</div>
+      </div>
+
+      <div class="opp p1">
+        <div class="top"><h3>Persist related_files</h3><span class="pill a">P1</span></div>
+        <div class="why">Extractors return <code>relatedFiles</code>, but <code>MemoryManager.remember()</code> has no such parameter and drops them. <b>0 of 2,007</b> rows have files. That kills the exact-match retrieval channel and the supervisor’s pre-read file list.</div>
+        <div class="fix"><b>Fix:</b> add <code>relatedFiles</code> to <code>remember()</code> and <code>insertMemory()</code>; pass it from every extractor. Backfill from topic keys and paths. Use it in retrieval and in <code>getPreReadFilesFromMemory</code>.</div>
+        <div class="meta"><span class="pill g">Impact: med–high</span><span class="pill b">Effort: S</span></div>
+        <div class="refs">src/memory/extractors.ts:198 · src/memory/manager.ts:208 · src/memory/retrieval.ts:25 · src/agent/supervisor.ts:127</div>
+      </div>
+
+      <div class="opp p2">
+        <div class="top"><h3>Cut extraction noise and cost</h3><span class="pill b">P2</span></div>
+        <div class="why">Every edit/write triggers <b>5–7 model calls</b> (synthesis, verifier, retry, verify, hypothetical queries, embedding). <b>80%</b> still fall back to “File modified”. The verifier prompt assumes the memory was “explicitly provided by the user”, so it cannot reject auto-extracted noise. 72% of rows are superseded.</div>
+        <div class="fix"><b>Fix:</b> extract at session end or on explicit <code>memory_remember</code>. Skip tests, docs, lockfiles. Batch per file. Drop verify/hypothetical queries for deterministic extractors. Prompt for decisions and rationale, not diffs.</div>
+        <div class="meta"><span class="pill g">Impact: high</span><span class="pill b">Effort: M</span></div>
+        <div class="refs">src/agent/loop.ts:1652 · src/memory/extractors.ts:111 · src/memory/manager.ts:527</div>
+      </div>
+
+      <div class="opp p2">
+        <div class="top"><h3>Fix topic keys and supersession</h3><span class="pill b">P2</span></div>
+        <div class="why">In kimi-code, <code>project_entry_point</code> is shared by every entry point: <b>112</b> rows stored, <b>1</b> active. <code>event_edit_&lt;path&gt;</code> keeps one row per file. Relative vs absolute paths create different keys (<b>271</b> duplicate content groups). Concurrent extraction races leave <b>41</b> topic keys with multiple active rows and <b>16</b> rows stuck at <code>superseded_by = "pending"</code>.</div>
+        <div class="fix"><b>Fix:</b> per-path entry-point keys; session-scoped event keys; normalize paths; add a unique constraint and a transaction; don’t supersede events. Reserve supersession for facts and preferences.</div>
+        <div class="meta"><span class="pill g">Impact: med–high</span><span class="pill b">Effort: M</span></div>
+        <div class="refs">src/memory/manager.ts:238 · src/memory/extractors.ts:240 · src/memory/db.ts:421</div>
+      </div>
+
+      <div class="opp p2">
+        <div class="top"><h3>Fix dead extractors and dead paths</h3><span class="pill b">P2</span></div>
+        <div class="why">The read tool returns line-numbered text, so <code>JSON.parse</code> fails for the <code>package_json</code> and <code>tsconfig</code> extractors — <b>0</b> rows ever. <code>memoryContext</code> is never populated; <code>recallByRole</code> is unused; <code>getPreReadFilesFromMemory</code> is only called from tests; the continuation summary filters on <code>"edit_event"</code>, which is not a category.</div>
+        <div class="fix"><b>Fix:</b> strip the line-number prefix before <code>JSON.parse</code>, or add a raw read mode for extractors. Remove or wire the dead paths. Fix the category filter to <code>event</code>.</div>
+        <div class="meta"><span class="pill g">Impact: medium</span><span class="pill b">Effort: S</span></div>
+        <div class="refs">src/tools/read.ts:84 · src/memory/extractors.ts:186 · src/agent/system-prompt.ts:143 · src/agent/continuation-summary.ts:117</div>
+      </div>
+
+      <div class="opp p3">
+        <div class="top"><h3>Close the feedback loop</h3><span class="pill p">P3</span></div>
+        <div class="why">No instruction or preference memory has ever been recalled. <code>accessed_at</code> is a weak signal (it moves for every top-5 result, relevant or not). The UI has no per-memory delete, and recall output has no IDs, so <code>memory_forget</code> is unusable for old memories.</div>
+        <div class="fix"><b>Fix:</b> track whether a recalled memory was actually used; show memory health in the status bar; add IDs to recall output; add per-memory delete; add <code>/memory doctor</code> with recall hit rate and noise ratio.</div>
+        <div class="meta"><span class="pill g">Impact: medium</span><span class="pill b">Effort: M</span></div>
+        <div class="refs">src/tools/memory.ts:119 · src/ui/memory-picker.tsx:115 · src/memory/retrieval.ts:197</div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Targets</div>
+    <h2>What “using the full potential” would look like</h2>
+    <p class="sub">These are the metrics to watch after the fixes. They are deliberately simple and measurable from the same DBs and traces.</p>
+    <div class="targets">
+      <div class="target"><div class="name">Sessions with memory on</div><div class="now">now: 0 / 116 (0%)</div><div class="goal">target: ≥ 80%</div></div>
+      <div class="target"><div class="name">Active memories that are durable knowledge</div><div class="now">now: 20 / 562 (3.6%)</div><div class="goal">target: ≥ 60%</div></div>
+      <div class="target"><div class="name">Active memories recalled at least once</div><div class="now">now: 148 / 2,007 (7.4%)</div><div class="goal">target: ≥ 30%</div></div>
+      <div class="target"><div class="name">Rows superseded</div><div class="now">now: 1,445 / 2,007 (72%)</div><div class="goal">target: ≤ 10%</div></div>
+      <div class="target"><div class="name">Instruction/preference recalls</div><div class="now">now: 0</div><div class="goal">target: &gt; 0, weekly</div></div>
+      <div class="target"><div class="name">Data loss on enable</div><div class="now">now: 100% at risk</div><div class="goal">target: 0 rows</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Applied in this session</div>
+    <h2>What I changed</h2>
+    <p class="sub">The audit's code-level fixes are implemented on the worktree branch, with focused tests. The product decisions — default-on, repo-identity migration, and extraction policy — are left for you.</p>
+    <div class="grid2">
+      <div class="card">
+        <div class="eyebrow" style="color:var(--green)">Recall correctness</div>
+        <ul class="changes">
+          <li>Session-start recall now queries with the user's prompt, not <code>cwd</code>.</li>
+          <li>Resume recall uses the session title; continuation summaries use the original goal.</li>
+          <li>FTS matches are scoped to the content column, so <code>repo_path</code> no longer matches every row.</li>
+          <li>Continuation-summary category filter fixed (<code>event</code>, not <code>edit_event</code>).</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="eyebrow" style="color:var(--green)">Data quality</div>
+        <ul class="changes">
+          <li><code>related_files</code> are persisted from extractors.</li>
+          <li><code>package.json</code> / <code>tsconfig</code> extractors strip read-tool line numbers.</li>
+          <li>Entry points get per-path topic keys; edit paths normalize to repo-relative.</li>
+          <li>Age cleanup protects importance ≥ 4, instruction, and preference rows.</li>
+          <li><code>memory_recall</code> output includes IDs so <code>memory_forget</code> works.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="eyebrow" style="color:var(--green)">Verification</div>
+      <p class="sub" style="margin:10px 0 0">39 memory tests and 76 agent/tool tests pass. Typecheck is clean for every changed file; the worktree still has pre-existing <code>aster-*</code> / <code>sandbox.ts</code> errors from uncommitted work. Opened as <a href="https://github.com/directionally-local/autopilot/pull/1066" style="color:var(--teal)">PR #1066</a>.</p>
+    </div>
+  </section>
+
+  <footer>
+    <b>Method.</b> Scanned 39 <code>.kimiflare/memory.db</code> files under <code>$HOME</code> (15 with data, 24 empty), 116 traced sessions in <code>~/.local/share/kimiflare/traces</code> (Oct 2026), and 187 session files in <code>~/.local/share/kimiflare/sessions</code>. Queried SQLite directly for counts, categories, importance, supersession, access times, topic keys, and duplicate content. Parsed <code>trace.jsonl</code> for <code>session_start.config.memoryEnabled</code>, <code>tool_call</code>/<code>tool_result</code> events, and recall-injection blobs. Read the memory subsystem at commit <code>b49a2b5</code> (30 Oct 2026).<br/>
+    <b>Caveats.</b> Traces are retained for a limited window, so the April–July period is reconstructed from the DBs, not traces. “High-signal” = <code>instruction</code>, <code>preference</code>, or <code>fact</code> with importance ≥ 4. “Recalled” = <code>accessed_at &gt; created_at</code>; this is a lower bound because recall updates only the top results. The 90-day cleanup projection assumes the default <code>memoryMaxAgeDays</code> of 90 and today’s date.
+  </footer>
+
+</div>
+</body>
+</html>

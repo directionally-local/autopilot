@@ -118,7 +118,7 @@ export const memoryRecallTool: ToolSpec = {
       }
       const lines = results.map((r) => {
         const files = r.memory.relatedFiles.length > 0 ? ` [${r.memory.relatedFiles.join(", ")}]` : "";
-        return `- [${r.memory.category}] ${r.memory.content}${files}`;
+        return `- [${r.memory.category}] ${r.memory.content}${files} (id: ${r.memory.id}, importance: ${r.memory.importance})`;
       });
       const content = lines.join("\n");
       const bytes = Buffer.byteLength(content, "utf8");

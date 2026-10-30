@@ -26,6 +26,10 @@ import { embeddingModelFor, fetchEmbeddings } from "./embeddings.js";
 import { DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
 import { retrieveMemories } from "./retrieval.js";
 import { runCleanup, shouldCleanup } from "./cleanup.js";
+import { redactSecrets } from "./redact.js";
+import { resolveRepoRoot } from "./repo-root.js";
+
+export { redactSecrets } from "./redact.js";
 
 export interface MemoryManagerOpts extends LlmAuth {
   dbPath: string;
@@ -63,22 +67,6 @@ async function runKimiText(opts: LlmOpts & { messages: ChatMessage[]; temperatur
     if (ev.type === "text") text += ev.delta;
   }
   return text.trim();
-}
-
-// Secret redaction patterns (default-on)
-const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
-  { pattern: /AKIA[0-9A-Z]{16}/g, replacement: "[REDACTED_AWS_KEY]" },
-  { pattern: /gh[pousr]_[A-Za-z0-9_]{36,}/g, replacement: "[REDACTED_GH_TOKEN]" },
-  { pattern: /sk-[a-zA-Z0-9]{48}/g, replacement: "[REDACTED_SK_KEY]" },
-  { pattern: /\b[0-9a-f]{32,64}\b/g, replacement: "[REDACTED_HEX_KEY]" },
-];
-
-export function redactSecrets(text: string): string {
-  let result = text;
-  for (const { pattern, replacement } of SECRET_PATTERNS) {
-    result = result.replace(pattern, replacement);
-  }
-  return result;
 }
 
 /** Deterministic topic-key normalization: lowercase, strip non-alphanum, replace spaces with _, truncate to 60. */
@@ -189,6 +177,12 @@ export class MemoryManager {
     return this.opts.redactSecrets !== false;
   }
 
+  /** Resolve a stable repo identity so subdirectories, worktrees, and clones
+   *  share one memory namespace instead of fragmenting by absolute cwd. */
+  private repo(repoPath: string): string {
+    return resolveRepoRoot(repoPath);
+  }
+
   /**
    * Store a memory with verification, topic-key normalization, hypothetical queries,
    * secret redaction, and supersession.
@@ -201,9 +195,11 @@ export class MemoryManager {
     sessionId: string,
     signal?: AbortSignal,
     agentRole?: string,
-    topicKey?: string
+    topicKey?: string,
+    relatedFiles?: string[]
   ): Promise<{ id: string; superseded?: string[] }> {
     if (!this.db) throw new Error("Memory DB not open");
+    const repo = this.repo(repoPath);
 
     // 1. Redact secrets
     let safeContent = this.shouldRedact() ? redactSecrets(content) : content;
@@ -221,12 +217,12 @@ export class MemoryManager {
     }
 
     // 3. Normalize topic key (trust caller-provided key for auto-extracted memories)
-    const resolvedTopicKey = topicKey?.trim() || this.normalizeTopicKey(safeContent, repoPath);
+    const resolvedTopicKey = topicKey?.trim() || this.normalizeTopicKey(safeContent, repo);
 
     // 4. Check for supersession
     const supersededIds: string[] = [];
     if (resolvedTopicKey) {
-      const existing = findMemoriesByTopicKey(this.db, repoPath, resolvedTopicKey);
+      const existing = findMemoriesByTopicKey(this.db, repo, resolvedTopicKey);
       for (const old of existing) {
         // Simple heuristic: same topic key + similar content length = likely superseded
         // A more robust approach would use an LLM, but this avoids extra tokens
@@ -248,10 +244,11 @@ export class MemoryManager {
       content: safeContent,
       category,
       sourceSessionId: sessionId,
-      repoPath,
+      repoPath: repo,
       importance: Math.max(1, Math.min(5, importance)),
       topicKey: resolvedTopicKey ?? undefined,
       agentRole,
+      relatedFiles,
     };
 
     const memory = insertMemory(this.db, input, embedding, vector);
@@ -276,6 +273,7 @@ export class MemoryManager {
     topicKey = "current_dev_plan",
   ): Promise<{ id: string; superseded?: string[] }> {
     if (!this.db) throw new Error("Memory DB not open");
+    const repo = this.repo(repoPath);
 
     const safeContent = this.shouldRedact() ? redactSecrets(plan) : plan;
     if (!safeContent.trim()) {
@@ -289,7 +287,7 @@ export class MemoryManager {
 
     // Supersede any previous plan under the same key.
     const supersededIds: string[] = [];
-    const existing = findMemoriesByTopicKey(this.db, repoPath, normalizedKey);
+    const existing = findMemoriesByTopicKey(this.db, repo, normalizedKey);
     for (const old of existing) {
       supersedeMemory(this.db, old.id, "pending");
       supersededIds.push(old.id);
@@ -302,7 +300,7 @@ export class MemoryManager {
       content: safeContent,
       category: "task",
       sourceSessionId: sessionId,
-      repoPath,
+      repoPath: repo,
       importance: 4,
       topicKey: normalizedKey,
     }, zeroEmbedding);
@@ -320,7 +318,7 @@ export class MemoryManager {
    */
   getByTopicKey(repoPath: string, topicKey: string): Memory | null {
     if (!this.db) return null;
-    const rows = findMemoriesByTopicKey(this.db, repoPath, topicKey);
+    const rows = findMemoriesByTopicKey(this.db, this.repo(repoPath), topicKey);
     return rows[0] ?? null;
   }
 
@@ -330,7 +328,7 @@ export class MemoryManager {
    */
   countHighSignalMemoriesSince(repoPath: string, since: number): number {
     if (!this.db) return 0;
-    return countHighSignalMemoriesSince(this.db, repoPath, since);
+    return countHighSignalMemoriesSince(this.db, this.repo(repoPath), since);
   }
 
   /**
@@ -346,7 +344,7 @@ export class MemoryManager {
          AND forgotten = 0 AND superseded_by IS NULL
          ORDER BY created_at DESC LIMIT 1`,
       )
-      .all(repoPath) as Array<{ created_at: number }>;
+      .all(this.repo(repoPath)) as Array<{ created_at: number }>;
     return rows[0]?.created_at ?? 0;
   }
 
@@ -356,14 +354,15 @@ export class MemoryManager {
    */
   async recordKimiMdRefresh(repoPath: string, sessionId: string): Promise<void> {
     if (!this.db) return;
+    const repo = this.repo(repoPath);
     const embedding = new Float32Array(DEFAULT_EMBEDDING_DIM);
     insertMemory(
       this.db,
       {
-        content: `KIMI.md refreshed for ${repoPath}`,
+        content: `KIMI.md refreshed for ${repo}`,
         category: "event",
         sourceSessionId: sessionId,
-        repoPath,
+        repoPath: repo,
         importance: 2,
         topicKey: "kimi_md_refresh",
       },
@@ -391,7 +390,7 @@ export class MemoryManager {
       }
     }
 
-    return retrieveMemories({ db: this.db, query: { ...query, embeddingModel: model } });
+    return retrieveMemories({ db: this.db, query: { ...query, embeddingModel: model, repoPath: this.repo(query.repoPath ?? process.cwd()) } });
   }
 
   /**
@@ -457,7 +456,7 @@ export class MemoryManager {
     if (!this.db) return 0;
     const model = this.embeddingModel;
     if (!model) return 0;
-    const stale = listMemoriesNeedingEmbedding(this.db, repoPath, model, limit);
+    const stale = listMemoriesNeedingEmbedding(this.db, this.repo(repoPath), model, limit);
     let fixed = 0;
     for (const mem of stale) {
       if (signal?.aborted) break;
@@ -513,7 +512,7 @@ export class MemoryManager {
 
     const result = await runCleanup({
       db: this.db,
-      repoPath,
+      repoPath: this.repo(repoPath),
       maxAgeDays,
       maxEntries,
       embeddingModel: this.embeddingModel,
@@ -529,7 +528,7 @@ export class MemoryManager {
 
   clearRepo(repoPath: string): number {
     if (!this.db) return 0;
-    return clearMemoriesForRepo(this.db, repoPath);
+    return clearMemoriesForRepo(this.db, this.repo(repoPath));
   }
 
   private async verifyMemory(content: string, signal?: AbortSignal): Promise<{ valid: boolean; corrected_content: string | null }> {

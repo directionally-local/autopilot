@@ -283,11 +283,15 @@ export function updateAccessedAt(db: SqliteDatabase, ids: string[]): void {
  *  This prevents syntax errors from special characters like /, -, etc.
  */
 function escapeFts5(query: string): string {
-  return query
+  const tokens = query
     .split(/\s+/)
     .filter((t) => t.length > 0)
-    .map((t) => `"${t.replace(/"/g, '""')}"*`)
-    .join(" ");
+    .map((t) => `"${t.replace(/"/g, '""')}"*`);
+  if (tokens.length === 0) return "";
+  // Scope the match to the content column. Without this, a query containing
+  // the repo path (e.g. session-start recall with cwd) matches the indexed
+  // repo_path column for every row in the repo and returns arbitrary results.
+  return `content : (${tokens.join(" ")})`;
 }
 
 export function searchMemoriesFts(
@@ -402,7 +406,17 @@ export function deleteMemoriesByIds(db: SqliteDatabase, ids: string[]): number {
 
 export function deleteOldMemories(db: SqliteDatabase, maxAgeMs: number): number {
   const cutoff = Date.now() - maxAgeMs;
-  const result = db.prepare("DELETE FROM memories WHERE created_at < ?").run(cutoff);
+  // Never age out durable knowledge. A blanket age delete would wipe every
+  // instruction/preference and every high-importance fact the moment a user
+  // re-enables memory after a long pause.
+  const result = db
+    .prepare(
+      `DELETE FROM memories
+       WHERE created_at < ?
+         AND importance < 4
+         AND category NOT IN ('instruction', 'preference')`,
+    )
+    .run(cutoff);
   return result.changes;
 }
 
@@ -565,7 +579,8 @@ export function countHighSignalMemoriesSince(
        WHERE repo_path = ? AND created_at > ?
        AND forgotten = 0 AND superseded_by IS NULL
        AND (
-         topic_key IN ('project_dependencies', 'project_tsconfig', 'project_entry_point')
+         topic_key IN ('project_dependencies', 'project_tsconfig')
+         OR topic_key LIKE 'project_entry_point%'
          OR category IN ('instruction', 'preference')
          OR (category = 'event' AND importance >= 3)
        )`,
