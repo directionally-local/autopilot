@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/directionally-local/autopilot/compare/v3.1.0...v3.1.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **log-sink:** wait for a rotated-out log file before a flush returns ([#1083](https://github.com/directionally-local/autopilot/issues/1083)) ([4c7d75e](https://github.com/directionally-local/autopilot/commit/4c7d75e02d82b68cddd756d8e790a112c35a2d2e))
+
 ## [3.1.0](https://github.com/directionally-local/autopilot/compare/v3.0.4...v3.1.0) (2026-10-30)
 
 
