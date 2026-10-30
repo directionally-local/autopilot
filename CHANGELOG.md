@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/directionally-local/autopilot/compare/v3.0.4...v3.1.0) (2026-10-30)
+
+
+### Features
+
+* store user files under autopilot directories ([#1081](https://github.com/directionally-local/autopilot/issues/1081)) ([07005e4](https://github.com/directionally-local/autopilot/commit/07005e4d9617f49f19bbd8eaf88ed42de086cc07))
+
 ## [3.0.4](https://github.com/directionally-local/autopilot/compare/v3.0.3...v3.0.4) (2026-10-30)
 
 
