@@ -261,7 +261,7 @@ executor doesn't race them against the signal.
 
 ## Persistence and durable runs
 
-- Sessions are JSON files in `$XDG_DATA_HOME/kimiflare/sessions/` (default
+- Sessions are JSON files in `$XDG_DATA_HOME/autopilot/sessions/` (default
   `~/.local/share/...`): messages, session state, artifact store, and
   checkpoints. The TUI saves after every turn; the SDK saves after every
   turn too, including failed and aborted ones (#637).
@@ -276,7 +276,7 @@ executor doesn't race them against the signal.
 ## Other subsystems
 
 - **Memory** (`src/memory/`): SQLite + FTS5 + embeddings, repository-scoped
-  by default (`.kimiflare/memory.db`). The `memory_*` tools, plus
+  by default (`.autopilot/memory.db`; an existing `.kimiflare/memory.db` is still used). The `memory_*` tools, plus
   fire-and-forget extraction after tool results.
 - **Skills** (`src/skills/`): embedding search over skill sections, packed
   by tier budget.

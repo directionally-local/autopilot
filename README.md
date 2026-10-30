@@ -83,7 +83,7 @@ Or run without installing:
 npx autopilot-ai
 ```
 
-> **Coming from `kimiflare`?** The package was renamed. Run `npm uninstall -g kimiflare && npm install -g autopilot-ai` and use `autopilot` instead of `kimiflare`. Your settings, sessions, memory and cost history are kept (they stay in `~/.config/kimiflare` and `~/.local/share/kimiflare`), and `KIMIFLARE_*` environment variables still work.
+> **Coming from `kimiflare`?** The package was renamed. Run `npm uninstall -g kimiflare && npm install -g autopilot-ai` and use `autopilot` instead of `kimiflare`. Your settings, keys, sessions, memory, traces and cost history are kept: on first start Autopilot moves `~/.config/kimiflare` to `~/.config/autopilot`, `~/.local/share/kimiflare` and `~/.kimiflare` to `~/.local/share/autopilot`, and `~/.local/state/kimiflare` to `~/.local/state/autopilot` (honouring `XDG_*_HOME`), and leaves a symlink at each old path so an older `kimiflare` binary still finds the same files. A file that already exists in the new folder is never overwritten; it stays in the old folder and Autopilot names it once. Project `.kimiflare/` folders are not moved: Autopilot reads `.autopilot/` first, then `.kimiflare/`, and creates only `.autopilot/`. `KIMIFLARE_*` environment variables still work.
 
 Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (earlier releases have the Brotli bug CVE-2026-111497, and `web_fetch` refuses to run on them).
 
@@ -145,7 +145,7 @@ Three ways to provide it — the first one found wins:
 
 1. **Environment:** `OPENROUTER_API_KEY` (or `KIMIFLARE_OPENROUTER_KEY`). With this set, the setup screen never appears — the way to run kimiflare headless (CI, a VM, a container).
 2. **Sign in / setup screen / CLI:** "Sign in with OpenRouter" on first run, or `autopilot auth openrouter` — approve in the browser and a key is created and saved (OpenRouter's OAuth PKCE flow). Over SSH or in a container it shows a link to open on any device and asks for the code OpenRouter displays (force this with `--code`). `--paste` prompts for an existing key instead, and `autopilot auth openrouter <key>` saves one directly. Inside the TUI, `/key set <key>` replaces it.
-3. **Config file:** `"openrouterApiKey": "sk-or-…"` in `~/.config/kimiflare/config.json` (created with mode 600).
+3. **Config file:** `"openrouterApiKey": "sk-or-…"` in `~/.config/autopilot/config.json` (created with mode 600).
 
 `/key` shows which key is in use, what it has spent and how much credit is left. Model calls — including memory embeddings and small internal side-calls (summaries, memory extraction) — are all billed to this key.
 
@@ -166,7 +166,7 @@ For substantial tasks, the agent can hand independent investigations to **subage
 
 Setup: install and start Hotcell, then add your OpenRouter key to its host key store (`hotcell keys add openrouter`). The real key never enters a sandbox. Subagents are read-only (no edits, shell, PRs, or MCP) and see your current working tree, including uncommitted changes — it is streamed into the sandbox, so private repositories work and nothing needs to be pushed (secrets like `.env` are never copied). The first subagent after an install builds a cached runtime (about two minutes, once per version); later ones start in seconds. See [docs/subagents.md](docs/subagents.md) for limits and troubleshooting.
 
-While subagents run they are listed in the activity panel (`/agents`). `/subagents cancel <n>` stops one without interrupting the turn, and `/subagents stats` shows how often subagents were offered, used, and succeeded over the last week (kept locally in `~/.local/share/kimiflare/subagents.jsonl`; no prompts or code are recorded).
+While subagents run they are listed in the activity panel (`/agents`). `/subagents cancel <n>` stops one without interrupting the turn, and `/subagents stats` shows how often subagents were offered, used, and succeeded over the last week (kept locally in `~/.local/share/autopilot/subagents.jsonl`; no prompts or code are recorded).
 
 ### Model
 
@@ -201,7 +201,7 @@ export KIMIFLARE_API_KEY="<bearer for that endpoint>"           # optional; head
 autopilot -p "..."        # or --mode rpc — no OpenRouter key needed
 ```
 
-The same pair can be persisted in `~/.config/kimiflare/config.json` as `baseUrl` / `apiKey`
+The same pair can be persisted in `~/.config/autopilot/config.json` as `baseUrl` / `apiKey`
 (env vars win over the file, field by field). When a base URL is configured:
 
 - Chat requests go to `<baseUrl>/chat/completions` and memory embeddings to `<baseUrl>/embeddings`,
@@ -222,7 +222,7 @@ autopilot                              # or: autopilot auth requesty (checks and
 autopilot -p "..." -m openai/gpt-4o-mini
 ```
 
-- The key can also live in `~/.config/kimiflare/config.json` as `requestyApiKey` (the env var wins).
+- The key can also live in `~/.config/autopilot/config.json` as `requestyApiKey` (the env var wins).
 - `REQUESTY_BASE_URL` picks a region, e.g. `https://router.eu.requesty.ai/v1` for the EU. Only https URLs on Requesty's hosts (`router.requesty.ai`, `router.eu.requesty.ai`, `router.us.requesty.ai`, `router.ap.requesty.ai`) are accepted, so the key is never sent anywhere else.
 - `/model` lists Requesty's managed policies first (short ids such as `kimi-k2.6` or
   `claude-sonnet-4-5`), then its full `vendor/model` catalog. Both kinds of id work.
@@ -332,7 +332,7 @@ For OpenRouter, the key is resolved in this priority order:
 
 1. **Explicit `config` object** (`openrouterApiKey`) — recommended for apps
 2. **Environment variables**: `OPENROUTER_API_KEY` / `KIMIFLARE_OPENROUTER_KEY`
-3. **Config file**: `~/.config/kimiflare/config.json`
+3. **Config file**: `~/.config/autopilot/config.json`
 
 A [Requesty](#requesty-optional) key (`requestyApiKey` in `config`, or `REQUESTY_API_KEY`) also works
 when no OpenRouter key is set; pass a Requesty model id such as `openai/gpt-4o-mini` as `model`.
@@ -468,7 +468,7 @@ Clear phrasing is decided instantly; ambiguous messages get a quick model check 
 
 autopilot writes structured JSON logs of agent-side activity (tool calls,
 permission decisions, MCP/LSP lifecycle, session events, errors) to
-`~/.config/kimiflare/logs/<date>.jsonl`, one file per day, with 7-day
+`~/.config/autopilot/logs/<date>.jsonl`, one file per day, with 7-day
 retention pruned automatically at startup.
 
 The logs deliberately exclude prompts and completions. To capture full
@@ -524,7 +524,7 @@ Autopilot can record its own sessions so you can see how it performs on your wor
 
 ### Session traces
 
-Tracing is off by default. Turn it on for one run with `KIMIFLARE_TRACE=1`, or always with `"trace": { "enabled": true }` in `~/.config/kimiflare/config.json`. Each session then writes a `trace.jsonl` under `~/.local/share/kimiflare/traces/` (`KIMIFLARE_TRACE_DIR` or `trace.root` to change it), one event per line:
+Tracing is off by default. Turn it on for one run with `KIMIFLARE_TRACE=1`, or always with `"trace": { "enabled": true }` in `~/.config/autopilot/config.json`. Each session then writes a `trace.jsonl` under `~/.local/share/autopilot/traces/` (`KIMIFLARE_TRACE_DIR` or `trace.root` to change it), one event per line:
 
 - every model request and response, with tokens, cost and latency
 - tool calls and their results, and each permission decision
@@ -707,7 +707,7 @@ Both fire from every host: the TUI, `--print`, `--emit`, the SDK and
 
 Hooks are read from four files and merged, in this order:
 
-1. `~/.config/kimiflare/settings.json` (legacy global)
+1. `~/.config/kimiflare/settings.json` (legacy global; after the one-time move it is a link to the file below and is read once)
 2. `~/.config/autopilot/settings.json` (global)
 3. `.kimiflare/settings.json` (legacy project)
 4. `.autopilot/settings.json` (project)
@@ -718,14 +718,16 @@ replaces it (ids are derived from event + command when not set, so a
 hook copied verbatim from a legacy file runs once). The autopilot paths
 are canonical: `/hooks enable`, the hook wizard and the dashboard write
 new hooks there, while enabling or disabling an existing hook edits the
-file it lives in. Legacy files are never moved or dropped; if your hooks
+file it lives in. Project legacy files are never moved or dropped (the
+global one moves with the rest of `~/.config/kimiflare`); if your hooks
 are only in a legacy file, autopilot shows a one-time notice naming the
 new path. `/hooks path` prints all four.
 
 ### Project trust
 
 A repository can ship hooks (`.autopilot/settings.json`,
-`.kimiflare/settings.json`) and language servers (`.kimiflare/lsp.json`),
+`.kimiflare/settings.json`) and language servers (`.autopilot/lsp.json`,
+or the older `.kimiflare/lsp.json`),
 and both run commands on your machine. Autopilot does not load a
 project's copies until you have trusted them, so cloning a repository and
 starting Autopilot in it runs nothing the repository chose. When a project

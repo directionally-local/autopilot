@@ -54,7 +54,7 @@ The canonical hook settings files, which an installer should write, are:
 - global: `$XDG_CONFIG_HOME/autopilot/settings.json` (default `~/.config/autopilot/settings.json`)
 - project: `<project>/.autopilot/settings.json`
 
-Autopilot still reads the legacy `~/.config/kimiflare/settings.json` and `.kimiflare/settings.json`. All four are merged in this order: legacy global, global, legacy project, project. Within an event, hooks run in that order, and an entry with the same `id` as an earlier one replaces it, so writing the Beacon hooks above with their fixed ids to the autopilot file never runs them twice. In code these paths come from `globalSettingsPath()`, `projectSettingsPath(cwd)`, `legacyGlobalSettingsPath()`, `legacyProjectSettingsPath(cwd)` and `hookSettingsLocations(cwd)` in `src/hooks/settings.ts`.
+Autopilot still reads the legacy `~/.config/kimiflare/settings.json` (once Autopilot has moved `~/.config/kimiflare`, a link to the autopilot file, read once) and `.kimiflare/settings.json`. All four are merged in this order: legacy global, global, legacy project, project. Within an event, hooks run in that order, and an entry with the same `id` as an earlier one replaces it, so writing the Beacon hooks above with their fixed ids to the autopilot file never runs them twice. In code these paths come from `globalSettingsPath()`, `projectSettingsPath(cwd)`, `legacyGlobalSettingsPath()`, `legacyProjectSettingsPath(cwd)` and `hookSettingsLocations(cwd)` in `src/hooks/settings.ts`.
 
 Hook commands also get `AUTOPILOT_HOOK_*` env vars (`EVENT`, `CWD`, `SESSION_ID`, `TOOL`, `PATH`, `TIER`, `PAYLOAD`, …), each set under its older `KIMIFLARE_HOOK_*` name too.
 
@@ -120,8 +120,8 @@ If a hook times out, crashes or its command is missing, Autopilot carries on (fa
 Every hook payload with a session id carries `transcript_path` and `transcript_format: "claude-jsonl"`. The path points at a transcript in Claude Code's JSONL format, which Autopilot writes next to its own session file:
 
 ```
-~/.local/share/kimiflare/sessions/<session id>.json    Autopilot's session (unchanged)
-~/.local/share/kimiflare/sessions/<session id>.jsonl   the transcript
+~/.local/share/autopilot/sessions/<session id>.json    Autopilot's session (unchanged)
+~/.local/share/autopilot/sessions/<session id>.jsonl   the transcript
 ```
 
 (`$XDG_DATA_HOME` replaces `~/.local/share` when set.) Every host that has a session id writes one: the TUI, print mode, `--emit-events`, `autopilot serve`'s `/prompt`, and the SDK.

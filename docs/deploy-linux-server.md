@@ -91,8 +91,8 @@ All state lives in the `autopilot` user's home:
 | --- | --- |
 | Runs, events, timers, notifications | `~/.local/state/autopilot/runs.db` |
 | Managed jobs | `~/.local/state/autopilot/jobs.db` (+ job logs next to it) |
-| Sessions (conversation checkpoints) | `~/.local/share/kimiflare/sessions/` |
-| Config | `~/.config/kimiflare/config.json` |
+| Sessions (conversation checkpoints) | `~/.local/share/autopilot/sessions/` |
+| Config | `~/.config/autopilot/config.json` |
 
 SQLite files must be copied with `.backup` (a consistent snapshot even while the server writes), not `cp`. A nightly encrypted backup to a Hetzner Storage Box with restic:
 
@@ -111,7 +111,7 @@ snap=$HOME/.local/state/autopilot/backup-snapshot
 mkdir -p "$snap"
 sqlite3 "$HOME/.local/state/autopilot/runs.db" ".backup '$snap/runs.db'"
 sqlite3 "$HOME/.local/state/autopilot/jobs.db" ".backup '$snap/jobs.db'"
-restic backup "$snap" "$HOME/.local/share/kimiflare/sessions" "$HOME/.config/kimiflare" --tag autopilot
+restic backup "$snap" "$HOME/.local/share/autopilot/sessions" "$HOME/.config/autopilot" --tag autopilot
 restic forget --keep-daily 14 --keep-weekly 8 --prune
 SH
 chmod 700 ~/backup.sh
@@ -129,7 +129,7 @@ export RESTIC_REPOSITORY=sftp:u123456@u123456.your-storagebox.de:autopilot RESTI
 restic snapshots --tag autopilot
 restic restore latest --target /tmp/autopilot-restore
 sqlite3 /tmp/autopilot-restore/*/backup-snapshot/runs.db "PRAGMA integrity_check; SELECT status, COUNT(*) FROM runs GROUP BY status;"
-ls /tmp/autopilot-restore/*/.local/share/kimiflare/sessions | head
+ls /tmp/autopilot-restore/*/.local/share/autopilot/sessions | head
 ```
 
 To restore for real:
