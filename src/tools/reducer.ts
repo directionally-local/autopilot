@@ -325,6 +325,17 @@ function reduceGrep(raw: string, args: Record<string, unknown>, cfg: ReducerConf
 
 // ─── Read ────────────────────────────────────────────────────────────────────
 
+/**
+ * Top-level declarations in the languages the JS/TS patterns below miss.
+ *
+ * The outline is the only thing a model sees for a large file. A Rust or
+ * Python file used to produce just "N lines total" plus a preview, so a model
+ * that needed a symbol re-read the same file until the loop guardrail stopped
+ * the turn. Indentation is allowed because methods live inside `impl` blocks.
+ */
+const DECLARATION_LINE =
+  /^\s*(?:(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+\w+|(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait|union|impl|mod|type)\b|(?:async\s+)?def\s+\w+|func\s+(?:\([^)]*\)\s*)?\w+|(?:public|private|protected|internal|abstract|final|sealed|data|open|static)\s+(?:class|interface|enum|object|fun|void|struct)\b|(?:class|interface|enum|namespace|template|module)\s+\w+|(?:function\s+)?\w+\s*\(\)\s*\{)/;
+
 function reduceRead(raw: string, args: Record<string, unknown>, cfg: ReducerConfig["read"]): ReduceResult {
   // If user explicitly requested a slice, respect it (but still cap)
   const hasSlice = typeof args.offset === "number" || typeof args.limit === "number";
@@ -355,11 +366,12 @@ function reduceRead(raw: string, args: Record<string, unknown>, cfg: ReducerConf
   const exports: string[] = [];
   const functions: string[] = [];
   const classes: string[] = [];
+  const declarations: string[] = [];
 
   for (let i = 0; i < cleanLines.length; i++) {
     const line = cleanLines[i]!;
     const lineNum = i + 1;
-    if (/^import\s+/.test(line)) {
+    if (/^(?:import\s+|use\s+|from\s+\S+\s+import\s+|#include\b)/.test(line)) {
       imports.push(`${lineNum}: ${line.trim()}`);
     } else if (/^(?:export\s+)?class\s+\w+/.test(line)) {
       classes.push(`${lineNum}: ${line.trim()}`);
@@ -367,6 +379,8 @@ function reduceRead(raw: string, args: Record<string, unknown>, cfg: ReducerConf
       exports.push(`${lineNum}: ${line.trim()}`);
     } else if (/^(?:async\s+)?function\s+\w+/.test(line)) {
       functions.push(`${lineNum}: ${line.trim()}`);
+    } else if (DECLARATION_LINE.test(line)) {
+      declarations.push(`${lineNum}: ${line.trim()}`);
     }
   }
 
@@ -388,6 +402,10 @@ function reduceRead(raw: string, args: Record<string, unknown>, cfg: ReducerConf
   if (classes.length > 0) {
     parts.push(`\nClasses (${classes.length}):`);
     parts.push(...classes.slice(0, Math.floor(cfg.maxOutlineLines / 4)));
+  }
+  if (declarations.length > 0) {
+    parts.push(`\nDeclarations (${declarations.length}):`);
+    parts.push(...declarations.slice(0, Math.floor(cfg.maxOutlineLines / 4)));
   }
 
   // Preview first N lines

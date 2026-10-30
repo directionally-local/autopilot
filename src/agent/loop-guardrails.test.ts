@@ -233,9 +233,8 @@ describe("runAgentTurn guardrails (unattended)", () => {
     assertNoDanglingToolCalls(opts.messages);
   });
 
-  it("recovers a consecutive duplicate read by returning un-reduced content", async () => {
-    const raw = Array.from({ length: 100 }, (_, i) => `line ${i + 1}: source content`).join("\n");
-    const forceFullReadOptions: boolean[] = [];
+  it("serves a repeated full-file read as the next page instead of blocking it", async () => {
+    const readRepeats: number[] = [];
     const executor = {
       list: () => [],
       run: async (
@@ -243,33 +242,51 @@ describe("runAgentTurn guardrails (unattended)", () => {
         _ask: unknown,
         _ctx: unknown,
         _onFileChange: unknown,
-        options?: { forceFullRead?: boolean },
+        options?: { readRepeat?: number },
       ) => {
-        forceFullReadOptions.push(options?.forceFullRead === true);
+        const repeat = options?.readRepeat ?? 0;
+        readRepeats.push(repeat);
         return {
           tool_call_id: call.id,
           name: call.name,
-          content: options?.forceFullRead ? `Repeated identical read detected.\n${raw}` : "File outline: preview only",
+          content: repeat > 0 ? `page ${repeat}` : "File outline: preview only",
           ok: true,
         };
       },
     } as unknown as ToolExecutor;
     const model = scriptModel([
-      { tool: "read", args: { path: "src/large.ts" } },
-      { tool: "read", args: { path: "src/large.ts" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
+      { tool: "read", args: { path: "src/large.rs" } },
       { text: "I can now inspect the file content." },
     ]);
     const events: GuardrailEvent[] = [];
-    const opts = baseOpts(executor, events, { tools: [READ_TOOL] });
+    const opts = baseOpts(executor, events, { tools: [{ ...READ_TOOL, isReadOnly: true }] });
 
     await runAgentTurn(opts);
 
-    assert.deepStrictEqual(forceFullReadOptions, [false, true]);
-    const readResults = opts.messages.filter((message) => message.role === "tool");
-    assert.strictEqual(readResults.length, 2);
-    assert.ok(String(readResults[1]!.content).includes("line 100: source content"));
+    // Outline, then three forward pages — never a block, never the same bytes.
+    assert.deepStrictEqual(readRepeats, [0, 1, 2, 3]);
     assert.deepStrictEqual(events, []);
-    assert.strictEqual(model.requests, 3);
+    assert.strictEqual(model.requests, 5);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("ends a read-only loop with a summary instead of an error", async () => {
+    // A repeated slice read is a real repeat (no page to serve), so the
+    // guardrail blocks it — but a read-only loop must not surface as a crash.
+    const model = scriptModel([{ tool: "read", args: { path: "src/large.rs", offset: 1, limit: 10 } }]);
+    const { executor } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { tools: [{ ...READ_TOOL, isReadOnly: true }] });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(events.map((e) => e.kind), ["loop_recovery", "loop_stopped"]);
+    const last = opts.messages.at(-1)!;
+    assert.strictEqual(last.role, "assistant");
+    assert.match(String(last.content), /repeating blocked tool calls/);
     assertNoDanglingToolCalls(opts.messages);
   });
 
