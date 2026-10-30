@@ -63,6 +63,21 @@ describe("resolveActiveProvider", () => {
     assert.ok(isProviderUsable(p), "Ollama needs no key");
   });
 
+  it("routes a preset through AUTOPILOT_BASE_URL when AUTOPILOT_PROVIDER names it (a gateway in front of the provider)", () => {
+    const env = { AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://gw:4752/deepseek", DEEPSEEK_API_KEY: "egress-token" };
+    const p = resolveActiveProvider({ provider: "openai", providers: { deepseek: { baseUrl: "https://api.deepseek.com" } } }, env);
+    assert.strictEqual(p.id, "deepseek");
+    assert.strictEqual(p.baseUrl, "http://gw:4752/deepseek", "the env URL wins over config and the preset");
+    assert.strictEqual(p.apiKey, "egress-token");
+    assert.ok(isProviderUsable(p));
+    // The legacy spelling works too; a keyless preset needs no key behind the gateway.
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "ollama", KIMIFLARE_BASE_URL: "http://gw:4752/ollama/v1" }).baseUrl, "http://gw:4752/ollama/v1");
+    assert.ok(isProviderUsable(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "ollama", AUTOPILOT_BASE_URL: "http://gw:4752/ollama/v1" })));
+    // Without AUTOPILOT_PROVIDER the URL still means a custom endpoint, and without the URL the preset's own base holds.
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://gw:4752/deepseek" }).id, "custom");
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "deepseek" }).baseUrl, "https://api.deepseek.com");
+  });
+
   it("is unusable when a provider that needs a key has none", () => {
     assert.strictEqual(isProviderUsable(resolveActiveProvider({ provider: "deepseek" }, {})), false);
     assert.strictEqual(isProviderUsable(resolveActiveProvider({ provider: "custom" }, {})), false);

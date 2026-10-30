@@ -7,6 +7,7 @@ import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import { getModel, type ModelEntry } from "../models/registry.js";
 import { getAppVersion } from "../util/version.js";
 import type { AsterApiRuntime, AsterTurnStart } from "./aster-api.js";
+import type { AsterProviderConfig } from "./aster-workspaces.js";
 import type { HotcellProvider } from "./hotcell-provider.js";
 import { redactLikelySecrets } from "./aster-tools.js";
 
@@ -123,10 +124,10 @@ export interface AsterCheckpoint {
 
 /**
  * AsterApiRuntime backed by one Hotcell per conversation. The provider credentials
- * never enter the cell: model egress goes through Hotcell's OpenRouter credential
- * gateway, scoped to the conversation's model. Only structured SDK events and
- * bounded control payloads leave the cell; prompts and file contents never appear
- * in exec commands or Hotcell logs.
+ * never enter the cell: model egress goes through Hotcell's credential gateway route
+ * for the configured provider, scoped to the conversation's model. Only structured SDK
+ * events and bounded control payloads leave the cell; prompts and file contents never
+ * appear in exec commands or Hotcell logs.
  */
 export class AsterHotcellRuntime implements AsterApiRuntime {
   private readonly packageSpec: string;
@@ -191,6 +192,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     workspaceId: string;
     workspaceRoot: string;
     model: string;
+    /** The LLM provider the cell's egress route and Autopilot runtime are configured for; absent: OpenRouter. */
+    provider?: AsterProviderConfig;
     allowCreate: boolean;
     onCellCreated: (cellId: string) => void;
     /** Absent: seed the configured workspace (original behavior). */
@@ -203,6 +206,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
         conversationId: input.conversationId,
         workspaceId: input.workspaceId,
         model: input.model,
+        ...(input.provider ? { provider: input.provider.id } : {}),
         ...(input.project ? { kind: input.project.kind } : {}),
         ...(input.project?.github ? {
           githubViaProxy: true,
@@ -222,6 +226,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
       }
     }
     input.onCellCreated(cell.getInfo().id);
+    if (input.provider) await this.configureProviderEnv(cell, input.provider);
 
     if (input.project?.kind === "code") {
       await this.cloneRepository(cell, input.project);
@@ -245,6 +250,23 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
 
   async destroyCell(cellId: string): Promise<void> {
     await this.provider.destroyConversationCell(cellId);
+  }
+
+  /**
+   * Point the cell's Autopilot at the configured provider through its Hotcell gateway
+   * route: AUTOPILOT_PROVIDER, AUTOPILOT_BASE_URL (the route's URL plus the preset's path,
+   * as OpenRouter's gets `/v1`), and the provider's key env set to the per-cell egress
+   * token the daemon minted. OpenRouter keeps the daemon's own OPENROUTER_* injection, which
+   * the bridge already understands. Idempotent, so a retried provision re-applies it.
+   */
+  private async configureProviderEnv(cell: Sandbox, provider: AsterProviderConfig): Promise<void> {
+    if (provider.id === "openrouter") return;
+    const { tokens, providers } = await cell.listEgressTokens();
+    const route = providers.find((entry) => entry.name === provider.id);
+    if (!route?.baseUrl) throw new Error("hotcell_egress_route_missing");
+    const token = tokens[0]?.token;
+    if (!token && provider.keyRequired) throw new Error("hotcell_egress_token_missing");
+    await cell.setEnvVars(cellProviderEnv(provider, route.baseUrl, token));
   }
 
   async pauseCell(cellId: string): Promise<void> {
@@ -827,7 +849,13 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     const running = processes.find((proc) => proc.status === "running" && proc.command.includes(BRIDGE_MARKER));
     if (!running) {
       await cell.mkdir(CELL_CONTROL_DIR, { parents: true });
-      await cell.startProcess(BRIDGE_RUNNER, { cwd: "/opt/autopilot", env: { HOME: `${CELL_STATE_DIR}/home` } });
+      // Sandbox-level env (the provider wiring from configureProviderEnv) is handed to the
+      // bridge explicitly, so it never depends on how the daemon applies it to processes.
+      let sandboxEnv: Record<string, string> = {};
+      try {
+        sandboxEnv = (await cell.getEnvVars()) ?? {};
+      } catch { /* an older daemon or a fake without sandbox env: the container env applies */ }
+      await cell.startProcess(BRIDGE_RUNNER, { cwd: "/opt/autopilot", env: { ...sandboxEnv, HOME: `${CELL_STATE_DIR}/home` } });
     }
     const deadline = Date.now() + this.healthTimeoutMs;
     for (;;) {
@@ -925,6 +953,27 @@ function projectNote(project: AsterCellProject): string {
     "Credentials are preconfigured for this repository; never print or write tokens. " +
     `${artifacts} The artifacts folder is not committed to the repository.]`
   );
+}
+
+/**
+ * The env a cell's Autopilot runtime needs to use `provider` through its Hotcell gateway
+ * route at `routeBaseUrl`. The gateway stands in for the provider's origin, so the preset's
+ * path ("/v1" for OpenAI-style APIs, none for DeepSeek) is appended to it; `token` (the
+ * cell's egress token) goes in the provider's key env and is omitted for keyless routes.
+ */
+export function cellProviderEnv(provider: AsterProviderConfig, routeBaseUrl: string, token: string | undefined): Record<string, string> {
+  const root = routeBaseUrl.replace(/\/+$/, "");
+  let path = "";
+  if (provider.baseUrl) {
+    try {
+      path = new URL(provider.baseUrl).pathname.replace(/\/+$/, "");
+    } catch { /* an unparseable preset URL contributes no path */ }
+  }
+  return {
+    AUTOPILOT_PROVIDER: provider.id,
+    AUTOPILOT_BASE_URL: path && path !== "/" ? `${root}${path}` : root,
+    ...(token ? { [provider.apiKeyEnv]: token } : {}),
+  };
 }
 
 /** Relative path inside artifacts/, without traversal, hidden segments, or control characters. */

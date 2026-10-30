@@ -238,19 +238,27 @@ asterCommand
   .command("setup")
   .description("Configure Aster for one or more local Git workspaces")
   .requiredOption("-w, --workspace <path>", "Local Git repository root (repeatable)", (value, previous: string[] = []) => [...previous, value])
+  .option("--provider <id>", "LLM provider cells use (a provider preset id, e.g. deepseek, ollama); default OpenRouter")
+  .option("--base-url <url>", "with --provider: its API base URL instead of the preset's")
   .option("--json", "Print the selected workspace IDs as JSON")
-  .action(async (options: { workspace: string[]; json?: boolean }) => {
+  .action(async (options: { workspace: string[]; provider?: string; baseUrl?: string; json?: boolean }) => {
     const { setupLocalAsterConfig } = await import("./server/aster-setup.js");
     try {
-      const setup = await setupLocalAsterConfig({ workspacePaths: options.workspace });
+      const setup = await setupLocalAsterConfig({
+        workspacePaths: options.workspace,
+        ...(options.provider ? { provider: options.provider } : {}),
+        ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      });
       const result = {
         configPath: setup.path,
+        provider: setup.config.provider.id,
         workspaces: setup.selectedWorkspaces.map(({ id, displayName, rootPath }) => ({ id, displayName, rootPath })),
       };
       if (options.json) {
         console.log(JSON.stringify(result));
       } else {
         console.log(`Aster config: ${setup.path}`);
+        console.log(`Provider: ${setup.config.provider.name}`);
         for (const workspace of result.workspaces) console.log(`Workspace: ${workspace.id} · ${workspace.displayName}`);
       }
     } catch (error) {

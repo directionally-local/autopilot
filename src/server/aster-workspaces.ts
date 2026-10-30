@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { getPreset, isProviderId, type ProviderId } from "../providers/presets.js";
 
 export interface AsterWorkspace {
   id: string;
@@ -9,11 +10,38 @@ export interface AsterWorkspace {
   rootPath: string;
 }
 
+/**
+ * The LLM provider every conversation cell talks to, through the Hotcell egress route of
+ * the same name. Absent from aster.json: OpenRouter, exactly as before the block existed.
+ */
+export interface AsterProviderConfig {
+  id: ProviderId;
+  /** Display name from the preset ("DeepSeek"). */
+  name: string;
+  /**
+   * OpenAI-compatible base URL the server lists models from (`GET {baseUrl}/models`) and
+   * whose path the cell's gateway URL inherits. Undefined for OpenRouter and Requesty,
+   * whose modules own their URLs.
+   */
+  baseUrl?: string;
+  /** Env var holding the server's own key for the catalog call, and the cell's token env. */
+  apiKeyEnv: string;
+  /** False for local runtimes (Ollama, LM Studio) that take unauthenticated requests. */
+  keyRequired: boolean;
+  /** The preset's default chat model; the catalog fallback when the live list is unavailable. */
+  defaultModel?: string;
+}
+
 export interface AsterServerConfig {
-  /** Fixed model allowlist; empty when `modelCatalog` is "openrouter". */
+  provider: AsterProviderConfig;
+  /** Fixed model allowlist; empty when `modelCatalog` is "catalog". */
   models: string[];
-  /** "openrouter": every model in OpenRouter's live catalog is selectable. */
-  modelCatalog: "fixed" | "openrouter";
+  /**
+   * "catalog": the provider's live model list is selectable (OpenRouter's catalog, or
+   * `GET {baseUrl}/models` for other providers). aster.json spells it "catalog", or the
+   * older "openrouter".
+   */
+  modelCatalog: "fixed" | "catalog";
   workspaces: AsterWorkspace[];
   approvalTtlMs: number;
 }
@@ -50,7 +78,8 @@ export async function loadAsterServerConfig(
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new AsterConfigError();
   const record = raw as Record<string, unknown>;
-  const modelCatalog = record.models === "openrouter" ? "openrouter" : "fixed";
+  const provider = parseProvider(record.provider);
+  const modelCatalog = record.models === "catalog" || record.models === "openrouter" ? "catalog" : "fixed";
   if (modelCatalog === "fixed" && (!Array.isArray(record.models) || record.models.length === 0 || record.models.length > 100)) {
     throw new AsterConfigError();
   }
@@ -94,7 +123,55 @@ export async function loadAsterServerConfig(
     roots.push(rootPath);
     workspaces.push({ id: workspace.id, displayName: workspace.displayName.trim(), rootPath });
   }
-  return { models: models as string[], modelCatalog, workspaces, approvalTtlMs: approvalTtlMs as number };
+  return { provider, models: models as string[], modelCatalog, workspaces, approvalTtlMs: approvalTtlMs as number };
+}
+
+/** The provider block, or OpenRouter when aster.json has none. */
+export function parseProvider(value: unknown): AsterProviderConfig {
+  if (value === undefined) return providerConfig("openrouter");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new AsterConfigError("aster.json: provider must be an object");
+  const record = value as Record<string, unknown>;
+  if (!isProviderId(record.id)) throw new AsterConfigError(`aster.json: provider.id must be one of Autopilot's provider ids (received ${JSON.stringify(record.id)})`);
+  const baseUrl = optionalString(record.baseUrl, "provider.baseUrl");
+  const apiKeyEnv = optionalString(record.apiKeyEnv, "provider.apiKeyEnv");
+  if (apiKeyEnv !== undefined && !/^[A-Z_][A-Z0-9_]{0,127}$/.test(apiKeyEnv)) throw new AsterConfigError("aster.json: provider.apiKeyEnv must be an environment variable name");
+  return providerConfig(record.id, baseUrl, apiKeyEnv);
+}
+
+export function providerConfig(id: ProviderId, baseUrl?: string, apiKeyEnv?: string): AsterProviderConfig {
+  const preset = getPreset(id);
+  const resolvedBaseUrl = normalizeBaseUrl(baseUrl ?? preset.baseUrl);
+  if (resolvedBaseUrl === undefined && id !== "openrouter" && id !== "requesty") {
+    throw new AsterConfigError(`aster.json: provider ${id} needs provider.baseUrl`);
+  }
+  const resolvedKeyEnv = apiKeyEnv ?? preset.apiKeyEnv[0];
+  if (!resolvedKeyEnv) throw new AsterConfigError(`aster.json: provider ${id} needs provider.apiKeyEnv`);
+  return {
+    id,
+    name: preset.name,
+    ...(resolvedBaseUrl !== undefined ? { baseUrl: resolvedBaseUrl } : {}),
+    apiKeyEnv: resolvedKeyEnv,
+    keyRequired: preset.keyRequired,
+    ...(preset.defaultModel ? { defaultModel: preset.defaultModel } : {}),
+  };
+}
+
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim() || value.length > 500) throw new AsterConfigError(`aster.json: ${field} must be a non-empty string`);
+  return value.trim();
+}
+
+function normalizeBaseUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AsterConfigError(`aster.json: provider.baseUrl is not a valid URL (${value})`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new AsterConfigError("aster.json: provider.baseUrl must be http(s)");
+  return value.replace(/\/+$/, "");
 }
 
 export function findAsterWorkspace(config: AsterServerConfig, workspaceId: string): AsterWorkspace | undefined {

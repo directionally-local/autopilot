@@ -30,7 +30,19 @@ Aster conversation cells require a Hotcell deployment reachable from the service
 | `AUTOPILOT_HOTCELL_SPEND_CAP_USD` | Per-conversation egress spend cap (default 10) |
 | `AUTOPILOT_HOTCELL_TOKEN_TTL_MS` | Egress token TTL (default 24h) |
 
-The provider fails closed: it refuses to create a cell if the Hotcell API auth is disabled, the configured driver is unavailable, or the OpenRouter egress gateway is missing. Creation is label-adoptive: cells carry a stable `autopilot.conversation_id` label, and a retry after an uncertain create adopts the labeled cell instead of provisioning a duplicate.
+The provider fails closed: it refuses to create a cell if the Hotcell API auth is disabled, the configured driver is unavailable, or the daemon has no egress route for the configured LLM provider (`hotcell_egress_unavailable`). Creation is label-adoptive: cells carry a stable `autopilot.conversation_id` label, and a retry after an uncertain create adopts the labeled cell instead of provisioning a duplicate.
+
+### Which LLM provider the cells use
+
+Cells reach their LLM through the Hotcell egress route named after the provider in `aster.json` (below); the route is named exactly like Autopilot's provider preset id (`openrouter`, `openai`, `deepseek`, `moonshot`, `anthropic`, `gemini`, `minimax`, `xai`, `mistral`, `groq`, `cerebras`, `together`, `fireworks`, `deepinfra`, `vercel`, `kimi-code`, `zai`, `zai-coding`, `requesty`, and the keyless `ollama` and `lmstudio`). The daemon mints a per-cell egress token scoped to the conversation's model, and the server configures the cell's Autopilot with:
+
+| Cell env | Value |
+| --- | --- |
+| `AUTOPILOT_PROVIDER` | the provider id |
+| `AUTOPILOT_BASE_URL` | the route's gateway URL plus the preset's API path (`…/openai/v1`, `…/deepseek`, `…/ollama/v1`) |
+| the preset's key env (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, …) | the cell's egress token; absent for keyless routes with no token |
+
+OpenRouter keeps the daemon's own `OPENROUTER_BASE_URL`/`OPENROUTER_API_KEY` injection. The real provider key only ever lives on the Hotcell daemon.
 
 ## Local macOS bootstrap
 
@@ -38,6 +50,9 @@ On a Mac, Autopilot can own the Aster workspace config and issue a short-lived, 
 
 ```sh
 autopilot aster setup --workspace "$HOME/src/my-project" --json
+# or, for cells that talk to another provider (optionally at a non-default URL):
+autopilot aster setup --workspace "$HOME/src/my-project" --provider deepseek
+autopilot aster setup --workspace "$HOME/src/my-project" --provider ollama --base-url http://gpu-box:11434/v1
 # Use the returned workspace ID:
 autopilot aster token create --name "Aster for Mac" --workspace my-project --expires-in-days 30 --json
 autopilot serve --hostname 127.0.0.1 --port 4096
@@ -53,7 +68,8 @@ Create `/etc/autopilot/aster.json` (do not put credentials in it):
 
 ```json
 {
-  "models": ["moonshotai/kimi-k2.6"],
+  "provider": { "id": "deepseek", "baseUrl": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY" },
+  "models": "catalog",
   "approvalTtlMs": 300000,
   "workspaces": [
     {
@@ -65,7 +81,8 @@ Create `/etc/autopilot/aster.json` (do not put credentials in it):
 }
 ```
 
-Set `"models": "openrouter"` instead of a list to offer every tool-capable model in OpenRouter's live catalog (cached on the server, refreshed every 6 hours).
+- `provider` (optional) names the LLM provider every cell uses, by Autopilot provider preset id. Absent, it is OpenRouter, so every aster.json written before the block existed keeps working. `baseUrl` defaults to the preset's API base URL (required for `custom`); `apiKeyEnv` defaults to the preset's key variable and names the env var on the *server* that holds its own key for the catalog call below, and the variable the cell's egress token is handed in.
+- `models` is either a fixed list of model ids (works for any provider) or `"catalog"` (the older spelling `"openrouter"` still means the same): every selectable model of the provider's live list. For OpenRouter that is its public catalog, tool-capable models only (cached on the server, refreshed every 6 hours); for every other provider it is `GET {baseUrl}/models` in the OpenAI-compatible shape, authenticated with the server's `apiKeyEnv` key (or unauthenticated for keyless providers), cached for five minutes, falling back to the preset's default model when the call fails.
 
 `id` is the only workspace selector accepted from clients. The API never accepts a client-supplied cwd or filesystem path. Roots must be existing, non-overlapping directories; each workspace root must be a Git repository so its tracked tree can be seeded into the conversation cell at creation.
 
@@ -166,11 +183,17 @@ All paths below require the scoped Bearer credential. Unknown IDs outside the to
 {"workspaces":[{"id":"default","displayName":"Default workspace"}]}
 ```
 
-`GET /api/v1/models` returns `{models: [id…], catalog: [{id, name, contextWindow, inputPerMtok, outputPerMtok, created, reasoning, vision}…]}`, never provider credentials.
+`GET /api/v1/models` returns `{models: [id…], catalog: [{id, name, contextWindow, inputPerMtok, outputPerMtok, created, reasoning, vision}…], provider: {id, name}, defaultModel}`, never provider credentials. `provider` is the configured provider (`{"id":"openrouter","name":"OpenRouter"}` by default); `defaultModel` is the preset's default model when it is selectable, else the first selectable model. For a DeepSeek server with a fixed list:
+
+```json
+{"models":["deepseek-v4-pro","deepseek-flash"],"catalog":[{"id":"deepseek-v4-pro"},{"id":"deepseek-flash"}],"provider":{"id":"deepseek","name":"DeepSeek"},"defaultModel":"deepseek-v4-pro"}
+```
+
+Conversation creation and model switches (`400 model_not_allowed`) validate against this list; with `AUTOPILOT_HOTCELL_ANY_MODEL` the cell's token may still call any model the route serves.
 
 ### Conversations and turns
 
-Every conversation is bound to exactly one private Hotcell microVM at creation. The cell owns the Autopilot session (`autopilot-ai` JSON-RPC bridge), the `/workspace` volume seeded from the configured workspace's Git tree, and a scoped OpenRouter egress token (conversation model only, spend-capped, TTL-bound). Provider credentials never enter the cell image, its env, or its logs; only structured SDK events leave it. Server restart or cell pause never loses the session: on resume the bridge restores the same session ID from the cell volume, and the event cursor survives because it is journaled in the cell.
+Every conversation is bound to exactly one private Hotcell microVM at creation. The cell owns the Autopilot session (`autopilot-ai` JSON-RPC bridge), the `/workspace` volume seeded from the configured workspace's Git tree, and a scoped egress token for the configured provider's gateway route (conversation model only, spend-capped, TTL-bound). Provider credentials never enter the cell image, its env, or its logs; only structured SDK events leave it. Server restart or cell pause never loses the session: on resume the bridge restores the same session ID from the cell volume, and the event cursor survives because it is journaled in the cell.
 
 `POST /api/v1/conversations`
 

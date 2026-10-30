@@ -353,9 +353,27 @@ export function getOpenApiSpec(): string {
       },
       "/api/v1/models": {
         get: {
-          summary: "List server-configured models",
+          summary: "List the models conversations may use, and the provider serving them",
           security: [{ asterBearer: [] }],
-          responses: { "200": { description: "Configured model IDs" } },
+          responses: {
+            "200": {
+              description: "The selectable model IDs (a fixed list, or the provider's live catalog), their metadata, the configured provider and its default model",
+              content: { "application/json": { schema: {
+                type: "object",
+                required: ["models", "catalog", "provider", "defaultModel"],
+                properties: {
+                  models: { type: "array", items: { type: "string" } },
+                  catalog: { type: "array", items: { type: "object", required: ["id"], properties: {
+                    id: { type: "string" }, name: { type: "string" }, contextWindow: { type: "integer" }, inputPerMtok: { type: "number" }, outputPerMtok: { type: "number" },
+                    created: { type: "integer" }, reasoning: { type: "boolean" }, vision: { type: "boolean" },
+                  } } },
+                  provider: { type: "object", required: ["id", "name"], properties: { id: { type: "string", description: "Autopilot provider preset id (openrouter, deepseek, ollama, …)" }, name: { type: "string" } } },
+                  defaultModel: { type: "string", description: "The provider's default model when it is selectable, else the first selectable model" },
+                },
+              }, example: { models: ["deepseek-v4-pro", "deepseek-flash"], catalog: [{ id: "deepseek-v4-pro" }, { id: "deepseek-flash" }], provider: { id: "deepseek", name: "DeepSeek" }, defaultModel: "deepseek-v4-pro" } } },
+            },
+            "503": { description: "The model catalog is unavailable right now" },
+          },
         },
       },
       "/api/v1/conversations": {
