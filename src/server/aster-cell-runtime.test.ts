@@ -486,19 +486,35 @@ describe("Aster Hotcell runtime", () => {
       const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
       let published = 0;
 
-      // Only the client's local changes so far: nothing of the agent's to publish.
-      const idle = fakeTurn({ cellId: "real-cell", conversation, userText: "look around", githubProxy, beforeFinish: async () => { published++; } });
+      // The agent only talked (a greeting, an answer): no repository work was asked for, so
+      // the turn doesn't announce that none was published.
+      const greeting = fakeTurn({ cellId: "real-cell", conversation, userText: "hello", githubProxy, beforeFinish: async () => { published++; } });
+      runtime.startTurn(greeting);
+      await waitFor(() => greeting.finished.length > 0);
+      assert.equal(published, 0);
+      assert.deepEqual(greeting.finished, ["completed"]);
+      assert.ok(!greeting.events.some((event) => event.type === "outcome"), "a tool-free reply gets no outcome line");
+
+      // The agent looked around with tools and changed nothing: only the client's local
+      // changes exist, nothing of the agent's to publish, and the turn says so.
+      state.promptEvents = [
+        { type: "tool.start", toolName: "bash", toolCallId: "c1", args: { command: "ls" } },
+        { type: "tool.result", toolName: "bash", toolCallId: "c1", result: "README.md" },
+        { type: "message.delta", text: "Nothing to change." },
+      ];
+      const idle = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 2, userText: "look around", githubProxy, beforeFinish: async () => { published++; } });
       runtime.startTurn(idle);
       await waitFor(() => idle.finished.length > 0);
       assert.equal(published, 0);
       assert.deepEqual(idle.finished, ["completed"]);
       assert.ok(idle.events.some((event) => event.type === "outcome" && /no pull request was opened/.test(String(event.data?.summary))));
+      state.promptEvents = undefined;
 
       // The agent commits its work itself, leaving nothing uncommitted for a checkpoint.
       writeFileSync(join(root, "design.md"), "the plan\n");
       git("add design.md");
       git("commit -q -m 'docs: the plan'");
-      const committed = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 2, userText: "write the plan", githubProxy, beforeFinish: async () => { published++; } });
+      const committed = fakeTurn({ cellId: "real-cell", conversation, runId: crypto.randomUUID(), cellEventCursor: 6, userText: "write the plan", githubProxy, beforeFinish: async () => { published++; } });
       runtime.startTurn(committed);
       await waitFor(() => committed.finished.length > 0);
       assert.ok(!committed.events.some((event) => event.type === "checkpoint.created"));

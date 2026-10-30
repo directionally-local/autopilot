@@ -418,6 +418,9 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
 
     let artifactsBefore: AsterArtifact[] = [];
     const usageTotals = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+    // A turn the agent answered without touching a tool (a greeting, a question) was not
+    // asked for repository work, so it doesn't get told that none was published.
+    let toolActivity = false;
     try {
       if (options.resume) throw new Error("resume");
       // An idle cell may have been paused (cold-stopped on the container driver):
@@ -500,6 +503,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
             if (typeof event.text === "string") turn.publishEvent("assistant.reasoning", { text: event.text });
             break;
           case "tool.start":
+            toolActivity = true;
             turn.publishEvent("tool.activity", {
               tool: event.toolName,
               toolCallId: event.toolCallId,
@@ -611,7 +615,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
             turn.publishEvent("outcome.failed", { reason: "pull_request_failed" });
           }
         }
-      } else {
+      } else if (toolActivity) {
         turn.publishEvent("outcome", { summary: "No repository changes were made; no pull request was opened." });
       }
     } else if (outcome?.status === "completed" && turn.beforeFinish) {
