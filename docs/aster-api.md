@@ -309,17 +309,20 @@ Use `deny` to reject. Decisions are single-use; repeating the same decision is i
 
 ## Interactive client: `autopilot attach-remote`
 
-`autopilot attach-remote` opens Autopilot's own interactive UI (Camouflage) on a code conversation that runs in a cell on the server. It is the API's interactive client: other tools (for example Directionally Local's `dl`) launch it with the server and credential in the environment, never in argv.
+`autopilot attach-remote` opens Autopilot's own interactive UI (Camouflage) on a conversation that runs in a cell on the server: a code conversation (a cloned repository on its own branch, the default) or a chat conversation (`--kind chat`: a sandbox in the workspace with no repository, branch or pull request). It is the API's interactive client: other tools (for example Directionally Local's `dl`) launch it with the server and credential in the environment, never in argv.
 
 ```sh
 AUTOPILOT_REMOTE_URL=http://127.0.0.1:53817 AUTOPILOT_REMOTE_TOKEN=aster_… \
   autopilot attach-remote --workspace default --repo acme/project --model moonshotai/kimi-k2.6 \
   [--base-commit <40-hex sha> [--patch-file local.patch]] --state-file state.json --title "dl · acme/project"
+# a chat conversation (no --repo; the header shows the workspace's title):
+autopilot attach-remote --workspace default --kind chat --model moonshotai/kimi-k2.6
 # later:
 autopilot attach-remote --conversation <id> --state-file state.json
 ```
 
-- New conversations are created with an `Idempotency-Key`; `--patch-file` is read and sent as `patch` (never logged). `--conversation` replays the conversation's events from 0, then follows live. `--state-file` gets `{"conversationId","branch","repository"}` (mode `0600`, written atomically) as soon as the conversation exists.
+- New conversations are created with an `Idempotency-Key`; `--model` is required for them. `--kind code` (the default) needs `--repo`; `--kind chat` refuses `--repo`, `--base-commit` and `--patch-file`. `--patch-file` is read and sent as `patch` (never logged). `--conversation` replays the conversation's events from 0, then follows live. `--state-file` gets `{"conversationId","branch","repository"}` (mode `0600`, written atomically; both `null` for a chat) as soon as the conversation exists.
+- The transcript opens with "Connected to conversation …" for a conversation this command created or one nothing has happened in yet; only a conversation with earlier output says "Reconnected … Earlier output follows".
 - Each message is a turn with its own `clientTurnId`. Messages typed while a turn runs queue and are sent, in order, when it ends. `/model <id>` sends `model` with the next turn. Shell (`!`), laptop image attachments and local-only slash commands are refused with a message; `/help`, `/model`, `/status`, `/pr` and `/exit` work.
 - Events render like a local session's: assistant text, `tool.activity` rows with input and output, `todo.updated`, `usage` cost, checkpoints, outcomes and errors; `approval.required` opens the permission prompt and posts the decision. After a turn the conversation's `pullRequestURL` is shown (again whenever it changes). The SSE stream reconnects with `Last-Event-ID` and drops duplicate IDs.
 - Esc cancels the running turn (`POST …/cancel`). Quitting (Ctrl-D, `/exit`, closing the terminal, SIGTERM/SIGHUP) only detaches: the conversation keeps running on the server. Exit code 0 on detach, 1 on errors (a `401` means the credential was revoked or expired).
