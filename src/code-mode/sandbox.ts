@@ -31,6 +31,21 @@ export interface SandboxOptions {
   ctx: ToolContext;
   timeoutMs?: number;
   memoryLimitMB?: number;
+  /**
+   * The turn's per-file read cursor (#1080). Without it, `api.read({ path })`
+   * always got the reducer's outline, so a model re-reading a large file
+   * through Code Mode saw no progress and repeated the same script until the
+   * loop guardrail blocked it.
+   */
+  readCursor?: SandboxReadCursor;
+}
+
+/** Shares the agent loop's whole-file read paging with calls made inside a script. */
+export interface SandboxReadCursor {
+  /** Page to serve for this read: 0 for the reducer's normal output, n > 0 for raw page n. */
+  next(args: Record<string, unknown>): number;
+  /** A successful edit/write of `path` starts its paging over. */
+  invalidate(path: string): void;
 }
 
 /** Lightweight TypeScript-to-JavaScript type stripper for LLM-generated code. */
@@ -176,13 +191,21 @@ function makeToolBridge(opts: SandboxOptions, toolCalls: SandboxToolCall[]) {
   let mutationTail: Promise<unknown> = Promise.resolve();
   return (tool: ToolSpec) =>
     async (args: unknown): Promise<string> => {
+      const argsObj = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
       const invoke = async (): Promise<ToolResult> => {
         const toolCallId = `code_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        return opts.executor.run(
+        const readRepeat = tool.name === "read" ? (opts.readCursor?.next(argsObj) ?? 0) : 0;
+        const result = await opts.executor.run(
           { id: toolCallId, name: tool.name, arguments: JSON.stringify(args ?? {}) },
           opts.askPermission,
           opts.ctx,
+          undefined,
+          readRepeat > 0 ? { readRepeat } : undefined,
         );
+        if (result.ok && (tool.name === "edit" || tool.name === "write") && typeof argsObj.path === "string") {
+          opts.readCursor?.invalidate(argsObj.path);
+        }
+        return result;
       };
       let result: ToolResult;
       if (tool.isReadOnly === true || tool.concurrent === true) {
