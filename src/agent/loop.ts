@@ -21,6 +21,7 @@ import { logTurnDebug, analyzePrompt } from "../cost-debug.js";
 import { EXTRACTORS } from "../memory/extractors.js";
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
+import type { SandboxReadCursor } from "../code-mode/index.js";
 import { estimatePromptTokens } from "./artifact-compaction.js";
 import { logger } from "../util/logger.js";
 import { selectSkills } from "../skills/router.js";
@@ -726,6 +727,27 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // per-file cursor always moves forward, and it is cleared when that file is
   // edited so "edit, then re-read to verify" is never treated as a repeat.
   const readPages = new Map<string, number>();
+  /**
+   * Advance the page cursor for a whole-file read of `path`. Shared by direct
+   * `read` calls and `api.read` inside Code Mode (#1080), so both draw on one
+   * per-file budget and both move forward on a repeat.
+   */
+  const advanceReadPage = (path: string): { kind: "first" } | { kind: "page"; page: number } | { kind: "exhausted" } => {
+    const served = readPages.get(path) ?? 0;
+    if (served === 0) {
+      readPages.set(path, 1);
+      return { kind: "first" };
+    }
+    if (served <= MAX_READ_PAGES) {
+      readPages.set(path, served + 1);
+      return { kind: "page", page: served };
+    }
+    return { kind: "exhausted" };
+  };
+  // `execute_code` scripts whose last run was served a new read page. Repeating
+  // such a script is paging through a file, not a loop: the guard lets it run.
+  // The read budget (MAX_READ_PAGES per file) still bounds the repeats.
+  const codeModeProgress = new Set<string>();
   // Calls that already failed on their arguments (invalid_args). The same
   // arguments can never succeed, so a repeat is blocked on the first retry
   // instead of after LOOP_THRESHOLD — the model hears the original error and
@@ -757,8 +779,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   let totalIter = 0;
   let budgetExhausted = false;
   let loopExhausted = false;
-  /** The last detected loop was made only of read-only calls (see the finalize path). */
-  let loopWasReadOnly = false;
+  /** The last detected loop included side-effecting thrash (see the finalize path). */
+  let loopWasThrashing = false;
   let loopRecoveries = 0;
   let completionNudges = 0;
   let prCiNudges = 0;
@@ -1093,7 +1115,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       logger.info("turn:finalized", { sessionId: opts.sessionId, reason: finalizeReason, totalIter });
       if (budgetExhausted) throw new BudgetExhaustedError();
       await fireStopHook();
-      if (finalizeReason === "loop" && !loopWasReadOnly) throw new AgentLoopError();
+      if (finalizeReason === "loop" && loopWasThrashing) throw new AgentLoopError();
       return;
     }
 
@@ -1168,7 +1190,12 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     }
 
     let blockedCount = 0;
-    let blockedReadOnlyCount = 0;
+    // Blocks that show the model thrashing on side effects: a non-read-only
+    // call repeated unchanged (loop_guardrail) or retried with arguments that
+    // already failed (invalid_args). Blocks where the harness simply has
+    // nothing more to give (read_exhausted, web_fetch_budget, unavailable)
+    // are not evidence of a loop (#1080).
+    let blockedThrashCount = 0;
     const availableToolNames = new Set(opts.tools.map((tool) => tool.name));
     if (codeMode) availableToolNames.add("execute_code");
     const executorTools = opts.executor.list();
@@ -1232,16 +1259,14 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         const hasSlice = typeof readArgs.offset === "number" || typeof readArgs.limit === "number";
         const readPath = typeof readArgs.path === "string" ? readArgs.path : "";
         if (!hasSlice && readPath) {
-          const served = readPages.get(readPath) ?? 0;
-          if (served === 0) {
-            // First read of this file: the reducer's outline. Start the cursor.
-            // The cursor, not the window count, governs whole-file reads, so a
-            // re-read after an edit is never mistaken for a repeat.
-            readPages.set(readPath, 1);
+          // The cursor, not the window count, governs whole-file reads, so a
+          // re-read after an edit is never mistaken for a repeat.
+          const step = advanceReadPage(readPath);
+          if (step.kind === "first") {
+            // First read of this file: the reducer's outline.
             return { kind: "run" };
-          } else if (served <= MAX_READ_PAGES) {
-            readPages.set(readPath, served + 1);
-            return { kind: "run", readRepeat: served };
+          } else if (step.kind === "page") {
+            return { kind: "run", readRepeat: step.page };
           } else {
             return {
               kind: "blocked",
@@ -1259,7 +1284,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           }
         }
       }
-      if (repeatedCalls >= LOOP_THRESHOLD) {
+      const pagingThroughCode = tc.function.name === "execute_code" && codeModeProgress.has(loopSignature);
+      if (repeatedCalls >= LOOP_THRESHOLD && !pagingThroughCode) {
         return {
           kind: "blocked",
           errorCode: "loop_guardrail",
@@ -1371,8 +1397,25 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     };
 
     /** Code Mode: run the script in the sandbox; its inner tool calls are reported, the script output is the result. */
-    const executeCode = async (tc: ToolCall): Promise<ToolResult> => {
+    const executeCode = async (tc: ToolCall, loopSignature: string): Promise<ToolResult> => {
       const args = parseArgsObject(tc.function.arguments) as { code?: string };
+      let servedNewPage = false;
+      const readCursor: SandboxReadCursor = {
+        next: (readArgs) => {
+          const hasSlice = typeof readArgs.offset === "number" || typeof readArgs.limit === "number";
+          if (hasSlice || typeof readArgs.path !== "string" || !readArgs.path) return 0;
+          const step = advanceReadPage(readArgs.path);
+          if (step.kind === "page") {
+            servedNewPage = true;
+            return step.page;
+          }
+          if (step.kind === "first") servedNewPage = true;
+          // Past the budget the script gets the reducer's output again and
+          // makes no progress, so an identical repeat is a loop once more.
+          return 0;
+        },
+        invalidate: (path) => readPages.delete(path),
+      };
       const code = args.code || "";
       const sandboxStartedAt = performance.now();
       if (trace.enabled) {
@@ -1410,7 +1453,10 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         },
         timeoutMs: 30000,
         memoryLimitMB: 128,
+        readCursor,
       });
+      if (servedNewPage) codeModeProgress.add(loopSignature);
+      else codeModeProgress.delete(loopSignature);
       logger.debug("turn:code_mode_end", {
         sessionId: opts.sessionId,
         toolCallId: tc.id,
@@ -1529,7 +1575,12 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         // A Code Mode redirect is a nudge, not a block: the model retries via execute_code.
         if (guardrailBlocked) {
           blockedCount++;
-          if (isReadOnlyTool(tc.function.name)) blockedReadOnlyCount++;
+          if (
+            (outcome.errorCode === "loop_guardrail" || outcome.errorCode === "invalid_args") &&
+            !isReadOnlyTool(tc.function.name)
+          ) {
+            blockedThrashCount++;
+          }
         }
       }
       toolResults.push(result);
@@ -1669,7 +1720,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
             outcome.kind === "blocked"
               ? outcome.result
               : outcome.kind === "code"
-                ? await executeCode(tc)
+                ? await executeCode(tc, loopSignature)
                 : await execute(tc, opts.callbacks.askPermission, outcome.readRepeat ?? 0);
           if (record(tc, index, loopSignature, outcome, result)) {
             yielded = result.waitRequest;
@@ -1686,10 +1737,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
 
     if (blockedCount === toolCalls.length && toolCalls.length > 0) {
       loopExhausted = true;
-      // A loop made only of read-only calls is the harness's own reduction
-      // biting back, not a model thrashing on side effects. End the turn with
-      // a summary instead of an error the UI paints as a crash.
-      loopWasReadOnly = blockedReadOnlyCount === blockedCount;
+      // A loop with no side-effecting thrash in it (read-only repeats, or
+      // blocks where the harness ran out of pages, budget or permission) is
+      // not the model thrashing. End the turn with a summary instead of an
+      // error the UI paints as a crash.
+      loopWasThrashing = blockedThrashCount > 0;
     }
 
     // (Drift accumulator decay was removed in OP-8 — drift detection is

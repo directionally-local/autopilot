@@ -5,9 +5,13 @@ import type { ToolExecutor, ToolResult } from "../tools/executor.js";
 import type { ChatMessage } from "./messages.js";
 import type { HooksManager } from "../hooks/manager.js";
 import type { ToolSpec } from "../tools/registry.js";
+import { secureSandboxUnavailableReason } from "../code-mode/index.js";
 
 // These turns pass a session id; keep their JSONL transcripts out of the real sessions dir.
 process.env.KIMIFLARE_TRANSCRIPT = "0";
+
+// Code Mode needs the optional isolated-vm sandbox; those tests skip without it.
+const NO_SANDBOX = (await secureSandboxUnavailableReason()) ?? false;
 
 type Step = { tool: string; args: Record<string, unknown> } | { text: string };
 
@@ -444,6 +448,59 @@ describe("runAgentTurn guardrails (unattended)", () => {
     const last = opts.messages.at(-1)!;
     assert.strictEqual(last.role, "assistant");
     assert.match(String(last.content), /repeating blocked tool calls/);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("ends a loop of harness-refused calls with a summary, not AgentLoopError", async () => {
+    // `edit` is not advertised this turn, so every call is blocked as
+    // unavailable. That is the harness refusing, not the model thrashing on
+    // side effects, so the turn ends with a summary instead of an error (#1080).
+    const model = scriptModel([{ tool: "edit", args: { path: "src/a.ts", old_string: "a", new_string: "b" } }]);
+    const { executor, runs } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events);
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(events.map((e) => e.kind), ["loop_recovery", "loop_stopped"]);
+    assert.strictEqual(runs.length, 0);
+    assert.ok(model.requests > 0);
+    assert.match(String(opts.messages.at(-1)!.content), /repeating blocked tool calls/);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("pages a repeated whole-file read inside Code Mode", { skip: NO_SANDBOX }, async () => {
+    // `api.read` inside execute_code used to get the outline every time, so
+    // the identical script was blocked on its third run (#1080). It now draws
+    // on the same per-file page cursor as a direct read, and a repeat that was
+    // served a new page is not treated as a loop.
+    const { executor, readRepeats } = pagingExecutor();
+    const script = { tool: "execute_code", args: { code: 'console.log(await api.read({ path: "src/large.rs" }));' } };
+    const model = scriptModel([script, script, script, script, { text: "Read the whole file." }]);
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { tools: [{ ...READ_TOOL, isReadOnly: true }], codeMode: true });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(readRepeats, [0, 1, 2, 3], "each run of the script advances a page");
+    assert.deepStrictEqual(events, []);
+    assert.strictEqual(model.requests, 5);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("blocks an identical Code Mode read once the file's pages are exhausted", { skip: NO_SANDBOX }, async () => {
+    const { executor, readRepeats } = pagingExecutor();
+    const script = { tool: "execute_code", args: { code: 'console.log(await api.read({ path: "src/large.rs" }));' } };
+    scriptModel([script, script, script, script, script, script, { text: "Done." }]);
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { tools: [{ ...READ_TOOL, isReadOnly: true }], codeMode: true });
+
+    await runAgentTurn(opts);
+
+    // Outline + 3 pages, one more run past the budget (no progress), then the
+    // guard blocks the identical script again.
+    assert.deepStrictEqual(readRepeats, [0, 1, 2, 3, 0]);
+    assert.deepStrictEqual(events.map((e) => e.kind), ["loop_recovery"]);
     assertNoDanglingToolCalls(opts.messages);
   });
 
