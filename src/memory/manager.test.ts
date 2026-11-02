@@ -240,3 +240,52 @@ describe("memory DB migration", () => {
     }
   });
 });
+
+describe("MemoryManager repo migration", () => {
+  let tmpDir: string;
+  let manager: MemoryManager;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "kimiflare-memory-repo-migrate-test-"));
+    manager = new MemoryManager({
+      dbPath: join(tmpDir, "memory.db"),
+      openrouterApiKey: "sk-or-test",
+      model: "moonshotai/kimi-k2.7-code",
+    });
+    manager.open();
+  });
+
+  afterEach(async () => {
+    manager.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("migrates orphaned rows so recall finds them again", async () => {
+    // Rows keyed to a path that no longer exists (a renamed checkout).
+    await manager.rememberPlan("Build a login page", "/gone/kimiflare", "s1");
+    assert.strictEqual(manager.getByTopicKey("/gone/autopilot", "current_dev_plan"), null);
+
+    const dryRun = manager.migrateRepo("/gone/kimiflare", "/gone/autopilot");
+    assert.strictEqual(dryRun.rows, 1);
+    assert.strictEqual(dryRun.applied, false);
+    assert.strictEqual(manager.getByTopicKey("/gone/autopilot", "current_dev_plan"), null, "dry run writes nothing");
+
+    const applied = manager.migrateRepo("/gone/kimiflare", "/gone/autopilot", { apply: true });
+    assert.strictEqual(applied.applied, true);
+    assert.strictEqual(manager.getByTopicKey("/gone/autopilot", "current_dev_plan")?.content, "Build a login page");
+    assert.strictEqual(manager.migrationCandidates("/gone/autopilot").length, 0, "nothing orphaned after migrating");
+  });
+
+  it("reports orphaned candidates and the DB path in the doctor report", async () => {
+    await manager.rememberPlan("Old plan", "/home/dev/kimiflare", "s1");
+    await manager.rememberPlan("New plan", "/home/dev/autopilot", "s2");
+
+    const candidates = manager.migrationCandidates("/home/dev/autopilot");
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0]?.path, "/home/dev/kimiflare");
+
+    const report = manager.doctorReport("/home/dev/autopilot");
+    assert.ok(report.includes(manager.dbPath));
+    assert.ok(report.includes("/memory migrate-repo /home/dev/kimiflare /home/dev/autopilot --apply --merge"));
+  });
+});

@@ -63,6 +63,8 @@ export const CATEGORIES: Category[] = [
       { command: "/memory on", description: "enable memory" },
       { command: "/memory off", description: "disable memory" },
       { command: "/memory clear", description: "wipe memories for this repo" },
+      { command: "/memory doctor", description: "find memories orphaned by a repo move/rename" },
+      { command: "/memory migrate-repo <old> <new> [--apply] [--merge]", description: "re-key memories after a repo move/rename", selectable: false },
       { command: "/memory search <query>", description: "search stored memories", selectable: false },
     ],
   },
