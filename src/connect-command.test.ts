@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import type { KimiConfig } from "./config.js";
+import type { AutopilotConfig } from "./config.js";
 import type { ConnectOutcome } from "./camouflage-view.js";
 import { runConnectCommand, type ConnectDeps, type ConnectScreens } from "./connect-command.js";
 import { CONNECT_EXIT, HIDDEN_WITHOUT_GATEWAY, type ConnectState } from "./providers/connect-state.js";
@@ -12,7 +12,7 @@ function outcome(over: Partial<ConnectOutcome> = {}): ConnectOutcome {
     id: "ollama",
     connection: { id: "ollama", source: "none" },
     model: "qwen3:8b",
-    cfg: { provider: "ollama", model: "qwen3:8b" } as KimiConfig,
+    cfg: { provider: "ollama", model: "qwen3:8b" } as AutopilotConfig,
     ...over,
   };
 }
@@ -89,7 +89,7 @@ describe("autopilot connect", () => {
         id: "custom",
         connection: { id: "custom", source: "key", key: "sk-secret-123", baseUrl: "http://gw:4000/v1" },
         model: "gpt-x",
-        cfg: { provider: "custom", baseUrl: "http://gw:4000/v1", apiKey: "sk-secret-123", model: "gpt-x" } as KimiConfig,
+        cfg: { provider: "custom", baseUrl: "http://gw:4000/v1", apiKey: "sk-secret-123", model: "gpt-x" } as AutopilotConfig,
       }),
     });
     assert.strictEqual(await runConnectCommand({ stateFile: "s.json" }, h.deps), CONNECT_EXIT.success);
@@ -104,7 +104,7 @@ describe("autopilot connect", () => {
         id: "deepseek",
         connection: { id: "deepseek", source: "config", key: "sk-ds" },
         model: "deepseek-v4-pro",
-        cfg: { provider: "deepseek", providers: { deepseek: { apiKey: "sk-ds" } }, model: "deepseek-v4-pro" } as KimiConfig,
+        cfg: { provider: "deepseek", providers: { deepseek: { apiKey: "sk-ds" } }, model: "deepseek-v4-pro" } as AutopilotConfig,
       }),
     });
     assert.strictEqual(await runConnectCommand({ modelOnly: true, stateFile: "s.json" }, h.deps), CONNECT_EXIT.success);
@@ -145,7 +145,7 @@ describe("autopilot connect", () => {
   });
 
   it("exits 1 when the saved provider has no URL to put in the state file", async () => {
-    const h = harness({ setup: outcome({ id: "custom", connection: { id: "custom", source: "none" }, cfg: { provider: "custom" } as KimiConfig }) });
+    const h = harness({ setup: outcome({ id: "custom", connection: { id: "custom", source: "none" }, cfg: { provider: "custom" } as AutopilotConfig }) });
     assert.strictEqual(await runConnectCommand({ stateFile: "s.json" }, h.deps), CONNECT_EXIT.cancelled);
     assert.deepStrictEqual(h.written, []);
     assert.match(h.err[0]!, /no base URL/);

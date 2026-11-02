@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
-import { runKimi, ThinkTagSplitter, type KimiEvent } from "./client.js";
+import { runKimi, ThinkTagSplitter, type ModelEvent } from "./client.js";
 import { llmAuthFromConfig } from "./llm-auth.js";
 import type { ChatMessage } from "./messages.js";
 import { registerProviderModels } from "../models/registry.js";
@@ -54,7 +54,7 @@ describe("MiniMax requests", () => {
       { role: "assistant", content: "ok", reasoning_details: [{ type: "reasoning.text", index: 0, text: "earlier thought" }], reasoning_content: "earlier thought" },
       { role: "user", content: "next" },
     ];
-    const events: KimiEvent[] = [];
+    const events: ModelEvent[] = [];
     for await (const e of runKimi({ ...auth, model: "MiniMax-M3", messages: history, reasoningEffort: "high" })) events.push(e);
     assert.strictEqual(last!.url, "https://api.minimax.io/v1/chat/completions");
     assert.strictEqual(last!.body.reasoning_split, true);

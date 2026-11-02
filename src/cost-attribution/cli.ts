@@ -1,9 +1,9 @@
 /**
- * CLI handler for `kimiflare cost`.
+ * CLI handler for `autopilot cost`.
  */
 
 import { readFile } from "node:fs/promises";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import type { SessionUsage, UsageLog } from "../usage-tracker.js";
 import { buildReport } from "./report.js";
 import { renderTerminal, renderJson } from "./renderer.js";
@@ -22,7 +22,7 @@ interface CostCommandOptions {
   json?: boolean;
   reclassify?: boolean;
   localOnly?: boolean;
-  config: KimiConfig;
+  config: AutopilotConfig;
 }
 
 function usagePath(): string {

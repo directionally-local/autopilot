@@ -10,7 +10,7 @@ import {
   saveProjectLspConfig,
   resolveLspConfig,
 } from "./lsp-config.js";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 
 // saveProjectLspConfig records trust: keep the user's real trust store out
 // of it. Loading is covered with trust on; the gate itself is tested in
@@ -138,7 +138,7 @@ describe("saveProjectLspConfig", () => {
 });
 
 describe("resolveLspConfig", () => {
-  const globalCfg: KimiConfig = {
+  const globalCfg: AutopilotConfig = {
     accountId: "x",
     apiToken: "x",
     model: "x",

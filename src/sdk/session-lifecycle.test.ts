@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAgentSession } from "./session.js";
-import type { KimiFlareSession } from "./types.js";
+import type { AutopilotSession } from "./types.js";
 import type { ChatMessage } from "../agent/messages.js";
 
 const ENV_KEYS = ["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "KIMI_MODEL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "KIMIFLARE_BASE_URL"] as const;
@@ -42,7 +42,7 @@ describe("SDK session turn lifecycle", () => {
   const originalFetch = globalThis.fetch;
   let home = "";
   let cwd = "";
-  let session: KimiFlareSession | null = null;
+  let session: AutopilotSession | null = null;
   let requests: Array<{ messages: ChatMessage[] }> = [];
 
   before(async () => {
@@ -72,7 +72,7 @@ describe("SDK session turn lifecycle", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  async function start(script: Script): Promise<KimiFlareSession> {
+  async function start(script: Script): Promise<AutopilotSession> {
     // This suite counts chat requests; Jev (completion check, subagent policy) is covered elsewhere.
     const created = await createAgentSession({ cwd, config: { completionCheck: false, subagentPolicy: "off" } as never });
     session = created.session;

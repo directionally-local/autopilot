@@ -12,7 +12,7 @@ import {
   switchedMessage,
 } from "./connect.js";
 import { PROVIDER_IDS } from "./presets.js";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 
 const env = {} as NodeJS.ProcessEnv;
 
@@ -66,7 +66,7 @@ describe("planConnect", () => {
 
   it("existing credentials: from the environment or the config file", () => {
     assert.deepStrictEqual(planConnect("openai", null, { OPENAI_API_KEY: "sk-env" } as NodeJS.ProcessEnv), { kind: "ready", key: "sk-env", source: "env" });
-    assert.deepStrictEqual(planConnect("gemini", { providers: { gemini: { apiKey: "g-1" } } } as Partial<KimiConfig>, env), { kind: "ready", key: "g-1", source: "config" });
+    assert.deepStrictEqual(planConnect("gemini", { providers: { gemini: { apiKey: "g-1" } } } as Partial<AutopilotConfig>, env), { kind: "ready", key: "g-1", source: "config" });
   });
 });
 
@@ -85,7 +85,7 @@ describe("helpers", () => {
   });
 
   it("says what happened after a switch, including an environment override", () => {
-    const cfg = { provider: "anthropic", model: "claude-x" } as unknown as KimiConfig;
+    const cfg = { provider: "anthropic", model: "claude-x" } as unknown as AutopilotConfig;
     assert.match(switchedMessage(cfg, "anthropic", env), /^provider: Anthropic · model claude-x\. Conversation history is kept/);
     assert.match(switchedMessage(cfg, "anthropic", { AUTOPILOT_PROVIDER: "openai" } as NodeJS.ProcessEnv), /AUTOPILOT_PROVIDER in the environment keeps OpenAI active/);
   });

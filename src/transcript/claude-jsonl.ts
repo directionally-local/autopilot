@@ -33,7 +33,7 @@
  * blob store cuts them (`truncateUtf8` + `[truncated: N bytes total]`), and
  * the file stops growing (one warning) at the trace's per-session cap.
  * Writing never throws: the first disk error is logged once and that
- * session's transcript stops. `KIMIFLARE_TRANSCRIPT=0` turns it off.
+ * session's transcript stops. `AUTOPILOT_TRANSCRIPT=0` turns it off.
  */
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
@@ -64,7 +64,7 @@ export const TRANSCRIPT_MAX_BLOCK_BYTES = 256 * 1024;
 /** Per-session size cap: the same as the session trace's. */
 export const TRANSCRIPT_MAX_SESSION_BYTES = RETENTION.traceMaxSessionBytes;
 
-/** False when `KIMIFLARE_TRANSCRIPT` is `0`, `false` or `off`. On by default. */
+/** False when `AUTOPILOT_TRANSCRIPT` is `0`, `false` or `off`. On by default. */
 export function transcriptEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = readEnv("TRANSCRIPT", env)?.trim().toLowerCase();
   return !(v === "0" || v === "false" || v === "off");

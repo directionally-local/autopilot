@@ -73,7 +73,7 @@ export interface HookConfig {
    *  matches everything. Ignored for events without a matcher field. */
   matcher?: string;
   /** The shell command to run. Receives the event payload as JSON on
-   *  stdin and as `KIMIFLARE_HOOK_*` environment variables. */
+   *  stdin and as `AUTOPILOT_HOOK_*` environment variables. */
   command: string;
   /** Per-hook timeout in milliseconds. Default 30 000. Hung hooks are
    *  killed and logged as a warning; the action proceeds (fail-open),
@@ -100,14 +100,14 @@ export interface HookConfig {
  *  counterparts). Only the `hooks` key is
  *  meaningful here; future settings (M6.2 pattern allowlists, etc.)
  *  will add sibling keys. */
-export interface KimiflareSettings {
+export interface HookSettings {
   hooks?: Partial<Record<HookEvent, HookConfig[]>>;
 }
 
 // ── Per-event payload shapes ─────────────────────────────────────────────
-// Sent to the hook on stdin as JSON, also exposed as KIMIFLARE_HOOK_*
+// Sent to the hook on stdin as JSON, also exposed as AUTOPILOT_HOOK_*
 // env vars (a few fields per event, for shell-one-liner ergonomics; the
-// full KIMIFLARE_HOOK_PAYLOAD copy only for payloads up to 32 KiB).
+// full AUTOPILOT_HOOK_PAYLOAD copy only for payloads up to 32 KiB).
 
 export interface BaseHookPayload {
   event: HookEvent;
@@ -120,7 +120,7 @@ export interface BaseHookPayload {
  *    - Code-mode sub-calls don't always have it.
  *    - SDK / CLI consumers may not run intent classification.
  *  When absent, the hook command sees no `tier` field in the JSON
- *  payload and no `KIMIFLARE_HOOK_TIER` env var. */
+ *  payload and no `AUTOPILOT_HOOK_TIER` env var. */
 export type IntentTier = "light" | "medium" | "heavy";
 
 export interface PreToolUsePayload extends BaseHookPayload {

@@ -10,7 +10,7 @@ import { runKimi } from "../agent/client.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { summarizeMessagesViaLlm } from "../agent/llm-summarize.js";
 import { fetchEmbeddings } from "../memory/embeddings.js";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 
 const ENV = ["KIMIFLARE_BASE_URL", "KIMIFLARE_API_KEY", "AUTOPILOT_PROVIDER", "OPENROUTER_API_KEY", "KIMIFLARE_OPENROUTER_KEY", "DEEPSEEK_API_KEY"];
 
@@ -54,7 +54,7 @@ describe("a non-OpenRouter provider never calls openrouter.ai", () => {
     providers: { deepseek: { apiKey: "sk-ds" } },
     openrouterApiKey: "sk-or-still-configured",
     model: "deepseek-v4-pro",
-  } as KimiConfig;
+  } as AutopilotConfig;
 
   it("routes chat, compaction and embeddings to the active provider", async () => {
     const auth = llmAuthFromConfig(cfg);

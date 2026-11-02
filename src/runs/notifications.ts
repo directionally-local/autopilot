@@ -159,7 +159,7 @@ export function notificationEmail(
     n.kind === "needs_input"
       ? "Inspect it over SSH, then resume or cancel:"
       : "Inspect it over SSH:",
-    `  curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" http://127.0.0.1:4096/runs/${run.id}`,
+    `  curl -u "autopilot:$AUTOPILOT_SERVER_PASSWORD" http://127.0.0.1:4096/runs/${run.id}`,
     ...(n.kind === "needs_input" ? [`  curl -u … -X POST http://127.0.0.1:4096/runs/${run.id}/resume -d '{…}'`] : []),
     "",
     `— Autopilot${opts.host ? ` on ${opts.host}` : ""}`,

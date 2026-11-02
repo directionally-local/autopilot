@@ -7,7 +7,7 @@
  * this, so they offer the same steps.
  */
 
-import { loadConfig, readPersistedConfig, type KimiConfig } from "../config.js";
+import { loadConfig, readPersistedConfig, type AutopilotConfig } from "../config.js";
 import { checkOpenRouterKey, type OpenRouterKeyInfo } from "../models/openrouter.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
@@ -84,18 +84,18 @@ export function credentialLabel(row: ProviderRow): string {
  * for a Cloudflare-era kimiflare config.
  */
 export function providerRows(
-  cfg: Partial<KimiConfig> | null,
+  cfg: Partial<AutopilotConfig> | null,
   opts: { upgrading?: boolean; env?: NodeJS.ProcessEnv; markActive?: boolean } = {},
 ): ProviderRow[] {
   const env = opts.env ?? process.env;
   // First run has no "current" provider, only the default.
-  const active = cfg && opts.markActive !== false ? resolveActiveProvider(cfg as KimiConfig, env).id : null;
+  const active = cfg && opts.markActive !== false ? resolveActiveProvider(cfg as AutopilotConfig, env).id : null;
   const envProviders = detectEnvProviders(env);
   const rows = PROVIDER_CHOICES.map(({ id, hint }): ProviderRow => {
     const preset = getPreset(id);
     const credentials: CredentialSource = envProviders.includes(id)
       ? "env"
-      : resolveProviderKey(id, cfg as KimiConfig | null, env)
+      : resolveProviderKey(id, cfg as AutopilotConfig | null, env)
         ? "config"
         : !preset.keyRequired && id !== "custom" && id !== "azure" && id !== "vertex"
           ? "none-needed"
@@ -142,14 +142,14 @@ export type ConnectPlan =
   /** Nothing to type: use these credentials (or none, for local runtimes). */
   | { kind: "ready"; key?: string; source: "env" | "config" | "none" };
 
-export function planConnect(id: ProviderId, cfg: Partial<KimiConfig> | null, env: NodeJS.ProcessEnv = process.env): ConnectPlan {
+export function planConnect(id: ProviderId, cfg: Partial<AutopilotConfig> | null, env: NodeJS.ProcessEnv = process.env): ConnectPlan {
   if (id === "openrouter") return { kind: "openrouter" };
   if (id === "copilot") return { kind: "copilot" };
   if (id === "chatgpt") return { kind: "chatgpt" };
   if (id === "custom") return { kind: "baseUrl", purpose: "custom" };
-  if (id === "azure" && !resolveActiveProvider({ ...(cfg ?? {}), provider: "azure" } as KimiConfig, env).baseUrl) return { kind: "baseUrl", purpose: "azure" };
-  if (id === "vertex" && !resolveActiveProvider({ ...(cfg ?? {}), provider: "vertex" } as KimiConfig, env).baseUrl) return { kind: "project" };
-  const key = resolveProviderKey(id, cfg as KimiConfig | null, env);
+  if (id === "azure" && !resolveActiveProvider({ ...(cfg ?? {}), provider: "azure" } as AutopilotConfig, env).baseUrl) return { kind: "baseUrl", purpose: "azure" };
+  if (id === "vertex" && !resolveActiveProvider({ ...(cfg ?? {}), provider: "vertex" } as AutopilotConfig, env).baseUrl) return { kind: "project" };
+  const key = resolveProviderKey(id, cfg as AutopilotConfig | null, env);
   if (key) return { kind: "ready", key, source: getPreset(id).apiKeyEnv.some((n) => env[n]?.trim()) ? "env" : "config" };
   if (!getPreset(id).keyRequired) return { kind: "ready", source: "none" };
   return { kind: "key" };
@@ -236,7 +236,7 @@ export async function verifyProvider(
 }
 
 /** Save the credentials we were given (never env or already-saved keys), switch, and reload the config. */
-export async function commitProvider(connection: Connection, modelId: string): Promise<KimiConfig> {
+export async function commitProvider(connection: Connection, modelId: string): Promise<AutopilotConfig> {
   const { id, key, source, baseUrl } = connection;
   const toSave = source === "key" || source === "signin" ? key : undefined;
   if (toSave || (id === "custom" && baseUrl)) {
@@ -343,7 +343,7 @@ export function maskKey(key: string): string {
 }
 
 /** The line shown after a switch (or why the environment overrides it). */
-export function switchedMessage(cfg: KimiConfig, to: ProviderId, env: NodeJS.ProcessEnv = process.env): string {
+export function switchedMessage(cfg: AutopilotConfig, to: ProviderId, env: NodeJS.ProcessEnv = process.env): string {
   const preset = getPreset(to);
   const effective = resolveActiveProvider(cfg, env);
   if (effective.id !== to) {

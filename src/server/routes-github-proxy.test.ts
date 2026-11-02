@@ -2,7 +2,7 @@ import { createServer } from "node:net";
 import { connect } from "node:net";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { setupRoutes } from "./routes.js";
 
 function freePort(): Promise<number> {
@@ -34,7 +34,7 @@ describe("server setup", () => {
     process.env.AUTOPILOT_ASTER_GITHUB_PROXY_URL = `http://host.docker.internal:${port}`;
     process.env.GITHUB_TOKEN = "github_pat_test_only_not_a_real_token";
     delete process.env.AUTOPILOT_HOTCELL_ENDPOINT;
-    const { cleanup } = setupRoutes({ model: "test/model" } as KimiConfig);
+    const { cleanup } = setupRoutes({ model: "test/model" } as AutopilotConfig);
     try {
       let up = false;
       for (let attempt = 0; attempt < 50 && !up; attempt++) {

@@ -53,7 +53,7 @@ export async function* readSSE(
       if (activeIdleTimeoutMs !== undefined && Date.now() - lastDataAt > activeIdleTimeoutMs) {
         logger.warn("sse:idle_timeout", { idleTimeoutMs: activeIdleTimeoutMs, gotFirstByte });
         throw new DOMException(
-          `kimiflare: stream idle for ${activeIdleTimeoutMs}ms — no data received from API`,
+          `autopilot: stream idle for ${activeIdleTimeoutMs}ms — no data received from API`,
           "TimeoutError",
         );
       }

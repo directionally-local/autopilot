@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { parseResponsesStream, toResponsesInput, toResponsesRequest } from "./responses.js";
-import type { KimiEvent } from "../client.js";
+import type { ModelEvent } from "../client.js";
 import type { ChatMessage, ReasoningDetail } from "../messages.js";
 
 function sseStream(events: unknown[]): ReadableStream<Uint8Array> {
@@ -14,8 +14,8 @@ function sseStream(events: unknown[]): ReadableStream<Uint8Array> {
   });
 }
 
-async function collect(events: unknown[]): Promise<KimiEvent[]> {
-  const out: KimiEvent[] = [];
+async function collect(events: unknown[]): Promise<ModelEvent[]> {
+  const out: ModelEvent[] = [];
   for await (const e of parseResponsesStream(sseStream(events), undefined, 5_000, 5_000)) out.push(e);
   return out;
 }
@@ -77,15 +77,15 @@ describe("parseResponsesStream", () => {
     const details = events.filter((e) => e.type === "reasoning_details").flatMap((e) => (e as { details: ReasoningDetail[] }).details);
     assert.deepStrictEqual(details, [{ type: "openai.reasoning", index: 0, id: "rs_1", data: "enc-xyz", summaryParts: [{ type: "summary_text", text: "Plan: read it." }] }]);
     assert.strictEqual(events.filter((e) => e.type === "text").map((e) => (e as { delta: string }).delta).join(""), "Reading.");
-    const call = events.find((e) => e.type === "tool_call_complete") as Extract<KimiEvent, { type: "tool_call_complete" }>;
+    const call = events.find((e) => e.type === "tool_call_complete") as Extract<ModelEvent, { type: "tool_call_complete" }>;
     assert.deepStrictEqual([call.id, call.name, call.arguments, call.finishReason], ["call_9", "read", '{"path":"a"}', "tool_calls"]);
-    const done = events.at(-1) as Extract<KimiEvent, { type: "done" }>;
+    const done = events.at(-1) as Extract<ModelEvent, { type: "done" }>;
     assert.deepStrictEqual(done.usage, { prompt_tokens: 500, completion_tokens: 30, total_tokens: 530, prompt_tokens_details: { cached_tokens: 400 } });
   });
 
   it("reports a truncated response as length and a failed one as an error", async () => {
     const truncated = await collect([{ type: "response.incomplete", response: { incomplete_details: { reason: "max_output_tokens" } } }]);
-    assert.strictEqual((truncated.at(-1) as Extract<KimiEvent, { type: "done" }>).finishReason, "length");
+    assert.strictEqual((truncated.at(-1) as Extract<ModelEvent, { type: "done" }>).finishReason, "length");
     await assert.rejects(collect([{ type: "response.failed", response: { error: { message: "server_error" } } }]), /server_error/);
   });
 });

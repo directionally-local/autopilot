@@ -13,7 +13,7 @@ import { mapModelsDevProvider } from "../models/provider-catalog.js";
 import { MODELS_DEV_SNAPSHOT } from "../models/models-dev-snapshot.js";
 import { PROVIDER_PRESETS, type ProviderId } from "../providers/presets.js";
 import type { ChatMessage } from "./messages.js";
-import { KimiApiError } from "../util/errors.js";
+import { ApiError } from "../util/errors.js";
 
 const ENV = ["KIMIFLARE_BASE_URL", "KIMIFLARE_API_KEY", "AUTOPILOT_PROVIDER", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY", "ZHIPU_API_KEY", "OLLAMA_API_KEY"];
 
@@ -114,7 +114,7 @@ describe("request body per provider", () => {
   it("names the provider and its key in auth errors", async () => {
     respond = () => new Response(JSON.stringify({ error: { message: "Authentication Fails" } }), { status: 401, headers: { "content-type": "application/json" } });
     await assert.rejects(send("deepseek", "deepseek-v4-pro"), (e: unknown) => {
-      assert.ok(e instanceof KimiApiError);
+      assert.ok(e instanceof ApiError);
       assert.match(e.message, /DeepSeek rejected the request \(HTTP 401\)/);
       assert.match(e.message, /DEEPSEEK_API_KEY/);
       assert.doesNotMatch(e.message, /OpenRouter/);

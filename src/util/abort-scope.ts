@@ -1,5 +1,5 @@
 /**
- * Hierarchical abort scopes for KimiFlare turn lifecycle.
+ * Hierarchical abort scopes for Autopilot turn lifecycle.
  *
  * Each turn gets a child scope from the session scope.
  * Each operation (bash, readSSE, etc.) gets a child scope from the turn scope.

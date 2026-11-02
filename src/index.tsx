@@ -1,7 +1,7 @@
 import "./util/migrate-on-start.js";
 import { Command, Option } from "commander";
 import { logger } from "./util/logger.js";
-import { loadConfig, type KimiConfig } from "./config.js";
+import { loadConfig, type AutopilotConfig } from "./config.js";
 import { PROVIDER_PRESETS } from "./providers/presets.js";
 import { resolveLspConfig } from "./util/lsp-config.js";
 import { checkForUpdate } from "./util/update-check.js";
@@ -25,7 +25,7 @@ program
   .option("-m, --model <id>", "model id for the active provider (defaults to its configured model)")
   // KimiFlare Cloud was retired with the move to OpenRouter. Keep the flag
   // parseable so old scripts don't break; it's ignored with a notice.
-  .addOption(new Option("--cloud", "(retired) KimiFlare Cloud").hideHelp())
+  .addOption(new Option("--cloud", "(retired) legacy cloud mode").hideHelp())
   .option("--dangerously-allow-all", "auto-approve every permission prompt (print mode only)")
   .addOption(new Option("--worker-profile <profile>", "internal worker permission profile").hideHelp())
   .option("--reasoning", "include reasoning in stdout (print mode only)")
@@ -477,7 +477,7 @@ asterCommand
 
 const logsCmd = program
   .command("logs")
-  .description("Inspect KimiFlare's structured logs (jsonl, one file per day, 7-day retention)");
+  .description("Inspect autopilot's structured logs (jsonl, one file per day, 7-day retention)");
 
 logsCmd
   .command("path")
@@ -964,7 +964,7 @@ const opts = program.opts<{
   detach?: boolean;
 }>();
 
-/** Start the OTLP exporter when KIMIFLARE_OTEL_ENDPOINT is set, flushed at exit. */
+/** Start the OTLP exporter when AUTOPILOT_OTEL_ENDPOINT is set, flushed at exit. */
 async function initOtel(): Promise<void> {
   const { initOtelSink, installOtelExitHook, shutdownOtelSink } = await import("./util/otel-sink.js");
   const { onShutdown, SHUTDOWN_PHASE } = await import("./util/exit.js");
@@ -1006,7 +1006,7 @@ async function runRemoteTask(): Promise<void> {
 }
 
 async function main() {
-  // Initialize the OTLP/HTTP log exporter if `KIMIFLARE_OTEL_ENDPOINT`
+  // Initialize the OTLP/HTTP log exporter if `AUTOPILOT_OTEL_ENDPOINT`
   // is set. No-op otherwise — the env-var gate keeps this zero-cost for
   // users who don't care. Done before loadConfig so any early errors
   // ship too.
@@ -1049,7 +1049,7 @@ async function main() {
   await ensureModelCatalog(cfg);
 
   if (opts.cloud) {
-    console.error("autopilot: --cloud ignored — KimiFlare Cloud was retired; autopilot runs on your own provider key.");
+    console.error("autopilot: --cloud ignored — the cloud service was retired; autopilot runs on your own provider key.");
   }
 
   if (opts.mode === "rpc") {
@@ -1156,7 +1156,7 @@ async function main() {
   // `autopilot resume [id]`, `-c` or `-S <id>`: which saved session to open (#906).
   const startup = await interactiveStartup(cfg);
   // Null on first run until Camouflage's onboarding saves a provider and model.
-  let sessionCfg: KimiConfig | null = cfg ? { ...cfg, model: requireModel(opts.model || cfg.model) } : null;
+  let sessionCfg: AutopilotConfig | null = cfg ? { ...cfg, model: requireModel(opts.model || cfg.model) } : null;
   const { runCamouflageView } = await import("./camouflage-view.js");
   const { CamouflageUnavailable, runWithCrashRestarts, crashGiveUpMessage } = await import("./camouflage-launch.js");
   const { renderAppWithBridge } = await import("./app.js");
@@ -1218,7 +1218,7 @@ async function main() {
 
 /** `autopilot resume [id]`, or `-c` / `-S <id>` without `-p`: which
  *  conversation the interactive UI reopens on start. Exits on a bad id. */
-async function interactiveStartup(cfg: KimiConfig | null): Promise<import("./app.js").RenderAppOpts> {
+async function interactiveStartup(cfg: AutopilotConfig | null): Promise<import("./app.js").RenderAppOpts> {
   const request: InteractiveResumeRequest | null =
     resumeCommand ?? (opts.session ? { sessionId: opts.session } : opts.continue ? { latest: true } : null);
   if (!request) return {};
@@ -1245,16 +1245,16 @@ async function noCredentialsMessage(): Promise<string> {
   const { readFile } = await import("node:fs/promises");
   const { configPath } = await import("./config.js");
   const { resolveActiveProvider } = await import("./providers/resolve.js");
-  let persisted: Partial<KimiConfig> = {};
+  let persisted: Partial<AutopilotConfig> = {};
   try {
-    persisted = JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig>;
+    persisted = JSON.parse(await readFile(configPath(), "utf8")) as Partial<AutopilotConfig>;
   } catch {
     /* no file */
   }
   const { id, preset } = resolveActiveProvider(persisted);
   const how =
     id === "custom"
-      ? "set KIMIFLARE_BASE_URL (and KIMIFLARE_API_KEY if your endpoint needs one)"
+      ? "set AUTOPILOT_BASE_URL (and AUTOPILOT_API_KEY if your endpoint needs one)"
       : `set ${preset.apiKeyEnv[0]}${preset.keysUrl ? ` (create a key at ${preset.keysUrl})` : ""}, or run  autopilot auth ${id}`;
   return [
     `no ${preset.name} credentials configured.`,
@@ -1265,7 +1265,7 @@ async function noCredentialsMessage(): Promise<string> {
 }
 
 /** Load the active provider's model catalog (see src/models/catalog.ts). */
-async function ensureModelCatalog(cfg: KimiConfig | null): Promise<void> {
+async function ensureModelCatalog(cfg: AutopilotConfig | null): Promise<void> {
   const { llmAuthFromConfig } = await import("./agent/llm-auth.js");
   const { ensureCatalogForProvider } = await import("./models/catalog.js");
   await ensureCatalogForProvider(llmAuthFromConfig(cfg));

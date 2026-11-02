@@ -321,7 +321,7 @@ function buildChangelogSvg(opts: {
 
   <!-- Footer -->
   <g class="font" transform="translate(0, ${height - padBottom + 20})">
-    <text x="${padX}" y="0" fill="#d1d5db" font-size="11">Generated with KimiFlare · ${today}</text>
+    <text x="${padX}" y="0" fill="#d1d5db" font-size="11">Generated with Autopilot · ${today}</text>
   </g>
 </svg>`;
 }

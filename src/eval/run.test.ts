@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runEval, runShell, summarizeTrace } from "./run.js";
 import { createMemoryRecorder, createNoopRecorder } from "../trace/recorder.js";
-import type { KimiFlareSession } from "../sdk/types.js";
+import type { AutopilotSession } from "../sdk/types.js";
 import type { ChatMessage } from "../agent/messages.js";
 
 const ENV_KEYS = ["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "KIMI_MODEL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "KIMIFLARE_BASE_URL", "KIMIFLARE_TRACE", "KIMIFLARE_TRACE_DIR"] as const;
@@ -163,7 +163,7 @@ describe("runEval", () => {
         getStatus: () => ({ isStreaming: false, isCompacting: false, pendingSteer: [], pendingFollowUp: [], currentMode: "auto" as const }),
         save: async () => {},
         dispose: () => {},
-      } as unknown as KimiFlareSession;
+      } as unknown as AutopilotSession;
       return { session };
     };
     const summary = await runEval({ tasksDir, configFile: join(home, "config.json"), model: "m", out, filter: "ok", createSession, log: () => {} });

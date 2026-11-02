@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { setupRoutes } from "./routes.js";
 import { RunStore } from "../runs/store.js";
 import { registerOpenRouterModels } from "../models/registry.js";
@@ -21,7 +21,7 @@ describe("unattended run HTTP routes", () => {
     process.env.XDG_DATA_HOME = join(dir, "data");
     delete process.env.KIMIFLARE_SERVER_PASSWORD;
 
-    const routes = setupRoutes({} as KimiConfig);
+    const routes = setupRoutes({} as AutopilotConfig);
     const server = createServer((req, res) => { void routes.handleRequest(req, res); });
     try {
       const address = await listen(server);
@@ -193,7 +193,7 @@ describe("unattended run whose active turn outgrows the context", () => {
     registerOpenRouterModels([
       { id: "test/tiny-window", contextWindow: 4_000, maxOutputTokens: 1_000, pricing: { inputPerMtok: 1, outputPerMtok: 1 }, supports: { tools: true, reasoning: false, streaming: true } },
     ]);
-    const routes = setupRoutes({ openrouterApiKey: "sk-or-test", model: "test/tiny-window", subagentPolicy: "off", memoryEnabled: false } as KimiConfig);
+    const routes = setupRoutes({ openrouterApiKey: "sk-or-test", model: "test/tiny-window", subagentPolicy: "off", memoryEnabled: false } as AutopilotConfig);
     const server = createServer((req, res) => { void routes.handleRequest(req, res); });
     try {
       const { port } = await listen(server);
@@ -239,7 +239,7 @@ describe("run admission: concurrency limit and operator kill switch", () => {
     process.env.XDG_DATA_HOME = join(dir, "data");
     process.env.KIMIFLARE_SERVER_PASSWORD = "test-only-password";
     process.env.AUTOPILOT_MAX_CONCURRENT_RUNS = "2";
-    const routes = setupRoutes({} as KimiConfig);
+    const routes = setupRoutes({} as AutopilotConfig);
     const server = createServer((req, res) => { void routes.handleRequest(req, res); });
     try {
       const { port } = await listen(server);
@@ -334,7 +334,7 @@ describe("UserPromptSubmit hooks on server prompts", () => {
       join(dir, "config", "autopilot", "settings.json"),
       JSON.stringify({ hooks: { UserPromptSubmit: [{ id: "no-deploy", command: "echo 'no deploys from here' >&2; exit 2" }] } }),
     );
-    const routes = setupRoutes({ model: "moonshotai/kimi-k2.6" } as KimiConfig);
+    const routes = setupRoutes({ model: "moonshotai/kimi-k2.6" } as AutopilotConfig);
     const server = createServer((req, res) => { void routes.handleRequest(req, res); });
     try {
       const { port } = await listen(server);

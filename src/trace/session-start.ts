@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import type { ToolDef } from "../agent/messages.js";
 import { getAppVersion } from "../util/version.js";
 import { sha256Hex } from "./blobs.js";
@@ -29,7 +29,7 @@ export interface CollectSessionStartOptions {
   model: string;
   mode: TraceSessionMode;
   /** The live config; credential keys are redacted before recording. */
-  config: KimiConfig | Record<string, unknown> | null | undefined;
+  config: AutopilotConfig | Record<string, unknown> | null | undefined;
   /** Tool definitions exactly as sent to the model. */
   tools: ToolDef[];
   systemPrompt: string;

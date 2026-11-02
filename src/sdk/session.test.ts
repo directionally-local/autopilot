@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
 import { createAgentSession } from "./session.js";
-import type { KimiFlareSession, SessionEvent } from "./types.js";
+import type { AutopilotSession, SessionEvent } from "./types.js";
 
 // createAgentSession needs an OpenRouter key; config + catalog are isolated
 // (temp XDG dir, unreachable OPENROUTER_BASE_URL so the catalog load fails
@@ -17,7 +17,7 @@ const ENV_KEYS = ["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "KIMI_MODEL", "XD
 describe("SDK Session", () => {
   const saved: Record<string, string | undefined> = {};
   let configHome = "";
-  let session: KimiFlareSession | null = null;
+  let session: AutopilotSession | null = null;
   const testCwd = join(process.cwd(), ".test-sdk-session");
 
   before(async () => {

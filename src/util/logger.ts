@@ -1,21 +1,21 @@
 /**
- * Structured logger for KimiFlare turn lifecycle events.
+ * Structured logger for Autopilot turn lifecycle events.
  *
  * Three sinks, all independent:
- *   1. **stderr** (gated by `KIMIFLARE_LOG_LEVEL`, default `off`) — for
+ *   1. **stderr** (gated by `AUTOPILOT_LOG_LEVEL`, default `off`) — for
  *      interactive debugging. Tail with `2>&1 | jq` from a dev shell.
  *   2. **file** (`~/.config/autopilot/logs/<date>.jsonl`, default ON;
- *      disable with `KIMIFLARE_LOG_SINK=off`) — for post-hoc analysis,
+ *      disable with `AUTOPILOT_LOG_SINK=off`) — for post-hoc analysis,
  *      shipped in M5.1. Always-on so the data exists even when the TUI
  *      is silent.
- *   3. **OTLP/HTTP** (gated by `KIMIFLARE_OTEL_ENDPOINT`, default
+ *   3. **OTLP/HTTP** (gated by `AUTOPILOT_OTEL_ENDPOINT`, default
  *      unset) — ship to any OpenTelemetry collector / SaaS backend
  *      (Datadog, Honeycomb, Grafana, …), shipped in M5.2. Batched,
  *      best-effort; never blocks the agent loop.
  *
  * Tail in a second terminal:
- *   KIMIFLARE_LOG_LEVEL=info npm run dev          # stderr live tail
- *   tail -f $(kimiflare logs path) | jq           # file tail
+ *   AUTOPILOT_LOG_LEVEL=info npm run dev          # stderr live tail
+ *   tail -f 20 20 12 61 79 80 81 701 33 98 100 204 250 395 398 399 400 333autopilot logs path) | jq           # file tail
  */
 
 import { writeLogLine, getLogSessionId, getLogTurnId } from "./log-sink.js";
@@ -45,7 +45,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 };
 
 /** In-memory circular buffer of recent log entries for error reporting.
- *  Captures all entries regardless of KIMIFLARE_LOG_LEVEL so that
+ *  Captures all entries regardless of AUTOPILOT_LOG_LEVEL so that
  *  diagnostic context is available even when stderr logging is off. */
 const RECENT_LOGS_MAX = 100;
 const recentLogs: LogEntry[] = [];
@@ -99,15 +99,15 @@ export function log(
     recentLogs.shift();
   }
 
-  // Stderr sink (gated by KIMIFLARE_LOG_LEVEL).
+  // Stderr sink (gated by AUTOPILOT_LOG_LEVEL).
   if (LEVEL_ORDER[level] >= LEVEL_ORDER[globalMinLevel]) {
     console.error(JSON.stringify(entry));
   }
 
-  // File sink (always-on unless disabled via KIMIFLARE_LOG_SINK=off).
+  // File sink (always-on unless disabled via AUTOPILOT_LOG_SINK=off).
   writeLogLine(entry);
 
-  // OTLP/HTTP sink (no-op unless KIMIFLARE_OTEL_ENDPOINT is set and
+  // OTLP/HTTP sink (no-op unless AUTOPILOT_OTEL_ENDPOINT is set and
   // initOtelSink() has been called).
   enqueueOtelLog(entry);
 }
@@ -121,7 +121,7 @@ export const logger = {
 };
 
 // #911: note each legacy KIMIFLARE_* variable once per process (file sink and
-// OTLP only unless KIMIFLARE_LOG_LEVEL/AUTOPILOT_LOG_LEVEL is info or lower —
+// OTLP only unless AUTOPILOT_LOG_LEVEL is info or lower —
 // never the TUI). Registered last so early reads (LOG_LEVEL above) replay here.
 onLegacyEnvVar((legacy, current) => {
   logger.info("env.legacy_name", { name: legacy, use: current });

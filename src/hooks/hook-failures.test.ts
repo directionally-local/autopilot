@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { classifyHookFailure, parseHookDecision, runHooks, setSpawnHookImplForTesting } from "./runner.js";
 import { HooksManager, formatHookFailureNotice, hookFailureEvent, type HookFailureNotice } from "./manager.js";
 import { projectSettingsPath } from "./settings.js";
-import type { HookConfig, HookPayload, KimiflareSettings } from "./types.js";
+import type { HookConfig, HookPayload, HookSettings } from "./types.js";
 import { ToolExecutor, ALL_TOOLS, permissionFromHook, type PermissionAsker, type PermissionRequest } from "../tools/executor.js";
 import { flushOtelSink, initOtelSink, resetOtelSinkForTesting, setFetchForTesting } from "../util/otel-sink.js";
 
@@ -52,7 +52,7 @@ afterEach(() => setSpawnHookImplForTesting(null));
 
 let projectCounter = 0;
 /** A fresh project dir whose settings file holds `hooks`. */
-function project(hooks: KimiflareSettings["hooks"]): string {
+function project(hooks: HookSettings["hooks"]): string {
   const cwd = join(root, `proj-${projectCounter++}`);
   mkdirSync(cwd, { recursive: true });
   const path = projectSettingsPath(cwd);

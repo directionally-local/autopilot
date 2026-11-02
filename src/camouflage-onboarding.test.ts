@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import type { KimiConfig } from "./config.js";
+import type { AutopilotConfig } from "./config.js";
 import { firstRunIntro, onboardingCancelledMessage, runFirstRun, UPGRADE_NOTICE, type FirstRunDeps } from "./camouflage-onboarding.js";
 import { sessionHeaderDetail } from "./camouflage-view.js";
 
@@ -22,7 +22,7 @@ function deps(over: Partial<FirstRunDeps> & { calls?: string[] } = {}): FirstRun
     },
     loadConfig: async () => {
       calls.push("load");
-      return { model: "moonshotai/kimi-k2", provider: "openrouter" } as KimiConfig;
+      return { model: "moonshotai/kimi-k2", provider: "openrouter" } as AutopilotConfig;
     },
     ...over,
   };
@@ -82,7 +82,7 @@ describe("runFirstRun", () => {
   });
 
   it("fails rather than starting a session without a model", async () => {
-    const r = await runFirstRun(deps({ loadConfig: async () => ({ model: "" }) as KimiConfig }));
+    const r = await runFirstRun(deps({ loadConfig: async () => ({ model: "" }) as AutopilotConfig }));
     assert.strictEqual(r.kind, "failed");
     assert.match(r.kind === "failed" ? r.message : "", /No model selected/);
   });

@@ -17,7 +17,7 @@
 import { readState, writeState, type StateFile } from "../util/state.js";
 import { RECOMMENDED_HOOKS } from "./recommended.js";
 import { globalSettingsPath, legacyOnlyHookPaths, loadHooksSettings, projectSettingsPath } from "./settings.js";
-import type { HookConfig, KimiflareSettings } from "./types.js";
+import type { HookConfig, HookSettings } from "./types.js";
 
 export const HOOKS_EXIT_CODE_DOCS_URL = "https://github.com/directionally-local/autopilot#blocking-and-exit-codes";
 
@@ -33,7 +33,7 @@ function isRecommended(hook: HookConfig): boolean {
 
 /** The exit-code notice text for these settings, or null when no enabled
  *  custom hook is registered for a blocking event. */
-export function exitCodeNoticeText(settings: KimiflareSettings): string | null {
+export function exitCodeNoticeText(settings: HookSettings): string | null {
   const custom = BLOCKING_EVENTS.flatMap((ev) => settings.hooks?.[ev] ?? []).filter(
     (h) => h.enabled !== false && !isRecommended(h),
   );

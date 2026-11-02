@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
@@ -100,14 +100,14 @@ export class AsterApi {
   private readonly waiters = new Map<string, AsterWaiter>();
   private readonly connectedEventStreams = new Map<string, number>();
   private readonly runtime: AsterApiRuntime;
-  private readonly config: KimiConfig;
+  private readonly config: AutopilotConfig;
 
   private readonly github: AsterGitHub;
 
   private memory: AsterMemory | undefined;
 
   constructor(
-    config: KimiConfig,
+    config: AutopilotConfig,
     runtime: AsterApiRuntime,
     github: AsterGitHub = new AsterGitHub(),
     memory?: AsterMemory,

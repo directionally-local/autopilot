@@ -1,12 +1,12 @@
 /**
  * Custom OpenAI-compatible endpoint routing.
  *
- * When `KIMIFLARE_BASE_URL` is set (or `baseUrl` in config), every model call
+ * When `AUTOPILOT_BASE_URL` is set (or `baseUrl` in config), every model call
  * — chat and embeddings — is sent to `<baseUrl>/chat/completions` (or
- * `/embeddings`) with `Authorization: Bearer <KIMIFLARE_API_KEY>` instead of
+ * `/embeddings`) with `Authorization: Bearer <AUTOPILOT_API_KEY>` instead of
  * OpenRouter, and no OpenRouter key is needed.
  *
- * This is how a host application (e.g. an agents platform running kimiflare
+ * This is how a host application (e.g. an agents platform running autopilot
  * inside a container) points the CLI at its own gateway/broker instead of
  * handing the process a raw provider key. The broker terminates the bearer it
  * issued and forwards upstream with credentials that never enter this process.
@@ -27,7 +27,7 @@ export interface CustomEndpoint {
   providerId?: ProviderId;
 }
 
-/** Config fields a custom endpoint can be persisted under (see `KimiConfig`). */
+/** Config fields a custom endpoint can be persisted under (see `AutopilotConfig`). */
 export interface CustomEndpointConfigFields {
   baseUrl?: string;
   apiKey?: string;

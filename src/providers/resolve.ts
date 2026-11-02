@@ -6,7 +6,7 @@
  * Precedence:
  *   1. AUTOPILOT_PROVIDER env (an explicit override; with AUTOPILOT_BASE_URL also
  *      set, that URL replaces the preset's base URL, e.g. a gateway in front of it)
- *   2. KIMIFLARE_BASE_URL env (a host app embedding Autopilot owns routing)
+ *   2. AUTOPILOT_BASE_URL env (a host app embedding Autopilot owns routing)
  *   3. `provider` in config
  *   4. legacy inference for configs written before `provider` existed:
  *      `baseUrl` → custom, OpenRouter key → openrouter, Requesty key → requesty

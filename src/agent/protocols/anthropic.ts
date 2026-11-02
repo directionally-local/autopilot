@@ -2,8 +2,8 @@
  * Anthropic Messages API adapter (https://docs.anthropic.com/en/api/messages).
  *
  * The agent loop speaks OpenAI Chat Completions shapes internally
- * (ChatMessage, ToolDef, KimiEvent). This module converts a request into a
- * Messages request and the Messages SSE stream back into KimiEvents, so the
+ * (ChatMessage, ToolDef, ModelEvent). This module converts a request into a
+ * Messages request and the Messages SSE stream back into ModelEvents, so the
  * loop, tools and history stay provider-agnostic:
  *
  * - system messages → top-level `system` blocks
@@ -23,8 +23,8 @@
  */
 
 import { readSSE } from "../../util/sse.js";
-import { KimiApiError } from "../../util/errors.js";
-import { effortFor, type KimiEvent } from "../client.js";
+import { ApiError } from "../../util/errors.js";
+import { effortFor, type ModelEvent } from "../client.js";
 import type { ChatMessage, ContentPart, ReasoningDetail, ToolDef, Usage } from "../messages.js";
 
 export const ANTHROPIC_VERSION = "2023-06-01";
@@ -203,13 +203,13 @@ interface StreamBlock {
   data?: string;
 }
 
-/** Translate a Messages SSE stream into the loop's KimiEvents. */
+/** Translate a Messages SSE stream into the loop's ModelEvents. */
 export async function* parseAnthropicStream(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal | undefined,
   idleTimeoutMs: number,
   postFirstByteIdleTimeoutMs: number,
-): AsyncGenerator<KimiEvent, void, void> {
+): AsyncGenerator<ModelEvent, void, void> {
   const blocks = new Map<number, StreamBlock>();
   const toolOrder: number[] = [];
   let finishReason: string | null = null;
@@ -293,7 +293,7 @@ export async function* parseAnthropicStream(
       }
       case "error": {
         const err = ev.error ?? {};
-        throw new KimiApiError(`kimiflare: ${err.message ?? "Anthropic reported an error mid-response"}`, undefined, err.type === "overloaded_error" ? 529 : undefined);
+        throw new ApiError(`autopilot: ${err.message ?? "Anthropic reported an error mid-response"}`, undefined, err.type === "overloaded_error" ? 529 : undefined);
       }
       default:
         break; // message_stop, ping

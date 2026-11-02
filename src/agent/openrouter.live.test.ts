@@ -11,7 +11,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { runKimi, type KimiEvent } from "./client.js";
+import { runKimi, type ModelEvent } from "./client.js";
 import type { ChatMessage, ToolDef, Usage } from "./messages.js";
 import { ensureOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import { checkOpenRouterKey } from "../models/openrouter.js";
@@ -33,7 +33,7 @@ const tools: ToolDef[] = [
 ];
 
 async function collect(messages: ChatMessage[]) {
-  const events: KimiEvent[] = [];
+  const events: ModelEvent[] = [];
   for await (const ev of runKimi({
     openrouterApiKey: key,
     model,

@@ -297,7 +297,7 @@ export interface ToolResult {
 
 /** Cap on `result.content` bytes carried in the PostToolUse hook
  *  payload (G7 from the M6.1 audit). Large tool outputs are reduced
- *  to fit OS env-var limits (`KIMIFLARE_HOOK_PAYLOAD` ~128 KB on
+ *  to fit OS env-var limits (`AUTOPILOT_HOOK_PAYLOAD` ~128 KB on
  *  Linux, less on macOS) and to keep hooks fast. The full output is
  *  still available via the tool's artifact id if the user needs it. */
 const HOOK_RESULT_CONTENT_CAP_BYTES = 4 * 1024;
@@ -794,7 +794,7 @@ export class ToolExecutor {
    * failure / permission-denied all surface to PostToolUse hooks uniformly
    * (PostToolUse keeps firing for failures, for compatibility). The
    * `content` field is capped via `capContentForHook` to keep large tool
-   * outputs from blowing the OS env-var limits on `KIMIFLARE_HOOK_PAYLOAD`.
+   * outputs from blowing the OS env-var limits on `AUTOPILOT_HOOK_PAYLOAD`.
    */
   private firePostToolUse(
     call: ToolInvocation,

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { AsterGitHub, AsterGitHubError } from "./aster-github.js";
 import { AsterApi, type AsterTurnStart } from "./aster-api.js";
 import { AsterStore } from "./aster-store.js";
@@ -60,7 +60,7 @@ describe("Aster control-plane API", () => {
     const server = await startServer({
       port: 0,
       hostname: "127.0.0.1",
-      config: { openrouterApiKey: "test-provider-key", model: "test/model" } as KimiConfig,
+      config: { openrouterApiKey: "test-provider-key", model: "test/model" } as AutopilotConfig,
       asterRuntime: {
         provisionConversation: async (input) => {
           input.onCellCreated(`cell-${input.conversationId}`);
@@ -204,7 +204,7 @@ describe("Aster control-plane API", () => {
     });
     tokens.close();
 
-    const server = await startServer({ port: 0, hostname: "127.0.0.1", config: { openrouterApiKey: "test-key", model: "test/model" } as KimiConfig });
+    const server = await startServer({ port: 0, hostname: "127.0.0.1", config: { openrouterApiKey: "test-key", model: "test/model" } as AutopilotConfig });
     try {
       const address = server.address();
       assert.ok(address && typeof address !== "string");
@@ -1056,7 +1056,7 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
       return { merged: true, message: "Pull request merged", sha: "abc123" };
     },
   } as unknown as AsterGitHub;
-  const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as KimiConfig, {
+  const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as AutopilotConfig, {
     provisionConversation: async (input) => {
       provisionedProjects.push(input.project);
       provisionedProviders.push(input.provider.id);

@@ -44,7 +44,10 @@ export interface TraceConfig {
   root?: string;
 }
 
-export interface KimiConfig {
+/** @deprecated Renamed to {@link AutopilotConfig} in the kimiflare → autopilot rename (#911); kept so existing SDK imports keep compiling. */
+export type KimiConfig = AutopilotConfig;
+
+export interface AutopilotConfig {
   /**
    * The active LLM provider (env: AUTOPILOT_PROVIDER). Unset on configs
    * written before multi-provider support: the provider is then inferred
@@ -55,9 +58,9 @@ export interface KimiConfig {
   providers?: Partial<Record<ProviderId, ProviderSettings>>;
   /**
    * The user's own OpenRouter API key (`sk-or-…`; env: OPENROUTER_API_KEY or
-   * KIMIFLARE_OPENROUTER_KEY, which win over the file). Every model call —
+   * AUTOPILOT_OPENROUTER_KEY, which win over the file). Every model call —
    * chat, memory embeddings, plumbing side-calls — is billed to this key.
-   * Bring-your-own only: kimiflare never pays for or proxies model calls.
+   * Bring-your-own only: autopilot never pays for or proxies model calls.
    */
   openrouterApiKey?: string;
   /**
@@ -71,7 +74,7 @@ export interface KimiConfig {
   model: string;
   /**
    * Optional OpenRouter provider-routing preferences, merged into every
-   * request's `provider` object (kimiflare always sends
+   * request's `provider` object (autopilot always sends
    * `require_parameters: true`). E.g. `{ "ignore": ["SomeProvider"] }` or
    * `{ "quantizations": ["fp8", "bf16"] }`. Avoid `order`/`sort` unless you
    * need them: they disable OpenRouter's sticky routing, which is what keeps
@@ -79,14 +82,14 @@ export interface KimiConfig {
    */
   openrouterProvider?: OpenRouterProviderPrefs;
   /**
-   * Custom OpenAI-compatible endpoint base URL (env: KIMIFLARE_BASE_URL).
-   * For a host application that embeds kimiflare and owns its own broker:
+   * Custom OpenAI-compatible endpoint base URL (env: AUTOPILOT_BASE_URL).
+   * For a host application that embeds autopilot and owns its own broker:
    * when set, ALL model calls go to `<baseUrl>/chat/completions` instead of
    * OpenRouter and no OpenRouter key is needed. See src/agent/custom-endpoint.ts.
    */
   baseUrl?: string;
   /**
-   * Bearer sent as `Authorization` to `baseUrl` (env: KIMIFLARE_API_KEY).
+   * Bearer sent as `Authorization` to `baseUrl` (env: AUTOPILOT_API_KEY).
    * Only used when `baseUrl` is set; omitted from the request entirely when
    * unset (for unauthenticated local gateways).
    */
@@ -188,7 +191,7 @@ export interface KimiConfig {
   workerMaxParallel?: number;
   /** Timeout per worker in milliseconds (default: 600000 = 10 min). */
   workerTimeoutMs?: number;
-  /** Turn count at which KimiFlare suggests /fresh in auto/edit mode. 0 = disabled. Default: 30. */
+  /** Turn count at which Autopilot suggests /fresh in auto/edit mode. 0 = disabled. Default: 30. */
   autoFreshSuggestionTurns?: number;
   /** If true, automatically execute /fresh when the threshold is hit instead of just suggesting it. Default: false. */
   autoFreshEnabled?: boolean;
@@ -224,7 +227,7 @@ export interface KimiConfig {
    * Local session tracing (docs/plans/trace-and-dataset-dev-plan.md). Off by
    * default; writes `trace.jsonl` + blobs per session under `root`
    * (default `${XDG_DATA_HOME:-~/.local/share}/autopilot/traces`).
-   * Env: KIMIFLARE_TRACE=1|0, KIMIFLARE_TRACE_DIR=<path>.
+   * Env: AUTOPILOT_TRACE=1|0, AUTOPILOT_TRACE_DIR=<path>.
    */
   trace?: TraceConfig;
 }
@@ -242,7 +245,7 @@ export const REQUESTY_PLUMBING_MODEL = PROVIDER_PRESETS.requesty.plumbingModel!;
  * the configured plumbing model — which loadConfig() defaults from the active
  * provider — else the session's chat model. Never another provider's id.
  */
-export function plumbingModelOf(cfg: Pick<KimiConfig, "plumbingModel" | "model"> | null | undefined, sessionModel?: string): string {
+export function plumbingModelOf(cfg: Pick<AutopilotConfig, "plumbingModel" | "model"> | null | undefined, sessionModel?: string): string {
   return cfg?.plumbingModel || sessionModel || cfg?.model || "";
 }
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
@@ -292,7 +295,7 @@ function readNumberEnv(suffix: string): number | undefined {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-/** Env (KIMIFLARE_TRACE, KIMIFLARE_TRACE_DIR) wins over the file; default off. */
+/** Env (AUTOPILOT_TRACE, AUTOPILOT_TRACE_DIR) wins over the file; default off. */
 function resolveTraceConfig(persisted: Partial<TraceConfig> | undefined): TraceConfig | undefined {
   const envEnabled = readBooleanEnv("TRACE");
   const envRoot = readEnv("TRACE_DIR")?.trim() || undefined;
@@ -303,15 +306,15 @@ function resolveTraceConfig(persisted: Partial<TraceConfig> | undefined): TraceC
   return trace;
 }
 
-export async function loadConfig(): Promise<KimiConfig | null> {
+export async function loadConfig(): Promise<AutopilotConfig | null> {
   // Always read the file up front, even when env vars provide credentials:
   // settings-only fields (mcpServers, lspServers, …) live only in the file and
   // must survive an env-driven launch.
-  let persisted: Partial<KimiConfig> & LegacyConfigFields = {};
+  let persisted: Partial<AutopilotConfig> & LegacyConfigFields = {};
   let hasFile = false;
   try {
     const raw = await readFile(configPath(), "utf8");
-    persisted = JSON.parse(raw) as Partial<KimiConfig> & LegacyConfigFields;
+    persisted = JSON.parse(raw) as Partial<AutopilotConfig> & LegacyConfigFields;
     hasFile = true;
   } catch {
     /* no config file yet — env-only is still valid */
@@ -381,7 +384,7 @@ export async function loadConfig(): Promise<KimiConfig | null> {
   // local runtimes) they fall back to the chat model, never to another
   // provider's id.
   const plumbingDefault = preset.plumbingModel;
-  const cfg: KimiConfig = {
+  const cfg: AutopilotConfig = {
     provider: providerFields.provider,
     providers: persisted.providers,
     openrouterApiKey,
@@ -473,9 +476,9 @@ export async function loadConfig(): Promise<KimiConfig | null> {
 }
 
 /** The config file as stored (no env, no defaults), or null when there is none. */
-export async function readPersistedConfig(): Promise<Partial<KimiConfig> | null> {
+export async function readPersistedConfig(): Promise<Partial<AutopilotConfig> | null> {
   try {
-    return JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig>;
+    return JSON.parse(await readFile(configPath(), "utf8")) as Partial<AutopilotConfig>;
   } catch {
     return null;
   }
@@ -489,7 +492,7 @@ export async function readPersistedConfig(): Promise<Partial<KimiConfig> | null>
  */
 export async function hasLegacyCloudflareConfig(): Promise<boolean> {
   try {
-    const raw = JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig> & LegacyConfigFields;
+    const raw = JSON.parse(await readFile(configPath(), "utf8")) as Partial<AutopilotConfig> & LegacyConfigFields;
     return !raw.openrouterApiKey && !!(raw.cloudflareOAuth || raw.apiToken || raw.aiGatewayId || raw.cloudMode);
   } catch {
     return false;
@@ -552,7 +555,7 @@ const MODEL_ID_KEYS = [
   "memoryEmbeddingModel",
 ] as const;
 
-function hasLegacyFields(persisted: Partial<KimiConfig> & LegacyConfigFields): boolean {
+function hasLegacyFields(persisted: Partial<AutopilotConfig> & LegacyConfigFields): boolean {
   if (LEGACY_KEYS.some((k) => persisted[k] !== undefined)) return true;
   return MODEL_ID_KEYS.some((k) => {
     const v = persisted[k];
@@ -561,7 +564,7 @@ function hasLegacyFields(persisted: Partial<KimiConfig> & LegacyConfigFields): b
 }
 
 async function rewriteLegacyConfig(
-  persisted: Partial<KimiConfig> & LegacyConfigFields,
+  persisted: Partial<AutopilotConfig> & LegacyConfigFields,
   openrouterApiKey: string | undefined,
 ): Promise<void> {
   const next: Record<string, unknown> = { ...persisted };
@@ -591,9 +594,9 @@ function stripUndefined<T extends object>(obj: T): T {
  * preset are not user choices: persisting them would pin one provider's ids
  * into the file and leak them into the next provider after a switch.
  */
-async function forSaving(cfg: KimiConfig, path: string): Promise<KimiConfig> {
+async function forSaving(cfg: AutopilotConfig, path: string): Promise<AutopilotConfig> {
   const active = resolveActiveProvider(cfg);
-  const out: KimiConfig = { ...cfg };
+  const out: AutopilotConfig = { ...cfg };
   const plumbing = active.preset.plumbingModel;
   if (plumbing) {
     for (const k of ["plumbingModel", "memoryExtractionModel"] as const) {
@@ -605,15 +608,15 @@ async function forSaving(cfg: KimiConfig, path: string): Promise<KimiConfig> {
   // its model goes under providers.<id>.model and the file's own model stays.
   const owner = isProviderId(cfg.provider) ? cfg.provider : resolveProviderId({ ...cfg, provider: undefined }, {});
   if (owner !== active.id) {
-    let onDisk: Partial<KimiConfig> = {};
+    let onDisk: Partial<AutopilotConfig> = {};
     try {
-      onDisk = JSON.parse(await readFile(path, "utf8")) as Partial<KimiConfig>;
+      onDisk = JSON.parse(await readFile(path, "utf8")) as Partial<AutopilotConfig>;
     } catch {
       /* no file yet */
     }
     out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: cfg.model } };
     if (onDisk.model) out.model = onDisk.model;
-    else delete (out as Partial<KimiConfig>).model;
+    else delete (out as Partial<AutopilotConfig>).model;
   }
   return out;
 }
@@ -623,11 +626,11 @@ async function forSaving(cfg: KimiConfig, path: string): Promise<KimiConfig> {
  * (unlike saveConfig(), which rewrites the whole file from an in-memory cfg
  * that may carry env-derived defaults).
  */
-export async function patchPersistedConfig(patch: Partial<KimiConfig>): Promise<string> {
+export async function patchPersistedConfig(patch: Partial<AutopilotConfig>): Promise<string> {
   const p = configPath();
-  let existing: Partial<KimiConfig> = {};
+  let existing: Partial<AutopilotConfig> = {};
   try {
-    existing = JSON.parse(await readFile(p, "utf8")) as Partial<KimiConfig>;
+    existing = JSON.parse(await readFile(p, "utf8")) as Partial<AutopilotConfig>;
   } catch {
     /* no file yet */
   }
@@ -638,7 +641,7 @@ export async function patchPersistedConfig(patch: Partial<KimiConfig>): Promise<
   return p;
 }
 
-export async function saveConfig(cfg: KimiConfig): Promise<string> {
+export async function saveConfig(cfg: AutopilotConfig): Promise<string> {
   const p = configPath();
   await mkdir(join(p, ".."), { recursive: true });
   await writeFile(p, JSON.stringify(await forSaving(cfg, p), null, 2), "utf8");

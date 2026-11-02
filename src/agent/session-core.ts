@@ -28,7 +28,7 @@ import { completionCheckFromConfig } from "./completion-check.js";
 import { classifyIntent, type IntentResult } from "../intent/classify.js";
 import { allowsSubagentDispatch, resolveSubagentGuidance, type SubagentGuidance, type SubagentPolicy } from "../intent/subagent-policy.js";
 import { checkHotcellReadiness, type HotcellReadiness } from "../tools/hotcell-readiness.js";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { ChatMessage } from "./messages.js";
 
@@ -44,7 +44,7 @@ export function lastUserText(messages: ChatMessage[]): string {
 }
 
 /** The config fields turn assembly reads. */
-export type CoreConfig = Partial<KimiConfig> & { model?: string };
+export type CoreConfig = Partial<AutopilotConfig> & { model?: string };
 
 export interface TurnPolicyInput {
   cfg: CoreConfig;

@@ -7,17 +7,17 @@ Autopilot's headless server can coordinate work that lasts much longer than one 
 Set a server password and run the headless server under a service manager. For a Linux server (systemd unit, limits, kill switch, upgrades, encrypted backups) see [Running Autopilot on a Linux server](deploy-linux-server.md).
 
 ```sh
-KIMIFLARE_SERVER_PASSWORD='use-a-secret' autopilot serve
+AUTOPILOT_SERVER_PASSWORD='use-a-secret' autopilot serve
 ```
 
-The server defaults to listening on localhost. It refuses to listen on any other address unless `KIMIFLARE_SERVER_PASSWORD` is set; if you expose it beyond the machine, also put TLS in front of it.
+The server defaults to listening on localhost. It refuses to listen on any other address unless `AUTOPILOT_SERVER_PASSWORD` is set; if you expose it beyond the machine, also put TLS in front of it.
 
-Because the API can run tools on the machine, it refuses requests from web pages: a request carrying a browser `Origin` from another site gets 403, and on a localhost listener the `Host` header must be a localhost name (this blocks DNS rebinding). Clients such as curl, the SDK and editor plugins are unaffected. To let a specific web app call the API, list its origins in `KIMIFLARE_SERVER_CORS_ORIGINS` (comma-separated, e.g. `https://dash.example.com`).
+Because the API can run tools on the machine, it refuses requests from web pages: a request carrying a browser `Origin` from another site gets 403, and on a localhost listener the `Host` header must be a localhost name (this blocks DNS rebinding). Clients such as curl, the SDK and editor plugins are unaffected. To let a specific web app call the API, list its origins in `AUTOPILOT_SERVER_CORS_ORIGINS` (comma-separated, e.g. `https://dash.example.com`).
 
 Create a task through the authenticated API. For work that does not need an isolated Git worktree, set `worktree` to false. Only tools in `allowedTools` are available to the run; `wait_for` is always added automatically.
 
 ```sh
-curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
+curl -u "autopilot:$AUTOPILOT_SERVER_PASSWORD" \
   -H 'Content-Type: application/json' \
   -d '{
     "task": "Run the training job, inspect its checkpoints and health periodically, and report when it completes or needs intervention.",
@@ -50,7 +50,7 @@ A managed job's `timeout_ms` is optional. If supplied, its maximum is seven days
 If an explicitly configured run budget is reached (or cost enforcement is impossible because the provider did not report authoritative cost), Autopilot changes the run to `needs_input` instead of marking the task completed or failed. The background job is not automatically killed: it is separate from the agent. Inspect the run, job, and usage, then resume with a revised limit or remove it with `null`:
 
 ```sh
-curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
+curl -u "autopilot:$AUTOPILOT_SERVER_PASSWORD" \
   -H 'Content-Type: application/json' \
   -d '{"maxRuntimeMs": null, "maxTotalTokens": null}' \
   -X POST http://127.0.0.1:4096/runs/<run-id>/resume
@@ -69,7 +69,7 @@ context_budget_exceeded: the current turn needs ~215,000 tokens but moonshotai/k
 Connected clients also receive a `run.needs_input` event. Continue on a model with a larger window, or cancel:
 
 ```sh
-curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" \
+curl -u "autopilot:$AUTOPILOT_SERVER_PASSWORD" \
   -H 'Content-Type: application/json' \
   -d '{"model": "google/gemini-3.8-flash"}' \
   -X POST http://127.0.0.1:4096/runs/<run-id>/resume

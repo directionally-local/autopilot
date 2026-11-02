@@ -6,7 +6,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { configPath, patchPersistedConfig, type KimiConfig } from "../config.js";
+import { configPath, patchPersistedConfig, type AutopilotConfig } from "../config.js";
 import { checkOpenRouterKey, looksLikeOpenRouterKey } from "../models/openrouter.js";
 import { checkRequestyKey } from "../models/requesty.js";
 import { getPreset, keyHeaders, PROVIDER_IDS, type ProviderId } from "./presets.js";
@@ -118,7 +118,7 @@ export async function checkProviderKey(
 
 async function persistedProviders(): Promise<Partial<Record<ProviderId, ProviderSettings>>> {
   try {
-    const raw = JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig>;
+    const raw = JSON.parse(await readFile(configPath(), "utf8")) as Partial<AutopilotConfig>;
     return raw.providers ?? {};
   } catch {
     return {};
@@ -126,7 +126,7 @@ async function persistedProviders(): Promise<Partial<Record<ProviderId, Provider
 }
 
 /** The config patch that stores `key` where provider `id` reads it from. */
-export async function keyPatch(id: ProviderId, key: string | undefined): Promise<Partial<KimiConfig>> {
+export async function keyPatch(id: ProviderId, key: string | undefined): Promise<Partial<AutopilotConfig>> {
   if (id === "openrouter") return { openrouterApiKey: key };
   if (id === "requesty") return { requestyApiKey: key };
   if (id === "custom") return { apiKey: key };
@@ -161,7 +161,7 @@ export async function saveProviderKey(id: ProviderId, key: string | undefined, b
  * providers.<from>.model so switching back restores it; the incoming one's
  * last model (or its preset default) becomes the top-level model.
  */
-export async function switchProvider(cfg: KimiConfig | null, to: ProviderId, model?: string): Promise<string> {
+export async function switchProvider(cfg: AutopilotConfig | null, to: ProviderId, model?: string): Promise<string> {
   const providers = await persistedProviders();
   const from = cfg ? resolveActiveProvider(cfg).id : undefined;
   if (from && cfg?.model) providers[from] = { ...providers[from], model: cfg.model };
@@ -179,7 +179,7 @@ export interface ProviderStatusRow {
 }
 
 /** One row per provider for `/provider` and `autopilot auth status`. */
-export function providerStatus(cfg: KimiConfig | null, env: NodeJS.ProcessEnv = process.env): ProviderStatusRow[] {
+export function providerStatus(cfg: AutopilotConfig | null, env: NodeJS.ProcessEnv = process.env): ProviderStatusRow[] {
   const active = resolveActiveProvider(cfg, env).id;
   return PROVIDER_IDS.map((id) => {
     const preset = getPreset(id);

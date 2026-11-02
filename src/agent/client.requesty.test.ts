@@ -64,7 +64,7 @@ describe("runKimi: Requesty", () => {
     assert.ok(lastRequest);
     assert.strictEqual(lastRequest!.url, "https://router.requesty.ai/v1/chat/completions");
     assert.strictEqual(lastRequest!.headers.get("Authorization"), "Bearer rq-key");
-    assert.strictEqual(lastRequest!.headers.get("X-Title"), "kimiflare");
+    assert.strictEqual(lastRequest!.headers.get("X-Title"), "autopilot");
     const body = JSON.parse(await lastRequest!.text()) as Record<string, unknown>;
     assert.strictEqual(body.model, "openai/gpt-4o-mini");
     assert.deepStrictEqual(body.stream_options, { include_usage: true });

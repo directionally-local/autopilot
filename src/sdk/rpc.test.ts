@@ -9,7 +9,7 @@ import { startRpcServer } from "./rpc.js";
 import type { createAgentSession } from "./session.js";
 import type {
   CreateSessionOptions,
-  KimiFlareSession,
+  AutopilotSession,
   PermissionDecision,
   SessionEvent,
 } from "./types.js";
@@ -17,7 +17,7 @@ import type {
 type SessionFactory = typeof createAgentSession;
 
 /**
- * In-memory KimiFlareSession double for exercising the RPC loop without
+ * In-memory AutopilotSession double for exercising the RPC loop without
  * network access. `prompt()` can be made to block until `abort()` or
  * `resolvePermission()` is called — exactly the mid-turn situations the
  * RPC loop must keep servicing.
@@ -49,7 +49,7 @@ function makeFakeSession(behavior: {
     permissionWaiters.clear();
   }
 
-  const session: KimiFlareSession = {
+  const session: AutopilotSession = {
     sessionId: behavior.sessionId ?? "fake-session",
     cwd: process.cwd(),
     isStreaming: false,

@@ -1,4 +1,4 @@
-import type { KimiConfig } from "#kimiflare/config.js";
+import type { AutopilotConfig } from "#kimiflare/config.js";
 import type { ToolExecutor } from "#kimiflare/tools/executor.js";
 import type { McpManager } from "#kimiflare/mcp/manager.js";
 import type { ChatMessage } from "#kimiflare/agent/messages.js";
@@ -8,7 +8,7 @@ import type { MemoryManager } from "#kimiflare/memory/manager.js";
 export interface AcpSession {
   id: string;
   cwd: string;
-  config: KimiConfig;
+  config: AutopilotConfig;
   executor: ToolExecutor;
   mcpManager: McpManager;
   messages: ChatMessage[];

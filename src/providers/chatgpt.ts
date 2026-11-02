@@ -23,7 +23,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { readFile } from "node:fs/promises";
-import { configPath, patchPersistedConfig, type KimiConfig } from "../config.js";
+import { configPath, patchPersistedConfig, type AutopilotConfig } from "../config.js";
 import { getUserAgent } from "../util/version.js";
 import type { ProviderSettings } from "./resolve.js";
 
@@ -211,9 +211,9 @@ export async function hostId(): Promise<string> {
   return id;
 }
 
-async function readPersisted(): Promise<Partial<KimiConfig> | null> {
+async function readPersisted(): Promise<Partial<AutopilotConfig> | null> {
   try {
-    return JSON.parse(await readFile(configPath(), "utf8")) as Partial<KimiConfig>;
+    return JSON.parse(await readFile(configPath(), "utf8")) as Partial<AutopilotConfig>;
   } catch {
     return null;
   }

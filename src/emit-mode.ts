@@ -7,10 +7,10 @@
  * Two modes:
  *
  *   One-shot:
- *     kimiflare --emit-events -p "do X" | camouflage-tui --stdin-events
+ *     autopilot --emit-events -p "do X" | camouflage-tui --stdin-events
  *
  *   Multi-turn (this commit):
- *     kimiflare --emit-events --multi-turn -p "first prompt"
+ *     autopilot --emit-events --multi-turn -p "first prompt"
  *     # then on stdin, one NDJSON line per follow-up:
  *     # {"event_type":"UserInputSubmitted","payload":{"text":"do Y next"}}
  *
@@ -30,14 +30,14 @@ import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
 import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "./tools/executor.js";
 import type { ChatMessage } from "./agent/messages.js";
-import { KimiApiError, humanizeApiError } from "./util/errors.js";
+import { ApiError, humanizeApiError } from "./util/errors.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt, PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submit.js";
 import { makeSessionId } from "./sessions.js";
-import type { KimiConfig, ReasoningEffort } from "./config.js";
+import type { AutopilotConfig, ReasoningEffort } from "./config.js";
 
 export interface EmitModeOpts
-  extends Pick<KimiConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider"> {
+  extends Pick<AutopilotConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider"> {
   model: string;
   reasoningEffort?: ReasoningEffort;
   prompt: string;
@@ -417,7 +417,7 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
         });
         exitCode = 43;
         aborted = true;
-      } else if (err instanceof KimiApiError) {
+      } else if (err instanceof ApiError) {
         emit("RuntimeError", {
           message: humanizeApiError(err),
           // The provider the request went to ("openrouter", "openai", "ollama", …).

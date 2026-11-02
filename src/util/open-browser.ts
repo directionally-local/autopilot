@@ -4,7 +4,7 @@ import { readEnv } from "./env.js";
 
 /**
  * Open a URL in the user's browser. Returns false when opening is disabled
- * (KIMIFLARE_NO_BROWSER=1 or BROWSER=none) so callers can provide a fallback.
+ * (AUTOPILOT_NO_BROWSER=1 or BROWSER=none) so callers can provide a fallback.
  * Never throws when an OS opener is unavailable.
  */
 export function openBrowser(url: string): boolean {

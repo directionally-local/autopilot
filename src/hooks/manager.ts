@@ -8,7 +8,7 @@ import type {
   HookEventOutcome,
   HookFailure,
   HookPayload,
-  KimiflareSettings,
+  HookSettings,
 } from "./types.js";
 
 /** A hook failure as hosts receive it. */
@@ -67,7 +67,7 @@ export function hookFailureEvent(n: HookFailureNotice): Record<string, unknown> 
  */
 export class HooksManager {
   private cwd: string;
-  private settings: KimiflareSettings;
+  private settings: HookSettings;
   private failureCounts = new Map<string, number>();
   private failureListeners = new Set<HookFailureListener>();
 

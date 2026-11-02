@@ -29,7 +29,7 @@ sudoedit /etc/autopilot/autopilot.env
 ```
 
 ```sh
-KIMIFLARE_SERVER_PASSWORD=<long random string>     # required for /runs
+AUTOPILOT_SERVER_PASSWORD=<long random string>     # required for /runs
 OPENROUTER_API_KEY=sk-or-...                        # or another provider's key
 AUTOPILOT_MAX_CONCURRENT_RUNS=4                     # runs doing work at once
 # Email when a run finishes, fails or needs input (optional)
@@ -56,7 +56,7 @@ Don't expose the server publicly. Tunnel to it:
 
 ```sh
 ssh -L 4096:127.0.0.1:4096 autopilot@your-host
-curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" http://127.0.0.1:4096/runs   # health check + run list
+curl -u "autopilot:$AUTOPILOT_SERVER_PASSWORD" http://127.0.0.1:4096/runs   # health check + run list
 ```
 
 ## 5. Limits and the kill switch
@@ -66,7 +66,7 @@ curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" http://127.0.0.1:4096/runs   # he
 - **Kill switch:** cancel every active run and refuse new ones. Add `"jobs": true` to also cancel running managed jobs.
 
   ```sh
-  curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" -H 'Content-Type: application/json' \
+  curl -u "autopilot:$AUTOPILOT_SERVER_PASSWORD" -H 'Content-Type: application/json' \
     -d '{"reason": "incident", "jobs": true}' -X POST http://127.0.0.1:4096/runs/stop-all
   ```
 
@@ -75,7 +75,7 @@ curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" http://127.0.0.1:4096/runs   # he
 ## 6. Upgrades
 
 ```sh
-curl -u "kimiflare:$KIMIFLARE_SERVER_PASSWORD" http://127.0.0.1:4096/runs   # note what's active
+curl -u "autopilot:$AUTOPILOT_SERVER_PASSWORD" http://127.0.0.1:4096/runs   # note what's active
 sudo npm install -g autopilot-ai@latest
 sudo systemctl restart autopilot
 journalctl -u autopilot -n 50

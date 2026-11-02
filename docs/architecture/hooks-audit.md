@@ -65,7 +65,7 @@ print mode silently has zero hook firing.
 `src/hooks/runner.ts:140` does `JSON.stringify(payload)` with no
 cap. PostToolUse carries `result.content`, which can be MBs after
 some tools. We then put that same JSON into the
-`KIMIFLARE_HOOK_PAYLOAD` env var (`runner.ts:34`). OS env-var
+`AUTOPILOT_HOOK_PAYLOAD` env var (`runner.ts:34`). OS env-var
 limits are ~128KB on Linux and smaller on macOS — a large tool
 result would silently fail the spawn or get truncated to a string
 the hook can't parse.
@@ -84,7 +84,7 @@ in `loop.ts` but never threaded into the payload.
   "Stop" semantically means clean completion; the docs already
   say "skipped on abort/throw." Six throw sites
   (`loop.ts:327, 491, 552, 698, 1164, 1194`) all qualify.
-- **Recursion guard** (hook shells out to kimiflare which fires the
+- **Recursion guard** (hook shells out to autopilot which fires the
   same hook) — no recommended hook does this; user-written
   recursive hooks are their own footgun, not our problem. The
   per-hook timeout caps blast radius.
@@ -152,7 +152,7 @@ Closes **G2**, **G3**.
 In `loop.ts` where the PostToolUse payload is built (or in
 `executor.run` after F1), truncate `result.content` to e.g. 4 KB
 before serializing. Document the cap; hooks that want the full
-content can read it from `KIMIFLARE_HOOK_PAYLOAD` size info or
+content can read it from `AUTOPILOT_HOOK_PAYLOAD` size info or
 from the tool's artifact id.
 
 Closes **G7**.
@@ -224,5 +224,5 @@ panes that pipe output) shouldn't break.
 - Hook stdin streaming for huge payloads — F4's cap is enough.
 - Per-event Stop variations (StopAfterError, etc.) — wait for
   signal that anyone wants this.
-- `kimiflare hooks` CLI subcommand outside the TUI — wait for
+- `autopilot hooks` CLI subcommand outside the TUI — wait for
   signal; the `/hooks` slash command covers TUI users.

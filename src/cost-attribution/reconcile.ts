@@ -1,5 +1,5 @@
 /**
- * OpenRouter reconciliation for `kimiflare cost`.
+ * OpenRouter reconciliation for `autopilot cost`.
  *
  * Every turn is confirmed individually as it happens (the stream's usage
  * accounting, or the /generation lookup — see usage-tracker.ts), so the

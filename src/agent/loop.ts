@@ -875,7 +875,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         await fireStopHook();
         return;
       } else {
-        throw new Error(`kimiflare: tool iteration limit reached (${max})`);
+        throw new Error(`autopilot: tool iteration limit reached (${max})`);
       }
     }
 
