@@ -7,6 +7,7 @@ import type { AppActions, AppBridge, AppSnapshot } from "../ui/app-bridge.js";
 import { attachRemote, checkFlags, remoteHeader, type AttachRemoteFlags, type MountRemoteView } from "./attach-cli.js";
 import { connectionNote, laptopImagePaths, REMOTE_COMMANDS, REVOKED_MESSAGE, serverModelEntries } from "./attach-session.js";
 import { startAsterStub, type AsterStub } from "./aster-stub.test-support.js";
+import { attachLifecycle } from "../camouflage-lifecycle.test-support.js";
 
 let stub: AsterStub;
 let dir: string;
@@ -569,7 +570,7 @@ describe("attach-remote through the Camouflage view (headless)", () => {
     stub = await startAsterStub();
     const { View } = await import("../camouflage-view.js");
     const sent: { type: string; payload: Record<string, unknown> }[] = [];
-    const cam = { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 };
+    const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 }, { permission: async () => ({ choice: "deny" }) });
     const sdk = { permission: async () => ({ choice: "deny" }), selectList: async () => ({ id: "", cancelled: true }), confirm: async () => ({ id: "", cancelled: true }), form: async () => ({ id: "", cancelled: true }) };
     const view = new View(cam as never, sdk as never, { commands: REMOTE_COMMANDS });
     const { done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" }, { bridge: view });
@@ -606,7 +607,7 @@ describe("attach-remote through the Camouflage view (headless)", () => {
     stub = await startAsterStub();
     const { View } = await import("../camouflage-view.js");
     const sent: { type: string; payload: Record<string, unknown> }[] = [];
-    const cam = { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 };
+    const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 }, { permission: async () => ({ choice: "deny" }) });
     const lists: { prompt: string; options: { value: string }[] }[] = [];
     let answer: { value?: string; cancelled: boolean } = { cancelled: true };
     const sdk = {
