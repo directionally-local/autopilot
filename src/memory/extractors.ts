@@ -11,6 +11,7 @@ import { runKimi } from "../agent/client.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { MemoryCategory } from "./schema.js";
 import { redactSecrets } from "./redact.js";
+import type { MemoryExtractionPolicy } from "../config.js";
 
 export interface ExtractorContext {
   /** Arguments passed to the tool (e.g. old_string, new_string, path). */
@@ -71,10 +72,32 @@ export function stripLineNumbers(content: string): string {
 
 /** Prefer a repo-relative path so the same file edited via absolute and
  *  relative paths maps to one topic key. */
-function normalizeFile(file: string, cwd?: string): string {
+export function normalizeFile(file: string, cwd?: string): string {
   if (!cwd || !isAbsolute(file)) return file;
   const rel = relative(cwd, file);
   return rel.startsWith("..") ? file : rel;
+}
+
+/**
+ * How the `edit_event` extractor runs under a memory-extraction policy (#1073).
+ * - `skip`: no edit rows at all (off / deterministic — the deterministic
+ *   extractors are the read-time ones; the `File modified` fallback is the
+ *   noise driver the audit flagged).
+ * - `buffer`: collect the edit and synthesize it later, in ONE batched call
+ *   at compaction/session end (session — the default).
+ * - `synthesize`: legacy per-edit LLM synthesis (aggressive).
+ */
+export type EditExtractionMode = "skip" | "buffer" | "synthesize";
+export function editExtractionMode(policy: MemoryExtractionPolicy): EditExtractionMode {
+  switch (policy) {
+    case "session":
+      return "buffer";
+    case "aggressive":
+      return "synthesize";
+    case "off":
+    case "deterministic":
+      return "skip";
+  }
 }
 
 const LOW_SIGNAL_DIR =

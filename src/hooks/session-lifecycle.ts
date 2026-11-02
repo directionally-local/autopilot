@@ -63,17 +63,48 @@ export async function noteSessionStart(info: SessionStartInfo): Promise<void> {
 /** SessionEnd hooks still running, e.g. from /clear or an SDK dispose that didn't await. */
 const ending = new Set<Promise<void>>();
 
+/**
+ * Best-effort observers that run when a session ends, before SessionEnd
+ * hooks — e.g. flushing buffered memory extraction (#1073). Observers run in
+ * parallel, are deadline-bounded by the caller's timeout, and never throw.
+ * Returns an unregister function.
+ */
+export type SessionEndObserver = (sessionId: string, reason: "exit" | "clear") => Promise<void> | void;
+const observers = new Set<SessionEndObserver>();
+export function observeSessionEnd(observer: SessionEndObserver): () => void {
+  observers.add(observer);
+  return () => {
+    observers.delete(observer);
+  };
+}
+
+async function runSessionEndObservers(sessionId: string, reason: "exit" | "clear", timeoutMs: number): Promise<void> {
+  if (observers.size === 0) return;
+  const ran = Promise.all(
+    [...observers].map((obs) => Promise.resolve().then(() => obs(sessionId, reason)).catch(() => undefined)),
+  );
+  await withDeadline(ran, timeoutMs);
+}
+
 /** Fire SessionEnd for one session (e.g. /clear). */
 export async function endSession(sessionId: string, reason: "exit" | "clear", timeoutMs = 3000): Promise<void> {
   const entry = started.get(sessionId);
   if (!entry) return;
   started.delete(sessionId);
   emitOtelEvent("session.end", sessionId, { "session.end_reason": reason });
-  if (!entry.hooks?.hasEnabledHooks("SessionEnd")) return;
-  const fired = entry.hooks
-    .fire("SessionEnd", { event: "SessionEnd", session_id: sessionId, cwd: entry.cwd, reason }, null)
-    .then(() => undefined, () => undefined);
-  const done: Promise<void> = withDeadline(fired, timeoutMs)
+  // Kick both off without awaiting first: `ending` must be populated in this
+  // same tick so a concurrent endSessions() (host unmount + shutdown racing)
+  // awaits this session instead of seeing an empty set.
+  const observersDone = runSessionEndObservers(sessionId, reason, timeoutMs);
+  const hooksDone = entry.hooks?.hasEnabledHooks("SessionEnd")
+    ? withDeadline(
+        entry.hooks
+          .fire("SessionEnd", { event: "SessionEnd", session_id: sessionId, cwd: entry.cwd, reason }, null)
+          .then(() => undefined, () => undefined),
+        timeoutMs,
+      )
+    : Promise.resolve("timeout" as const);
+  const done: Promise<void> = Promise.all([observersDone, hooksDone])
     .then(() => undefined)
     .finally(() => ending.delete(done));
   ending.add(done);

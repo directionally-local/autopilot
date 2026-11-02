@@ -18,7 +18,7 @@ import type { LspManager } from "../lsp/manager.js";
 import type { HybridResult } from "../memory/schema.js";
 import { hasRecalledMemory, injectRecalledMemoryOnce } from "../memory/recall-inject.js";
 import { logTurnDebug, analyzePrompt } from "../cost-debug.js";
-import { EXTRACTORS } from "../memory/extractors.js";
+import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extractors.js";
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
 import type { SandboxReadCursor } from "../code-mode/index.js";
@@ -975,6 +975,16 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           turnId,
         );
         opts.callbacks.onCompacted?.(info);
+        // Buffered edit events (#1073): compaction is a flush point — one
+        // batched extraction call, fire-and-forget so compaction never waits on it.
+        void opts.memoryManager
+          ?.flushSessionEdits(opts.sessionId ?? "default", opts.signal)
+          .catch((err) =>
+            logger.debug("memory:flush_error", {
+              sessionId: opts.sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
       }
     }
     if (promptTokens > maxPromptTokens) {
@@ -1503,6 +1513,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     /** Fire-and-forget memory extraction from a tool result (never breaks the turn). */
     const extractMemories = (tc: ToolCall, result: ToolResult): void => {
       if (!opts.memoryManager) return;
+      const policy = opts.memoryManager.extractionPolicy;
+      if (policy === "off") return;
       const toolArgs = parseArgsObject(tc.function.arguments);
       const filePath = toolArgs.path as string | undefined;
       // The preceding assistant message, for intent context.
@@ -1514,13 +1526,37 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       const session = sessionToolState(opts.sessionId);
       for (const extractor of EXTRACTORS) {
         if (!extractor.match(tc.function.name, filePath)) continue;
+        if (extractor.id === "edit_event") {
+          const mode = editExtractionMode(policy);
+          if (mode === "skip") continue;
+          if (mode === "buffer") {
+            // "session" policy (#1073): no per-edit LLM call and no
+            // `File modified` row — buffer the edit for the batched
+            // synthesis at compaction/session end. Low-signal paths never
+            // reach here (the extractor's match already skipped them).
+            if (result.ok && filePath) {
+              opts.memoryManager!.recordEdit(opts.sessionId ?? "default", {
+                file: normalizeFile(filePath, opts.cwd),
+                tool: tc.function.name,
+                intent: assistantMessage.slice(-300),
+                repoPath: opts.cwd,
+                at: Date.now(),
+              });
+            }
+            continue;
+          }
+          // "aggressive": fall through to per-edit LLM synthesis.
+        }
         void (async () => {
           try {
             const memory = await extractor.extract(result.content, filePath, {
               toolArgs: { ...toolArgs, _toolName: tc.function.name },
               assistantMessage,
               cwd: opts.cwd,
-              llmOpts: { ...llmOpts, signal: opts.signal },
+              // Extraction LLM opts only in aggressive mode: the read-time
+              // deterministic extractors never use them, and "deterministic"
+              // must make zero extraction calls (#1073).
+              llmOpts: policy === "aggressive" ? { ...llmOpts, signal: opts.signal } : undefined,
             });
             if (!memory) return;
             await opts.memoryManager!.remember(
