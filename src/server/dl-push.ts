@@ -2,22 +2,23 @@ import { SqliteDatabase } from "../util/sqlite.js";
 import { createSign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { connect, type ClientHttp2Session } from "node:http2";
-import { defaultAsterDbPath } from "./aster-store.js";
+import { defaultDlDbPath } from "./dl-store.js";
+import { serverEnv } from "./dl-compat.js";
 
 /**
  * Apple Push notifications for Aster: "your task finished" when a turn completes or fails,
  * so a chat can be started and the app closed.
  *
  * Configured with an APNs auth key (not the App Store Connect API key):
- *   AUTOPILOT_ASTER_APNS_KEY_PATH  path to AuthKey_<KEYID>.p8
- *   AUTOPILOT_ASTER_APNS_KEY_ID    the key's ID
- *   AUTOPILOT_ASTER_APNS_TEAM_ID   Apple developer team ID
- *   AUTOPILOT_ASTER_APNS_TOPIC     the app's bundle ID
+ *   AUTOPILOT_SERVER_APNS_KEY_PATH  path to AuthKey_<KEYID>.p8
+ *   AUTOPILOT_SERVER_APNS_KEY_ID    the key's ID
+ *   AUTOPILOT_SERVER_APNS_TEAM_ID   Apple developer team ID
+ *   AUTOPILOT_SERVER_APNS_TOPIC     the app's bundle ID
  * Devices register with their environment: TestFlight and App Store builds use production
  * APNs, Xcode debug builds use the sandbox.
  */
 
-export interface AsterPushMessage {
+export interface DlPushMessage {
   title: string;
   body: string;
   conversationId: string;
@@ -30,7 +31,7 @@ interface DeviceRow {
   environment: string;
 }
 
-export interface AsterPushOptions {
+export interface DlPushOptions {
   keyPath?: string;
   keyId?: string;
   teamId?: string;
@@ -41,20 +42,20 @@ export interface AsterPushOptions {
 
 const DEVICE_TOKEN_RE = /^[0-9a-f]{64,200}$/i;
 
-export class AsterPush {
+export class DlPush {
   private readonly db: SqliteDatabase;
-  private readonly options: Required<Pick<AsterPushOptions, "keyId" | "teamId" | "topic">> & AsterPushOptions;
+  private readonly options: Required<Pick<DlPushOptions, "keyId" | "teamId" | "topic">> & DlPushOptions;
   private privateKey: string | undefined;
   private jwt: { value: string; issuedAt: number } | undefined;
   private readonly sessions = new Map<string, ClientHttp2Session>();
 
-  constructor(dbPath = defaultAsterDbPath(), options: AsterPushOptions = {}, env: NodeJS.ProcessEnv = process.env) {
+  constructor(dbPath = defaultDlDbPath(), options: DlPushOptions = {}, env: NodeJS.ProcessEnv = process.env) {
     this.options = {
       ...options,
-      keyPath: options.keyPath ?? env.AUTOPILOT_ASTER_APNS_KEY_PATH,
-      keyId: options.keyId ?? env.AUTOPILOT_ASTER_APNS_KEY_ID ?? "",
-      teamId: options.teamId ?? env.AUTOPILOT_ASTER_APNS_TEAM_ID ?? "",
-      topic: options.topic ?? env.AUTOPILOT_ASTER_APNS_TOPIC ?? "com.aster.ai",
+      keyPath: options.keyPath ?? serverEnv(env, "APNS_KEY_PATH"),
+      keyId: options.keyId ?? serverEnv(env, "APNS_KEY_ID") ?? "",
+      teamId: options.teamId ?? serverEnv(env, "APNS_TEAM_ID") ?? "",
+      topic: options.topic ?? serverEnv(env, "APNS_TOPIC") ?? "com.aster.ai",
     };
     this.db = new SqliteDatabase(dbPath);
     this.db.pragma("journal_mode = WAL");
@@ -92,7 +93,7 @@ export class AsterPush {
   }
 
   /** Sends to every registered device; tokens Apple reports as gone are removed. Never throws. */
-  async notify(message: AsterPushMessage): Promise<void> {
+  async notify(message: DlPushMessage): Promise<void> {
     if (!this.configured) return;
     const devices = this.db.prepare("SELECT token, environment FROM aster_devices").all() as DeviceRow[];
     if (devices.length === 0) return;

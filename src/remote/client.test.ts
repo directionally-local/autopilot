@@ -44,7 +44,7 @@ describe("remote API client", () => {
         : "id: 2\nevent: b\ndata: {}\n\nid: 3\nevent: completed\ndata: {}\n\n";
       return new Response(streamOf([body]), { status: 200, headers: { "Content-Type": "text/event-stream" } });
     }) as typeof fetch;
-    const client = new RemoteClient("https://box.example.com", "aster_token", fakeFetch);
+    const client = new RemoteClient("https://box.example.com", "dl_token", fakeFetch);
     const events = await collect(client.events("conv", 0), 3);
     assert.deepEqual(events.map((event) => event.id), [1, 2, 3]);
     assert.deepEqual(cursors, ["0", "2"]);
@@ -52,7 +52,7 @@ describe("remote API client", () => {
 
   it("stops reconnecting on a client error such as a revoked credential", async () => {
     const fakeFetch = (async () => new Response(JSON.stringify({ error: { code: "invalid_credential", message: "nope" } }), { status: 401 })) as unknown as typeof fetch;
-    const client = new RemoteClient("https://box.example.com", "aster_token", fakeFetch);
+    const client = new RemoteClient("https://box.example.com", "dl_token", fakeFetch);
     await assert.rejects(() => collect(client.events("conv", 0)), (error) => error instanceof RemoteApiError && error.code === "invalid_credential");
   });
 
@@ -60,7 +60,7 @@ describe("remote API client", () => {
     const replies = [
       { status: 400, body: { error: { code: "authorization_pending", message: "" } } },
       { status: 400, body: { error: { code: "slow_down", message: "" } } },
-      { status: 200, body: { token: "aster_issued", credentialId: "c1", name: "laptop", workspaceIds: ["default"], scopes: [], expiresAt: "2027-01-01T00:00:00.000Z" } },
+      { status: 200, body: { token: "dl_issued", credentialId: "c1", name: "laptop", workspaceIds: ["default"], scopes: [], expiresAt: "2027-01-01T00:00:00.000Z" } },
     ];
     const fakeFetch = (async () => {
       const reply = replies.shift()!;
@@ -70,7 +70,7 @@ describe("remote API client", () => {
     const client = new RemoteClient("https://box.example.com", undefined, fakeFetch);
     const device: DeviceAuthorization = { deviceCode: "d", userCode: "BCDF-GHJK", verificationUri: "", verificationUriComplete: "", expiresIn: 600, interval: 5 };
     const credential = await client.waitForCredential(device, { sleep: async (ms) => { sleeps.push(ms); } });
-    assert.equal(credential.token, "aster_issued");
+    assert.equal(credential.token, "dl_issued");
     assert.deepEqual(sleeps, [5_000, 5_000, 10_000]);
 
     const denied = new RemoteClient("https://box.example.com", undefined, (async () =>

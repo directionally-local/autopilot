@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { setupLocalAsterConfig } from "./aster-setup.js";
+import { setupLocalDlConfig } from "./dl-setup.js";
 
 const roots: string[] = [];
 
@@ -12,17 +12,17 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe("local Aster setup", () => {
+describe("local dl server setup", () => {
   it("writes a private config for an existing Git root and reuses it on repeat", async () => {
     const root = await fixture();
-    const repository = await gitRepository(root, "aster-project");
+    const repository = await gitRepository(root, "dl-project");
     const configHome = join(root, "config-home");
-    const env = { ...process.env, XDG_CONFIG_HOME: configHome, AUTOPILOT_ASTER_CONFIG: undefined };
+    const env = { ...process.env, XDG_CONFIG_HOME: configHome, AUTOPILOT_SERVER_CONFIG: undefined };
 
-    const first = await setupLocalAsterConfig({ workspacePaths: [repository], env });
-    assert.equal(first.path, join(configHome, "autopilot", "aster.json"));
+    const first = await setupLocalDlConfig({ workspacePaths: [repository], env });
+    assert.equal(first.path, join(configHome, "autopilot", "server.json"));
     assert.equal(first.selectedWorkspaces.length, 1);
-    assert.equal(first.selectedWorkspaces[0]?.id, "aster-project");
+    assert.equal(first.selectedWorkspaces[0]?.id, "dl-project");
     assert.equal(first.selectedWorkspaces[0]?.rootPath, await realpath(repository));
     assert.equal(first.config.modelCatalog, "catalog");
     assert.equal(first.config.provider.id, "openrouter");
@@ -33,7 +33,7 @@ describe("local Aster setup", () => {
     assert.equal((await stat(join(configHome, "autopilot"))).mode & 0o777, 0o700);
 
     const original = await readFile(first.path, "utf8");
-    const repeated = await setupLocalAsterConfig({ workspacePaths: [repository], env });
+    const repeated = await setupLocalDlConfig({ workspacePaths: [repository], env });
     assert.deepEqual(repeated.selectedWorkspaces, first.selectedWorkspaces);
     assert.equal(await readFile(first.path, "utf8"), original);
   });
@@ -42,13 +42,13 @@ describe("local Aster setup", () => {
     const root = await fixture();
     const configuredRepo = await gitRepository(root, "configured");
     const otherRepo = await gitRepository(root, "other");
-    const configPath = join(root, "aster.json");
-    const env = { ...process.env, AUTOPILOT_ASTER_CONFIG: configPath };
-    await setupLocalAsterConfig({ workspacePaths: [configuredRepo], env });
+    const configPath = join(root, "server.json");
+    const env = { ...process.env, AUTOPILOT_SERVER_CONFIG: configPath };
+    await setupLocalDlConfig({ workspacePaths: [configuredRepo], env });
     const original = await readFile(configPath, "utf8");
 
     await assert.rejects(
-      setupLocalAsterConfig({ workspacePaths: [otherRepo], env }),
+      setupLocalDlConfig({ workspacePaths: [otherRepo], env }),
       /already exists.*does not include.*left unchanged/,
     );
     assert.equal(await readFile(configPath, "utf8"), original);
@@ -57,21 +57,21 @@ describe("local Aster setup", () => {
   it("writes the provider block for --provider, with an optional base URL override", async () => {
     const root = await fixture();
     const repository = await gitRepository(root, "repo");
-    const configPath = join(root, "aster.json");
-    const setup = await setupLocalAsterConfig({ workspacePaths: [repository], provider: "deepseek", configPath });
+    const configPath = join(root, "server.json");
+    const setup = await setupLocalDlConfig({ workspacePaths: [repository], provider: "deepseek", configPath });
     assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).provider, { id: "deepseek" });
     assert.equal(setup.config.provider.baseUrl, "https://api.deepseek.com");
     assert.equal(setup.config.modelCatalog, "catalog");
 
     const withUrl = join(root, "ollama.json");
-    const ollama = await setupLocalAsterConfig({ workspacePaths: [repository], provider: "ollama", baseUrl: "http://gpu-box:11434/v1", models: ["qwen3:32b"], configPath: withUrl });
+    const ollama = await setupLocalDlConfig({ workspacePaths: [repository], provider: "ollama", baseUrl: "http://gpu-box:11434/v1", models: ["qwen3:32b"], configPath: withUrl });
     assert.deepEqual(JSON.parse(await readFile(withUrl, "utf8")).provider, { id: "ollama", baseUrl: "http://gpu-box:11434/v1" });
     assert.equal(ollama.config.provider.baseUrl, "http://gpu-box:11434/v1");
     assert.deepEqual(ollama.config.models, ["qwen3:32b"]);
 
-    await assert.rejects(setupLocalAsterConfig({ workspacePaths: [repository], provider: "acme-llm", configPath: join(root, "x.json") }), /unknown provider "acme-llm"/);
-    await assert.rejects(setupLocalAsterConfig({ workspacePaths: [repository], baseUrl: "https://x", configPath: join(root, "y.json") }), /--base-url needs --provider/);
-    await assert.rejects(setupLocalAsterConfig({ workspacePaths: [repository], provider: "custom", configPath: join(root, "z.json") }), /needs provider.baseUrl/);
+    await assert.rejects(setupLocalDlConfig({ workspacePaths: [repository], provider: "acme-llm", configPath: join(root, "x.json") }), /unknown provider "acme-llm"/);
+    await assert.rejects(setupLocalDlConfig({ workspacePaths: [repository], baseUrl: "https://x", configPath: join(root, "y.json") }), /--base-url needs --provider/);
+    await assert.rejects(setupLocalDlConfig({ workspacePaths: [repository], provider: "custom", configPath: join(root, "z.json") }), /needs provider.baseUrl/);
   });
 
   it("rejects a subdirectory instead of silently widening the workspace root", async () => {
@@ -80,7 +80,7 @@ describe("local Aster setup", () => {
     const nested = join(repository, "nested");
     await mkdir(nested);
     await assert.rejects(
-      setupLocalAsterConfig({ workspacePaths: [nested], configPath: join(root, "aster.json") }),
+      setupLocalDlConfig({ workspacePaths: [nested], configPath: join(root, "server.json") }),
       /workspace must be the Git repository root/,
     );
   });
@@ -90,14 +90,14 @@ describe("local Aster setup", () => {
     const directory = join(root, "plain-directory");
     await mkdir(directory);
     await assert.rejects(
-      setupLocalAsterConfig({ workspacePaths: [directory], configPath: join(root, "aster.json") }),
+      setupLocalDlConfig({ workspacePaths: [directory], configPath: join(root, "server.json") }),
       /existing Git repository root/,
     );
   });
 });
 
 async function fixture(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "autopilot-aster-setup-"));
+  const root = await mkdtemp(join(tmpdir(), "autopilot-dl-setup-"));
   roots.push(root);
   return root;
 }

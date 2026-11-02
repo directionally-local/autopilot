@@ -1,15 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AsterConfigError, loadAsterServerConfig } from "./aster-workspaces.js";
-import type { AsterStore, CreatedAsterCredential } from "./aster-store.js";
+import { DlConfigError, loadDlServerConfig } from "./dl-workspaces.js";
+import type { DlStore, CreatedDlCredential } from "./dl-store.js";
 
 /**
  * Pairing a client (the laptop CLI, later a desktop app) with this server without
  * copying keys. The client starts a device-code authorization and polls; the owner
  * approves its short code in a browser page or on the server with
- * `autopilot aster pair approve`. The browser becomes the owner by opening a one-time
- * claim link (`autopilot aster owner link`), which stores a pairing:approve Aster
+ * `autopilot server pair approve`. The browser becomes the owner by opening a one-time
+ * claim link (`autopilot server owner link`), which stores a pairing:approve dl server
  * credential in an HttpOnly cookie. Everything lives under /api/v1 so gateways that
- * proxy only the Aster API keep working.
+ * proxy only the dl server API keep working.
  */
 
 const AUTH_PREFIX = "/api/v1/auth";
@@ -17,13 +17,15 @@ const DEVICE_CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING_DEVICE_CODES = 20;
 const MAX_FORM_BYTES = 8 * 1024;
 const CLIENT_NAME_RE = /^[\p{L}\p{N} ._'()@-]{1,60}$/u;
-const OWNER_COOKIE = "aster_owner";
+const OWNER_COOKIE = "dl_owner";
+/** Owner browsers that claimed before the rename still carry this cookie. */
+const LEGACY_OWNER_COOKIE = "aster_owner";
 export const CLIENT_CREDENTIAL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 export const OWNER_CREDENTIAL_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 export const OWNER_CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Handles the unauthenticated pairing routes; returns false for every other path. */
-export async function handleAsterPairing(req: IncomingMessage, res: ServerResponse, url: URL, store: AsterStore): Promise<boolean> {
+export async function handleDlPairing(req: IncomingMessage, res: ServerResponse, url: URL, store: DlStore): Promise<boolean> {
   const path = url.pathname;
   if (!path.startsWith(`${AUTH_PREFIX}/`)) return false;
   const method = req.method ?? "GET";
@@ -73,11 +75,11 @@ export async function handleAsterPairing(req: IncomingMessage, res: ServerRespon
     if (!isSameOrigin(req)) return html(res, 403, "Refused", "<h1>Refused</h1><p>Cross-origin request.</p>");
     const form = await readForm(req);
     const workspaceIds = await configuredWorkspaceIds();
-    if (!workspaceIds) return html(res, 503, "Not configured", "<h1>Not configured</h1><p>Aster workspaces are not configured on this server.</p>");
+    if (!workspaceIds) return html(res, 503, "Not configured", "<h1>Not configured</h1><p>dl server workspaces are not configured on this server.</p>");
     const credential = store.redeemOwnerClaim(form.get("token") ?? "", { workspaceIds, credentialTtlMs: OWNER_CREDENTIAL_TTL_MS });
     if (!credential) {
       return html(res, 410, "Link expired", `<h1>This link expired or was already used</h1>
-        <p>On the server, run <code>autopilot aster owner link</code> for a new one.</p>`);
+        <p>On the server, run <code>autopilot server owner link</code> for a new one.</p>`);
     }
     res.setHeader("Set-Cookie", `${OWNER_COOKIE}=${credential.token}; Path=${AUTH_PREFIX}; Max-Age=${Math.floor(OWNER_CREDENTIAL_TTL_MS / 1000)}; HttpOnly; Secure; SameSite=Strict`);
     res.writeHead(303, { Location: `${AUTH_PREFIX}/approve`, "Cache-Control": "no-store" });
@@ -107,7 +109,7 @@ export async function handleAsterPairing(req: IncomingMessage, res: ServerRespon
     const form = await readForm(req);
     const decision = form.get("decision") === "deny" ? "deny" : "approve";
     const workspaceIds = await configuredWorkspaceIds();
-    if (!workspaceIds) return html(res, 503, "Not configured", "<h1>Not configured</h1><p>Aster workspaces are not configured on this server.</p>");
+    if (!workspaceIds) return html(res, 503, "Not configured", "<h1>Not configured</h1><p>dl server workspaces are not configured on this server.</p>");
     const outcome = store.resolveDeviceAuthorization(form.get("code") ?? "", decision, { workspaceIds, credentialTtlMs: CLIENT_CREDENTIAL_TTL_MS });
     const messages: Record<typeof outcome, [number, string]> = {
       approved: [200, "Approved. The device finishes signing in on its own; you can close this page."],
@@ -120,11 +122,11 @@ export async function handleAsterPairing(req: IncomingMessage, res: ServerRespon
     return html(res, status, "Approve a device", `<h1>Approve a device</h1><p>${message}</p><p><a href="${AUTH_PREFIX}/approve">Approve another</a></p>`);
   }
 
-  return sendError(res, 404, "not_found", "Aster endpoint not found");
+  return sendError(res, 404, "not_found", "dl server endpoint not found");
 }
 
 /** The pairing outcome a client receives; the token is shown once. */
-export function publicCredential(credential: CreatedAsterCredential): Record<string, unknown> {
+export function publicCredential(credential: CreatedDlCredential): Record<string, unknown> {
   return {
     token: credential.token,
     credentialId: credential.id,
@@ -138,10 +140,10 @@ export function publicCredential(credential: CreatedAsterCredential): Record<str
 /** Every configured workspace: a solo server pairs its owner's devices with all of them. */
 export async function configuredWorkspaceIds(): Promise<string[] | undefined> {
   try {
-    const ids = (await loadAsterServerConfig()).workspaces.map(({ id }) => id);
+    const ids = (await loadDlServerConfig()).workspaces.map(({ id }) => id);
     return ids.length > 0 ? ids : undefined;
   } catch (error) {
-    if (error instanceof AsterConfigError) return undefined;
+    if (error instanceof DlConfigError) return undefined;
     throw error;
   }
 }
@@ -158,8 +160,8 @@ export function publicBaseUrl(req: IncomingMessage, env: NodeJS.ProcessEnv = pro
   return `${proto}://${host}`;
 }
 
-function isOwner(req: IncomingMessage, store: AsterStore): boolean {
-  const token = readCookie(req, OWNER_COOKIE);
+function isOwner(req: IncomingMessage, store: DlStore): boolean {
+  const token = readCookie(req, OWNER_COOKIE) ?? readCookie(req, LEGACY_OWNER_COOKIE);
   if (!token) return false;
   return store.authenticate(`Bearer ${token}`)?.scopes.includes("pairing:approve") === true;
 }
@@ -190,10 +192,10 @@ function notOwnerBody(code: string | null): string {
     <h1>Approve a device</h1>
     <p>This browser isn't the server's owner yet. Open the owner link your installer printed, or create one on the server:</p>
     <pre>dl connect-laptop</pre>
-    <p class="muted">Without Directionally Local: <code>autopilot aster owner link</code></p>
+    <p class="muted">Without Directionally Local: <code>autopilot server owner link</code></p>
     <p>You can also approve from the server directly:</p>
     <pre>dl connect-laptop ${escapeHtml(code ?? "<code>")}</pre>
-    <p class="muted">Without Directionally Local: <code>autopilot aster pair approve ${escapeHtml(code ?? "<code>")}</code></p>`;
+    <p class="muted">Without Directionally Local: <code>autopilot server pair approve ${escapeHtml(code ?? "<code>")}</code></p>`;
 }
 
 function approvalForm(userCode: string, clientName: string): string {

@@ -11,16 +11,17 @@ import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager } from "../runs/worktrees.js";
 import { loadSession, saveSession, sessionsDir, type SessionFile } from "../sessions.js";
 import { getAppVersion } from "../util/version.js";
-import { AsterStore, type AsterConversationProject, type AsterConversation, type AsterConversationStatus, type AsterPrincipal, type AsterScope } from "./aster-store.js";
-import { AsterConfigError, findAsterWorkspace, loadAsterServerConfig, type AsterProviderConfig } from "./aster-workspaces.js";
-import { isSelectableModel, modelsResponse } from "./aster-models.js";
-import type { AsterArtifact, AsterCellProject } from "./aster-cell-runtime.js";
-import { AsterGitHub, AsterGitHubError, REPOSITORY_FULL_NAME_RE } from "./aster-github.js";
-import { AsterMemory } from "./aster-memory.js";
-import { AsterGitHubProxy, createAsterGitHubGrantToken } from "./aster-github-proxy.js";
-import { AsterPush } from "./aster-push.js";
-import { handleAsterPairing, PairingRequestError } from "./aster-pairing.js";
-import { containsLikelyProviderSecret, createAsterTools, findLikelyProviderSecret, redactLikelySecrets, assertAsterCellPath } from "./aster-tools.js";
+import { DlStore, type DlConversationProject, type DlConversation, type DlConversationStatus, type DlPrincipal, type DlScope } from "./dl-store.js";
+import { serverEnv } from "./dl-compat.js";
+import { DlConfigError, findDlWorkspace, loadDlServerConfig, type DlProviderConfig } from "./dl-workspaces.js";
+import { isSelectableModel, modelsResponse } from "./dl-models.js";
+import type { DlArtifact, DlCellProject } from "./dl-cell-runtime.js";
+import { DlGitHub, DlGitHubError, REPOSITORY_FULL_NAME_RE } from "./dl-github.js";
+import { DlMemory } from "./dl-memory.js";
+import { DlGitHubProxy, createDlGitHubGrantToken } from "./dl-github-proxy.js";
+import { DlPush } from "./dl-push.js";
+import { handleDlPairing, PairingRequestError } from "./dl-pairing.js";
+import { containsLikelyProviderSecret, createDlTools, findLikelyProviderSecret, redactLikelySecrets, assertDlCellPath } from "./dl-tools.js";
 
 const API_PREFIX = "/api/v1";
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -30,15 +31,15 @@ const CLIENT_TURN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CREATE_IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_APPROVAL_ARG_BYTES = 24 * 1024;
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ALLOWED_ASTER_TOOLS = ["read", "write", "edit"] as const;
+const ALLOWED_DL_TOOLS = ["read", "write", "edit"] as const;
 const BASE_COMMIT_RE = /^[0-9a-f]{40}$/;
 // Keeps the whole create request under MAX_BODY_BYTES once JSON-escaped.
 const MAX_PATCH_CHARS = 3 * 1024 * 1024;
 const MAX_LISTED_CONVERSATIONS = 200;
 
-export interface AsterTurnStart {
+export interface DlTurnStart {
   runId: string;
-  conversation: AsterConversation;
+  conversation: DlConversation;
   cellId: string;
   cellEventCursor: number;
   userText: string;
@@ -60,30 +61,30 @@ export interface AsterTurnStart {
   beforeFinish?: () => Promise<void>;
 }
 
-export interface AsterApiRuntime {
-  provisionConversation?: (input: { conversationId: string; sessionId: string; cellName: string; workspaceId: string; workspaceRoot: string; model: string; provider: AsterProviderConfig; allowCreate: boolean; onCellCreated: (cellId: string) => void; project?: AsterCellProject }) => Promise<{ cellId: string }>;
+export interface DlApiRuntime {
+  provisionConversation?: (input: { conversationId: string; sessionId: string; cellName: string; workspaceId: string; workspaceRoot: string; model: string; provider: DlProviderConfig; allowCreate: boolean; onCellCreated: (cellId: string) => void; project?: DlCellProject }) => Promise<{ cellId: string }>;
   findConversationCell?: (conversationId: string) => Promise<{ cellId: string } | undefined>;
   destroyCell?: (cellId: string) => Promise<void>;
   pauseCell?: (cellId: string) => Promise<void>;
   resumeCell?: (cellId: string) => Promise<void>;
-  startTurn: (turn: AsterTurnStart) => void;
+  startTurn: (turn: DlTurnStart) => void;
   /** Re-attach to a turn the cell kept running across a server restart. */
-  resumeTurn?: (turn: AsterTurnStart) => void;
+  resumeTurn?: (turn: DlTurnStart) => void;
   cancelRun: (runId: string) => void;
   setModel?: (cellId: string, model: string) => Promise<void>;
-  listCheckpoints?: (cellId: string) => Promise<AsterCheckpointInfo[]>;
-  restoreCheckpoint?: (cellId: string, conversationId: string, checkpointId: string) => Promise<AsterCheckpointInfo>;
-  listArtifacts?: (cellId: string) => Promise<AsterArtifact[]>;
+  listCheckpoints?: (cellId: string) => Promise<DlCheckpointInfo[]>;
+  restoreCheckpoint?: (cellId: string, conversationId: string, checkpointId: string) => Promise<DlCheckpointInfo>;
+  listArtifacts?: (cellId: string) => Promise<DlArtifact[]>;
   readArtifact?: (cellId: string, path: string) => Promise<{ data: Buffer; mimeType: string; name: string }>;
 }
 
-export interface AsterCheckpointInfo {
+export interface DlCheckpointInfo {
   id: string;
   message: string;
   createdAt: string;
 }
 
-interface AsterWaiter {
+interface DlWaiter {
   resolve: (decision: "allow" | "deny") => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -94,24 +95,24 @@ interface HttpFailure {
   message: string;
 }
 
-export class AsterApi {
-  private store: AsterStore | undefined;
+export class DlApi {
+  private store: DlStore | undefined;
   private recovery: Promise<void> | undefined;
-  private readonly waiters = new Map<string, AsterWaiter>();
+  private readonly waiters = new Map<string, DlWaiter>();
   private readonly connectedEventStreams = new Map<string, number>();
-  private readonly runtime: AsterApiRuntime;
+  private readonly runtime: DlApiRuntime;
   private readonly config: AutopilotConfig;
 
-  private readonly github: AsterGitHub;
+  private readonly github: DlGitHub;
 
-  private memory: AsterMemory | undefined;
+  private memory: DlMemory | undefined;
 
   constructor(
     config: AutopilotConfig,
-    runtime: AsterApiRuntime,
-    github: AsterGitHub = new AsterGitHub(),
-    memory?: AsterMemory,
-    push?: Pick<AsterPush, "configured" | "notify" | "close" | "register" | "unregister">,
+    runtime: DlApiRuntime,
+    github: DlGitHub = new DlGitHub(),
+    memory?: DlMemory,
+    push?: Pick<DlPush, "configured" | "notify" | "close" | "register" | "unregister">,
   ) {
     this.config = config;
     this.runtime = runtime;
@@ -120,54 +121,54 @@ export class AsterApi {
     this.push = push;
   }
 
-  private githubProxy: AsterGitHubProxy | undefined;
+  private githubProxy: DlGitHubProxy | undefined;
   /** Where cells reach the repository-scoped GitHub proxy, when it is running. */
   private githubProxyUrl: string | undefined;
 
   /**
    * Starts the repository-scoped GitHub proxy when configured
-   * (AUTOPILOT_ASTER_GITHUB_PROXY_LISTEN=host:port, AUTOPILOT_ASTER_GITHUB_PROXY_URL as cells see it).
+   * (AUTOPILOT_SERVER_GITHUB_PROXY_LISTEN=host:port, AUTOPILOT_SERVER_GITHUB_PROXY_URL as cells see it).
    */
   async startGitHubProxy(env: NodeJS.ProcessEnv = process.env): Promise<void> {
-    const listen = env.AUTOPILOT_ASTER_GITHUB_PROXY_LISTEN;
-    const publicUrl = env.AUTOPILOT_ASTER_GITHUB_PROXY_URL;
+    const listen = serverEnv(env, "GITHUB_PROXY_LISTEN");
+    const publicUrl = serverEnv(env, "GITHUB_PROXY_URL");
     const token = env.GITHUB_TOKEN;
     if (!listen || !publicUrl || !token || this.githubProxy) return;
     const separator = listen.lastIndexOf(":");
-    const proxy = new AsterGitHubProxy({ token, resolveGrant: (grant) => this.getStore().resolveGitHubGrant(grant) });
+    const proxy = new DlGitHubProxy({ token, resolveGrant: (grant) => this.getStore().resolveGitHubGrant(grant) });
     await proxy.listen(Number(listen.slice(separator + 1)), listen.slice(0, separator));
     this.githubProxy = proxy;
     this.githubProxyUrl = publicUrl.replace(/\/+$/, "");
   }
 
-  private push: Pick<AsterPush, "configured" | "notify" | "close" | "register" | "unregister"> | undefined;
+  private push: Pick<DlPush, "configured" | "notify" | "close" | "register" | "unregister"> | undefined;
 
-  private getPush(): Pick<AsterPush, "configured" | "notify" | "close" | "register" | "unregister"> | undefined {
+  private getPush(): Pick<DlPush, "configured" | "notify" | "close" | "register" | "unregister"> | undefined {
     try {
-      return this.push ??= new AsterPush();
+      return this.push ??= new DlPush();
     } catch {
       return undefined;
     }
   }
 
   /** "Your task finished" (or failed) on the user's devices; cancelled turns stay silent. */
-  private notifyTurnEnd(store: AsterStore, conversationId: string, runId: string, status: string, reason: string | undefined, userText: string, after: number): void {
+  private notifyTurnEnd(store: DlStore, conversationId: string, runId: string, status: string, reason: string | undefined, userText: string, after: number): void {
     if (status !== "completed" && status !== "failed") return;
     if ((this.connectedEventStreams.get(conversationId) ?? 0) > 0) return;
     const push = this.getPush();
     if (!push?.configured) return;
     const reply = status === "completed" ? collectAssistantText(store, conversationId, runId, after).trim() : "";
-    const title = userText.trim().split("\n")[0] || "Aster";
+    const title = userText.trim().split("\n")[0] || "dl server";
     const body = status === "completed"
       ? (reply ? `✅ ${reply}` : "✅ Done")
       : `⚠️ Couldn’t finish${reason && reason !== "error" ? `: ${reason}` : ""}`;
     void push.notify({ title, body, conversationId });
   }
 
-  private getMemory(): AsterMemory | undefined {
-    if (process.env.AUTOPILOT_ASTER_MEMORY === "off") return undefined;
+  private getMemory(): DlMemory | undefined {
+    if (serverEnv(process.env, "MEMORY") === "off") return undefined;
     try {
-      return this.memory ??= new AsterMemory();
+      return this.memory ??= new DlMemory();
     } catch {
       return undefined;
     }
@@ -178,14 +179,14 @@ export class AsterApi {
     try {
       const store = this.getStore();
       // Device pairing and owner claim run before bearer auth: they are how a client gets one.
-      if (await handleAsterPairing(req, res, url, store)) return;
+      if (await handleDlPairing(req, res, url, store)) return;
       const principal = store.authenticate(req.headers.authorization);
       if (!principal) {
-        sendError(res, 401, "invalid_credential", "A valid Aster bearer credential is required");
+        sendError(res, 401, "invalid_credential", "A valid dl server bearer credential is required");
         return;
       }
       await this.ensureRecovered(store);
-      const config = await loadAsterServerConfig();
+      const config = await loadDlServerConfig();
       const method = req.method ?? "GET";
       const path = url.pathname;
 
@@ -252,7 +253,7 @@ export class AsterApi {
         if (typeof body.workspaceId !== "string" || !principal.workspaceIds.includes(body.workspaceId)) {
           return sendError(res, 403, "workspace_forbidden", "Workspace ID is not in this credential's scope");
         }
-        const workspace = findAsterWorkspace(config, body.workspaceId);
+        const workspace = findDlWorkspace(config, body.workspaceId);
         if (!workspace) return sendError(res, 404, "workspace_not_found", "Workspace is not configured");
         if (typeof body.model !== "string" || !(await isSelectableModel(config, body.model))) {
           return sendError(res, 400, "model_not_allowed", "Select a model from the configured model list");
@@ -324,7 +325,7 @@ export class AsterApi {
           });
           return json(res, 201, { repository });
         } catch (error) {
-          if (error instanceof AsterGitHubError) return sendError(res, error.status, error.code, error.message);
+          if (error instanceof DlGitHubError) return sendError(res, error.status, error.code, error.message);
           throw error;
         }
       }
@@ -505,12 +506,12 @@ export class AsterApi {
         return this.resolveApproval(res, store, approval.id, body.decision);
       }
 
-      return sendError(res, 404, "not_found", "Aster endpoint not found");
+      return sendError(res, 404, "not_found", "dl server endpoint not found");
     } catch (error) {
       if (isHttpFailure(error)) return sendError(res, error.status, error.code, error.message);
       if (error instanceof PairingRequestError) return sendError(res, error.status, error.code, error.message);
-      if (error instanceof AsterConfigError) return sendError(res, 503, "aster_not_configured", "Aster workspaces/models are not configured");
-      return sendError(res, 500, "internal_error", "Aster request could not be completed");
+      if (error instanceof DlConfigError) return sendError(res, 503, "dl_not_configured", "dl server workspaces/models are not configured");
+      return sendError(res, 500, "internal_error", "dl server request could not be completed");
     }
   }
 
@@ -530,15 +531,15 @@ export class AsterApi {
     this.push = undefined;
   }
 
-  private getStore(): AsterStore {
-    return this.store ??= new AsterStore();
+  private getStore(): DlStore {
+    return this.store ??= new DlStore();
   }
 
-  private hasScope(principal: AsterPrincipal, scope: AsterScope): boolean {
+  private hasScope(principal: DlPrincipal, scope: DlScope): boolean {
     return principal.scopes.includes(scope);
   }
 
-  private async authorizedConversation(store: AsterStore, principal: AsterPrincipal, id: string): Promise<AsterConversation | undefined> {
+  private async authorizedConversation(store: DlStore, principal: DlPrincipal, id: string): Promise<DlConversation | undefined> {
     if (!CONVERSATION_ID_RE.test(id)) return undefined;
     const conversation = store.getConversation(id);
     const mapping = store.getCellMapping(id);
@@ -549,7 +550,7 @@ export class AsterApi {
       try {
         const run = runs.getRun(activeRunId);
         if (run && ["interrupted_unknown", "cancelled", "failed", "completed"].includes(run.status)) {
-          const status: AsterConversationStatus = run.status === "completed" ? "completed" : run.status === "cancelled" ? "cancelled" : "interrupted";
+          const status: DlConversationStatus = run.status === "completed" ? "completed" : run.status === "cancelled" ? "cancelled" : "interrupted";
           store.updateConversationStatus(conversation.id, activeRunId, status, { reason: "run_recovered" });
           return store.getConversation(id);
         }
@@ -560,7 +561,7 @@ export class AsterApi {
     return conversation;
   }
 
-  private async ensureRecovered(store: AsterStore): Promise<void> {
+  private async ensureRecovered(store: DlStore): Promise<void> {
     if (this.recovery) return this.recovery;
     this.recovery = (async () => {
       const runs = new RunStore();
@@ -578,7 +579,7 @@ export class AsterApi {
         for (const conversation of store.listActiveConversations()) {
           const run = conversation.activeRunId ? runs.getRun(conversation.activeRunId) : undefined;
           if (!run || ["interrupted_unknown", "cancelled", "failed", "completed"].includes(run.status)) {
-            const status: AsterConversationStatus = run?.status === "completed" ? "completed" : run?.status === "cancelled" ? "cancelled" : "interrupted";
+            const status: DlConversationStatus = run?.status === "completed" ? "completed" : run?.status === "cancelled" ? "cancelled" : "interrupted";
             store.updateConversationStatus(conversation.id, conversation.activeRunId!, status, { reason: "server_restart_recovery" });
           } else if (run.status === "needs_input") {
             runs.transition(run.id, "cancelled", "approval_expired_on_restart");
@@ -602,7 +603,7 @@ export class AsterApi {
   }
 
   /** A turn handle for re-attaching to a cell turn after a restart (no prompt is sent). */
-  private cellTurn(store: AsterStore, conversation: AsterConversation, runId: string, cellId: string, cursor: number, userText: string): AsterTurnStart {
+  private cellTurn(store: DlStore, conversation: DlConversation, runId: string, cellId: string, cursor: number, userText: string): DlTurnStart {
     const publishEvent = (type: string, data: Record<string, unknown>) => {
       store.appendEvent(conversation.id, runId, type, data);
     };
@@ -638,11 +639,11 @@ export class AsterApi {
 
   private async createConversation(
     res: ServerResponse,
-    store: AsterStore,
-    principal: AsterPrincipal,
+    store: DlStore,
+    principal: DlPrincipal,
     workspace: { id: string; displayName: string; rootPath: string },
     model: string,
-    provider: AsterProviderConfig,
+    provider: DlProviderConfig,
     idempotencyKey: string,
     kind?: "chat" | "code",
     repository?: string,
@@ -656,7 +657,7 @@ export class AsterApi {
       workspaceId: workspace.id,
       model,
       sessionId: candidateSessionId,
-      cellName: `aster-${candidateId}`,
+      cellName: `dl-${candidateId}`,
       idempotencyKey,
       kind,
       ...(repository ? { repository } : {}),
@@ -676,7 +677,7 @@ export class AsterApi {
     }
 
     // The project is fixed on first attempt; retries with the same Idempotency-Key reuse it.
-    let project: AsterCellProject | undefined;
+    let project: DlCellProject | undefined;
     if (kind) {
       let stored = store.getConversationProject(mapping.conversationId);
       if (!stored) {
@@ -685,15 +686,15 @@ export class AsterApi {
           try {
             repo = await this.github.getRepository(repository!);
           } catch (error) {
-            if (error instanceof AsterGitHubError) return sendError(res, error.status, error.code, error.message);
+            if (error instanceof DlGitHubError) return sendError(res, error.status, error.code, error.message);
             throw error;
           }
           store.setConversationProject(mapping.conversationId, {
             kind,
             repository: repo.fullName,
-            branch: `aster/${mapping.conversationId.slice(0, 8)}`,
+            branch: `dl/${mapping.conversationId.slice(0, 8)}`,
           });
-          stored = { kind, repository: repo.fullName, branch: `aster/${mapping.conversationId.slice(0, 8)}` };
+          stored = { kind, repository: repo.fullName, branch: `dl/${mapping.conversationId.slice(0, 8)}` };
           project = { kind, repository: repo.fullName, baseBranch: repo.defaultBranch, branch: stored.branch! };
         } else {
           store.setConversationProject(mapping.conversationId, { kind, repository: null, branch: null });
@@ -710,7 +711,7 @@ export class AsterApi {
         if (changes.patch) project.patch = changes.patch;
       }
       if (project.kind === "code" && project.repository && this.githubProxyUrl) {
-        const grantToken = createAsterGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", mapping.conversationId, project.repository, project.branch!);
+        const grantToken = createDlGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", mapping.conversationId, project.repository, project.branch!);
         store.createGitHubGrant(mapping.conversationId, grantToken);
         project.github = {
           token: grantToken,
@@ -754,7 +755,7 @@ export class AsterApi {
         createdAt: new Date(mapping.createdAt).toISOString(),
         updatedAt: new Date().toISOString(),
         messages: [],
-        title: "Aster conversation",
+        title: "dl server conversation",
       };
       await saveSession(sessionFile);
       store.setCellStatus(mapping.conversationId, "ready");
@@ -763,7 +764,7 @@ export class AsterApi {
     } catch (error) {
       // The client only gets a generic 503; the operator needs the reason (e.g. a missing gateway).
       const code = error && typeof error === "object" && "code" in error ? ` (${String((error as { code: unknown }).code)})` : "";
-      process.stderr.write(`aster: conversation ${mapping.conversationId} failed to provision${code}: ${redactLikelySecrets(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`);
+      process.stderr.write(`dl server: conversation ${mapping.conversationId} failed to provision${code}: ${redactLikelySecrets(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`);
       const current = store.getCellMapping(mapping.conversationId);
       if (current?.cellId && this.runtime.destroyCell) {
         try {
@@ -781,8 +782,8 @@ export class AsterApi {
 
   private async appendTurn(
     res: ServerResponse,
-    store: AsterStore,
-    conversation: AsterConversation,
+    store: DlStore,
+    conversation: DlConversation,
     clientTurnId: string | undefined,
     requestText: string,
     text: string,
@@ -877,13 +878,13 @@ export class AsterApi {
           task: text,
           cwd: conversation.cwd,
           sessionId: conversation.sessionId,
-          allowedTools: [...ALLOWED_ASTER_TOOLS],
+          allowedTools: [...ALLOWED_DL_TOOLS],
         });
         runStore.transition(runId, "running");
       } finally {
         runStore.close();
       }
-      const tools = createAsterTools(conversation.cwd);
+      const tools = createDlTools(conversation.cwd);
       const executor = new ToolExecutor(tools);
       executor.unregister("expand_artifact");
       const allowedTools = new Set(tools.map((tool) => tool.name));
@@ -894,11 +895,11 @@ export class AsterApi {
       const conversationProject = store.getConversationProject(conversation.id);
       const githubProxy = conversationProject?.kind === "code" && conversationProject.repository && conversationProject.branch && this.githubProxyUrl
         ? {
-            token: createAsterGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", conversation.id, conversationProject.repository, conversationProject.branch),
+            token: createDlGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", conversation.id, conversationProject.repository, conversationProject.branch),
             gitUrl: `${this.githubProxyUrl}/git`,
           }
         : undefined;
-      const active: AsterTurnStart = {
+      const active: DlTurnStart = {
         runId,
         conversation,
         cellId: cellMapping.cellId,
@@ -964,7 +965,7 @@ export class AsterApi {
       try {
         const run = runs.getRun(runId);
         if (run && ["queued", "running", "waiting", "needs_input"].includes(run.status)) {
-          runs.transition(runId, "failed", "aster_turn_start_failed");
+          runs.transition(runId, "failed", "dl_turn_start_failed");
           runs.cancelTimersForRun(runId);
         }
       } finally {
@@ -978,8 +979,8 @@ export class AsterApi {
   }
 
   private async askForApproval(
-    store: AsterStore,
-    conversation: AsterConversation,
+    store: DlStore,
+    conversation: DlConversation,
     runId: string,
     request: PermissionRequest,
     publish: (type: string, data: Record<string, unknown>) => void,
@@ -991,14 +992,14 @@ export class AsterApi {
       return "deny";
     }
     try {
-      assertAsterCellPath(request.args.path);
+      assertDlCellPath(request.args.path);
     } catch {
       publish("tool.activity", { tool: request.tool.name, activity: "rejected", reason: "workspace_path_forbidden" });
       return "deny";
     }
     const file = typeof request.args.path === "string" ? request.args.path.split(/[\\/]/).filter(Boolean).slice(-2).join("/") : "workspace file";
     const explanation = request.tool.name === "write" ? `Create or replace ${file} in this workspace` : `Edit ${file} in this workspace`;
-    const config = await loadAsterServerConfig();
+    const config = await loadDlServerConfig();
     const approval = store.createApproval({
       conversationId: conversation.id,
       runId,
@@ -1034,13 +1035,13 @@ export class AsterApi {
     });
   }
 
-  private async expireApproval(store: AsterStore, id: string): Promise<void> {
+  private async expireApproval(store: DlStore, id: string): Promise<void> {
     const approval = store.expireApproval(id);
     if (!approval || approval.status !== "expired") return;
     await this.resumeAfterApproval(store, approval, "deny", "expired");
   }
 
-  private async resolveApproval(res: ServerResponse, store: AsterStore, id: string, decision: "allow" | "deny"): Promise<void> {
+  private async resolveApproval(res: ServerResponse, store: DlStore, id: string, decision: "allow" | "deny"): Promise<void> {
     const result = store.resolveApproval(id, decision);
     if (!result.approval) {
       sendError(res, 404, "approval_not_found", "Approval not found");
@@ -1064,7 +1065,7 @@ export class AsterApi {
     sendError(res, 409, "approval_not_pending", "Approval is not pending");
   }
 
-  private async resumeAfterApproval(store: AsterStore, approval: import("./aster-store.js").AsterApproval, decision: "allow" | "deny", status: string): Promise<void> {
+  private async resumeAfterApproval(store: DlStore, approval: import("./dl-store.js").DlApproval, decision: "allow" | "deny", status: string): Promise<void> {
     const runs = new RunStore();
     try {
       const run = runs.getRun(approval.runId);
@@ -1085,7 +1086,7 @@ export class AsterApi {
     }
   }
 
-  private async pauseConversation(res: ServerResponse, store: AsterStore, conversation: AsterConversation): Promise<void> {
+  private async pauseConversation(res: ServerResponse, store: DlStore, conversation: DlConversation): Promise<void> {
     const mapping = store.getCellMapping(conversation.id);
     if (!mapping || !mapping.cellId) return sendError(res, 409, "cell_not_ready", "Conversation cell is not ready");
     if (mapping.status === "paused") return json(res, 200, { ...publicConversation(conversation), cellStatus: "paused" });
@@ -1103,7 +1104,7 @@ export class AsterApi {
     }
   }
 
-  private async resumeConversation(res: ServerResponse, store: AsterStore, conversation: AsterConversation): Promise<void> {
+  private async resumeConversation(res: ServerResponse, store: DlStore, conversation: DlConversation): Promise<void> {
     const mapping = store.getCellMapping(conversation.id);
     if (!mapping || !mapping.cellId) return sendError(res, 409, "cell_not_ready", "Conversation cell is not ready");
     if (mapping.status !== "paused") return json(res, 200, { ...publicConversation(conversation), cellStatus: mapping.status });
@@ -1120,7 +1121,7 @@ export class AsterApi {
     }
   }
 
-  private async destroyConversation(res: ServerResponse, store: AsterStore, conversation: AsterConversation): Promise<void> {
+  private async destroyConversation(res: ServerResponse, store: DlStore, conversation: DlConversation): Promise<void> {
     const mapping = store.getCellMapping(conversation.id);
     if (!mapping) return sendError(res, 404, "conversation_not_found", "Conversation not found");
     if (mapping.status === "destroyed") return json(res, 200, { conversationId: conversation.id, status: "destroyed" });
@@ -1151,7 +1152,7 @@ export class AsterApi {
   }
 
   /** The conversation's cell id when it can take control requests; otherwise sends the error. */
-  private readyCell(res: ServerResponse, store: AsterStore, conversationId: string): string | undefined {
+  private readyCell(res: ServerResponse, store: DlStore, conversationId: string): string | undefined {
     const mapping = store.getCellMapping(conversationId);
     if (mapping?.status === "paused") {
       sendError(res, 409, "conversation_paused", "Conversation is paused; resume it first");
@@ -1167,10 +1168,10 @@ export class AsterApi {
   /** Switch the cell session first, then the record, so a failed switch leaves both on the old model. */
   private async switchModel(
     res: ServerResponse,
-    store: AsterStore,
-    conversation: AsterConversation,
+    store: DlStore,
+    conversation: DlConversation,
     model: string,
-  ): Promise<AsterConversation | undefined> {
+  ): Promise<DlConversation | undefined> {
     if (conversation.activeRunId) {
       sendError(res, 409, "conversation_busy", "A turn is already active for this conversation");
       return undefined;
@@ -1200,7 +1201,7 @@ export class AsterApi {
     return store.getConversation(conversation.id);
   }
 
-  private async cancelConversation(res: ServerResponse, store: AsterStore, conversation: AsterConversation): Promise<void> {
+  private async cancelConversation(res: ServerResponse, store: DlStore, conversation: DlConversation): Promise<void> {
     const runId = conversation.activeRunId;
     if (!runId) {
       json(res, 200, publicConversation(conversation));
@@ -1220,7 +1221,7 @@ export class AsterApi {
     try {
       const run = runs.getRun(runId);
       if (run && ["queued", "running", "waiting", "needs_input"].includes(run.status)) {
-        runs.transition(runId, "cancelled", "cancelled_by_aster_client");
+        runs.transition(runId, "cancelled", "cancelled_by_dl_client");
         runs.cancelTimersForRun(runId);
       }
     } finally {
@@ -1233,7 +1234,7 @@ export class AsterApi {
     json(res, 200, updated ? publicConversation(updated) : { conversationId: conversation.id, status: "cancelled" });
   }
 
-  private streamEvents(req: IncomingMessage, res: ServerResponse, store: AsterStore, conversationId: string, cursor: number): void {
+  private streamEvents(req: IncomingMessage, res: ServerResponse, store: DlStore, conversationId: string, cursor: number): void {
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-store",
@@ -1282,7 +1283,7 @@ export class AsterApi {
     void pump();
   }
 
-  private async recover(store: AsterStore): Promise<void> {
+  private async recover(store: DlStore): Promise<void> {
     if (this.recovery) return this.recovery;
     this.recovery = (async () => {
       const runs = new RunStore();
@@ -1300,7 +1301,7 @@ export class AsterApi {
         for (const conversation of store.listActiveConversations()) {
           const run = conversation.activeRunId ? runs.getRun(conversation.activeRunId) : undefined;
           if (!run || ["interrupted_unknown", "cancelled", "failed", "completed"].includes(run.status)) {
-            const status: AsterConversationStatus = run?.status === "completed" ? "completed" : run?.status === "cancelled" ? "cancelled" : "interrupted";
+            const status: DlConversationStatus = run?.status === "completed" ? "completed" : run?.status === "cancelled" ? "cancelled" : "interrupted";
             store.updateConversationStatus(conversation.id, conversation.activeRunId!, status, { reason: "server_restart_recovery" });
           } else if (run.status === "needs_input") {
             runs.transition(run.id, "cancelled", "approval_expired_on_restart");
@@ -1314,7 +1315,7 @@ export class AsterApi {
     return this.recovery;
   }
 
-  private async requireConversation(store: AsterStore, principal: AsterPrincipal, id: string): Promise<AsterConversation | undefined> {
+  private async requireConversation(store: DlStore, principal: DlPrincipal, id: string): Promise<DlConversation | undefined> {
     if (!CONVERSATION_ID_RE.test(id)) return undefined;
     const conversation = store.getConversation(id);
     const mapping = store.getCellMapping(id);
@@ -1330,7 +1331,7 @@ function parseCursor(header: string | string[] | undefined, query: string | null
 }
 
 /** The assistant's streamed reply for one run, rebuilt from its journaled deltas. */
-function collectAssistantText(store: AsterStore, conversationId: string, runId: string, after: number): string {
+function collectAssistantText(store: DlStore, conversationId: string, runId: string, after: number): string {
   let text = "";
   let cursor = after;
   for (;;) {
@@ -1348,7 +1349,7 @@ function collectAssistantText(store: AsterStore, conversationId: string, runId: 
   return text;
 }
 
-function publicConversation(conversation: AsterConversation, project?: AsterConversationProject): Record<string, unknown> {
+function publicConversation(conversation: DlConversation, project?: DlConversationProject): Record<string, unknown> {
   return {
     ...(project ? { kind: project.kind, repository: project.repository, branch: project.branch } : {}),
     ...(conversation.pullRequestNumber ? { pullRequestNumber: conversation.pullRequestNumber } : {}),
@@ -1364,7 +1365,7 @@ function publicConversation(conversation: AsterConversation, project?: AsterConv
   };
 }
 
-function publicApproval(approval: import("./aster-store.js").AsterApproval): Record<string, unknown> {
+function publicApproval(approval: import("./dl-store.js").DlApproval): Record<string, unknown> {
   return {
     approvalId: approval.id,
     conversationId: approval.conversationId,

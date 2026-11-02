@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 function remote(name: string): RemoteServer {
-  return { name, url: `https://${name}.example.com`, token: `aster_${name}`, credentialId: `cred-${name}`, expiresAt: "2027-01-01T00:00:00.000Z", addedAt: "2026-10-01T00:00:00.000Z" };
+  return { name, url: `https://${name}.example.com`, token: `dl_${name}`, credentialId: `cred-${name}`, expiresAt: "2027-01-01T00:00:00.000Z", addedAt: "2026-10-01T00:00:00.000Z" };
 }
 
 describe("remote server config", () => {
@@ -41,9 +41,9 @@ describe("remote server config", () => {
     assert.equal((await resolveRemote(undefined, path)).name, "acme");
 
     await saveRemote(remote("home"), path);
-    await saveRemote({ ...remote("acme"), token: "aster_replaced" }, path);
+    await saveRemote({ ...remote("acme"), token: "dl_replaced" }, path);
     assert.deepEqual((await loadRemotes(path)).map((entry) => entry.name), ["home", "acme"]);
-    assert.equal((await resolveRemote("acme", path)).token, "aster_replaced");
+    assert.equal((await resolveRemote("acme", path)).token, "dl_replaced");
     await assert.rejects(() => resolveRemote(undefined, path), /pick one with --on/);
     await assert.rejects(() => resolveRemote("nope", path), /No server named "nope"/);
 

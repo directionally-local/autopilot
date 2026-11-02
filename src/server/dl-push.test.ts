@@ -4,16 +4,16 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AsterPush } from "./aster-push.js";
+import { DlPush } from "./dl-push.js";
 
-describe("Aster push", () => {
+describe("dl server push", () => {
   it("signs an ES256 provider token, sends to each device's environment, and drops dead tokens", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "aster-push-"));
+    const dir = mkdtempSync(join(tmpdir(), "dl-push-"));
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const keyPath = join(dir, "AuthKey_TEST.p8");
     writeFileSync(keyPath, privateKey.export({ type: "pkcs8", format: "pem" }));
     const sent: Array<{ host: string; token: string; headers: Record<string, string>; payload: string }> = [];
-    const push = new AsterPush(join(dir, "aster.db"), {
+    const push = new DlPush(join(dir, "dl.db"), {
       keyPath, keyId: "KEY123", teamId: "TEAM456", topic: "com.aster.ai",
       deliver: async (input) => { sent.push(input); return input.token.startsWith("dead") ? 410 : 200; },
     }, {});
@@ -62,8 +62,8 @@ describe("Aster push", () => {
   });
 
   it("records devices but stays silent without an APNs key", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "aster-push-"));
-    const push = new AsterPush(join(dir, "aster.db"), {}, {});
+    const dir = mkdtempSync(join(tmpdir(), "dl-push-"));
+    const push = new DlPush(join(dir, "dl.db"), {}, {});
     try {
       assert.equal(push.configured, false);
       assert.ok(push.register("c".repeat(64), "production"));

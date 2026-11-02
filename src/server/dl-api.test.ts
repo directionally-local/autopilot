@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { AutopilotConfig } from "../config.js";
-import { AsterGitHub, AsterGitHubError } from "./aster-github.js";
-import { AsterApi, type AsterTurnStart } from "./aster-api.js";
-import { AsterStore } from "./aster-store.js";
-import type { AsterPushMessage } from "./aster-push.js";
+import { DlGitHub, DlGitHubError } from "./dl-github.js";
+import { DlApi, type DlTurnStart } from "./dl-api.js";
+import { DlStore } from "./dl-store.js";
+import type { DlPushMessage } from "./dl-push.js";
 import { startServer } from "./index.js";
 import { RunStore } from "../runs/store.js";
 import { saveSession } from "../sessions.js";
@@ -26,28 +26,28 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-describe("Aster control-plane API", () => {
+describe("dl server control-plane API", () => {
   it("runs follow-up turns through an injected cell runtime with SSE replay", async () => {
-    const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-live-route-")));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-dl-live-route-")));
     tempDirs.push(root);
     const workspaceRoot = join(root, "repo");
     await mkdir(workspaceRoot);
     git(["init", "--quiet", "--initial-branch=main"], workspaceRoot);
-    git(["config", "user.name", "Aster integration test"], workspaceRoot);
-    git(["config", "user.email", "aster-integration@example.invalid"], workspaceRoot);
+    git(["config", "user.name", "dl server integration test"], workspaceRoot);
+    git(["config", "user.email", "dl-integration@example.invalid"], workspaceRoot);
     await writeFile(join(workspaceRoot, "README.md"), "starter\n");
     git(["add", "."], workspaceRoot);
     git(["commit", "--quiet", "-m", "initial"], workspaceRoot);
 
-    const configPath = join(root, "aster.json");
+    const configPath = join(root, "server.json");
     await writeFile(configPath, JSON.stringify({ models: ["test/model"], workspaces: [{ id: "default", displayName: "Default", rootPath: workspaceRoot }] }));
-    setEnv("AUTOPILOT_ASTER_CONFIG", configPath);
-    setEnv("AUTOPILOT_ASTER_DB", join(root, "state", "aster.db"));
+    setEnv("AUTOPILOT_SERVER_CONFIG", configPath);
+    setEnv("AUTOPILOT_SERVER_DB", join(root, "state", "dl.db"));
     setEnv("AUTOPILOT_RUNS_DB", join(root, "state", "runs.db"));
     setEnv("XDG_DATA_HOME", join(root, "data"));
     setEnv("XDG_STATE_HOME", join(root, "state-home"));
     setEnv("KIMIFLARE_SERVER_PASSWORD", "legacy-only-secret");
-    const credentialStore = new AsterStore();
+    const credentialStore = new DlStore();
     const credential = credentialStore.createCredential({
       name: "integration",
       workspaceIds: ["default"],
@@ -56,12 +56,12 @@ describe("Aster control-plane API", () => {
     });
     credentialStore.close();
 
-    const turns: AsterTurnStart[] = [];
+    const turns: DlTurnStart[] = [];
     const server = await startServer({
       port: 0,
       hostname: "127.0.0.1",
       config: { openrouterApiKey: "test-provider-key", model: "test/model" } as AutopilotConfig,
-      asterRuntime: {
+      dlRuntime: {
         provisionConversation: async (input) => {
           input.onCellCreated(`cell-${input.conversationId}`);
           return { cellId: `cell-${input.conversationId}` };
@@ -176,26 +176,26 @@ describe("Aster control-plane API", () => {
     }
   });
 
-  it("uses Bearer auth for Aster routes and keeps legacy Basic auth separate", async () => {
-    const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-auth-")));
+  it("uses Bearer auth for dl server routes and keeps legacy Basic auth separate", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-dl-auth-")));
     tempDirs.push(root);
     const workspaceRoot = join(root, "repo");
     await mkdir(workspaceRoot);
     git(["init", "--quiet", "--initial-branch=main"], workspaceRoot);
-    git(["config", "user.name", "Aster test"], workspaceRoot);
-    git(["config", "user.email", "aster-test@example.invalid"], workspaceRoot);
+    git(["config", "user.name", "dl server test"], workspaceRoot);
+    git(["config", "user.email", "dl-test@example.invalid"], workspaceRoot);
     await writeFile(join(workspaceRoot, "README.md"), "initial\n");
     git(["add", "."], workspaceRoot);
     git(["commit", "--quiet", "-m", "initial"], workspaceRoot);
-    const configPath = join(root, "aster.json");
+    const configPath = join(root, "server.json");
     await writeFile(configPath, JSON.stringify({ models: ["test/model"], workspaces: [{ id: "default", displayName: "Default", rootPath: workspaceRoot }] }));
-    setEnv("AUTOPILOT_ASTER_CONFIG", configPath);
-    setEnv("AUTOPILOT_ASTER_DB", join(root, "state", "aster.db"));
+    setEnv("AUTOPILOT_SERVER_CONFIG", configPath);
+    setEnv("AUTOPILOT_SERVER_DB", join(root, "state", "dl.db"));
     setEnv("AUTOPILOT_RUNS_DB", join(root, "state", "runs.db"));
     setEnv("XDG_DATA_HOME", join(root, "data"));
     setEnv("XDG_STATE_HOME", join(root, "state-home"));
     setEnv("KIMIFLARE_SERVER_PASSWORD", "legacy-only-secret");
-    const tokens = new AsterStore();
+    const tokens = new DlStore();
     const credential = tokens.createCredential({
       name: "auth-test",
       workspaceIds: ["default"],
@@ -213,9 +213,9 @@ describe("Aster control-plane API", () => {
         headers: { Authorization: `Basic ${Buffer.from("kimiflare:legacy-only-secret").toString("base64")}` },
       });
       assert.equal(basicOnly.status, 401);
-      const aster = await fetch(`${baseUrl}/api/v1/health`, { headers: { Authorization: `Bearer ${credential.token}` } });
-      assert.equal(aster.status, 200);
-      assert.equal(aster.headers.get("access-control-allow-origin"), null);
+      const dl = await fetch(`${baseUrl}/api/v1/health`, { headers: { Authorization: `Bearer ${credential.token}` } });
+      assert.equal(dl.status, 200);
+      assert.equal(dl.headers.get("access-control-allow-origin"), null);
       const legacyUnauthorized = await fetch(`${baseUrl}/`);
       assert.equal(legacyUnauthorized.status, 401);
       const legacyAuthorized = await fetch(`${baseUrl}/`, {
@@ -295,7 +295,7 @@ describe("Aster control-plane API", () => {
       assert.equal(secondCreate.status, 201);
       const second = await secondCreate.json() as { conversationId: string };
 
-      const store = new AsterStore();
+      const store = new DlStore();
       try {
         const firstMapping = store.getCellMapping(first.conversationId)!;
         const secondMapping = store.getCellMapping(second.conversationId)!;
@@ -308,7 +308,7 @@ describe("Aster control-plane API", () => {
       }
 
       // Cross-credential access is invisible even within the same workspace scope.
-      const otherStore = new AsterStore();
+      const otherStore = new DlStore();
       let otherToken: string;
       try {
         otherToken = otherStore.createCredential({
@@ -398,7 +398,7 @@ describe("Aster control-plane API", () => {
       const conversation = await created.json() as { conversationId: string; kind: string; repository: string; branch: string };
       assert.equal(conversation.kind, "code");
       assert.equal(conversation.repository, "me/app");
-      assert.match(conversation.branch, /^aster\/[0-9a-f]{8}$/);
+      assert.match(conversation.branch, /^dl\/[0-9a-f]{8}$/);
 
       const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, {
         clientTurnId: "code-turn-1", text: "Implement the feature",
@@ -542,7 +542,7 @@ describe("Aster control-plane API", () => {
       assert.equal(turn.status, 202);
       const approval = await waitForApproval(harness, conversation.conversationId);
       await waitForStatus(harness, conversation.conversationId, "completed");
-      const store = new AsterStore();
+      const store = new DlStore();
       try {
         assert.equal(store.getApproval(approval.id)?.status, "expired");
         const lateAllow = await request(harness, "POST", `/api/v1/approvals/${approval.id}`, { decision: "allow" });
@@ -638,7 +638,7 @@ describe("Aster control-plane API", () => {
   });
 });
 
-describe("Aster chat/code projects, GitHub, and artifacts", () => {
+describe("dl server chat/code projects, GitHub, and artifacts", () => {
   it("lists and creates repositories and provisions code and chat conversations", async () => {
     const harness = await createHarness("complete");
     try {
@@ -658,7 +658,7 @@ describe("Aster chat/code projects, GitHub, and artifacts", () => {
       const codeBody = await code.json() as { conversationId: string; kind: string; repository: string; branch: string };
       assert.equal(codeBody.kind, "code");
       assert.equal(codeBody.repository, "me/app");
-      assert.equal(codeBody.branch, `aster/${codeBody.conversationId.slice(0, 8)}`);
+      assert.equal(codeBody.branch, `dl/${codeBody.conversationId.slice(0, 8)}`);
       assert.deepEqual(harness.provisionedProjects.at(-1), { kind: "code", repository: "me/app", baseBranch: "main", branch: codeBody.branch });
 
       const chat = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model", kind: "chat" });
@@ -708,7 +708,7 @@ describe("Aster chat/code projects, GitHub, and artifacts", () => {
   });
 });
 
-describe("Aster model catalog, model switching, and checkpoints", () => {
+describe("dl server model catalog, model switching, and checkpoints", () => {
   it("names a non-OpenRouter provider in /models and hands it to cell provisioning", async () => {
     const harness = await createHarness("complete", { provider: { id: "deepseek", models: ["deepseek-v4-pro", "deepseek-flash"] } });
     try {
@@ -801,7 +801,7 @@ describe("Aster model catalog, model switching, and checkpoints", () => {
   });
 });
 
-describe("Aster device pairing and remote runs", () => {
+describe("dl server device pairing and remote runs", () => {
   it("pairs a client through the owner's browser and issues a client credential once", async () => {
     const harness = await createHarness("complete");
     try {
@@ -822,9 +822,9 @@ describe("Aster device pairing and remote runs", () => {
 
       const anonymous = await fetch(device.verificationUriComplete);
       assert.equal(anonymous.status, 401);
-      assert.match(await anonymous.text(), /autopilot aster owner link/);
+      assert.match(await anonymous.text(), /autopilot server owner link/);
 
-      const claimStore = new AsterStore();
+      const claimStore = new DlStore();
       const claim = claimStore.createOwnerClaim(60_000);
       claimStore.close();
       const claimPage = await fetch(`${harness.baseUrl}/api/v1/auth/claim?token=${claim.token}`);
@@ -835,11 +835,11 @@ describe("Aster device pairing and remote runs", () => {
       const claimed = await fetch(`${harness.baseUrl}/api/v1/auth/claim`, { ...claimForm, headers: { ...claimForm.headers, Origin: harness.baseUrl } });
       assert.equal(claimed.status, 303);
       const cookie = claimed.headers.get("set-cookie") ?? "";
-      assert.match(cookie, /^aster_owner=aster_[A-Za-z0-9_-]+; Path=\/api\/v1\/auth; .*HttpOnly; Secure; SameSite=Strict$/);
-      const ownerToken = cookie.split(";")[0]!.slice("aster_owner=".length);
+      assert.match(cookie, /^dl_owner=dl_[A-Za-z0-9_-]+; Path=\/api\/v1\/auth; .*HttpOnly; Secure; SameSite=Strict$/);
+      const ownerToken = cookie.split(";")[0]!.slice("dl_owner=".length);
       assert.equal((await fetch(`${harness.baseUrl}/api/v1/auth/claim`, { ...claimForm, headers: { ...claimForm.headers, Origin: harness.baseUrl } })).status, 410, "claim links are single-use");
 
-      const ownerPage = await fetch(device.verificationUriComplete, { headers: { Cookie: `aster_owner=${ownerToken}` } });
+      const ownerPage = await fetch(device.verificationUriComplete, { headers: { Cookie: `dl_owner=${ownerToken}` } });
       assert.equal(ownerPage.status, 200);
       const ownerHtml = await ownerPage.text();
       assert.match(ownerHtml, new RegExp(device.userCode));
@@ -847,7 +847,7 @@ describe("Aster device pairing and remote runs", () => {
 
       const approveForm = (origin: string) => fetch(`${harness.baseUrl}/api/v1/auth/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: `aster_owner=${ownerToken}`, Origin: origin },
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: `dl_owner=${ownerToken}`, Origin: origin },
         body: new URLSearchParams({ code: device.userCode, decision: "approve" }).toString(),
       });
       assert.equal((await approveForm("https://evil.example")).status, 403);
@@ -917,7 +917,7 @@ describe("Aster device pairing and remote runs", () => {
       assert.equal(runs[0]!.branch, conversation.branch);
       assert.equal((await request(harness, "GET", "/api/v1/conversations?limit=0")).status, 400);
 
-      const otherStore = new AsterStore();
+      const otherStore = new DlStore();
       const other = otherStore.createCredential({ name: "other", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
       otherStore.close();
       const otherList = await fetch(`${harness.baseUrl}/api/v1/conversations`, { headers: { Authorization: `Bearer ${other.token}` } });
@@ -933,7 +933,7 @@ interface Harness {
   token: string;
   workspaceRoot: string;
   worktreeRoot: string;
-  turns: AsterTurnStart[];
+  turns: DlTurnStart[];
   cancelledRuns: string[];
   permissionDecisions: string[];
   destroyedCells: string[];
@@ -947,27 +947,27 @@ interface Harness {
   pullRequestCreates: Array<{ repository: string; title: string; body: string; head: string; base: string }>;
   pullRequestChecks: string[];
   pullRequestMerges: number[];
-  pushes: AsterPushMessage[];
+  pushes: DlPushMessage[];
   close(): Promise<void>;
 }
 
 async function createHarness(mode: "complete" | "hang" | "approval" | "fail", options: { openRouterCatalog?: boolean; pushConfigured?: boolean; provider?: { id: string; models: string[] } } = {}): Promise<Harness> {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-api-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-dl-api-")));
   tempDirs.push(root);
   const workspaceRoot = join(root, "workspace");
   await mkdir(workspaceRoot);
   git(["init", "--quiet", "--initial-branch=main"], workspaceRoot);
-  git(["config", "user.name", "Aster test"], workspaceRoot);
-  git(["config", "user.email", "aster-test@example.invalid"], workspaceRoot);
+  git(["config", "user.name", "dl server test"], workspaceRoot);
+  git(["config", "user.email", "dl-test@example.invalid"], workspaceRoot);
   await writeFile(join(workspaceRoot, "README.md"), "starter\n");
   git(["add", "."], workspaceRoot);
   git(["commit", "--quiet", "-m", "initial"], workspaceRoot);
 
   const dataHome = join(root, "data");
   const stateHome = join(root, "state-home");
-  const asterDb = join(root, "state", "aster.db");
+  const dlDb = join(root, "state", "dl.db");
   const runsDb = join(root, "state", "runs.db");
-  const configPath = join(root, "aster.json");
+  const configPath = join(root, "server.json");
   await writeFile(configPath, JSON.stringify({
     ...(options.provider ? { provider: { id: options.provider.id } } : {}),
     models: options.provider ? options.provider.models : options.openRouterCatalog ? "openrouter" : ["test/model"],
@@ -976,11 +976,11 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   }));
   setEnv("XDG_DATA_HOME", dataHome);
   setEnv("XDG_STATE_HOME", stateHome);
-  setEnv("AUTOPILOT_ASTER_DB", asterDb);
+  setEnv("AUTOPILOT_SERVER_DB", dlDb);
   setEnv("AUTOPILOT_RUNS_DB", runsDb);
-  setEnv("AUTOPILOT_ASTER_CONFIG", configPath);
+  setEnv("AUTOPILOT_SERVER_CONFIG", configPath);
   setEnv("KIMIFLARE_SERVER_PASSWORD", "legacy-only-secret");
-  setEnv("AUTOPILOT_ASTER_MEMORY", "off");
+  setEnv("AUTOPILOT_SERVER_MEMORY", "off");
   if (options.openRouterCatalog) {
     // A fresh on-disk catalog cache, so the test never reaches the network.
     const configHome = join(root, "config-home");
@@ -997,16 +997,16 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     setEnv("XDG_CONFIG_HOME", configHome);
   }
 
-  const asterStore = new AsterStore(asterDb);
-  const credential = asterStore.createCredential({
+  const dlStore = new DlStore(dlDb);
+  const credential = dlStore.createCredential({
     name: "test-client",
     workspaceIds: ["default"],
     scopes: ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"],
     expiresAt: Date.now() + 60_000,
   });
-  asterStore.close();
+  dlStore.close();
 
-  const turns: AsterTurnStart[] = [];
+  const turns: DlTurnStart[] = [];
   const cancelledRuns: string[] = [];
   const permissionDecisions: string[] = [];
   const destroyedCells: string[] = [];
@@ -1020,10 +1020,10 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const pullRequestCreates: Array<{ repository: string; title: string; body: string; head: string; base: string }> = [];
   const pullRequestChecks: string[] = [];
   const pullRequestMerges: number[] = [];
-  const pushes: AsterPushMessage[] = [];
+  const pushes: DlPushMessage[] = [];
   const fakePush = {
     configured: options.pushConfigured ?? false,
-    notify: async (message: AsterPushMessage) => { pushes.push(message); },
+    notify: async (message: DlPushMessage) => { pushes.push(message); },
     register: () => true,
     unregister: () => {},
     close: () => {},
@@ -1036,7 +1036,7 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     configured: true,
     listRepositories: async (query: string) => [repo("me/app"), repo("me/site")].filter((r) => r.fullName.includes(query)),
     getRepository: async (fullName: string) => {
-      if (fullName !== "me/app" && !createdRepositories.includes(fullName)) throw new AsterGitHubError("Repository not found", 404, "repository_not_found");
+      if (fullName !== "me/app" && !createdRepositories.includes(fullName)) throw new DlGitHubError("Repository not found", 404, "repository_not_found");
       return repo(fullName);
     },
     createRepository: async (input: { name: string }) => {
@@ -1055,8 +1055,8 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
       pullRequestMerges.push(number);
       return { merged: true, message: "Pull request merged", sha: "abc123" };
     },
-  } as unknown as AsterGitHub;
-  const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as AutopilotConfig, {
+  } as unknown as DlGitHub;
+  const api = new DlApi({ openrouterApiKey: "test-key", model: "test/model" } as AutopilotConfig, {
     provisionConversation: async (input) => {
       provisionedProjects.push(input.project);
       provisionedProviders.push(input.provider.id);
@@ -1149,7 +1149,7 @@ async function waitForStatusAt(base: string, token: string, conversationId: stri
   assert.fail(`conversation did not reach ${expected}`);
 }
 
-async function failTurn(turn: AsterTurnStart): Promise<void> {
+async function failTurn(turn: DlTurnStart): Promise<void> {
   const runs = new RunStore();
   try {
     if (runs.getRun(turn.runId)?.status === "running") runs.transition(turn.runId, "failed", "test_failure");
@@ -1159,7 +1159,7 @@ async function failTurn(turn: AsterTurnStart): Promise<void> {
   turn.finish("failed", "test_failure");
 }
 
-async function completeTurn(turn: AsterTurnStart, text: string): Promise<void> {
+async function completeTurn(turn: DlTurnStart, text: string): Promise<void> {
   turn.messages.push({ role: "assistant", content: text });
   turn.sessionFile.messages = turn.messages;
   turn.sessionFile.updatedAt = new Date().toISOString();
@@ -1175,7 +1175,7 @@ async function completeTurn(turn: AsterTurnStart, text: string): Promise<void> {
   turn.finish("completed");
 }
 
-async function approveWriteTurn(turn: AsterTurnStart, decisions: string[]): Promise<void> {
+async function approveWriteTurn(turn: DlTurnStart, decisions: string[]): Promise<void> {
   const decision = await turn.askPermission({
     tool: { name: "write" },
     args: { path: "created.txt", content: "safe content" },
@@ -1196,7 +1196,7 @@ async function waitForStatus(harness: Harness, conversationId: string, expected:
 }
 
 async function waitForApproval(harness: Harness, conversationId: string): Promise<{ id: string }> {
-  const store = new AsterStore();
+  const store = new DlStore();
   const deadline = Date.now() + 3000;
   try {
     while (Date.now() < deadline) {

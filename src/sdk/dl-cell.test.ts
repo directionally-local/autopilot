@@ -5,7 +5,7 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { cellProviderFromEnv, cellSessionConfig, normalizeGatewayBaseUrl } from "./aster-cell.js";
+import { cellProviderFromEnv, cellSessionConfig, normalizeGatewayBaseUrl } from "./dl-cell.js";
 import { startRpcServer } from "./rpc.js";
 
 test("appends /v1 to the Hotcell gateway base URL exactly once", () => {
@@ -38,7 +38,7 @@ test("the cell follows the provider the server configured, or OpenRouter from th
 });
 
 test("registers the server's entry for the session's model, so the cell knows its real context window", async () => {
-  const { acceptModelInfo } = await import("./aster-cell.js");
+  const { acceptModelInfo } = await import("./dl-cell.js");
   const { getModelOrInfer, registerOpenRouterModels } = await import("../models/registry.js");
   const id = "test-vendor/huge-window-1017";
   assert.equal(getModelOrInfer(id).contextWindow, 128_000, "unknown here: the generic guess");

@@ -62,7 +62,7 @@ export async function remoteList(io = processIO): Promise<void> {
 
 export async function remoteRemove(name: string, io = processIO): Promise<boolean> {
   const removed = await removeRemote(name);
-  if (removed) io.out(`Removed "${name}". To revoke its credential on the server: autopilot aster token revoke <id>\n`);
+  if (removed) io.out(`Removed "${name}". To revoke its credential on the server: autopilot server token revoke <id>\n`);
   else io.err(`No server named "${name}".\n`);
   return removed;
 }

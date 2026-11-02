@@ -4,10 +4,10 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { AsterHotcellRuntime, cellProviderEnv } from "./aster-cell-runtime.js";
+import { DlHotcellRuntime, cellProviderEnv } from "./dl-cell-runtime.js";
 import type { HotcellProvider } from "./hotcell-provider.js";
-import type { AsterTurnStart } from "./aster-api.js";
-import { providerConfig } from "./aster-workspaces.js";
+import type { DlTurnStart } from "./dl-api.js";
+import { providerConfig } from "./dl-workspaces.js";
 
 const CONTROL_PREFIX = "node --input-type=module";
 const INSTALLED_RUNTIME_PACKAGE = "/opt/autopilot/node_modules/autopilot-ai/package.json";
@@ -68,8 +68,8 @@ function fakeSandbox(state: FakeCellState) {
     if (command.startsWith(CONTROL_PREFIX)) {
       if (state.unreachable) return { exitCode: 1, stdout: "", stderr: "cell gone", success: false };
       const requestId = command.trim().split(" ").pop()!;
-      const raw = state.files.get(`/workspace/.aster/control/${requestId}.json`);
-      state.files.delete(`/workspace/.aster/control/${requestId}.json`);
+      const raw = state.files.get(`/workspace/.dl/control/${requestId}.json`);
+      state.files.delete(`/workspace/.dl/control/${requestId}.json`);
       if (!raw) return { exitCode: 1, stdout: JSON.stringify({ error: "missing_request" }), stderr: "", success: false };
       const request = JSON.parse(raw) as { method: string; path: string; body?: Record<string, unknown> };
       const respond = (value: unknown) => ({ exitCode: 0, stdout: JSON.stringify(value) + "\n", stderr: "", success: true });
@@ -112,7 +112,7 @@ function fakeSandbox(state: FakeCellState) {
     }
     if (command.startsWith("base64 -d ")) return { exitCode: 0, stdout: "", stderr: "", success: true };
     if (command.startsWith("rm -f ")) {
-      state.files.set("/workspace/.aster/.seeded", "1");
+      state.files.set("/workspace/.dl/.seeded", "1");
       return { exitCode: 0, stdout: "", stderr: "", success: true };
     }
     if (command.startsWith("mkdir -p ") || command.startsWith("npm install ")) {
@@ -180,7 +180,7 @@ function realWorkspaceSandbox(state: FakeCellState, root: string) {
       }
     },
     writeFile: async (path: string, content: string) => {
-      if (path.startsWith("/workspace/.aster/control/")) return fake.writeFile(path, content);
+      if (path.startsWith("/workspace/.dl/control/")) return fake.writeFile(path, content);
       mkdirSync(dirname(mapPath(path)), { recursive: true });
       writeFileSync(mapPath(path), content);
     },
@@ -199,7 +199,7 @@ function realWorkspaceProvider(state: FakeCellState, root: string): HotcellProvi
 
 function emptyCellState(id = "real-cell"): FakeCellState {
   return {
-    id, files: new Map(), processes: [{ command: "startAsterCellBridge", status: "running" }], sessions: [], prompts: [],
+    id, files: new Map(), processes: [{ command: "startDlCellBridge", status: "running" }], sessions: [], prompts: [],
     aborts: 0, events: [], destroyed: false, paused: 0, started: 0,
   };
 }
@@ -240,7 +240,7 @@ function fakeProvider(cells: Map<string, FakeCellState>, defaults: Pick<FakeCell
   } as unknown as HotcellProvider;
 }
 
-function fakeTurn(overrides: Partial<AsterTurnStart>): AsterTurnStart & { events: Array<{ type: string; data?: Record<string, unknown> }>; finished: string[]; cursors: number[] } {
+function fakeTurn(overrides: Partial<DlTurnStart>): DlTurnStart & { events: Array<{ type: string; data?: Record<string, unknown> }>; finished: string[]; cursors: number[] } {
   const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
   const finished: string[] = [];
   const cursors: number[] = [];
@@ -267,12 +267,12 @@ function fakeTurn(overrides: Partial<AsterTurnStart>): AsterTurnStart & { events
   };
 }
 
-describe("Aster Hotcell runtime", () => {
+describe("dl server Hotcell runtime", () => {
   it("provisions distinct cells per conversation, adopts on retry, and reuses the seeded workspace", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
 
-    const base = { sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
+    const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
     const first = await runtime.provisionConversation({ conversationId: crypto.randomUUID(), ...base });
     const second = await runtime.provisionConversation({ conversationId: crypto.randomUUID(), ...base });
     assert.notEqual(first.cellId, second.cellId);
@@ -283,7 +283,7 @@ describe("Aster Hotcell runtime", () => {
     assert.equal(recordedId, created.cellId);
     const state = [...cells.values()].find((cell) => cell.id === created.cellId)!;
     assert.deepEqual(state.sessions, ["s-1"]);
-    assert.equal(state.processes.filter((proc) => proc.command.includes("startAsterCellBridge")).length, 1);
+    assert.equal(state.processes.filter((proc) => proc.command.includes("startDlCellBridge")).length, 1);
 
     // A retry after a create attempt adopts by label and never starts a second bridge or reseeds.
     const retried = await runtime.provisionConversation({ conversationId, ...base, allowCreate: false, onCellCreated: () => {} });
@@ -296,38 +296,38 @@ describe("Aster Hotcell runtime", () => {
   it("configures a DeepSeek cell's Autopilot for the provider's gateway route with the cell's egress token", async () => {
     const cells = new Map<string, FakeCellState>();
     const egress = { tokens: [{ token: "egress-token-1" }], providers: [{ name: "deepseek", baseUrl: "http://host.docker.internal:4752/deepseek/" }] };
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells, { egress }), { archiveWorkspace: async () => "QUJD" });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells, { egress }), { archiveWorkspace: async () => "QUJD" });
     const conversationId = crypto.randomUUID();
     const created = await runtime.provisionConversation({
-      conversationId, sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId, sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "deepseek-v4-pro", provider: providerConfig("deepseek"), allowCreate: true, onCellCreated: () => {},
     });
     const state = [...cells.values()].find((cell) => cell.id === created.cellId)!;
     assert.equal(state.createInput?.provider, "deepseek", "the cell's egress route is the provider's");
     const expected = { AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://host.docker.internal:4752/deepseek", DEEPSEEK_API_KEY: "egress-token-1" };
     assert.deepEqual(state.envVars, expected, "DeepSeek's API lives at its origin, so the gateway URL gets no /v1");
-    assert.deepEqual(state.processEnvs?.[0], { ...expected, HOME: "/workspace/.aster/home" }, "the bridge gets the sandbox env explicitly");
+    assert.deepEqual(state.processEnvs?.[0], { ...expected, HOME: "/workspace/.dl/home" }, "the bridge gets the sandbox env explicitly");
     assert.ok(!state.commands?.some((command) => command.includes("egress-token-1")), "the token never appears in an exec command");
   });
 
   it("configures a keyless Ollama cell without a key env and keeps OpenRouter on the daemon's own injection", async () => {
     const ollamaCells = new Map<string, FakeCellState>();
     const egress = { tokens: [], providers: [{ name: "ollama", baseUrl: "http://host.docker.internal:4752/ollama" }] };
-    const ollama = new AsterHotcellRuntime(fakeProvider(ollamaCells, { egress }), { archiveWorkspace: async () => "QUJD" });
-    const base = { sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo", allowCreate: true, onCellCreated: () => {} };
+    const ollama = new DlHotcellRuntime(fakeProvider(ollamaCells, { egress }), { archiveWorkspace: async () => "QUJD" });
+    const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", allowCreate: true, onCellCreated: () => {} };
     const created = await ollama.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "qwen3:32b", provider: providerConfig("ollama") });
     const state = [...ollamaCells.values()].find((cell) => cell.id === created.cellId)!;
     assert.deepEqual(state.envVars, { AUTOPILOT_PROVIDER: "ollama", AUTOPILOT_BASE_URL: "http://host.docker.internal:4752/ollama/v1" });
 
     const openrouterCells = new Map<string, FakeCellState>();
-    const openrouter = new AsterHotcellRuntime(fakeProvider(openrouterCells), { archiveWorkspace: async () => "QUJD" });
+    const openrouter = new DlHotcellRuntime(fakeProvider(openrouterCells), { archiveWorkspace: async () => "QUJD" });
     const orCreated = await openrouter.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "test/model", provider: providerConfig("openrouter") });
     const orState = [...openrouterCells.values()].find((cell) => cell.id === orCreated.cellId)!;
     assert.equal(orState.envVars, undefined, "OPENROUTER_BASE_URL/_API_KEY come from the daemon, as before");
     assert.equal(orState.createInput?.provider, "openrouter");
 
     // A route the daemon doesn't offer fails provisioning instead of leaving a cell that can't reach a model.
-    const missing = new AsterHotcellRuntime(fakeProvider(new Map(), { egress: { tokens: [{ token: "t" }], providers: [{ name: "openrouter", baseUrl: "http://gw/openrouter" }] } }), { archiveWorkspace: async () => "QUJD" });
+    const missing = new DlHotcellRuntime(fakeProvider(new Map(), { egress: { tokens: [{ token: "t" }], providers: [{ name: "openrouter", baseUrl: "http://gw/openrouter" }] } }), { archiveWorkspace: async () => "QUJD" });
     await assert.rejects(
       missing.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "deepseek-v4-pro", provider: providerConfig("deepseek") }),
       /hotcell_egress_route_missing/,
@@ -339,7 +339,7 @@ describe("Aster Hotcell runtime", () => {
     assert.deepEqual(cellProviderEnv(providerConfig("openai"), "http://gw:4752/openai", token), { AUTOPILOT_PROVIDER: "openai", AUTOPILOT_BASE_URL: "http://gw:4752/openai/v1", OPENAI_API_KEY: token });
     assert.deepEqual(cellProviderEnv(providerConfig("deepseek"), "http://gw:4752/deepseek", token), { AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://gw:4752/deepseek", DEEPSEEK_API_KEY: token });
     assert.deepEqual(cellProviderEnv(providerConfig("lmstudio"), "http://gw:4752/lmstudio", undefined), { AUTOPILOT_PROVIDER: "lmstudio", AUTOPILOT_BASE_URL: "http://gw:4752/lmstudio/v1" });
-    // An explicit aster.json base URL contributes its path too (a self-hosted gateway under /api/v1).
+    // An explicit server.json base URL contributes its path too (a self-hosted gateway under /api/v1).
     assert.equal(cellProviderEnv(providerConfig("custom", "https://llm.example.com/api/v1", "LLM_KEY"), "http://gw:4752/custom", token).AUTOPILOT_BASE_URL, "http://gw:4752/custom/api/v1");
   });
 
@@ -351,7 +351,7 @@ describe("Aster Hotcell runtime", () => {
     const cells = new Map([[conversationId, state]]);
     const sdkBundle = "updated runtime — 📦\n".repeat(8_000);
     const expectedVersion = "1.19.2-aster.13";
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), {
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), {
       autopilotPackageSpec: `autopilot-ai@${expectedVersion}`,
       cellRuntimeSdkBundle: sdkBundle,
       archiveWorkspace: async () => "QUJD",
@@ -372,14 +372,14 @@ describe("Aster Hotcell runtime", () => {
     assert.equal(JSON.parse(state.files.get(INSTALLED_RUNTIME_PACKAGE)!).version, expectedVersion);
     assert.equal(state.files.get(CELL_RUNTIME_SDK_ENTRY), sdkBundle);
     assert.equal(state.processes[0]?.status, "exited");
-    assert.equal(state.processes.filter((process) => process.status === "running" && process.command.includes("startAsterCellBridge")).length, 1);
+    assert.equal(state.processes.filter((process) => process.status === "running" && process.command.includes("startDlCellBridge")).length, 1);
     assert.ok(!state.commands?.some((command) => command.includes("npm install")));
     assert.ok(state.writeSizes?.every((size) => size <= 32 * 1024));
   });
 
   it("provisions a cell from the API conversation and streams its first turn", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const conversationId = crypto.randomUUID();
     const sessionId = crypto.randomUUID();
     const turn = fakeTurn({
@@ -391,7 +391,7 @@ describe("Aster Hotcell runtime", () => {
         workspaceId: "default",
         worktreePath: "/tmp/repo-worktree",
         model: "test/model",
-        branch: "aster/12345678",
+        branch: "dl/12345678",
         kind: "code",
         repository: "me/app",
         baseBranch: "main",
@@ -409,7 +409,7 @@ describe("Aster Hotcell runtime", () => {
     const state = cells.get(conversationId);
     assert.ok(state, "The runtime should provision one cell for this API conversation");
     assert.deepEqual(state.sessions, [sessionId]);
-    assert.ok(state.commands?.some((command) => command.includes("me/app") && command.includes("aster/12345678")));
+    assert.ok(state.commands?.some((command) => command.includes("me/app") && command.includes("dl/12345678")));
     assert.equal(state.prompts.length, 1);
     assert.ok(state.prompts[0]?.message.includes("GitHub repository me/app"));
     assert.ok(state.prompts[0]?.message.endsWith("make a small change"));
@@ -423,7 +423,7 @@ describe("Aster Hotcell runtime", () => {
     const state = emptyCellState("repo-cell");
     state.commitAhead = true;
     cells.set(conversationId, state);
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { pollIntervalMs: 5 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { pollIntervalMs: 5 });
     let published = 0;
     const turn = fakeTurn({
       cellId: state.id,
@@ -434,7 +434,7 @@ describe("Aster Hotcell runtime", () => {
         workspaceId: "default",
         worktreePath: "/tmp/repo",
         model: "test/model",
-        branch: "aster/12345678",
+        branch: "dl/12345678",
         kind: "code",
         repository: "me/app",
         baseBranch: "main",
@@ -450,15 +450,15 @@ describe("Aster Hotcell runtime", () => {
     runtime.startTurn(turn);
     await waitFor(() => turn.finished.length > 0);
 
-    const pushIndex = state.commands?.findIndex((command) => command.includes("push -u origin 'aster/12345678'") ) ?? -1;
+    const pushIndex = state.commands?.findIndex((command) => command.includes("push -u origin 'dl/12345678'") ) ?? -1;
     assert.ok(pushIndex >= 0, "The feature branch should be pushed");
     assert.equal(published, 1);
     assert.deepEqual(turn.finished, ["completed"]);
   });
 
   it("opens the PR when the agent committed its own work, counting from the clone's start, not origin/<base>", async () => {
-    const root = mkdtempSync(join(tmpdir(), "aster-cell-"));
-    const remote = mkdtempSync(join(tmpdir(), "aster-remote-"));
+    const root = mkdtempSync(join(tmpdir(), "dl-cell-"));
+    const remote = mkdtempSync(join(tmpdir(), "dl-remote-"));
     try {
       const git = (args: string) => execSync(`git -c user.name=t -c user.email=t@t -c commit.gpgsign=false ${args}`, { cwd: root, encoding: "utf8" });
       execSync("git init -q --bare", { cwd: remote });
@@ -468,21 +468,21 @@ describe("Aster Hotcell runtime", () => {
       writeFileSync(join(root, "README.md"), "seed\n");
       git("add README.md");
       git("commit -q -m base");
-      git("checkout -q -b aster/12345678");
+      git("checkout -q -b dl/12345678");
       writeFileSync(join(root, "README.md"), "seed, edited on the laptop\n");
       git("commit -q -am 'Apply local changes'");
       git(`remote add origin ${remote}`);
-      git("update-ref refs/aster/start HEAD");
-      mkdirSync(join(root, ".aster"));
-      writeFileSync(join(root, ".aster", ".seeded"), "");
-      writeFileSync(join(root, ".git", "info", "exclude"), ".aster/\n");
+      git("update-ref refs/dl/start HEAD");
+      mkdirSync(join(root, ".dl"));
+      writeFileSync(join(root, ".dl", ".seeded"), "");
+      writeFileSync(join(root, ".git", "info", "exclude"), ".dl/\n");
       assert.throws(() => git("rev-parse --verify -q origin/main"));
 
       const conversation = {
-        id: "conv-commits", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/12345678", pullRequestNumber: null,
+        id: "conv-commits", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/12345678", pullRequestNumber: null,
       } as never;
       const state = emptyCellState();
-      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
       let published = 0;
 
@@ -520,7 +520,7 @@ describe("Aster Hotcell runtime", () => {
       assert.ok(!committed.events.some((event) => event.type === "checkpoint.created"));
       assert.equal(published, 1, "the PR hook runs");
       assert.deepEqual(committed.finished, ["completed"]);
-      assert.match(execSync("git log --format=%s aster/12345678", { cwd: remote, encoding: "utf8" }), /^docs: the plan\n/, "the branch was pushed");
+      assert.match(execSync("git log --format=%s dl/12345678", { cwd: remote, encoding: "utf8" }), /^docs: the plan\n/, "the branch was pushed");
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(remote, { recursive: true, force: true });
@@ -528,8 +528,8 @@ describe("Aster Hotcell runtime", () => {
   });
 
   it("pushes a failed turn's work to its branch instead of stranding it, without opening a PR", async () => {
-    const root = mkdtempSync(join(tmpdir(), "aster-cell-"));
-    const remote = mkdtempSync(join(tmpdir(), "aster-remote-"));
+    const root = mkdtempSync(join(tmpdir(), "dl-cell-"));
+    const remote = mkdtempSync(join(tmpdir(), "dl-remote-"));
     try {
       const git = (args: string) => execSync(`git -c user.name=t -c user.email=t@t -c commit.gpgsign=false ${args}`, { cwd: root, encoding: "utf8" });
       execSync("git init -q --bare", { cwd: remote });
@@ -537,19 +537,19 @@ describe("Aster Hotcell runtime", () => {
       writeFileSync(join(root, "README.md"), "seed\n");
       git("add README.md");
       git("commit -q -m base");
-      git("checkout -q -b aster/12345678");
+      git("checkout -q -b dl/12345678");
       git(`remote add origin ${remote}`);
-      git("update-ref refs/aster/start HEAD");
-      mkdirSync(join(root, ".aster"));
-      writeFileSync(join(root, ".aster", ".seeded"), "");
-      writeFileSync(join(root, ".git", "info", "exclude"), ".aster/\n");
+      git("update-ref refs/dl/start HEAD");
+      mkdirSync(join(root, ".dl"));
+      writeFileSync(join(root, ".dl", ".seeded"), "");
+      writeFileSync(join(root, ".git", "info", "exclude"), ".dl/\n");
       const conversation = {
-        id: "conv-failed", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/12345678", pullRequestNumber: null,
+        id: "conv-failed", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/12345678", pullRequestNumber: null,
       } as never;
       const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
       const state = emptyCellState();
       state.promptEvents = [{ type: "session.end", reason: "error", error: "context window exceeded" }];
-      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       let published = 0;
 
       // Nothing done yet: nothing to push.
@@ -569,23 +569,23 @@ describe("Aster Hotcell runtime", () => {
       await waitFor(() => failed.finished.length > 0);
       assert.deepEqual(failed.finished, ["failed"], "the turn's own outcome stands");
       assert.equal(published, 0, "no pull request for a failed turn");
-      const log = execSync("git log --format=%s aster/12345678", { cwd: remote, encoding: "utf8" });
+      const log = execSync("git log --format=%s dl/12345678", { cwd: remote, encoding: "utf8" });
       assert.match(log, /^write the plan\ndocs: part one\nbase\n$/, "the agent's commit and the checkpoint of its uncommitted work were pushed");
       const outcome = failed.events.find((event) => event.type === "outcome");
-      assert.match(String(outcome?.data?.summary), /didn't finish, so no pull request was opened\. Its work so far is on branch aster\/12345678/);
+      assert.match(String(outcome?.data?.summary), /didn't finish, so no pull request was opened\. Its work so far is on branch dl\/12345678/);
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(remote, { recursive: true, force: true });
     }
   });
 
-  it("maps cell events to Aster events, advances the cursor, and finishes completed turns", async () => {
+  it("maps cell events to dl server events, advances the cursor, and finishes completed turns", async () => {
     const cells = new Map<string, FakeCellState>();
     const provider = fakeProvider(cells);
-    const runtime = new AsterHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = new DlHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const conversationId = crypto.randomUUID();
     const { cellId } = await runtime.provisionConversation({
-      conversationId, sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId, sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
     });
     const state = [...cells.values()][0]!;
@@ -625,9 +625,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("sends 150k prompts through bounded Hotcell control-file writes", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
     });
     const userText = "Quarterly \u2014 r\u00e9sultats \u4e2d\u6587 \u{1F4C4}\n".repeat(6_000);
@@ -646,10 +646,10 @@ describe("Aster Hotcell runtime", () => {
   it("cancels an active turn with an in-cell abort and completes pause/resume/destroy through the provider", async () => {
     const cells = new Map<string, FakeCellState>();
     const provider = fakeProvider(cells);
-    const runtime = new AsterHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = new DlHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const conversationId = crypto.randomUUID();
     const { cellId } = await runtime.provisionConversation({
-      conversationId, sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId, sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
     });
     const turn = fakeTurn({ cellId, runId: crypto.randomUUID() });
@@ -669,7 +669,7 @@ describe("Aster Hotcell runtime", () => {
   });
 
   it("streams tool commands and output, then checkpoints the turn's changes in git", async () => {
-    const root = mkdtempSync(join(tmpdir(), "aster-cell-"));
+    const root = mkdtempSync(join(tmpdir(), "dl-cell-"));
     try {
       writeFileSync(join(root, "README.md"), "seed\n");
       const state = emptyCellState();
@@ -677,7 +677,7 @@ describe("Aster Hotcell runtime", () => {
         { cursor: 1, runId: null, event: { type: "tool.start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } } },
         { cursor: 2, runId: null, event: { type: "tool.result", toolCallId: "t1", toolName: "bash", result: "README.md\nsk-or-v1-abcdefghijklmnopqrstuvwxyz", isError: false } },
       );
-      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       await runtime.listCheckpoints(state.id); // provisioning creates the repo before any turn
       // Simulate the agent's work landing in the workspace during the turn.
       writeFileSync(join(root, "hello.txt"), "made by the agent\n");
@@ -700,18 +700,18 @@ describe("Aster Hotcell runtime", () => {
 
       const checkpoints = await runtime.listCheckpoints(state.id);
       assert.deepEqual(checkpoints.map((checkpoint) => checkpoint.message), ["list files", "Workspace created"]);
-      assert.ok(!execSync("git ls-files", { cwd: root, encoding: "utf8" }).includes(".aster"));
+      assert.ok(!execSync("git ls-files", { cwd: root, encoding: "utf8" }).includes(".dl"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
   it("skips empty checkpoints and restores a checkpoint as a new, undoable commit", async () => {
-    const root = mkdtempSync(join(tmpdir(), "aster-cell-"));
+    const root = mkdtempSync(join(tmpdir(), "dl-cell-"));
     try {
       writeFileSync(join(root, "a.txt"), "one\n");
       const state = emptyCellState();
-      const runtime = new AsterHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       const conversation = { id: "conv-restore", sessionId: "s" } as never;
 
       const first = fakeTurn({ cellId: state.id, conversation, userText: "noop turn" });
@@ -749,9 +749,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("restarts the bridge before prompting a cell that was paused while idle", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
     });
     const state = [...cells.values()][0]!;
@@ -768,63 +768,63 @@ describe("Aster Hotcell runtime", () => {
   it("clones code projects through the GitHub gateway and leaves chat cells unseeded", async () => {
     const cells = new Map<string, FakeCellState>();
     let archived = 0;
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => { archived++; return "QUJD"; } });
-    const base = { sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => { archived++; return "QUJD"; } });
+    const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
 
-    await runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/abcd1234" } });
+    await runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/abcd1234" } });
     const codeCell = [...cells.values()].at(-1)!;
     const clone = codeCell.commands!.find((command) => command.includes("github-git/me/app.git"))!;
     assert.match(clone, /\$\{GITHUB_BASE_URL%\/github\}\/github-git\/me\/app\.git/);
-    assert.match(clone, /git checkout -q -b 'aster\/abcd1234' FETCH_HEAD/);
+    assert.match(clone, /git checkout -q -b 'dl\/abcd1234' FETCH_HEAD/);
     assert.doesNotMatch(clone, /github_pat_|ghp_/);
     assert.ok(codeCell.commands!.some((command) => command.includes("artifacts/")), "code cells exclude artifacts/ from git");
-    assert.match(codeCell.files.get("/workspace/.aster/pending-notes") ?? "", /me\/app is cloned at \/workspace on branch aster\/abcd1234/);
+    assert.match(codeCell.files.get("/workspace/.dl/pending-notes") ?? "", /me\/app is cloned at \/workspace on branch dl\/abcd1234/);
 
     await runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "chat" } });
     const chatCell = [...cells.values()].at(-1)!;
     assert.ok(!chatCell.commands!.some((command) => command.includes("github-git")));
-    assert.match(chatCell.files.get("/workspace/.aster/pending-notes") ?? "", /\/workspace\/artifacts\//);
+    assert.match(chatCell.files.get("/workspace/.dl/pending-notes") ?? "", /\/workspace\/artifacts\//);
     assert.equal(archived, 0, "chat and code cells don't receive the configured workspace");
 
     await assert.rejects(
-      () => runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app; rm -rf /", baseBranch: "main", branch: "aster/x" } }),
+      () => runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app; rm -rf /", baseBranch: "main", branch: "dl/x" } }),
       /invalid_project/,
     );
   });
 
   it("starts a code cell from the client's base commit and commits its uploaded patch first", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells));
-    const base = { sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
+    const runtime = new DlHotcellRuntime(fakeProvider(cells));
+    const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
     const baseCommit = "a".repeat(40);
     const patch = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n";
 
     await runtime.provisionConversation({
       ...base,
       conversationId: crypto.randomUUID(),
-      project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/abcd1234", baseCommit, patch },
+      project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/abcd1234", baseCommit, patch },
     });
     const cell = [...cells.values()].at(-1)!;
     const clone = cell.commands!.find((command) => command.includes("github-git/me/app.git"))!;
-    assert.match(clone, new RegExp(`git fetch -q origin '${baseCommit}'; git checkout -q -b 'aster/abcd1234' FETCH_HEAD`));
+    assert.match(clone, new RegExp(`git fetch -q origin '${baseCommit}'; git checkout -q -b 'dl/abcd1234' FETCH_HEAD`));
     assert.doesNotMatch(clone, /ls-remote/, "a client base commit never falls back to the branch tip");
-    assert.equal(cell.files.get("/workspace/.aster/local-changes.patch"), patch);
-    const apply = cell.commands!.findIndex((command) => command.includes("git apply --binary --index /workspace/.aster/local-changes.patch"));
+    assert.equal(cell.files.get("/workspace/.dl/local-changes.patch"), patch);
+    const apply = cell.commands!.findIndex((command) => command.includes("git apply --binary --index /workspace/.dl/local-changes.patch"));
     assert.ok(apply > cell.commands!.indexOf(clone));
     assert.ok(!cell.commands!.some((command) => command.includes("+new")), "the diff never appears on an exec command line");
-    assert.ok(cell.commands!.indexOf("touch /workspace/.aster/.seeded") > apply, "the cell is marked seeded only after the patch applies");
+    assert.ok(cell.commands!.indexOf("touch /workspace/.dl/.seeded") > apply, "the cell is marked seeded only after the patch applies");
 
     await assert.rejects(
-      () => runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "aster/x", baseCommit: "main; rm -rf /" } }),
+      () => runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/x", baseCommit: "main; rm -rf /" } }),
       /invalid_project/,
     );
   });
 
   it("only reads artifacts by safe relative paths", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
     });
     for (const path of ["../etc/passwd", "/etc/passwd", ".git/config", "a/../../b", "", "x\ny"]) {
@@ -855,7 +855,7 @@ describe("Aster Hotcell runtime", () => {
       },
       getCell: async () => { throw new Error("unused"); },
     } as unknown as HotcellProvider;
-    const runtime = new AsterHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD" });
+    const runtime = new DlHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD" });
 
     assert.deepEqual(await runtime.pauseIdleCells(15 * 60_000, 1), ["older"]);
     assert.deepEqual(await runtime.pauseIdleCells(15 * 60_000), ["old"]);
@@ -864,7 +864,7 @@ describe("Aster Hotcell runtime", () => {
     // Out of capacity on create: pause the least recently used idle cell, then retry once.
     cells.push({ id: "idle-two-hours", conversationId: "e", status: "running", lastActivityAt: new Date(now - 7_200_000).toISOString() });
     await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
     });
     assert.equal(creates, 2);
@@ -873,9 +873,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("re-attaches to a turn after a server restart without re-sending the prompt", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
     });
     const state = [...cells.values()][0]!;
@@ -895,9 +895,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("ends a turn the cell no longer runs instead of leaving the chat busy", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, livenessCheckMs: 50 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, livenessCheckMs: 50 });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
     });
     const turn = fakeTurn({ cellId, cellEventCursor: 0 });
@@ -908,9 +908,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("fails a turn that stops making progress, and aborts it in the cell", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 80 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 80 });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
     });
     const state = [...cells.values()][0]!;
@@ -926,9 +926,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("keeps a quiet turn that's still within the stall limit", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 60_000 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 60_000 });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
     });
     const state = [...cells.values()][0]!;
@@ -943,9 +943,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("fails a turn whose cell stops answering", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 0, unreachableTimeoutMs: 80 });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 0, unreachableTimeoutMs: 80 });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
     });
     const state = [...cells.values()][0]!;
@@ -964,12 +964,12 @@ describe("Aster Hotcell runtime", () => {
     const entries: Record<string, unknown> = {
       "deepseek/deepseek-v4.1-flash-1017": { id: "deepseek/deepseek-v4.1-flash-1017", contextWindow: 1_048_576, pricing: { inputPerMtok: 0.3, outputPerMtok: 1.2 }, supports: { tools: true, streaming: true } },
     };
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), {
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), {
       archiveWorkspace: async () => "QUJD",
       modelInfo: async (model) => entries[model] as never,
     });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "deepseek/deepseek-v4.1-flash-1017", allowCreate: true, onCellCreated: () => {},
     });
     const state = [...cells.values()][0]!;
@@ -984,9 +984,9 @@ describe("Aster Hotcell runtime", () => {
 
   it("switches the cell session's model through the bridge", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new AsterHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
+    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
     const { cellId } = await runtime.provisionConversation({
-      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "aster-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
     });
     await runtime.setModel(cellId, "anthropic/claude-opus-5.5");

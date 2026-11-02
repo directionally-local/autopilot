@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AsterMemory } from "./aster-memory.js";
+import { DlMemory } from "./dl-memory.js";
 
 /** A fake OpenRouter that replies with the queued extraction results and records prompts. */
 function fakeModel(replies: unknown[]) {
@@ -17,11 +17,11 @@ function fakeModel(replies: unknown[]) {
   return { fetchImpl, prompts };
 }
 
-function withMemory(replies: unknown[], run: (memory: AsterMemory, prompts: string[]) => Promise<void>) {
+function withMemory(replies: unknown[], run: (memory: DlMemory, prompts: string[]) => Promise<void>) {
   return async () => {
-    const dir = mkdtempSync(join(tmpdir(), "aster-memory-"));
+    const dir = mkdtempSync(join(tmpdir(), "dl-memory-"));
     const { fetchImpl, prompts } = fakeModel(replies);
-    const memory = new AsterMemory(join(dir, "aster.db"), { apiKey: "test", fetchImpl, model: "test/model" });
+    const memory = new DlMemory(join(dir, "dl.db"), { apiKey: "test", fetchImpl, model: "test/model" });
     try {
       await run(memory, prompts);
     } finally {
@@ -31,7 +31,7 @@ function withMemory(replies: unknown[], run: (memory: AsterMemory, prompts: stri
   };
 }
 
-describe("Aster memory", () => {
+describe("dl server memory", () => {
   it("keeps people and projects as cards that are updated in place, plus facts and chat summaries", withMemory([
     {
       upserts: [
@@ -74,7 +74,7 @@ describe("Aster memory", () => {
     await memory.remember({ conversationId: "c1", userText: "remember my dog is Miso", assistantText: "ok" });
     const id = memory.list("fact")[0]!.id;
     const { fetchImpl } = fakeModel([{ deletes: [id] }]);
-    const other = new AsterMemory(undefined as never, { apiKey: "x", fetchImpl });
+    const other = new DlMemory(undefined as never, { apiKey: "x", fetchImpl });
     other.close();
     // Direct check through a second extraction on the same store.
     (memory as unknown as { options: { fetchImpl: typeof fetch } }).options.fetchImpl = fetchImpl;

@@ -1,9 +1,9 @@
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isSelectableModel, modelsResponse, resetProviderCatalogCache, selectableModels, PROVIDER_CATALOG_CACHE_TTL_MS } from "./aster-models.js";
-import { providerConfig, type AsterServerConfig } from "./aster-workspaces.js";
+import { isSelectableModel, modelsResponse, resetProviderCatalogCache, selectableModels, PROVIDER_CATALOG_CACHE_TTL_MS } from "./dl-models.js";
+import { providerConfig, type DlServerConfig } from "./dl-workspaces.js";
 
-function config(overrides: Partial<AsterServerConfig>): AsterServerConfig {
+function config(overrides: Partial<DlServerConfig>): DlServerConfig {
   return { provider: providerConfig("openrouter"), models: [], modelCatalog: "catalog", workspaces: [], approvalTtlMs: 1000, ...overrides };
 }
 
@@ -19,7 +19,7 @@ function fakeFetch(calls: Call[], ids: string[], fail = false): typeof fetch {
   }) as typeof fetch;
 }
 
-describe("Aster model catalog per provider", () => {
+describe("dl server model catalog per provider", () => {
   beforeEach(() => resetProviderCatalogCache());
 
   it("offers a fixed list as is, for any provider", async () => {

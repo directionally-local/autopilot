@@ -7,8 +7,8 @@ import { getPreset, isProviderId, type ProviderId } from "../providers/presets.j
 import { startRpcServer } from "./rpc.js";
 import type { SessionEvent } from "./types.js";
 
-const HOME = process.env.HOME || "/workspace/.aster/home";
-const STATE_DIR = "/workspace/.aster";
+const HOME = process.env.HOME || "/workspace/.dl/home";
+const STATE_DIR = "/workspace/.dl";
 const EVENT_LOG = join(STATE_DIR, "events.ndjson");
 const TURN_STATE = join(STATE_DIR, "turn-state.json");
 // Prompts (with memory and notes prepended) pass through here; keep well above the API's turn limit.
@@ -23,7 +23,7 @@ const CELL_MODE = "auto";
 
 /**
  * The LLM provider this cell reaches through its Hotcell gateway route, read from the env
- * the Aster server (AUTOPILOT_PROVIDER, AUTOPILOT_BASE_URL, the preset's key env holding
+ * the dl server (AUTOPILOT_PROVIDER, AUTOPILOT_BASE_URL, the preset's key env holding
  * the egress token) or, for OpenRouter, the daemon itself (OPENROUTER_BASE_URL/_API_KEY) set.
  */
 export interface CellProvider {
@@ -50,7 +50,7 @@ export function cellProviderFromEnv(env: NodeJS.ProcessEnv = process.env): CellP
 
 /**
  * The session config every cell `new_session` gets. The session edits /workspace in place:
- * that clone is what the runtime checkpoints, pushes as `aster/<id>` and opens the PR from.
+ * that clone is what the runtime checkpoints, pushes as `dl/<id>` and opens the PR from.
  * The provider's gateway URL and token travel in the config as well as the env, so the
  * session follows them even when the SDK resolves its provider from config alone.
  */
@@ -92,7 +92,7 @@ export function normalizeGatewayBaseUrl(value: string | undefined): string | und
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-export async function startAsterCellBridge(port = 31417): Promise<ReturnType<typeof createServer>> {
+export async function startDlCellBridge(port = 31417): Promise<ReturnType<typeof createServer>> {
   process.env.HOME = HOME;
   // OpenRouter's module reads OPENROUTER_BASE_URL itself; give it the `/v1` form once.
   const gatewayBaseUrl = normalizeGatewayBaseUrl(process.env.OPENROUTER_BASE_URL);
@@ -363,21 +363,21 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 
 
 
-const REQUEST_DIR = "/workspace/.aster/control";
+const REQUEST_DIR = "/workspace/.dl/control";
 const CONTROL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ALLOWED_PATHS = new Set(["/health", "/status", "/rpc"]);
 
-export interface AsterCellControlRequest {
+export interface DlCellControlRequest {
   method: "GET" | "POST";
   path: string;
   body?: unknown;
 }
 
-export async function executeAsterCellControl(requestId: string): Promise<unknown> {
+export async function executeDlCellControl(requestId: string): Promise<unknown> {
   if (!CONTROL_UUID_RE.test(requestId)) throw new Error("invalid_control_request");
   const requestPath = resolvePath(REQUEST_DIR, requestId + ".json");
   if (!requestPath.startsWith(REQUEST_DIR + "/")) throw new Error("invalid_control_request");
-  const request = JSON.parse(await readFile(requestPath, "utf8")) as AsterCellControlRequest;
+  const request = JSON.parse(await readFile(requestPath, "utf8")) as DlCellControlRequest;
   await unlink(requestPath).catch(() => {});
   if (request.method === "GET" && request.path.startsWith("/events?after=")) {
     const cursor = request.path.slice("/events?after=".length);

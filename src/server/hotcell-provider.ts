@@ -59,7 +59,7 @@ export class HotcellProvider {
     const driver = env.AUTOPILOT_HOTCELL_DRIVER;
     if (!endpoint || !apiKey || !HOTCELL_DRIVERS.includes(driver as HotcellDriver)) {
       throw new HotcellProviderError(
-        "Aster Hotcell requires AUTOPILOT_HOTCELL_ENDPOINT, AUTOPILOT_HOTCELL_API_KEY, and an explicit AUTOPILOT_HOTCELL_DRIVER (applevz, firecracker, or container)",
+        "dl server Hotcell requires AUTOPILOT_HOTCELL_ENDPOINT, AUTOPILOT_HOTCELL_API_KEY, and an explicit AUTOPILOT_HOTCELL_DRIVER (applevz, firecracker, or container)",
         "hotcell_not_configured",
       );
     }
@@ -84,7 +84,7 @@ export class HotcellProvider {
   async findConversationCell(conversationId: string): Promise<Sandbox | undefined> {
     const matches = (await this.client.list()).filter((item) => item.labels?.[HOTCELL_CONVERSATION_LABEL] === conversationId);
     if (matches.length > 1) {
-      throw new HotcellProviderError("Multiple Hotcells carry the same Aster conversation label; refusing ambiguous attachment", "duplicate_hotcells");
+      throw new HotcellProviderError("Multiple Hotcells carry the same dl server conversation label; refusing ambiguous attachment", "duplicate_hotcells");
     }
     return matches[0] ? this.client.getSandbox(matches[0].id) : undefined;
   }
@@ -97,7 +97,7 @@ export class HotcellProvider {
     provider?: string;
     /** "code" cells also get GitHub (API and git) through the credential gateway. */
     kind?: "chat" | "code";
-    /** Code cells using Aster's repository-scoped GitHub proxy skip Hotcell's GitHub gateway. */
+    /** Code cells using the dl server's repository-scoped GitHub proxy skip Hotcell's GitHub gateway. */
     githubViaProxy?: boolean;
     env?: Record<string, string>;
   }): Promise<Sandbox> {
@@ -110,7 +110,7 @@ export class HotcellProvider {
     if (existing) return existing;
 
     const info = await this.client.info();
-    if (!info.auth) throw new HotcellProviderError("Hotcell API authentication is disabled; refusing to provision an Aster cell", "hotcell_auth_required");
+    if (!info.auth) throw new HotcellProviderError("Hotcell API authentication is disabled; refusing to provision a dl server cell", "hotcell_auth_required");
     if (!info.drivers.includes(this.config.driver)) {
       throw new HotcellProviderError("Configured Hotcell driver is unavailable", "hotcell_driver_unavailable");
     }
@@ -170,7 +170,7 @@ export class HotcellProvider {
     await cell.destroy();
   }
 
-  /** Aster conversation cells with their lifecycle status and last API activity. */
+  /** dl server conversation cells with their lifecycle status and last API activity. */
   async listConversationCells(): Promise<Array<{ id: string; conversationId: string; status: string; lastActivityAt: string }>> {
     return (await this.client.list())
       .filter((item) => item.labels?.[HOTCELL_CONVERSATION_LABEL])
@@ -202,7 +202,7 @@ function validateConfig(config: HotcellProviderConfig): void {
   }
   if (!config.apiKey.trim()) throw new HotcellProviderError("Hotcell API key is required", "hotcell_auth_required");
   if (!HOTCELL_DRIVERS.includes(config.driver)) {
-    throw new HotcellProviderError("Aster requires an explicit Hotcell driver", "unsafe_hotcell_driver");
+    throw new HotcellProviderError("dl server requires an explicit Hotcell driver", "unsafe_hotcell_driver");
   }
   if (!Number.isInteger(config.memoryMb) || config.memoryMb < 512 || !Number.isFinite(config.cpus) || config.cpus < 0.5 || !Number.isInteger(config.pidsLimit) || config.pidsLimit < 32) {
     throw new HotcellProviderError("Hotcell resource limits are invalid", "invalid_hotcell_limits");

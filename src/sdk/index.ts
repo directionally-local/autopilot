@@ -4,8 +4,11 @@ export * from "./types.js";
 export { createDefaultPermissionHandler } from "./permissions.js";
 export { startRpcServer } from "./rpc.js";
 export { PromptBlockedError } from "../hooks/prompt-submit.js";
-export { startAsterCellBridge, executeAsterCellControl } from "./aster-cell.js";
-export type { AsterCellControlRequest } from "./aster-cell.js";
+export { startDlCellBridge, executeDlCellControl } from "./dl-cell.js";
+export type { DlCellControlRequest } from "./dl-cell.js";
+// Pre-rename SDK names, kept so existing consumers keep compiling.
+export { startDlCellBridge as startAsterCellBridge, executeDlCellControl as executeAsterCellControl } from "./dl-cell.js";
+export type { DlCellControlRequest as AsterCellControlRequest } from "./dl-cell.js";
 export { RunStore } from "../runs/store.js";
 export { RunWakeScheduler } from "../runs/wake-scheduler.js";
 export type { RunWakeEvent, RunWakeSchedulerOptions } from "../runs/wake-scheduler.js";

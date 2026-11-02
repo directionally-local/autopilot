@@ -147,7 +147,7 @@ let providerIndex: Map<string, ModelEntry> = new Map();
 let providerCatalogId: string | null = null;
 /**
  * Entries handed over by whoever could load the live catalog, for a process that can't:
- * a Hotcell cell gets its model's entry from the Aster server, since the cell's gateway
+ * a Hotcell cell gets its model's entry from the dl server, since the cell's gateway
  * doesn't serve OpenRouter's /models. Below every catalog, above the seed list.
  */
 const hintIndex = new Map<string, ModelEntry>();

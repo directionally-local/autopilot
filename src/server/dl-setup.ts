@@ -4,9 +4,10 @@ import { existsSync } from "node:fs";
 import { chmod, link, mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { isProviderId, PROVIDER_IDS } from "../providers/presets.js";
-import { loadAsterServerConfig, localAsterConfigPath, providerConfig, type AsterServerConfig, type AsterWorkspace } from "./aster-workspaces.js";
+import { loadDlServerConfig, localDlConfigPath, providerConfig, type DlServerConfig, type DlWorkspace } from "./dl-workspaces.js";
+import { serverEnv } from "./dl-compat.js";
 
-export interface WriteLocalAsterConfigOptions {
+export interface WriteLocalDlConfigOptions {
   workspacePaths: string[];
   /** An empty list selects the provider's live model catalog. */
   models?: string[];
@@ -18,18 +19,18 @@ export interface WriteLocalAsterConfigOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-export interface WrittenLocalAsterConfig {
+export interface WrittenLocalDlConfig {
   path: string;
-  config: AsterServerConfig;
-  selectedWorkspaces: AsterWorkspace[];
+  config: DlServerConfig;
+  selectedWorkspaces: DlWorkspace[];
 }
 
 /** Create a private local config without credentials, or reuse it when it already
  * contains every requested Git root. Existing unrelated workspaces are preserved.
  */
-export async function setupLocalAsterConfig(
-  options: WriteLocalAsterConfigOptions,
-): Promise<WrittenLocalAsterConfig> {
+export async function setupLocalDlConfig(
+  options: WriteLocalDlConfigOptions,
+): Promise<WrittenLocalDlConfig> {
   if (options.workspacePaths.length === 0 || options.workspacePaths.length > 100) {
     throw new Error("provide between 1 and 100 Git workspace roots");
   }
@@ -48,15 +49,15 @@ export async function setupLocalAsterConfig(
 
   const requestedWorkspaces = await createWorkspaceEntries(options.workspacePaths);
   const env = options.env ?? process.env;
-  const requestedPath = options.configPath?.trim() || env.AUTOPILOT_ASTER_CONFIG?.trim() || localAsterConfigPath(env);
+  const requestedPath = options.configPath?.trim() || serverEnv(env, "CONFIG") || localDlConfigPath(env);
   const path = resolve(requestedPath);
 
   if (existsSync(path)) {
-    const config = await loadAsterServerConfig(path);
+    const config = await loadDlServerConfig(path);
     const selectedWorkspaces = requestedWorkspaces.map((requested) => {
       const existing = config.workspaces.find((workspace) => workspace.rootPath === requested.rootPath);
       if (!existing) {
-        throw new Error(`Aster config already exists at ${path} and does not include ${requested.displayName}; it was left unchanged`);
+        throw new Error(`dl server config already exists at ${path} and does not include ${requested.displayName}; it was left unchanged`);
       }
       return existing;
     });
@@ -76,7 +77,7 @@ export async function setupLocalAsterConfig(
   try {
     await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     await chmod(temporaryPath, 0o600);
-    const validated = await loadAsterServerConfig(temporaryPath);
+    const validated = await loadDlServerConfig(temporaryPath);
     // A hard link gives no-clobber semantics if another setup wins the race.
     await link(temporaryPath, path);
     await rm(temporaryPath);
@@ -85,15 +86,15 @@ export async function setupLocalAsterConfig(
     await rm(temporaryPath, { force: true }).catch(() => {});
     if (isAlreadyExists(error)) {
       // Concurrent first-run setup: re-read and reuse only if the same roots won.
-      return setupLocalAsterConfig(options);
+      return setupLocalDlConfig(options);
     }
     throw error;
   }
 }
 
-async function createWorkspaceEntries(paths: string[]): Promise<AsterWorkspace[]> {
+async function createWorkspaceEntries(paths: string[]): Promise<DlWorkspace[]> {
   const usedIds = new Set<string>();
-  const workspaces: AsterWorkspace[] = [];
+  const workspaces: DlWorkspace[] = [];
   for (const input of paths) {
     const requested = resolve(input);
     let root: string;

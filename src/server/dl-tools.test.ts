@@ -3,29 +3,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { assertAsterWorkspacePath, containsLikelyProviderSecret, createAsterTools, findLikelyProviderSecret, redactLikelySecrets } from "./aster-tools.js";
+import { assertDlWorkspacePath, containsLikelyProviderSecret, createDlTools, findLikelyProviderSecret, redactLikelySecrets } from "./dl-tools.js";
 
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe("Aster workspace tool policy", () => {
+describe("dl server workspace tool policy", () => {
   it("rejects parent traversal, absolute paths, symlinks outside, and credential paths", async () => {
     const { root, outside } = await fixture();
     await writeFile(join(outside, "secret.txt"), "secret");
     await symlink(outside, join(root, "linked"));
-    await assert.rejects(assertAsterWorkspacePath(root, "../secret.txt"), /workspace_path_forbidden/);
-    await assert.rejects(assertAsterWorkspacePath(root, join(outside, "secret.txt")), /workspace_path_forbidden/);
-    await assert.rejects(assertAsterWorkspacePath(root, "linked/secret.txt"), /workspace_path_forbidden/);
-    await assert.rejects(assertAsterWorkspacePath(root, ".env"), /workspace_sensitive_path_forbidden/);
-    await assert.rejects(assertAsterWorkspacePath(root, ".git/config"), /workspace_sensitive_path_forbidden/);
+    await assert.rejects(assertDlWorkspacePath(root, "../secret.txt"), /workspace_path_forbidden/);
+    await assert.rejects(assertDlWorkspacePath(root, join(outside, "secret.txt")), /workspace_path_forbidden/);
+    await assert.rejects(assertDlWorkspacePath(root, "linked/secret.txt"), /workspace_path_forbidden/);
+    await assert.rejects(assertDlWorkspacePath(root, ".env"), /workspace_sensitive_path_forbidden/);
+    await assert.rejects(assertDlWorkspacePath(root, ".git/config"), /workspace_sensitive_path_forbidden/);
   });
 
   it("allows new files only below the workspace and wraps only safe file tools", async () => {
     const { root } = await fixture();
-    assert.equal(await assertAsterWorkspacePath(root, "src/new.ts", true), join(root, "src", "new.ts"));
-    const tools = createAsterTools(root);
+    assert.equal(await assertDlWorkspacePath(root, "src/new.ts", true), join(root, "src", "new.ts"));
+    const tools = createDlTools(root);
     assert.deepEqual(tools.map((tool) => tool.name), ["read", "write", "edit"]);
   });
 
@@ -73,7 +73,7 @@ describe("Aster workspace tool policy", () => {
 });
 
 async function fixture(): Promise<{ root: string; outside: string }> {
-  const temp = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-tools-")));
+  const temp = await realpath(await mkdtemp(join(tmpdir(), "autopilot-dl-tools-")));
   roots.push(temp);
   const root = join(temp, "workspace");
   const outside = join(temp, "outside");
