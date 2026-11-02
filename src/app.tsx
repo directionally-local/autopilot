@@ -45,6 +45,7 @@ import type { Task, PlanOption } from "./tools/registry.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTerminalTitle } from "./ui/terminal-title.js";
+import { syncHerdrFromTui } from "./util/herdr.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
@@ -2144,10 +2145,27 @@ function App({
         hasProjectDir: projectDirsToRead(process.cwd()).length > 0,
       },
     });
+    // herdr pane state (#1103); a no-op outside herdr.
+    syncHerdrFromTui({
+      turnRunning: busy || supervisorRef.current.isRunning,
+      sessionId: sessionIdRef.current,
+      permissionTool: perm ? perm.tool.name : null,
+      awaitingChoice: planOptions !== null || open.includes("planComplete"),
+      currentTask: () => lastUserText(events),
+    });
   });
 
   // Camouflage draws everything from the bridge snapshot; Ink renders nothing.
   return null;
+}
+
+/** Text of the latest submitted (not queued) user message. */
+function lastUserText(events: readonly ChatEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e?.kind === "user" && !e.queued) return e.text;
+  }
+  return undefined;
 }
 
 /** Why a session is reopened on start (see App's `initialResumeReason`). */
