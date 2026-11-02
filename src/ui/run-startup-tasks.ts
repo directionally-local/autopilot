@@ -81,6 +81,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
       model: cfg.model,
       plumbingModel: cfg.plumbingModel,
       extractionModel: cfg.memoryExtractionModel,
+      extraction: cfg.memoryExtraction,
       embeddingModel: cfg.memoryEmbeddingModel,
       embeddingAuth: embeddingAuthFromConfig(cfg),
       maxAgeDays: cfg.memoryMaxAgeDays ?? RETENTION.memoryMaxAgeDays,
