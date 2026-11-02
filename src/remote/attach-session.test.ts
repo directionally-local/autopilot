@@ -6,10 +6,10 @@ import { join } from "node:path";
 import type { AppActions, AppBridge, AppSnapshot } from "../ui/app-bridge.js";
 import { attachRemote, checkFlags, remoteHeader, type AttachRemoteFlags, type MountRemoteView } from "./attach-cli.js";
 import { connectionNote, laptopImagePaths, REMOTE_COMMANDS, REVOKED_MESSAGE, serverModelEntries } from "./attach-session.js";
-import { startAsterStub, type AsterStub } from "./aster-stub.test-support.js";
+import { startDlStub, type DlStub } from "./dl-stub.test-support.js";
 import { attachLifecycle } from "../camouflage-lifecycle.test-support.js";
 
-let stub: AsterStub;
+let stub: DlStub;
 let dir: string;
 
 before(async () => {
@@ -97,25 +97,25 @@ describe("attach-remote: flags", () => {
   });
 
   it("the first transcript line is Connected for a new or empty conversation, Reconnected only with history", () => {
-    const c = { conversationId: "c0ffee00-1234", workspaceId: "w", model: "m/x", status: "ready", activeRunId: null, lastEventId: 1, createdAt: "", updatedAt: "", branch: "aster/c0ffee00" };
-    assert.match(connectionNote(c, true), /^Connected to conversation c0ffee00 · branch aster\/c0ffee00, created on the server just now/);
-    assert.match(connectionNote(c, false), /^Connected to conversation c0ffee00 · branch aster\/c0ffee00\. Nothing has happened in it yet/);
+    const c = { conversationId: "c0ffee00-1234", workspaceId: "w", model: "m/x", status: "ready", activeRunId: null, lastEventId: 1, createdAt: "", updatedAt: "", branch: "dl/c0ffee00" };
+    assert.match(connectionNote(c, true), /^Connected to conversation c0ffee00 · branch dl\/c0ffee00, created on the server just now/);
+    assert.match(connectionNote(c, false), /^Connected to conversation c0ffee00 · branch dl\/c0ffee00\. Nothing has happened in it yet/);
     assert.match(connectionNote({ ...c, lastEventId: 7 }, false), /^Reconnected to conversation c0ffee00 .*Earlier output follows/);
     assert.match(connectionNote({ ...c, activeRunId: "run-1" }, false), /^Reconnected/, "a turn is already running: its output is earlier output");
   });
 
   it("refuses to run without the URL and token in the environment", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const { done, errors } = await attach({ conversation: "x" }, { env: { AUTOPILOT_REMOTE_URL: stub.url } });
     assert.equal(await done, 1);
     assert.match(errors.join(""), /AUTOPILOT_REMOTE_TOKEN is not set/);
   });
 
   it("header uses --title, else the repository; a chat conversation shows its workspace instead", () => {
-    const c = { conversationId: "c", workspaceId: "w", model: "m/x", status: "ready", activeRunId: null, lastEventId: 0, createdAt: "", updatedAt: "", repository: "o/r", branch: "aster/c" };
+    const c = { conversationId: "c", workspaceId: "w", model: "m/x", status: "ready", activeRunId: null, lastEventId: 0, createdAt: "", updatedAt: "", repository: "o/r", branch: "dl/c" };
     assert.equal(remoteHeader(c, "dl-test · o/r").title, "dl-test · o/r");
     assert.equal(remoteHeader(c, undefined).title, "autopilot · o/r");
-    assert.match(remoteHeader(c, undefined).detail.join("\n"), /m\/x · o\/r · aster\/c · remote session[\s\S]*keeps running on the server/);
+    assert.match(remoteHeader(c, undefined).detail.join("\n"), /m\/x · o\/r · dl\/c · remote session[\s\S]*keeps running on the server/);
 
     const chat = { ...c, kind: "chat" as const, repository: null, branch: null };
     assert.equal(remoteHeader(chat, undefined, "Default workspace").title, "autopilot · Default workspace");
@@ -144,9 +144,9 @@ describe("attach-remote: flags", () => {
   });
 });
 
-describe("attach-remote: session against a stub Aster server", () => {
+describe("attach-remote: session against a stub dl server", () => {
   it("creates a code conversation (Idempotency-Key, base commit, patch), writes the state file, runs a turn and shows the PR", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const patchFile = join(dir, "local.patch");
     await writeFile(patchFile, "diff --git a/x b/x\n");
     const stateFile = join(dir, "nested", "state.json");
@@ -160,7 +160,7 @@ describe("attach-remote: session against a stub Aster server", () => {
 
     const state = JSON.parse(await readFile(stateFile, "utf8")) as Record<string, string>;
     const [id] = [...stub.conversations.keys()];
-    assert.deepEqual(state, { conversationId: id, branch: `aster/${id!.slice(0, 8)}`, repository: "acme/project" });
+    assert.deepEqual(state, { conversationId: id, branch: `dl/${id!.slice(0, 8)}`, repository: "acme/project" });
     assert.equal((await stat(stateFile)).mode & 0o777, 0o600);
 
     await waitFor(() => !!bridge.last && !bridge.last.turnRunning, "caught up");
@@ -183,7 +183,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("creates a chat conversation without a repository, titled by its workspace, and never shows a PR", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const stateFile = join(dir, "chat-state.json");
     const { bridge, done, errors, header } = await attach({ workspace: "default", kind: "chat", model: "vendor/model-a", stateFile });
 
@@ -207,18 +207,18 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("reconnecting to a conversation nothing has happened in says Connected, not Reconnected", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.seed({ conversationId: "22222222-bbbb", status: "ready" }, [{ type: "conversation.created", data: {} }]);
     const { bridge, done } = await attach({ conversation: "22222222-bbbb" });
     await waitFor(() => !!bridge.last && !bridge.last.turnRunning, "caught up");
-    assert.match(bridge.texts()[0]!, /^info:Connected to conversation 22222222 · branch aster\/22222222\. Nothing has happened in it yet/);
+    assert.match(bridge.texts()[0]!, /^info:Connected to conversation 22222222 · branch dl\/22222222\. Nothing has happened in it yet/);
     assert.ok(!bridge.texts().some((t) => t.includes("Earlier output follows")));
     bridge.actions.exit();
     assert.equal(await done, 0);
   });
 
   it("reconnect replays history from event 0, then follows live; the PR is shown once", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.seed({ conversationId: "11111111-aaaa", pullRequestURL: "https://github.com/acme/project/pull/3" }, [
       { type: "conversation.created", data: {} },
       { type: "assistant.delta", data: { text: "Earlier answer." } },
@@ -247,7 +247,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("messages typed during a turn queue and go one turn at a time", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.holdTerminal = true;
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
@@ -268,7 +268,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("Esc cancels the running turn on the server; quitting only detaches", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.holdTerminal = true;
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
@@ -289,7 +289,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("401 at startup: exits 1 with the revoked-credential message", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.seed({ conversationId: "22222222" });
     stub.revoked = true;
     const { done, errors } = await attach({ conversation: "22222222" });
@@ -298,7 +298,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("401 mid-session ends the session with exit 1", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.seed({ conversationId: "33333333" }, [{ type: "completed", data: {} }]);
     const { bridge, done, errors } = await attach({ conversation: "33333333" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
@@ -308,14 +308,14 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("an unknown conversation exits 1", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const { done, errors } = await attach({ conversation: "nope" });
     assert.equal(await done, 1);
     assert.match(errors.join(""), /no such conversation/);
   });
 
   it("SSE drops resume with Last-Event-ID and duplicates are dropped", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.dropAfter = 2;
     stub.resendOnConnect = true;
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
@@ -333,7 +333,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("/model switches the next turn's model; local-only commands and inputs are refused", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
     bridge.actions.submit("/model vendor/nope");
@@ -365,7 +365,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("/model with no ID opens the picker on the server's models; a pick switches the next turn, Esc changes nothing", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.modelCatalog = [{ id: "vendor/model-b", name: "Vendor: Model B", contextWindow: 200_000, inputPerMtok: 1, outputPerMtok: 2 }];
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
@@ -403,7 +403,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("/model falls back to the plain message when the server's models can't be fetched", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.modelsDown = true;
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
@@ -415,7 +415,7 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 
   it("approval.required opens the permission prompt; the decision is posted", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.approvals.set("ap-1", { approvalId: "ap-1", status: "pending", tool: "edit", explanation: "Edit src/a.ts", arguments: { path: "src/a.ts" } });
     stub.script = () => [{ type: "approval.required", data: { approvalId: "ap-1", tool: "edit", explanation: "Edit src/a.ts" } }];
     stub.holdTerminal = true;
@@ -438,7 +438,7 @@ describe("attach-remote: session against a stub Aster server", () => {
 
 describe("attach-remote: /resume and /clear", () => {
   it("/resume lists this credential's conversations newest first with title, state, age and repository", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     stub.seed({ conversationId: "aaaaaaaa-1111", repository: "acme/old", title: "Fix the flaky test", status: "completed", updatedAt: twoHoursAgo }, [
       { type: "conversation.created", data: {} },
@@ -460,7 +460,7 @@ describe("attach-remote: /resume and /clear", () => {
   });
 
   it("/resume <n> switches the screen to that conversation and follows it", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.seed({ conversationId: "aaaaaaaa-1111", repository: "acme/old", title: "Fix the flaky test", status: "completed" }, [
       { type: "conversation.created", data: {} },
       { type: "assistant.delta", data: { text: "Earlier answer." } },
@@ -476,7 +476,7 @@ describe("attach-remote: /resume and /clear", () => {
     bridge.actions.submit("/resume 2");
 
     await waitFor(() => bridge.texts()[0]?.includes("aaaaaaaa") === true, "switched");
-    assert.match(bridge.texts()[0]!, /^info:Reconnected to conversation aaaaaaaa · branch aster\/aaaaaaaa\. Earlier output follows/);
+    assert.match(bridge.texts()[0]!, /^info:Reconnected to conversation aaaaaaaa · branch dl\/aaaaaaaa\. Earlier output follows/);
     await waitFor(() => bridge.texts().includes("assistant:Earlier answer."), "replayed history");
     assert.equal(JSON.parse(await readFile(stateFile, "utf8")).conversationId, "aaaaaaaa-1111", "the state file follows the switch");
     assert.ok(stub.conversations.has(currentId), "the conversation left behind keeps its history");
@@ -489,7 +489,7 @@ describe("attach-remote: /resume and /clear", () => {
   });
 
   it("/resume <id> switches without a listing first; the current one and unknown numbers are refused", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     stub.seed({ conversationId: "bbbbbbbb-2222", repository: "acme/other", status: "ready" }, [{ type: "conversation.created", data: {} }]);
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
@@ -502,13 +502,13 @@ describe("attach-remote: /resume and /clear", () => {
 
     bridge.actions.submit("/resume bbbbbbbb-2222");
     await waitFor(() => bridge.texts()[0]?.includes("bbbbbbbb") === true, "switched");
-    assert.match(bridge.texts()[0]!, /^info:Connected to conversation bbbbbbbb · branch aster\/bbbbbbbb\. Nothing has happened in it yet/);
+    assert.match(bridge.texts()[0]!, /^info:Connected to conversation bbbbbbbb · branch dl\/bbbbbbbb\. Nothing has happened in it yet/);
     bridge.actions.exit();
     assert.equal(await done, 0);
   });
 
   it("/clear starts a fresh code conversation on the same repository and switches to it", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const stateFile = join(dir, "clear-state.json");
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a", stateFile });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
@@ -534,7 +534,7 @@ describe("attach-remote: /resume and /clear", () => {
   });
 
   it("/clear on a chat conversation creates another chat", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const { bridge, done } = await attach({ workspace: "default", kind: "chat", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
 
@@ -550,7 +550,7 @@ describe("attach-remote: /resume and /clear", () => {
   });
 
   it("/help and the command palette list /resume and /clear", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
     await waitFor(() => bridge.last?.turnRunning === false, "ready");
 
@@ -567,7 +567,7 @@ describe("attach-remote: /resume and /clear", () => {
 
 describe("attach-remote through the Camouflage view (headless)", () => {
   it("renders a remote turn with the same renderer events a local turn produces", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const { View } = await import("../camouflage-view.js");
     const sent: { type: string; payload: Record<string, unknown> }[] = [];
     const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 }, { permission: async () => ({ choice: "deny" }) });
@@ -604,7 +604,7 @@ describe("attach-remote through the Camouflage view (headless)", () => {
   });
 
   it("/model opens the renderer's model picker with only the server's models", async () => {
-    stub = await startAsterStub();
+    stub = await startDlStub();
     const { View } = await import("../camouflage-view.js");
     const sent: { type: string; payload: Record<string, unknown> }[] = [];
     const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 }, { permission: async () => ({ choice: "deny" }) });

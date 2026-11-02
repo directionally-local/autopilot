@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { openRouterHeaders, openRouterUrl } from "../models/openrouter.js";
-import { defaultAsterDbPath } from "./aster-store.js";
-import { containsLikelyProviderSecret } from "./aster-tools.js";
+import { defaultDlDbPath } from "./dl-store.js";
+import { containsLikelyProviderSecret } from "./dl-tools.js";
+import { serverEnv } from "./dl-compat.js";
 
 /**
- * Long-term memory shared by all of a user's Aster chats.
+ * Long-term memory shared by all of a user's dl server chats.
  *
  * Three kinds of items:
  * - person / project: a living profile card (keyed, rewritten as new information arrives),
@@ -23,11 +24,11 @@ import { containsLikelyProviderSecret } from "./aster-tools.js";
  * available to the agent as a file it can search.
  */
 
-export type AsterMemoryKind = "fact" | "person" | "project" | "session";
+export type DlMemoryKind = "fact" | "person" | "project" | "session";
 
-export interface AsterMemoryItem {
+export interface DlMemoryItem {
   id: string;
-  kind: AsterMemoryKind;
+  kind: DlMemoryKind;
   key: string | null;
   title: string;
   content: string;
@@ -37,14 +38,14 @@ export interface AsterMemoryItem {
   updatedAt: number;
 }
 
-export interface AsterMemoryChange {
+export interface DlMemoryChange {
   id: string;
-  kind: AsterMemoryKind;
+  kind: DlMemoryKind;
   title: string;
   change: "added" | "updated" | "removed";
 }
 
-export interface AsterMemoryExchange {
+export interface DlMemoryExchange {
   conversationId: string;
   project?: { kind: "chat" | "code"; repository?: string | null } | undefined;
   userText: string;
@@ -65,13 +66,13 @@ const BRIEF_RECENT_SESSIONS = 6;
 const BRIEF_RECENT_CARDS = 3;
 const KEY_RE = /^(person|project):[a-z0-9][a-z0-9-]{0,80}$/;
 
-export class AsterMemory {
+export class DlMemory {
   private readonly db: SqliteDatabase;
   /** Card keys already shown to the agent per conversation, so later turns only add new ones. */
   private readonly shown = new Map<string, Set<string>>();
 
   constructor(
-    dbPath = defaultAsterDbPath(),
+    dbPath = defaultDlDbPath(),
     private readonly options: {
       model?: string;
       apiKey?: string;
@@ -111,21 +112,21 @@ export class AsterMemory {
   }
 
   private get model(): string {
-    return this.options.model ?? process.env.AUTOPILOT_ASTER_MEMORY_MODEL ?? "google/gemini-3.8-flash";
+    return this.options.model ?? serverEnv(process.env, "MEMORY_MODEL") ?? "google/gemini-3.8-flash";
   }
 
   close(): void {
     this.db.close();
   }
 
-  list(kind?: AsterMemoryKind): AsterMemoryItem[] {
+  list(kind?: DlMemoryKind): DlMemoryItem[] {
     const rows = kind
       ? this.db.prepare("SELECT * FROM aster_memories WHERE deleted = 0 AND kind = ? ORDER BY updated_at DESC").all(kind)
       : this.db.prepare("SELECT * FROM aster_memories WHERE deleted = 0 ORDER BY updated_at DESC").all();
     return (rows as MemoryRow[]).map(rowToItem);
   }
 
-  get(id: string): AsterMemoryItem | undefined {
+  get(id: string): DlMemoryItem | undefined {
     const row = this.db.prepare("SELECT * FROM aster_memories WHERE id = ? AND deleted = 0").get(id) as MemoryRow | undefined;
     return row ? rowToItem(row) : undefined;
   }
@@ -137,14 +138,14 @@ export class AsterMemory {
 
   /** Write or merge one item. person/project/session are keyed; facts are by id. */
   upsert(input: {
-    kind: AsterMemoryKind;
+    kind: DlMemoryKind;
     key?: string | null;
     id?: string | null;
     title: string;
     content: string;
     pinned?: boolean;
     sourceConversationId?: string | null;
-  }): { item: AsterMemoryItem; change: "added" | "updated" } {
+  }): { item: DlMemoryItem; change: "added" | "updated" } {
     const now = Date.now();
     const limit = input.kind === "fact" ? MAX_FACT_CHARS : MAX_CARD_CHARS;
     const title = input.title.trim().slice(0, 120);
@@ -180,7 +181,7 @@ export class AsterMemory {
       const fresh = mentioned.filter((card) => !shown.has(card.id));
       if (fresh.length === 0) return "";
       fresh.forEach((card) => shown.add(card.id));
-      return `[Aster memory — relevant to this message]\n${fresh.map(formatCard).join("\n")}`;
+      return `[dl server memory — relevant to this message]\n${fresh.map(formatCard).join("\n")}`;
     }
 
     const shownNow = new Set<string>();
@@ -194,8 +195,8 @@ export class AsterMemory {
     this.shown.set(conversationId, shownNow);
 
     const sections = [
-      "[Aster memory — what you know about the user from earlier chats. Use it naturally and don't recite it. " +
-      "The full memory is in /workspace/.aster/memory.md; grep it when the user mentions someone or something you don't recognize.]",
+      "[dl server memory — what you know about the user from earlier chats. Use it naturally and don't recite it. " +
+      "The full memory is in /workspace/.dl/memory.md; grep it when the user mentions someone or something you don't recognize.]",
     ];
     if (facts.length) sections.push("About the user:\n" + facts.map((fact) => `- ${fact.content}`).join("\n"));
     if (featured.length) sections.push("People and projects:\n" + featured.map(formatCard).join("\n"));
@@ -207,12 +208,12 @@ export class AsterMemory {
   /** All memory as Markdown, written into the cell so the agent can search it on demand. */
   snapshot(): string {
     const items = this.list();
-    const group = (kind: AsterMemoryKind, heading: string, render: (item: AsterMemoryItem) => string) => {
+    const group = (kind: DlMemoryKind, heading: string, render: (item: DlMemoryItem) => string) => {
       const entries = items.filter((item) => item.kind === kind);
       return entries.length ? `## ${heading}\n\n${entries.map(render).join("\n")}\n` : "";
     };
     return [
-      "# Aster memory\n\nWhat the user's assistant remembers across chats. Read-only here; it is updated automatically after each turn.\n",
+      "# dl server memory\n\nWhat the user's assistant remembers across chats. Read-only here; it is updated automatically after each turn.\n",
       group("fact", "About the user", (item) => `- ${item.content}`),
       group("person", "People", (item) => `### ${item.title}\n${item.content}\n`),
       group("project", "Projects", (item) => `### ${item.title}\n${item.content}\n`),
@@ -221,11 +222,11 @@ export class AsterMemory {
   }
 
   /** Read one exchange and update memory. Returns what changed (for the app's "memory updated" chip). */
-  async remember(exchange: AsterMemoryExchange): Promise<AsterMemoryChange[]> {
+  async remember(exchange: DlMemoryExchange): Promise<DlMemoryChange[]> {
     if (!this.enabled) return [];
     const result = await this.extract(exchange);
     if (!result) return [];
-    const changes: AsterMemoryChange[] = [];
+    const changes: DlMemoryChange[] = [];
     const known = new Map(this.list().filter((item) => item.kind !== "session").map((item) => [item.id, item]));
 
     for (const id of result.deletes ?? []) {
@@ -257,7 +258,7 @@ export class AsterMemory {
     return changes;
   }
 
-  private async extract(exchange: AsterMemoryExchange): Promise<ExtractionResult | undefined> {
+  private async extract(exchange: DlMemoryExchange): Promise<ExtractionResult | undefined> {
     const items = this.list().filter((item) => item.kind !== "session")
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
       .slice(0, MAX_MEMORY_PROMPT_ITEMS);
@@ -335,10 +336,10 @@ interface MemoryRow {
   updated_at: number;
 }
 
-function rowToItem(row: MemoryRow): AsterMemoryItem {
+function rowToItem(row: MemoryRow): DlMemoryItem {
   return {
     id: row.id,
-    kind: row.kind as AsterMemoryKind,
+    kind: row.kind as DlMemoryKind,
     key: row.key,
     title: row.title,
     content: row.content,
@@ -356,12 +357,12 @@ function normalizeKey(kind: "person" | "project", value: string): string | null 
   return KEY_RE.test(key) ? key : null;
 }
 
-function formatCard(card: AsterMemoryItem): string {
+function formatCard(card: DlMemoryItem): string {
   return `- ${card.title} (${card.kind}): ${card.content}`;
 }
 
 /** Whether a message refers to a card by its title or key words (e.g. "Sara" for "Sara Ahmadi"). */
-function mentions(text: string, card: AsterMemoryItem): boolean {
+function mentions(text: string, card: DlMemoryItem): boolean {
   const haystack = ` ${text.toLowerCase()} `;
   const words = new Set<string>();
   for (const part of [card.title, card.key?.split(":")[1]?.replace(/-/g, " ") ?? ""]) {

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { endSession, endSessions, noteSessionStart, resetSessionLifecycleForTesting } from "./session-lifecycle.js";
+import { endSession, endSessions, noteSessionStart, observeSessionEnd, resetSessionLifecycleForTesting } from "./session-lifecycle.js";
 import type { HooksManager } from "./manager.js";
 import type { HookEvent, HookPayload } from "./types.js";
 import { resetExitForTesting, runShutdownTasks, onShutdown, SHUTDOWN_PHASE } from "../util/exit.js";
@@ -69,6 +69,37 @@ describe("reliable SessionEnd (#877)", () => {
     const start = Date.now();
     await runShutdownTasks(200);
     assert.ok(Date.now() - start < 1500);
+  });
+
+  it("runs session-end observers for the ended session (#1073)", async () => {
+    const seen: string[] = [];
+    const off = observeSessionEnd((sessionId, reason) => {
+      seen.push(`${sessionId}:${reason}`);
+    });
+    try {
+      await noteSessionStart({ sessionId: "a", cwd: "/r", resumed: false });
+      await endSession("a", "clear");
+      assert.deepEqual(seen, ["a:clear"]);
+      // Unregistering stops the observer.
+      off();
+      await noteSessionStart({ sessionId: "b", cwd: "/r", resumed: false });
+      await endSession("b", "exit");
+      assert.deepEqual(seen, ["a:clear"]);
+    } finally {
+      off();
+    }
+  });
+
+  it("a throwing observer never breaks endSession", async () => {
+    const off = observeSessionEnd(() => {
+      throw new Error("boom");
+    });
+    try {
+      await noteSessionStart({ sessionId: "a", cwd: "/r", resumed: false });
+      await endSession("a", "exit");
+    } finally {
+      off();
+    }
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { EXTRACTORS, isLowSignalPath, stripLineNumbers } from "./extractors.js";
+import { EXTRACTORS, editExtractionMode, isLowSignalPath, stripLineNumbers } from "./extractors.js";
 
 function extractor(id: string) {
   const found = EXTRACTORS.find((e) => e.id === id);
@@ -63,6 +63,15 @@ describe("deterministic extractors", () => {
     assert.ok(rel && abs);
     assert.strictEqual(rel.topicKey, abs.topicKey);
     assert.deepStrictEqual(abs.relatedFiles, ["src/app.tsx"]);
+  });
+});
+
+describe("editExtractionMode (memoryExtraction policy, #1073)", () => {
+  it("maps each policy to its extraction mode", () => {
+    assert.strictEqual(editExtractionMode("off"), "skip");
+    assert.strictEqual(editExtractionMode("deterministic"), "skip");
+    assert.strictEqual(editExtractionMode("session"), "buffer");
+    assert.strictEqual(editExtractionMode("aggressive"), "synthesize");
   });
 });
 

@@ -30,8 +30,8 @@ describe("server setup", () => {
   it("starts the repository-scoped GitHub proxy when it's configured", async () => {
     const port = await freePort();
     const saved = { ...process.env };
-    process.env.AUTOPILOT_ASTER_GITHUB_PROXY_LISTEN = `127.0.0.1:${port}`;
-    process.env.AUTOPILOT_ASTER_GITHUB_PROXY_URL = `http://host.docker.internal:${port}`;
+    process.env.AUTOPILOT_SERVER_GITHUB_PROXY_LISTEN = `127.0.0.1:${port}`;
+    process.env.AUTOPILOT_SERVER_GITHUB_PROXY_URL = `http://host.docker.internal:${port}`;
     process.env.GITHUB_TOKEN = "github_pat_test_only_not_a_real_token";
     delete process.env.AUTOPILOT_HOTCELL_ENDPOINT;
     const { cleanup } = setupRoutes({ model: "test/model" } as AutopilotConfig);
@@ -41,7 +41,7 @@ describe("server setup", () => {
         up = await accepts(port);
         if (!up) await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      assert.ok(up, "the GitHub proxy listens on AUTOPILOT_ASTER_GITHUB_PROXY_LISTEN");
+      assert.ok(up, "the GitHub proxy listens on AUTOPILOT_SERVER_GITHUB_PROXY_LISTEN");
     } finally {
       await cleanup();
       process.env = saved;

@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { AsterGitHub, AsterGitHubError } from "./aster-github.js";
+import { DlGitHub, DlGitHubError } from "./dl-github.js";
 
-describe("Aster GitHub REST client", () => {
+describe("dl server GitHub REST client", () => {
   it("opens a PR against the validated repository and returns its public metadata", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown; authorization: string | null }> = [];
-    const client = new AsterGitHub("placeholder-github-token", async (input, init) => {
+    const client = new DlGitHub("placeholder-github-token", async (input, init) => {
       calls.push({
         url: String(input),
         method: init?.method ?? "GET",
@@ -18,7 +18,7 @@ describe("Aster GitHub REST client", () => {
         title: "Add account settings",
         state: "open",
         merged_at: null,
-        head: { ref: "aster/abc12345" },
+        head: { ref: "dl/abc12345" },
         base: { ref: "main" },
       }, { status: 201 });
     });
@@ -26,7 +26,7 @@ describe("Aster GitHub REST client", () => {
     const pull = await client.createPullRequest("me/app", {
       title: "Add account settings",
       body: "Implemented the requested settings page.",
-      head: "aster/abc12345",
+      head: "dl/abc12345",
       base: "main",
     });
 
@@ -35,7 +35,7 @@ describe("Aster GitHub REST client", () => {
       url: "https://github.com/me/app/pull/42",
       title: "Add account settings",
       state: "open",
-      headBranch: "aster/abc12345",
+      headBranch: "dl/abc12345",
       baseBranch: "main",
       merged: false,
     });
@@ -44,22 +44,22 @@ describe("Aster GitHub REST client", () => {
     assert.deepEqual(calls[0]?.body, {
       title: "Add account settings",
       body: "Implemented the requested settings page.",
-      head: "aster/abc12345",
+      head: "dl/abc12345",
       base: "main",
     });
     assert.equal(calls[0]?.authorization, "Bearer placeholder-github-token");
   });
 
   it("lists check runs for a repository ref", async () => {
-    const client = new AsterGitHub("placeholder-github-token", async (input) => {
-      assert.equal(String(input), "https://api.github.com/repos/me/app/commits/aster%2Fabc12345/check-runs?per_page=100");
+    const client = new DlGitHub("placeholder-github-token", async (input) => {
+      assert.equal(String(input), "https://api.github.com/repos/me/app/commits/dl%2Fabc12345/check-runs?per_page=100");
       return Response.json({ check_runs: [
         { id: 8, name: "Tests", status: "completed", conclusion: "success", html_url: "https://github.com/me/app/actions/runs/8" },
         { id: 9, name: "Lint", status: "in_progress", conclusion: null },
       ] });
     });
 
-    assert.deepEqual(await client.listChecks("me/app", "aster/abc12345"), [
+    assert.deepEqual(await client.listChecks("me/app", "dl/abc12345"), [
       { id: 8, name: "Tests", status: "completed", conclusion: "success", url: "https://github.com/me/app/actions/runs/8" },
       { id: 9, name: "Lint", status: "in_progress", conclusion: null, url: null },
     ]);
@@ -67,12 +67,12 @@ describe("Aster GitHub REST client", () => {
 
   it("treats an already-merged pull request as an idempotent merge success", async () => {
     const methods: string[] = [];
-    const client = new AsterGitHub("placeholder-github-token", async (_input, init) => {
+    const client = new DlGitHub("placeholder-github-token", async (_input, init) => {
       methods.push(init?.method ?? "GET");
       if (init?.method === "PUT") return Response.json({ message: "Pull Request is not mergeable" }, { status: 405 });
       return Response.json({
         number: 42, html_url: "https://github.com/me/app/pull/42", title: "Already merged", state: "closed",
-        merged_at: "2026-10-20T00:00:00Z", head: { ref: "aster/abc12345" }, base: { ref: "main" },
+        merged_at: "2026-10-20T00:00:00Z", head: { ref: "dl/abc12345" }, base: { ref: "main" },
       });
     });
 
@@ -85,7 +85,7 @@ describe("Aster GitHub REST client", () => {
 
   it("merges with squash and rejects unsafe repository or branch values before network access", async () => {
     let requestCount = 0;
-    const client = new AsterGitHub("placeholder-github-token", async (_input, init) => {
+    const client = new DlGitHub("placeholder-github-token", async (_input, init) => {
       requestCount++;
       assert.equal(init?.method, "PUT");
       assert.deepEqual(JSON.parse(String(init?.body)), { merge_method: "squash" });
@@ -101,13 +101,13 @@ describe("Aster GitHub REST client", () => {
       body: "",
       head: "branch",
       base: "main",
-    }), (error: unknown) => error instanceof AsterGitHubError && error.code === "invalid_repository");
+    }), (error: unknown) => error instanceof DlGitHubError && error.code === "invalid_repository");
     await assert.rejects(client.createPullRequest("me/app", {
       title: "Unsafe",
       body: "",
       head: "../../main",
       base: "main",
-    }), (error: unknown) => error instanceof AsterGitHubError && error.code === "invalid_pull_request");
+    }), (error: unknown) => error instanceof DlGitHubError && error.code === "invalid_pull_request");
     assert.equal(requestCount, 1);
   });
 });

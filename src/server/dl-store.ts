@@ -1,22 +1,28 @@
 import { SqliteDatabase } from "../util/sqlite.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stateDir } from "../util/app-dirs.js";
+import { serverEnv, warnDeprecated } from "./dl-compat.js";
 
-export type AsterScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve" | "pairing:approve";
-export type AsterConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "merged";
-export type AsterApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
+/** New credentials use `dl_`; `aster_` tokens issued before the rename keep working. */
+const TOKEN_PREFIX = "dl_";
+const TOKEN_PATTERN = /^Bearer ((?:dl|aster)_[A-Za-z0-9_-]{40,})$/;
+const OWNER_CLAIM_PATTERN = /^(?:dl|aster)_claim_[A-Za-z0-9_-]{40,}$/;
 
-export interface AsterPrincipal {
+export type DlScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve" | "pairing:approve";
+export type DlConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "merged";
+export type DlApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
+
+export interface DlPrincipal {
   credentialId: string;
   name: string;
   workspaceIds: string[];
-  scopes: AsterScope[];
+  scopes: DlScope[];
   expiresAt: number;
 }
 
-export interface AsterConversation {
+export interface DlConversation {
   id: string;
   workspaceId: string;
   model: string;
@@ -29,7 +35,7 @@ export interface AsterConversation {
   baseBranch: string | null;
   pullRequestNumber: number | null;
   pullRequestURL: string | null;
-  status: AsterConversationStatus;
+  status: DlConversationStatus;
   activeRunId: string | null;
   lastEventSequence: number;
   oldestEventSequence: number;
@@ -38,13 +44,13 @@ export interface AsterConversation {
 }
 
 /** What a conversation's cell holds: a plain chat workspace, or a cloned GitHub repository. */
-export interface AsterConversationProject {
+export interface DlConversationProject {
   kind: "chat" | "code";
   repository: string | null;
   branch: string | null;
 }
 
-export interface AsterCellMapping {
+export interface DlCellMapping {
   conversationId: string;
   credentialId: string;
   workspaceId: string;
@@ -59,12 +65,12 @@ export interface AsterCellMapping {
   updatedAt: number;
 }
 
-export type AsterCellReservation =
-  | { kind: "created"; mapping: AsterCellMapping }
-  | { kind: "replay"; mapping: AsterCellMapping }
+export type DlCellReservation =
+  | { kind: "created"; mapping: DlCellMapping }
+  | { kind: "replay"; mapping: DlCellMapping }
   | { kind: "conflict" };
 
-export interface AsterEvent {
+export interface DlEvent {
   sequence: number;
   conversationId: string;
   runId: string | null;
@@ -73,21 +79,21 @@ export interface AsterEvent {
   createdAt: number;
 }
 
-export interface AsterApproval {
+export interface DlApproval {
   id: string;
   conversationId: string;
   runId: string;
   toolName: string;
   explanation: string;
   arguments: Record<string, unknown>;
-  status: AsterApprovalStatus;
+  status: DlApprovalStatus;
   expiresAt: number;
   decision: "allow" | "deny" | null;
   createdAt: number;
   resolvedAt: number | null;
 }
 
-export interface NewAsterApproval {
+export interface NewDlApproval {
   conversationId: string;
   runId: string;
   toolName: string;
@@ -96,7 +102,7 @@ export interface NewAsterApproval {
   expiresAt: number;
 }
 
-export type AsterTurnReservation =
+export type DlTurnReservation =
   | { kind: "absent" }
   | { kind: "reserved" }
   | { kind: "replay"; runId: string; responseStatus: number; response: Record<string, unknown> }
@@ -104,7 +110,7 @@ export type AsterTurnReservation =
   | { kind: "busy" }
   | { kind: "not_found" };
 
-export interface ReserveAsterTurnInput {
+export interface ReserveDlTurnInput {
   conversationId: string;
   clientTurnId: string;
   requestText: string;
@@ -137,7 +143,7 @@ interface ConversationRow extends Record<string, unknown> {
   base_branch: string | null;
   pull_request_number: number | null;
   pull_request_url: string | null;
-  status: AsterConversationStatus;
+  status: DlConversationStatus;
   active_run_id: string | null;
   last_event_sequence: number;
   oldest_event_sequence: number;
@@ -152,37 +158,37 @@ interface ApprovalRow extends Record<string, unknown> {
   tool_name: string;
   explanation: string;
   arguments_json: string;
-  status: AsterApprovalStatus;
+  status: DlApprovalStatus;
   expires_at: number;
   decision: "allow" | "deny" | null;
   created_at: number;
   resolved_at: number | null;
 }
 
-export type AsterDeviceStatus = "pending" | "approved" | "denied" | "redeemed";
+export type DlDeviceStatus = "pending" | "approved" | "denied" | "redeemed";
 
-export interface AsterDeviceAuthorization {
+export interface DlDeviceAuthorization {
   userCode: string;
   clientName: string;
-  status: AsterDeviceStatus;
+  status: DlDeviceStatus;
   createdAt: number;
   expiresAt: number;
 }
 
-export type AsterDeviceRedemption =
+export type DlDeviceRedemption =
   | { kind: "pending" }
   | { kind: "slow_down" }
   | { kind: "denied" }
   | { kind: "expired" }
-  | { kind: "issued"; credential: CreatedAsterCredential };
+  | { kind: "issued"; credential: CreatedDlCredential };
 
-export type AsterDeviceResolution = "approved" | "denied" | "not_found" | "expired" | "already_resolved";
+export type DlDeviceResolution = "approved" | "denied" | "not_found" | "expired" | "already_resolved";
 
 interface DeviceRow extends Record<string, unknown> {
   device_code_hash: string;
   user_code: string;
   client_name: string;
-  status: AsterDeviceStatus;
+  status: DlDeviceStatus;
   workspace_ids_json: string | null;
   credential_ttl_ms: number | null;
   created_at: number;
@@ -190,41 +196,41 @@ interface DeviceRow extends Record<string, unknown> {
   last_polled_at: number | null;
 }
 
-export interface AsterCredentialInfo {
+export interface DlCredentialInfo {
   id: string;
   name: string;
   workspaceIds: string[];
-  scopes: AsterScope[];
+  scopes: DlScope[];
   createdAt: number;
   expiresAt: number;
   lastUsedAt: number | null;
   status: "active" | "expired" | "revoked";
 }
 
-export interface CreatedAsterCredential {
+export interface CreatedDlCredential {
   id: string;
   name: string;
   workspaceIds: string[];
-  scopes: AsterScope[];
+  scopes: DlScope[];
   createdAt: number;
   expiresAt: number;
   token: string;
 }
 
-const VALID_SCOPES = new Set<AsterScope>([
+const VALID_SCOPES = new Set<DlScope>([
   "workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve", "pairing:approve",
 ]);
 /** What a paired client (laptop CLI, desktop app) may do; never pairing:approve. */
-export const ASTER_CLIENT_SCOPES: AsterScope[] = ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"];
+export const DL_CLIENT_SCOPES: DlScope[] = ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"];
 // No vowels or look-alikes, so a code can't spell a word and is easy to read aloud.
 const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
 const DEVICE_POLL_INTERVAL_MS = 5_000;
 const MAX_EVENTS_PER_CONVERSATION = 50_000;
 
-export class AsterStore {
+export class DlStore {
   private readonly db: SqliteDatabase;
 
-  constructor(dbPath = defaultAsterDbPath()) {
+  constructor(dbPath = defaultDlDbPath()) {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     try { chmodSync(dirname(dbPath), 0o700); } catch { /* permissions are managed by the service account */ }
     this.db = new SqliteDatabase(dbPath);
@@ -393,7 +399,7 @@ export class AsterStore {
     /** Uploaded working-tree changes: part of the request, so a retry must resend the same ones. */
     baseCommit?: string;
     patch?: string;
-  }): AsterCellReservation {
+  }): DlCellReservation {
     const keyHash = createHash("sha256").update(input.idempotencyKey).digest("hex");
     const fingerprintInput: unknown[] = [input.workspaceId, input.model, input.kind ?? "chat", input.repository?.toLowerCase() ?? null];
     if (input.baseCommit !== undefined) {
@@ -401,7 +407,7 @@ export class AsterStore {
     }
     const fingerprint = createHash("sha256").update(JSON.stringify(fingerprintInput)).digest("hex");
     const legacyChatFingerprint = createHash("sha256").update(JSON.stringify([input.workspaceId, input.model])).digest("hex");
-    const reserve = this.db.transaction((): AsterCellReservation => {
+    const reserve = this.db.transaction((): DlCellReservation => {
       const existing = this.db.prepare("SELECT * FROM aster_cell_mappings WHERE credential_id = ? AND create_key_hash = ?")
         .get(input.credentialId, keyHash) as Record<string, unknown> | undefined;
       if (existing) {
@@ -420,17 +426,17 @@ export class AsterStore {
     return reserve.immediate();
   }
 
-  getCellMapping(conversationId: string): AsterCellMapping | undefined {
+  getCellMapping(conversationId: string): DlCellMapping | undefined {
     const row = this.db.prepare("SELECT * FROM aster_cell_mappings WHERE conversation_id = ?").get(conversationId) as Record<string, unknown> | undefined;
     return row ? cellMappingFromRow(row) : undefined;
   }
 
-  listCellMappings(): AsterCellMapping[] {
+  listCellMappings(): DlCellMapping[] {
     const rows = this.db.prepare("SELECT * FROM aster_cell_mappings ORDER BY created_at").all() as Array<Record<string, unknown>>;
     return rows.map(cellMappingFromRow);
   }
 
-  getCredentialCellMapping(conversationId: string, credentialId: string): AsterCellMapping | undefined {
+  getCredentialCellMapping(conversationId: string, credentialId: string): DlCellMapping | undefined {
     const row = this.db.prepare("SELECT * FROM aster_cell_mappings WHERE conversation_id = ? AND credential_id = ?")
       .get(conversationId, credentialId) as Record<string, unknown> | undefined;
     return row ? cellMappingFromRow(row) : undefined;
@@ -446,7 +452,7 @@ export class AsterStore {
       .run(cellId, Date.now(), conversationId);
   }
 
-  setCellStatus(conversationId: string, status: AsterCellMapping["status"]): void {
+  setCellStatus(conversationId: string, status: DlCellMapping["status"]): void {
     this.db.prepare("UPDATE aster_cell_mappings SET status = ?, updated_at = ? WHERE conversation_id = ?")
       .run(status, Date.now(), conversationId);
   }
@@ -458,7 +464,7 @@ export class AsterStore {
     return result.changes === 1;
   }
 
-  createCredential(input: { name: string; workspaceIds: string[]; scopes: AsterScope[]; expiresAt: number }): CreatedAsterCredential {
+  createCredential(input: { name: string; workspaceIds: string[]; scopes: DlScope[]; expiresAt: number }): CreatedDlCredential {
     const name = input.name.trim();
     if (!name || name.length > 100) throw new Error("credential name must be 1 to 100 characters");
     const workspaceIds = [...new Set(input.workspaceIds)];
@@ -469,7 +475,7 @@ export class AsterStore {
     if (scopes.length === 0 || scopes.some((scope) => !VALID_SCOPES.has(scope))) throw new Error("credential scopes are invalid");
     if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= Date.now()) throw new Error("credential expiry must be in the future");
     const id = randomUUID();
-    const token = `aster_${randomBytes(32).toString("base64url")}`;
+    const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
     const now = Date.now();
     this.db.prepare(`INSERT INTO aster_credentials
       (id, name, token_hash, workspace_ids_json, scopes_json, created_at, expires_at)
@@ -478,8 +484,8 @@ export class AsterStore {
     return { id, name, workspaceIds, scopes, createdAt: now, expiresAt: input.expiresAt, token };
   }
 
-  authenticate(authorization: string | undefined, now = Date.now()): AsterPrincipal | undefined {
-    const match = authorization?.match(/^Bearer (aster_[A-Za-z0-9_-]{40,})$/);
+  authenticate(authorization: string | undefined, now = Date.now()): DlPrincipal | undefined {
+    const match = authorization?.match(TOKEN_PATTERN);
     if (!match) return undefined;
     const row = this.db.prepare("SELECT * FROM aster_credentials WHERE token_hash = ?")
       .get(hashToken(match[1]!)) as CredentialRow | undefined;
@@ -489,7 +495,7 @@ export class AsterStore {
       credentialId: row.id,
       name: row.name,
       workspaceIds: JSON.parse(row.workspace_ids_json) as string[],
-      scopes: JSON.parse(row.scopes_json) as AsterScope[],
+      scopes: JSON.parse(row.scopes_json) as DlScope[],
       expiresAt: row.expires_at,
     };
   }
@@ -505,7 +511,7 @@ export class AsterStore {
       this.db.prepare("DELETE FROM aster_device_authorizations WHERE expires_at <= ? AND status != 'redeemed'").run(now);
       const pending = this.db.prepare("SELECT COUNT(*) AS count FROM aster_device_authorizations WHERE status = 'pending'").get() as { count: number };
       if (pending.count >= input.maxPending) return undefined;
-      const deviceCode = `aster_device_${randomBytes(32).toString("base64url")}`;
+      const deviceCode = `dl_device_${randomBytes(32).toString("base64url")}`;
       let userCode = newUserCode();
       while (this.db.prepare("SELECT 1 FROM aster_device_authorizations WHERE user_code = ?").get(userCode)) userCode = newUserCode();
       const expiresAt = now + input.ttlMs;
@@ -518,14 +524,14 @@ export class AsterStore {
     return create.immediate();
   }
 
-  getDeviceAuthorization(userCode: string, now = Date.now()): AsterDeviceAuthorization | undefined {
+  getDeviceAuthorization(userCode: string, now = Date.now()): DlDeviceAuthorization | undefined {
     const row = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE user_code = ?")
       .get(normalizeUserCode(userCode)) as DeviceRow | undefined;
     if (!row || (row.status === "pending" && row.expires_at <= now)) return undefined;
     return deviceFromRow(row);
   }
 
-  listPendingDeviceAuthorizations(now = Date.now()): AsterDeviceAuthorization[] {
+  listPendingDeviceAuthorizations(now = Date.now()): DlDeviceAuthorization[] {
     const rows = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE status = 'pending' AND expires_at > ? ORDER BY created_at")
       .all(now) as DeviceRow[];
     return rows.map(deviceFromRow);
@@ -537,8 +543,8 @@ export class AsterStore {
     decision: "approve" | "deny",
     grant: { workspaceIds: string[]; credentialTtlMs: number },
     now = Date.now(),
-  ): AsterDeviceResolution {
-    const resolve = this.db.transaction((): AsterDeviceResolution => {
+  ): DlDeviceResolution {
+    const resolve = this.db.transaction((): DlDeviceResolution => {
       const row = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE user_code = ?")
         .get(normalizeUserCode(userCode)) as DeviceRow | undefined;
       if (!row) return "not_found";
@@ -557,8 +563,8 @@ export class AsterStore {
   }
 
   /** The client's poll. An approved code is exchanged for its credential exactly once. */
-  redeemDeviceAuthorization(deviceCode: string, now = Date.now()): AsterDeviceRedemption {
-    const redeem = this.db.transaction((): AsterDeviceRedemption => {
+  redeemDeviceAuthorization(deviceCode: string, now = Date.now()): DlDeviceRedemption {
+    const redeem = this.db.transaction((): DlDeviceRedemption => {
       const row = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE device_code_hash = ?")
         .get(hashToken(deviceCode)) as DeviceRow | undefined;
       if (!row || row.status === "redeemed") return { kind: "expired" };
@@ -572,7 +578,7 @@ export class AsterStore {
       const credential = this.createCredential({
         name: row.client_name,
         workspaceIds: JSON.parse(row.workspace_ids_json ?? "[]") as string[],
-        scopes: ASTER_CLIENT_SCOPES,
+        scopes: DL_CLIENT_SCOPES,
         expiresAt: now + (row.credential_ttl_ms ?? 0),
       });
       this.db.prepare("UPDATE aster_device_authorizations SET status = 'redeemed', credential_id = ? WHERE device_code_hash = ?")
@@ -584,16 +590,16 @@ export class AsterStore {
 
   /** A one-time link that makes the browser opening it an owner able to approve pairings. */
   createOwnerClaim(ttlMs: number, now = Date.now()): { token: string; expiresAt: number } {
-    const token = `aster_claim_${randomBytes(32).toString("base64url")}`;
+    const token = `dl_claim_${randomBytes(32).toString("base64url")}`;
     const expiresAt = now + ttlMs;
     this.db.prepare("INSERT INTO aster_owner_claims (token_hash, created_at, expires_at) VALUES (?, ?, ?)").run(hashToken(token), now, expiresAt);
     return { token, expiresAt };
   }
 
   /** Consumes an owner claim and issues the owner's pairing:approve credential. */
-  redeemOwnerClaim(token: string, grant: { workspaceIds: string[]; credentialTtlMs: number }, now = Date.now()): CreatedAsterCredential | undefined {
-    if (!/^aster_claim_[A-Za-z0-9_-]{40,}$/.test(token)) return undefined;
-    const redeem = this.db.transaction((): CreatedAsterCredential | undefined => {
+  redeemOwnerClaim(token: string, grant: { workspaceIds: string[]; credentialTtlMs: number }, now = Date.now()): CreatedDlCredential | undefined {
+    if (!OWNER_CLAIM_PATTERN.test(token)) return undefined;
+    const redeem = this.db.transaction((): CreatedDlCredential | undefined => {
       const row = this.db.prepare("SELECT * FROM aster_owner_claims WHERE token_hash = ?").get(hashToken(token)) as
         { token_hash: string; expires_at: number; claimed_at: number | null } | undefined;
       if (!row || row.claimed_at !== null || row.expires_at <= now) return undefined;
@@ -610,7 +616,7 @@ export class AsterStore {
   }
 
   /** Conversations a credential created, newest first. */
-  listCredentialConversations(credentialId: string, limit: number): AsterConversation[] {
+  listCredentialConversations(credentialId: string, limit: number): DlConversation[] {
     const rows = this.db.prepare(`SELECT conversation_id FROM aster_cell_mappings
       WHERE credential_id = ? AND status != 'destroyed' ORDER BY created_at DESC LIMIT ?`)
       .all(credentialId, limit) as Array<{ conversation_id: string }>;
@@ -620,14 +626,14 @@ export class AsterStore {
     });
   }
 
-  /** Every credential, newest first, for operators (`autopilot aster token list`). Never the token. */
-  listCredentials(now = Date.now()): AsterCredentialInfo[] {
+  /** Every credential, newest first, for operators (`autopilot server token list`). Never the token. */
+  listCredentials(now = Date.now()): DlCredentialInfo[] {
     const rows = this.db.prepare("SELECT * FROM aster_credentials ORDER BY created_at DESC").all() as Array<CredentialRow & { last_used_at: number | null }>;
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
       workspaceIds: JSON.parse(row.workspace_ids_json) as string[],
-      scopes: JSON.parse(row.scopes_json) as AsterScope[],
+      scopes: JSON.parse(row.scopes_json) as DlScope[],
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       lastUsedAt: row.last_used_at,
@@ -635,8 +641,8 @@ export class AsterStore {
     }));
   }
 
-  /** Every credential's conversations, newest first, with who started each (`autopilot aster runs`). */
-  listAllConversations(limit: number): Array<AsterConversation & { credentialId: string; credentialName: string | null }> {
+  /** Every credential's conversations, newest first, with who started each (`autopilot server runs`). */
+  listAllConversations(limit: number): Array<DlConversation & { credentialId: string; credentialName: string | null }> {
     const rows = this.db.prepare(`SELECT m.conversation_id, m.credential_id, c.name AS credential_name
       FROM aster_cell_mappings m LEFT JOIN aster_credentials c ON c.id = m.credential_id
       WHERE m.status != 'destroyed' ORDER BY m.created_at DESC LIMIT ?`)
@@ -663,7 +669,7 @@ export class AsterStore {
     kind?: "chat" | "code";
     repository?: string | null;
     baseBranch?: string | null;
-  }): AsterConversation {
+  }): DlConversation {
     const kind = input.kind ?? "chat";
     const repository = input.repository ?? null;
     const baseBranch = input.baseBranch ?? null;
@@ -686,17 +692,17 @@ export class AsterStore {
     return this.getConversation(input.id)!;
   }
 
-  getConversation(id: string): AsterConversation | undefined {
+  getConversation(id: string): DlConversation | undefined {
     const row = this.db.prepare("SELECT * FROM aster_conversations WHERE id = ?").get(id) as ConversationRow | undefined;
     return row ? rowToConversation(row) : undefined;
   }
 
-  listActiveConversations(): AsterConversation[] {
+  listActiveConversations(): DlConversation[] {
     const rows = this.db.prepare("SELECT * FROM aster_conversations WHERE active_run_id IS NOT NULL").all() as ConversationRow[];
     return rows.map(rowToConversation);
   }
 
-  lookupTurn(conversationId: string, clientTurnId: string, requestText: string): AsterTurnReservation {
+  lookupTurn(conversationId: string, clientTurnId: string, requestText: string): DlTurnReservation {
     const row = this.db.prepare("SELECT run_id, request_text, response_status, response_json FROM aster_turn_idempotency WHERE conversation_id = ? AND client_turn_id = ?")
       .get(conversationId, clientTurnId) as { run_id: string; request_text: string; response_status: number; response_json: string } | undefined;
     if (!row) return { kind: "absent" };
@@ -709,8 +715,8 @@ export class AsterStore {
     };
   }
 
-  reserveTurn(input: ReserveAsterTurnInput): AsterTurnReservation {
-    const reserve = this.db.transaction((): AsterTurnReservation => {
+  reserveTurn(input: ReserveDlTurnInput): DlTurnReservation {
+    const reserve = this.db.transaction((): DlTurnReservation => {
       const existing = this.db.prepare("SELECT run_id, request_text, response_status, response_json FROM aster_turn_idempotency WHERE conversation_id = ? AND client_turn_id = ?")
         .get(input.conversationId, input.clientTurnId) as { run_id: string; request_text: string; response_status: number; response_json: string } | undefined;
       if (existing) {
@@ -752,7 +758,7 @@ export class AsterStore {
     return update.immediate();
   }
 
-  updateConversationStatus(conversationId: string, runId: string, status: AsterConversationStatus, data: Record<string, unknown> = {}): boolean {
+  updateConversationStatus(conversationId: string, runId: string, status: DlConversationStatus, data: Record<string, unknown> = {}): boolean {
     const terminal = status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted" || status === "merged";
     const update = this.db.transaction(() => {
       const now = Date.now();
@@ -766,7 +772,7 @@ export class AsterStore {
     return update.immediate();
   }
 
-  setConversationStatus(conversationId: string, status: AsterConversationStatus, data: Record<string, unknown> = {}): boolean {
+  setConversationStatus(conversationId: string, status: DlConversationStatus, data: Record<string, unknown> = {}): boolean {
     const update = this.db.transaction(() => {
       const now = Date.now();
       const result = this.db.prepare("UPDATE aster_conversations SET status = ?, updated_at = ? WHERE id = ? AND active_run_id IS NULL")
@@ -779,12 +785,12 @@ export class AsterStore {
   }
 
   /** Records a conversation's project once; the first value wins so retries can't change it. */
-  setConversationProject(conversationId: string, project: AsterConversationProject): void {
+  setConversationProject(conversationId: string, project: DlConversationProject): void {
     this.db.prepare(`INSERT OR IGNORE INTO aster_conversation_projects (conversation_id, kind, repository, branch, created_at)
       VALUES (?, ?, ?, ?, ?)`).run(conversationId, project.kind, project.repository, project.branch, Date.now());
   }
 
-  getConversationProject(conversationId: string): AsterConversationProject | undefined {
+  getConversationProject(conversationId: string): DlConversationProject | undefined {
     const row = this.db.prepare("SELECT kind, repository, branch FROM aster_conversation_projects WHERE conversation_id = ?")
       .get(conversationId) as { kind: string; repository: string | null; branch: string | null } | undefined;
     if (!row) return undefined;
@@ -863,12 +869,12 @@ export class AsterStore {
     return update.immediate();
   }
 
-  appendEvent(conversationId: string, runId: string | null, type: string, data: Record<string, unknown>): AsterEvent {
+  appendEvent(conversationId: string, runId: string | null, type: string, data: Record<string, unknown>): DlEvent {
     const append = this.db.transaction(() => this.insertEvent(conversationId, runId, type, data, Date.now()));
     return append.immediate();
   }
 
-  eventsAfter(conversationId: string, after: number, limit = 200): AsterEvent[] {
+  eventsAfter(conversationId: string, after: number, limit = 200): DlEvent[] {
     const rows = this.db.prepare(`SELECT * FROM aster_events WHERE conversation_id = ? AND sequence > ?
       ORDER BY sequence LIMIT ?`).all(conversationId, after, Math.max(1, Math.min(500, Math.trunc(limit)))) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
@@ -881,7 +887,7 @@ export class AsterStore {
     }));
   }
 
-  createApproval(input: NewAsterApproval): AsterApproval {
+  createApproval(input: NewDlApproval): DlApproval {
     const id = randomUUID();
     const now = Date.now();
     this.db.prepare(`INSERT INTO aster_approvals
@@ -891,24 +897,24 @@ export class AsterStore {
     return this.getApproval(id)!;
   }
 
-  getApproval(id: string): AsterApproval | undefined {
+  getApproval(id: string): DlApproval | undefined {
     const row = this.db.prepare("SELECT * FROM aster_approvals WHERE id = ?").get(id) as ApprovalRow | undefined;
     return row ? rowToApproval(row) : undefined;
   }
 
-  pendingApprovalsForConversation(conversationId: string): AsterApproval[] {
+  pendingApprovalsForConversation(conversationId: string): DlApproval[] {
     const rows = this.db.prepare("SELECT * FROM aster_approvals WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at")
       .all(conversationId) as ApprovalRow[];
     return rows.map(rowToApproval);
   }
 
-  getConversationForApproval(approvalId: string): AsterConversation | undefined {
+  getConversationForApproval(approvalId: string): DlConversation | undefined {
     const row = this.db.prepare(`SELECT c.* FROM aster_conversations c
       JOIN aster_approvals a ON a.conversation_id = c.id WHERE a.id = ?`).get(approvalId) as ConversationRow | undefined;
     return row ? rowToConversation(row) : undefined;
   }
 
-  expireApproval(id: string, now = Date.now()): AsterApproval | undefined {
+  expireApproval(id: string, now = Date.now()): DlApproval | undefined {
     const update = this.db.transaction(() => {
       const approval = this.getApproval(id);
       if (!approval) return undefined;
@@ -921,7 +927,7 @@ export class AsterStore {
     return update.immediate();
   }
 
-  cancelPendingApprovals(conversationId: string, now = Date.now()): AsterApproval[] {
+  cancelPendingApprovals(conversationId: string, now = Date.now()): DlApproval[] {
     const update = this.db.transaction(() => {
       const rows = this.db.prepare("SELECT * FROM aster_approvals WHERE conversation_id = ? AND status = 'pending'").all(conversationId) as ApprovalRow[];
       for (const row of rows) this.db.prepare("UPDATE aster_approvals SET status = 'cancelled', resolved_at = ? WHERE id = ? AND status = 'pending'").run(now, row.id);
@@ -930,7 +936,7 @@ export class AsterStore {
     return update.immediate();
   }
 
-  expirePendingApprovals(now = Date.now()): AsterApproval[] {
+  expirePendingApprovals(now = Date.now()): DlApproval[] {
     const update = this.db.transaction(() => {
       const rows = this.db.prepare("SELECT * FROM aster_approvals WHERE status = 'pending' AND expires_at <= ?").all(now) as ApprovalRow[];
       for (const row of rows) this.db.prepare("UPDATE aster_approvals SET status = 'expired', resolved_at = ? WHERE id = ? AND status = 'pending'").run(now, row.id);
@@ -939,7 +945,7 @@ export class AsterStore {
     return update.immediate();
   }
 
-  expireAllPendingApprovals(now = Date.now()): AsterApproval[] {
+  expireAllPendingApprovals(now = Date.now()): DlApproval[] {
     const update = this.db.transaction(() => {
       const rows = this.db.prepare("SELECT * FROM aster_approvals WHERE status = 'pending'").all() as ApprovalRow[];
       for (const row of rows) this.db.prepare("UPDATE aster_approvals SET status = 'expired', resolved_at = ? WHERE id = ? AND status = 'pending'").run(now, row.id);
@@ -948,7 +954,7 @@ export class AsterStore {
     return update.immediate();
   }
 
-  resolveApproval(id: string, decision: "allow" | "deny", now = Date.now()): { approval?: AsterApproval; conflict: boolean; changed: boolean } {
+  resolveApproval(id: string, decision: "allow" | "deny", now = Date.now()): { approval?: DlApproval; conflict: boolean; changed: boolean } {
     const update = this.db.transaction(() => {
       const current = this.getApproval(id);
       if (!current) return { conflict: false, changed: false };
@@ -966,7 +972,7 @@ export class AsterStore {
     return update.immediate();
   }
 
-  private insertEvent(conversationId: string, runId: string | null, type: string, data: Record<string, unknown>, now: number): AsterEvent {
+  private insertEvent(conversationId: string, runId: string | null, type: string, data: Record<string, unknown>, now: number): DlEvent {
     const row = this.db.prepare("SELECT last_event_sequence FROM aster_conversations WHERE id = ?").get(conversationId) as { last_event_sequence: number } | undefined;
     if (!row) throw new Error("Conversation not found");
     const sequence = row.last_event_sequence + 1;
@@ -978,8 +984,17 @@ export class AsterStore {
   }
 }
 
-export function defaultAsterDbPath(): string {
-  return process.env.AUTOPILOT_ASTER_DB || join(stateDir(), "aster.db");
+export function defaultDlDbPath(): string {
+  const configured = serverEnv(process.env, "DB");
+  if (configured) return configured;
+  const current = join(stateDir(), "dl.db");
+  if (existsSync(current)) return current;
+  const legacy = join(stateDir(), "aster.db");
+  if (existsSync(legacy)) {
+    warnDeprecated("db:aster.db", `using the pre-rename database at ${legacy}; move it to ${current} when convenient.`);
+    return legacy;
+  }
+  return current;
 }
 
 function hashToken(token: string): string {
@@ -997,11 +1012,11 @@ export function normalizeUserCode(code: string): string {
   return compact.length === 8 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
 }
 
-function deviceFromRow(row: DeviceRow): AsterDeviceAuthorization {
+function deviceFromRow(row: DeviceRow): DlDeviceAuthorization {
   return { userCode: row.user_code, clientName: row.client_name, status: row.status, createdAt: row.created_at, expiresAt: row.expires_at };
 }
 
-function cellMappingFromRow(row: Record<string, unknown>): AsterCellMapping {
+function cellMappingFromRow(row: Record<string, unknown>): DlCellMapping {
   return {
     conversationId: row.conversation_id as string,
     credentialId: row.credential_id as string,
@@ -1010,7 +1025,7 @@ function cellMappingFromRow(row: Record<string, unknown>): AsterCellMapping {
     sessionId: row.session_id as string,
     cellName: row.cell_name as string,
     cellId: (row.cell_id as string | null) ?? null,
-    status: row.status as AsterCellMapping["status"],
+    status: row.status as DlCellMapping["status"],
     createAttempted: row.create_attempted === 1,
     eventCursor: row.event_cursor as number,
     createdAt: row.created_at as number,
@@ -1018,7 +1033,7 @@ function cellMappingFromRow(row: Record<string, unknown>): AsterCellMapping {
   };
 }
 
-function rowToConversation(row: ConversationRow): AsterConversation {
+function rowToConversation(row: ConversationRow): DlConversation {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -1041,7 +1056,7 @@ function rowToConversation(row: ConversationRow): AsterConversation {
   };
 }
 
-function rowToApproval(row: ApprovalRow): AsterApproval {
+function rowToApproval(row: ApprovalRow): DlApproval {
   return {
     id: row.id,
     conversationId: row.conversation_id,

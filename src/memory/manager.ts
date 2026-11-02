@@ -32,7 +32,7 @@ import {
   type ExportedMemory,
 } from "./db.js";
 import { embeddingModelFor, fetchEmbeddings } from "./embeddings.js";
-import { DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
+import { DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL, type MemoryExtractionPolicy } from "../config.js";
 import { retrieveMemories } from "./retrieval.js";
 import { runCleanup, shouldCleanup } from "./cleanup.js";
 import { redactSecrets } from "./redact.js";
@@ -47,6 +47,7 @@ import {
   type RepoMigrationPlan,
   type RepoPathCount,
 } from "./migrate-repo.js";
+import { observeSessionEnd } from "../hooks/session-lifecycle.js";
 
 export { redactSecrets } from "./redact.js";
 
@@ -82,7 +83,33 @@ export interface MemoryManagerOpts extends LlmAuth {
   maxAgeDays?: number;
   maxEntries?: number;
   redactSecrets?: boolean;
+  /** When LLM-based extraction runs. Default: "session" (#1073). */
+  extraction?: MemoryExtractionPolicy;
 }
+
+/** An edit buffered under the "session" policy, waiting for the batched flush. */
+export interface PendingSessionEdit {
+  /** Repo-relative (or absolute) path of the edited file. */
+  file: string;
+  /** Tool that made the edit (edit | write). */
+  tool: string;
+  /** Tail of the assistant message that drove the edit (redacted on buffer). */
+  intent: string;
+  /** Working directory of the edit; used as repoPath when the batch is stored. */
+  repoPath: string;
+  /** Epoch ms when the edit was recorded. */
+  at: number;
+}
+
+interface SessionEditMemory {
+  content: string;
+  category: MemoryCategory;
+  importance: number;
+  relatedFiles?: string[];
+}
+
+/** Cap on buffered edits per session; the oldest are dropped past this. */
+const MAX_PENDING_EDITS = 200;
 
 interface LlmOpts extends LlmAuth {
   model: string;
@@ -157,9 +184,55 @@ Cover different phrasings: declarative, interrogative, and keyword-based.
 Return a JSON array of strings. Example:
 ["what package manager does this project use?", "pnpm preference", "user likes pnpm over npm"]`;
 
+const SESSION_EDIT_SYSTEM = `You are given the code edits made during one coding session. Write 1 to 3 durable memories a future session should know.
+
+Rules:
+- Capture decisions, conventions, and outcomes — not a per-edit changelog.
+- Each memory is ONE sentence, max 25 words, with concrete names (files, tools, facts).
+- Skip mechanical or trivial changes. If nothing durable was learned, return [].
+- Use ONLY the edit list below.
+
+Return ONLY a JSON array:
+[{"content": "...", "category": "fact" | "event" | "preference" | "instruction" | "task", "importance": 1-5, "relatedFiles": ["path"]}]`;
+
+/** Parse the batched session-edit synthesis response into 1–3 memories. */
+export function parseSessionEditMemories(text: string): SessionEditMemory[] {
+  const cleaned = text.replace(/```(?:json)?\s*|\s*```/g, "").trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: SessionEditMemory[] = [];
+  const categories: readonly string[] = ["fact", "event", "instruction", "task", "preference"];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const content = typeof rec.content === "string" ? rec.content.trim() : "";
+    if (!content) continue;
+    const category = typeof rec.category === "string" && categories.includes(rec.category)
+      ? (rec.category as MemoryCategory)
+      : "event";
+    const importance = typeof rec.importance === "number" && Number.isFinite(rec.importance)
+      ? Math.max(1, Math.min(5, Math.round(rec.importance)))
+      : 3;
+    const relatedFiles = Array.isArray(rec.relatedFiles)
+      ? rec.relatedFiles.filter((f): f is string => typeof f === "string").slice(0, 10)
+      : undefined;
+    out.push({ content, category, importance, ...(relatedFiles && relatedFiles.length > 0 ? { relatedFiles } : {}) });
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
 export class MemoryManager {
   private db: SqliteDatabase | null = null;
   private opts: MemoryManagerOpts;
+  /** Buffered edit events per session, flushed in one LLM call (#1073). */
+  private pendingEdits = new Map<string, PendingSessionEdit[]>();
+  private offSessionEnd: (() => void) | null = null;
 
   constructor(opts: MemoryManagerOpts) {
     this.opts = opts;
@@ -168,10 +241,19 @@ export class MemoryManager {
   open(): void {
     if (!this.db) {
       this.db = openMemoryDb(this.opts.dbPath);
+      // Session end (exit or /clear) is a flush point for buffered edit events.
+      this.offSessionEnd = observeSessionEnd((sessionId) =>
+        this.flushSessionEdits(sessionId).then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
     }
   }
 
   close(): void {
+    this.offSessionEnd?.();
+    this.offSessionEnd = null;
     if (this.db) {
       closeMemoryDb();
       this.db = null;
@@ -207,6 +289,93 @@ export class MemoryManager {
   /** Expose extraction LLM opts so the agent loop can pass them to extractors. */
   getExtractionLlmOpts(): LlmOpts {
     return this.extractionLlmOpts;
+  }
+
+  /** The active memory-extraction policy (#1073). Default: "session". */
+  get extractionPolicy(): MemoryExtractionPolicy {
+    return this.opts.extraction ?? "session";
+  }
+
+  /**
+   * Buffer one edit under the "session" policy — no LLM call, no row (#1073).
+   * The batch is synthesized once at compaction or session end.
+   */
+  recordEdit(sessionId: string, edit: PendingSessionEdit): void {
+    if (this.extractionPolicy !== "session") return;
+    const list = this.pendingEdits.get(sessionId) ?? [];
+    if (list.length >= MAX_PENDING_EDITS) list.shift();
+    list.push({ ...edit, intent: this.shouldRedact() ? redactSecrets(edit.intent) : edit.intent });
+    this.pendingEdits.set(sessionId, list);
+  }
+
+  /** How many edits are buffered for a session (0 unless the policy is "session"). */
+  pendingEditCount(sessionId: string): number {
+    return this.pendingEdits.get(sessionId)?.length ?? 0;
+  }
+
+  /**
+   * Flush buffered edit events with ONE synthesis call and store the 1–3
+   * durable memories it returns (#1073). Returns the number stored.
+   * Called at compaction and at session end; safe to call concurrently — the
+   * buffer drains synchronously, so a second flush sees it empty.
+   */
+  async flushSessionEdits(sessionId: string, signal?: AbortSignal): Promise<number> {
+    const edits = this.pendingEdits.get(sessionId);
+    if (!edits || edits.length === 0) return 0;
+    this.pendingEdits.delete(sessionId);
+    if (!this.db || this.extractionPolicy !== "session") return 0;
+
+    let memories: SessionEditMemory[];
+    try {
+      memories = await this.synthesizeSessionEdits(edits, signal);
+    } catch {
+      // Keep the batch for the next flush (compaction or session end).
+      const newer = this.pendingEdits.get(sessionId);
+      this.pendingEdits.set(sessionId, newer ? [...edits, ...newer] : edits);
+      return 0;
+    }
+
+    let stored = 0;
+    const repoPath = edits[0]!.repoPath;
+    for (const memory of memories) {
+      try {
+        await this.remember(
+          memory.content,
+          memory.category,
+          memory.importance,
+          repoPath,
+          sessionId,
+          signal,
+          undefined,
+          undefined,
+          memory.relatedFiles,
+        );
+        stored++;
+      } catch {
+        // Best-effort: one failed memory never blocks the rest of the batch.
+      }
+    }
+    return stored;
+  }
+
+  /** The single LLM call behind flushSessionEdits: all buffered edits → 1–3 memories. */
+  private async synthesizeSessionEdits(edits: PendingSessionEdit[], signal?: AbortSignal): Promise<SessionEditMemory[]> {
+    const lines = edits
+      .map((e, i) => `${i + 1}. ${e.tool} ${e.file}${e.intent ? `\n   intent: ${e.intent}` : ""}`)
+      .join("\n");
+    const user = redactSecrets(
+      `Code edits made during this session:\n\n${lines}\n\nRespond with a JSON array of 1 to 3 durable memories.`,
+    );
+    const text = await runKimiText({
+      ...this.extractionLlmOpts,
+      signal,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: SESSION_EDIT_SYSTEM },
+        { role: "user", content: user },
+      ],
+    });
+    return parseSessionEditMemories(text);
   }
 
   private shouldRedact(): boolean {

@@ -1,7 +1,7 @@
 /**
  * The shapes a provider secret takes, and where one sits in a git diff.
  *
- * Pure and dependency-free on purpose: the Aster server refuses a patch that holds a key,
+ * Pure and dependency-free on purpose: the dl server refuses a patch that holds a key,
  * and dl (the laptop's installer) scans the same patch before it ever leaves the machine.
  * Both import this module, so the two can't drift apart.
  *

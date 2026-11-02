@@ -1,9 +1,9 @@
 /**
- * Aster event → interactive UI state, for `autopilot attach-remote`.
+ * dl server event → interactive UI state, for `autopilot attach-remote`.
  *
  * The Camouflage view draws App snapshots (ChatEvents, tasks, usage, a
  * pending permission). A remote session has no App: its events arrive from
- * the Aster API's SSE stream instead. This module folds those events into
+ * the dl server API's SSE stream instead. This module folds those events into
  * the same snapshot pieces a local session produces, so the view renders a
  * remote turn exactly like a local one. Pure: no I/O, no timers.
  */
@@ -14,7 +14,7 @@ import type { Usage } from "../agent/messages.js";
 import type { RemoteEvent } from "./client.js";
 
 /** Run outcomes the server emits as their own event type. */
-export const ASTER_TERMINAL_EVENTS = new Set(["completed", "failed", "cancelled", "interrupted"]);
+export const DL_TERMINAL_EVENTS = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 export interface PendingApproval {
   approvalId: string;
@@ -23,7 +23,7 @@ export interface PendingApproval {
   expiresAt?: number | string;
 }
 
-export interface AsterViewState {
+export interface DlViewState {
   events: ChatEvent[];
   tasks: Task[];
   /** The current run's cumulative usage (the server reports totals per run). */
@@ -43,12 +43,12 @@ export interface AsterViewState {
 }
 
 /** What the session controller must act on after an event (the adapter itself does no I/O). */
-export type AsterEffect =
+export type DlEffect =
   | { kind: "turnEnded"; status: string }
   | { kind: "approvalRequired"; approvalId: string }
   | { kind: "approvalResolved"; approvalId: string };
 
-export function initialAsterState(): AsterViewState {
+export function initialDlState(): DlViewState {
   return {
     events: [],
     tasks: [],
@@ -65,20 +65,20 @@ export function initialAsterState(): AsterViewState {
 }
 
 /** Total cost of the conversation as far as the events go. */
-export function totalCostUsd(state: AsterViewState): number {
+export function totalCostUsd(state: DlViewState): number {
   return state.priorCostUsd + state.runCostUsd;
 }
 
 /**
- * Fold one Aster event into the state. Events at or below the last applied
+ * Fold one dl server event into the state. Events at or below the last applied
  * ID are ignored (SSE delivery is at-least-once). Returns what the caller
  * must do about it.
  */
-export function applyAsterEvent(state: AsterViewState, event: RemoteEvent): AsterEffect[] {
+export function applyDlEvent(state: DlViewState, event: RemoteEvent): DlEffect[] {
   if (event.id <= state.lastEventId) return [];
   state.lastEventId = event.id;
   const d = event.data;
-  const key = `aster-${event.id}`;
+  const key = `dl-${event.id}`;
   switch (event.type) {
     case "assistant.delta": {
       const text = str(d.text) ?? str(d.delta) ?? "";
@@ -191,7 +191,7 @@ export function applyAsterEvent(state: AsterViewState, event: RemoteEvent): Aste
   }
 }
 
-function toolActivity(state: AsterViewState, key: string, d: Record<string, unknown>): AsterEffect[] {
+function toolActivity(state: DlViewState, key: string, d: Record<string, unknown>): DlEffect[] {
   const tool = str(d.tool) ?? "tool";
   const callId = str(d.toolCallId);
   const activity = str(d.activity);
@@ -236,7 +236,7 @@ function toolActivity(state: AsterViewState, key: string, d: Record<string, unkn
   return [];
 }
 
-function endTurn(state: AsterViewState, key: string, status: string, reason: string | undefined): void {
+function endTurn(state: DlViewState, key: string, status: string, reason: string | undefined): void {
   closeAssistant(state);
   const toolStatus: ToolEventState["status"] = status === "completed" ? "done" : status === "failed" ? "error" : "cancelled";
   state.events = state.events.map((e) => (e.kind === "tool" && (e.status === "running" || e.status === "queued") ? { ...e, status: toolStatus } : e));
@@ -254,11 +254,11 @@ function endTurn(state: AsterViewState, key: string, status: string, reason: str
 }
 
 /** Any run activity means a turn is in flight (also true while replaying history). */
-function beginActivity(state: AsterViewState): void {
+function beginActivity(state: DlViewState): void {
   state.running = true;
 }
 
-function openAssistant(state: AsterViewState, key: string): Extract<ChatEvent, { kind: "assistant" }> {
+function openAssistant(state: DlViewState, key: string): Extract<ChatEvent, { kind: "assistant" }> {
   const open = state.openAssistant ? state.events.find((e) => e.key === state.openAssistant) : undefined;
   if (open?.kind === "assistant") return open;
   const msg: Extract<ChatEvent, { kind: "assistant" }> = { kind: "assistant", key, id: state.lastEventId, text: "", reasoning: "", streaming: true };
@@ -267,20 +267,20 @@ function openAssistant(state: AsterViewState, key: string): Extract<ChatEvent, {
   return msg;
 }
 
-function closeAssistant(state: AsterViewState): void {
+function closeAssistant(state: DlViewState): void {
   if (!state.openAssistant) return;
   const open = state.events.find((e) => e.key === state.openAssistant);
   if (open?.kind === "assistant") replace(state, open.key, { ...open, streaming: false });
   state.openAssistant = null;
 }
 
-function push(state: AsterViewState, event: ChatEvent): void {
+function push(state: DlViewState, event: ChatEvent): void {
   // Notices end the assistant message they follow, like a local turn's step boundary.
   if (event.kind !== "assistant") closeAssistant(state);
   state.events.push(event);
 }
 
-function replace(state: AsterViewState, key: string, next: ChatEvent): void {
+function replace(state: DlViewState, key: string, next: ChatEvent): void {
   const i = state.events.findIndex((e) => e.key === key);
   if (i >= 0) state.events[i] = next;
 }

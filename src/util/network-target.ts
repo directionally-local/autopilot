@@ -2,7 +2,7 @@
  * Where a URL points on the network. web_fetch and browser_fetch run
  * without a prompt, so a prompt-injected model could otherwise read cloud
  * metadata credentials (http://169.254.169.254/...), services on
- * localhost (autopilot's own `serve` API, the Aster cell bridge) or the
+ * localhost (autopilot's own `serve` API, the dl server cell bridge) or the
  * private network, and pull the response into its context. Fetching
  * http://localhost:3000 to check a dev server is legitimate, so such
  * targets are not blocked: they need the user's permission, per host.

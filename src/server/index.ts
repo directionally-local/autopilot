@@ -13,7 +13,7 @@ import { logger } from "../util/logger.js";
 import { installExitHandlers, onShutdown } from "../util/exit.js";
 import { setupRoutes } from "./routes.js";
 import { hasDotSegment, requestPathname } from "./request-path.js";
-import type { AsterApiRuntime } from "./aster-api.js";
+import type { DlApiRuntime } from "./dl-api.js";
 import { readEnv } from "../util/env.js";
 
 /** Basic-auth usernames accepted by the legacy local API, canonical name first (#911). */
@@ -23,12 +23,12 @@ export interface ServerOpts {
   port: number;
   hostname: string;
   config: AutopilotConfig;
-  /** Injectable Aster runtime; defaults to the Hotcell-backed runtime when its env is configured. */
-  asterRuntime?: AsterApiRuntime;
+  /** Injectable dl server runtime; defaults to the Hotcell-backed runtime when its env is configured. */
+  dlRuntime?: DlApiRuntime;
 }
 
 export async function startServer(opts: ServerOpts): Promise<Server> {
-  const { handleRequest, cleanup } = setupRoutes(opts.config, { asterRuntime: opts.asterRuntime });
+  const { handleRequest, cleanup } = setupRoutes(opts.config, { dlRuntime: opts.dlRuntime });
 
   const password = readEnv("SERVER_PASSWORD");
   if (!password && !isLoopbackHost(opts.hostname)) {
@@ -46,8 +46,8 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
       res.end(JSON.stringify({ error: "Bad request path" }));
       return;
     }
-    const isAsterApi = pathname.startsWith("/api/v1/");
-    if (!isAsterApi) {
+    const isDlApi = pathname.startsWith("/api/v1/");
+    if (!isDlApi) {
       const verdict = checkLegacyRequest(req.headers, { listenHost: opts.hostname, corsOrigins });
       if (!verdict.ok) {
         res.writeHead(403, { "Content-Type": "application/json" });
@@ -62,16 +62,16 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
       }
     }
 
-    if (req.method === "OPTIONS" && !isAsterApi) {
+    if (req.method === "OPTIONS" && !isDlApi) {
       res.writeHead(204);
       res.end();
       return;
     }
 
-    // Legacy local API Basic auth. The versioned Aster API authenticates its own scoped bearer token.
+    // Legacy local API Basic auth. The versioned dl server API authenticates its own scoped bearer token.
     // The username is `autopilot`; the pre-rename `kimiflare` username is still
     // accepted so existing curl commands, scripts and editor plugins keep working (#911).
-    if (!isAsterApi && password) {
+    if (!isDlApi && password) {
       const auth = req.headers.authorization ?? "";
       const ok = BASIC_AUTH_USERS.some(
         (user) => auth === "Basic " + Buffer.from(`${user}:${password}`).toString("base64"),

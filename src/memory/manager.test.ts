@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { deterministicTopicKey, pickTopicKey, MemoryManager } from "./manager.js";
+import { deterministicTopicKey, pickTopicKey, parseSessionEditMemories, MemoryManager } from "./manager.js";
 
 describe("deterministicTopicKey", () => {
   it("lowercases and snake_cases a simple phrase", () => {
@@ -287,6 +287,180 @@ describe("MemoryManager content-addressed lifecycle (#1074)", () => {
     } finally {
       m.close();
     }
+  });
+});
+
+describe("session-end edit extraction (memoryExtraction: session, #1073)", () => {
+  let tmpDir: string;
+  const originalFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "kimiflare-memory-session-extract-"));
+    calls.length = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      calls.push({ url, body });
+      if (url.endsWith("/embeddings")) {
+        const n = (body.input as string[]).length;
+        return new Response(JSON.stringify({ data: Array.from({ length: n }, (_, index) => ({ index, embedding: [1, 0, 0] })) }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // The batched synthesis call asks for durable memories; every other side
+      // call (verify, hypothetical queries) gets the usual valid verdict.
+      const content = JSON.stringify(body).includes("durable memories")
+        ? JSON.stringify([
+            {
+              content: "Buffered edit events and synthesized them in one session-end call.",
+              category: "event",
+              importance: 3,
+              relatedFiles: ["src/memory/manager.ts"],
+            },
+          ])
+        : '{"valid":true,"corrected_content":null}';
+      // The OpenAI preset speaks the Responses API; emit its SSE shape.
+      const events = [
+        { type: "response.output_text.delta", delta: content },
+        { type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 10 } } },
+      ];
+      const sse = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+      return new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const auth = {
+    providerId: "openai" as const,
+    customEndpoint: { baseUrl: "https://api.openai.com/v1", apiKey: "k", providerId: "openai" as const },
+  };
+
+  function open(extraction?: "off" | "deterministic" | "session" | "aggressive"): MemoryManager {
+    const m = new MemoryManager({
+      dbPath: join(tmpDir, "memory.db"),
+      model: "m",
+      ...auth,
+      ...(extraction ? { extraction } : {}),
+    });
+    m.open();
+    return m;
+  }
+
+  const edit = (file: string) => ({
+    file,
+    tool: "edit",
+    intent: "add the feature",
+    repoPath: "/repo",
+    at: Date.now(),
+  });
+
+  it("defaults the policy to session", () => {
+    const m = open();
+    try {
+      assert.strictEqual(m.extractionPolicy, "session");
+    } finally {
+      m.close();
+    }
+  });
+
+  it("buffers edits with zero model calls", () => {
+    const m = open();
+    try {
+      m.recordEdit("s1", edit("src/a.ts"));
+      m.recordEdit("s1", edit("src/b.ts"));
+      assert.strictEqual(m.pendingEditCount("s1"), 2);
+      assert.strictEqual(calls.length, 0, "no model calls while buffering");
+    } finally {
+      m.close();
+    }
+  });
+
+  it("flushes the buffer with ONE synthesis call and stores the memories", async () => {
+    const m = open();
+    try {
+      m.recordEdit("s1", edit("src/a.ts"));
+      m.recordEdit("s1", edit("src/b.ts"));
+
+      const stored = await m.flushSessionEdits("s1");
+
+      const synthesis = calls.filter((c) => JSON.stringify(c.body).includes("durable memories"));
+      assert.strictEqual(synthesis.length, 1, "exactly one extraction call for the whole batch");
+      assert.strictEqual(stored, 1);
+      assert.strictEqual(m.pendingEditCount("s1"), 0, "buffer drained after flush");
+
+      const results = await m.recall({ text: "session-end call", repoPath: "/repo" });
+      assert.ok(results.some((r) => r.memory.content.includes("session-end")));
+    } finally {
+      m.close();
+    }
+  });
+
+  it("makes no call when the buffer is empty", async () => {
+    const m = open();
+    try {
+      assert.strictEqual(await m.flushSessionEdits("s1"), 0);
+      assert.strictEqual(calls.length, 0);
+    } finally {
+      m.close();
+    }
+  });
+
+  it("does not buffer under other policies", () => {
+    for (const policy of ["off", "deterministic", "aggressive"] as const) {
+      const m = open(policy);
+      try {
+        assert.strictEqual(m.extractionPolicy, policy);
+        m.recordEdit("s1", edit("src/a.ts"));
+        assert.strictEqual(m.pendingEditCount("s1"), 0, policy);
+      } finally {
+        m.close();
+      }
+    }
+  });
+
+  it("keeps the batch for the next flush when synthesis fails", async () => {
+    const m = open();
+    try {
+      m.recordEdit("s1", edit("src/a.ts"));
+      // An abort surfaces immediately (no network retries), like a shutdown.
+      globalThis.fetch = (async () => {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }) as typeof fetch;
+      assert.strictEqual(await m.flushSessionEdits("s1"), 0);
+      assert.strictEqual(m.pendingEditCount("s1"), 1, "failed batch is restored");
+    } finally {
+      globalThis.fetch = originalFetch;
+      m.close();
+    }
+  });
+});
+
+describe("parseSessionEditMemories", () => {
+  it("caps the batch at three memories and defaults bad fields", () => {
+    const memories = parseSessionEditMemories(
+      '```json\n[{"content":"a"},{"content":"b"},{"content":"c"},{"content":"d"}]\n```',
+    );
+    assert.strictEqual(memories.length, 3);
+
+    const defaulted = parseSessionEditMemories('[{"content":"x","category":"nope","importance":99}]');
+    assert.strictEqual(defaulted.length, 1);
+    assert.strictEqual(defaulted[0]?.category, "event");
+    assert.strictEqual(defaulted[0]?.importance, 5);
+  });
+
+  it("returns nothing for junk or non-array responses", () => {
+    assert.deepStrictEqual(parseSessionEditMemories("not json"), []);
+    assert.deepStrictEqual(parseSessionEditMemories('{"content":"x"}'), []);
+    assert.deepStrictEqual(parseSessionEditMemories('[{"content":"  "}]'), []);
   });
 });
 

@@ -4,29 +4,29 @@ import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 
 /**
- * Repository-scoped Git Smart HTTP proxy for Aster code cells. A cell receives only
+ * Repository-scoped Git Smart HTTP proxy for dl server code cells. A cell receives only
  * an HMAC-derived per-conversation capability; the real GitHub token stays on host.
  * Reads are limited to one repository and writes are limited to that conversation's
  * feature branch. REST endpoints are deliberately not exposed to the agent.
  */
 
-export interface AsterGitHubGrant {
+export interface DlGitHubGrant {
   conversationId: string;
   repository: string;
   branch: string;
 }
 
-export function createAsterGitHubGrantToken(serverToken: string, conversationId: string, repository: string, branch = ""): string {
+export function createDlGitHubGrantToken(serverToken: string, conversationId: string, repository: string, branch = ""): string {
   return createHmac("sha256", serverToken)
-    .update(`aster-github:${conversationId}:${repository.toLowerCase()}:${branch}`)
+    .update(`dl-github:${conversationId}:${repository.toLowerCase()}:${branch}`)
     .digest("base64url");
 }
 
-export interface AsterGitHubProxyOptions {
+export interface DlGitHubProxyOptions {
   /** The server's GitHub token; never sent to cells. */
   token: string;
   /** Resolves a cell's grant token to its repository and writable branch. */
-  resolveGrant: (grantToken: string) => AsterGitHubGrant | undefined;
+  resolveGrant: (grantToken: string) => DlGitHubGrant | undefined;
   /** Upstream root, overridable for tests. */
   gitUpstream?: string;
 }
@@ -36,11 +36,11 @@ const FORWARDED_REQUEST_HEADERS = ["accept", "content-type", "content-encoding",
 const HOP_BY_HOP = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailer"]);
 const MAX_COMMAND_LIST_BYTES = 64 * 1024;
 
-export class AsterGitHubProxy {
+export class DlGitHubProxy {
   private server: Server | undefined;
   private readonly gitUpstream: URL;
 
-  constructor(private readonly options: AsterGitHubProxyOptions) {
+  constructor(private readonly options: DlGitHubProxyOptions) {
     this.gitUpstream = new URL(options.gitUpstream ?? "https://github.com");
   }
 
@@ -67,7 +67,7 @@ export class AsterGitHubProxy {
     const grantToken = extractToken(req);
     if (!grantToken) {
       // git asks anonymously first and retries with credentials after a Basic challenge.
-      res.writeHead(401, { "www-authenticate": 'Basic realm="aster-github"', "content-type": "text/plain" });
+      res.writeHead(401, { "www-authenticate": 'Basic realm="dl-github"', "content-type": "text/plain" });
       res.end("credentials required");
       return;
     }
@@ -117,7 +117,7 @@ export class AsterGitHubProxy {
       if (parsed.commands.length === 0 || parsed.commands.some((command) =>
         command.ref !== `refs/heads/${branch}` || command.newObjectId.length === 0 || /^0+$/.test(command.newObjectId))) {
         req.removeListener("data", onData);
-        return deny(res, 403, "Aster cells may push only to their own feature branch");
+        return deny(res, 403, "dl server cells may push only to their own feature branch");
       }
       req.removeListener("data", onData);
       forwarding = true;
@@ -177,7 +177,7 @@ function upstreamHeaders(req: IncomingMessage, token: string, git: boolean): Rec
     const value = req.headers[name];
     if (typeof value === "string") headers[name] = value;
   }
-  headers["user-agent"] ??= "autopilot-aster";
+  headers["user-agent"] ??= "autopilot-dl-server";
   headers.authorization = git
     ? "Basic " + Buffer.from(`x-access-token:${token}`).toString("base64")
     : `Bearer ${token}`;

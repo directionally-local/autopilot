@@ -1,9 +1,9 @@
 /**
  * `autopilot attach-remote`: the interactive UI on a conversation that runs
- * in a sandbox on an Aster server.
+ * in a sandbox on an dl server.
  *
  * RemoteAttachSession stands in for App on the other side of the AppBridge:
- * it turns Aster SSE events into snapshots (through attach-adapter) and the
+ * it turns dl server SSE events into snapshots (through attach-adapter) and the
  * view's actions into API calls. Typed messages become turns (one
  * clientTurnId each); messages typed while a turn runs queue, as they do
  * locally. Esc cancels the running turn on the server; quitting only
@@ -18,7 +18,7 @@ import type { ChatEvent } from "../ui/view-types.js";
 import type { PermissionDecision } from "../tools/executor.js";
 import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
 import { getModel, getModelOrInfer, type ModelEntry } from "../models/registry.js";
-import { applyAsterEvent, initialAsterState, totalCostUsd, type AsterEffect, type AsterViewState } from "./attach-adapter.js";
+import { applyDlEvent, initialDlState, totalCostUsd, type DlEffect, type DlViewState } from "./attach-adapter.js";
 import { RemoteApiError, type RemoteClient, type RemoteConversation, type RemoteEvent, type RemoteModelInfo } from "./client.js";
 
 /** The commands a remote session handles; everything else built in is local-only. */
@@ -115,7 +115,7 @@ interface QueuedMessage {
 }
 
 export class RemoteAttachSession {
-  readonly state: AsterViewState = initialAsterState();
+  readonly state: DlViewState = initialDlState();
   private readonly client: RemoteClient;
   private conversation: RemoteConversation;
   private readonly newId: () => string;
@@ -553,13 +553,13 @@ export class RemoteAttachSession {
   /** Apply one event from the stream. */
   apply(event: RemoteEvent): void {
     const wasReplaying = this.replaying;
-    const effects = applyAsterEvent(this.state, event);
+    const effects = applyDlEvent(this.state, event);
     for (const effect of effects) this.effect(effect);
     if (wasReplaying && !this.replaying) void this.caughtUp();
     this.flush();
   }
 
-  private effect(effect: AsterEffect): void {
+  private effect(effect: DlEffect): void {
     switch (effect.kind) {
       case "turnEnded":
         this.turnsEnded++;

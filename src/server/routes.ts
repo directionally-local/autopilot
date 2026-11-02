@@ -47,15 +47,16 @@ import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager, type RunWorktree } from "../runs/worktrees.js";
 import { RunWakeScheduler, type RunWakeEvent } from "../runs/wake-scheduler.js";
 import type { RunBudgetUpdate, RunRecord } from "../runs/store.js";
-import { AsterApi, type AsterApiRuntime } from "./aster-api.js";
-import { AsterHotcellRuntime } from "./aster-cell-runtime.js";
+import { DlApi, type DlApiRuntime } from "./dl-api.js";
+import { DlHotcellRuntime } from "./dl-cell-runtime.js";
 import { HotcellProvider, HotcellProviderError } from "./hotcell-provider.js";
-import { redactLikelySecrets } from "./aster-tools.js";
+import { redactLikelySecrets } from "./dl-tools.js";
+import { serverEnv } from "./dl-compat.js";
 
-function createHotcellAsterRuntime(): AsterApiRuntime | undefined {
+function createHotcellDlRuntime(): DlApiRuntime | undefined {
   try {
-    const idlePauseMs = Number(process.env.AUTOPILOT_ASTER_IDLE_PAUSE_MS ?? 15 * 60 * 1000);
-    return new AsterHotcellRuntime(HotcellProvider.fromEnvironment(), {
+    const idlePauseMs = Number(serverEnv(process.env, "IDLE_PAUSE_MS") ?? 15 * 60 * 1000);
+    return new DlHotcellRuntime(HotcellProvider.fromEnvironment(), {
       idlePauseMs: Number.isFinite(idlePauseMs) && idlePauseMs >= 0 ? idlePauseMs : 15 * 60 * 1000,
     });
   } catch (error) {
@@ -82,9 +83,9 @@ interface ActiveSession {
   maxRuntimeMs?: number | null;
   conversationId?: string;
   workspaceRoot?: string;
-  askAsterPermission?: (request: PermissionRequest) => Promise<PermissionDecision>;
-  publishAsterEvent?: (type: string, data: Record<string, unknown>) => void;
-  finishAsterTurn?: (status: "completed" | "failed" | "cancelled", reason?: string) => void;
+  askDlPermission?: (request: PermissionRequest) => Promise<PermissionDecision>;
+  publishDlEvent?: (type: string, data: Record<string, unknown>) => void;
+  finishDlTurn?: (status: "completed" | "failed" | "cancelled", reason?: string) => void;
   /** Session trace (no-op unless `config.trace.enabled`). */
   trace?: TraceRecorder;
   /** Turn id minted with the pending user message, consumed by the next turn. */
@@ -229,7 +230,7 @@ function runAdmissionRefusal(config: AutopilotConfig): { status: number; error: 
   }
 }
 
-export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: AsterApiRuntime } = {}) {
+export function setupRoutes(config: AutopilotConfig, options: { dlRuntime?: DlApiRuntime } = {}) {
   /**
    * Resume a run paused for input: optionally switch model, revise budgets
    * and pass the operator's answer, then start the next turn. Shared by the
@@ -307,16 +308,16 @@ export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: A
       store.close();
     }
   }
-  const asterRuntime = options.asterRuntime ?? createHotcellAsterRuntime();
-  const asterApi = new AsterApi(config, asterRuntime ?? {
+  const dlRuntime = options.dlRuntime ?? createHotcellDlRuntime();
+  const dlApi = new DlApi(config, dlRuntime ?? {
     startTurn: (turn) => turn.finish("failed", "hotcell_unavailable"),
     cancelRun: () => {},
   });
-  if (!options.asterRuntime) {
+  if (!options.dlRuntime) {
     // Repository-scoped GitHub access for code cells (no-op unless configured). Without it,
     // code conversations need Hotcell's own GitHub gateway and fail to provision when it's absent.
-    void asterApi.startGitHubProxy().catch((error: unknown) => {
-      process.stderr.write(`aster: GitHub proxy failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
+    void dlApi.startGitHubProxy().catch((error: unknown) => {
+      process.stderr.write(`dl server: GitHub proxy failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
     });
   }
 
@@ -382,7 +383,7 @@ export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: A
     const pathname = url.pathname;
 
     if (pathname.startsWith("/api/v1/")) {
-      await asterApi.handle(req, res);
+      await dlApi.handle(req, res);
       return;
     }
 
@@ -934,7 +935,7 @@ export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: A
     }
     activeRuns.clear();
     activeSessions.clear();
-    asterApi.close();
+    dlApi.close();
     return cleaned;
   }
 
@@ -946,7 +947,7 @@ function launchAgentTurnForSession(active: ActiveSession, config: AutopilotConfi
     const message = error instanceof Error ? error.message : String(error);
     logger.error("server: agent turn startup failed", {
       sessionId: active.sessionFile.id,
-      error: active.conversationId ? "aster_agent_start_failed" : redactLikelySecrets(message),
+      error: active.conversationId ? "dl_agent_start_failed" : redactLikelySecrets(message),
     });
     active.running = false;
     active.controller = undefined;
@@ -956,7 +957,7 @@ function launchAgentTurnForSession(active: ActiveSession, config: AutopilotConfi
       try {
         const run = store.getRun(active.runId);
         if (run && ["queued", "running", "waiting"].includes(run.status)) {
-          store.transition(run.id, "failed", active.conversationId ? "aster_agent_start_failed" : `server_turn_start_failed:${redactLikelySecrets(message)}`.slice(0, 500));
+          store.transition(run.id, "failed", active.conversationId ? "dl_agent_start_failed" : `server_turn_start_failed:${redactLikelySecrets(message)}`.slice(0, 500));
           store.cancelTimersForRun(run.id);
         }
       } finally {
@@ -965,7 +966,7 @@ function launchAgentTurnForSession(active: ActiveSession, config: AutopilotConfi
     } catch (storeError) {
       logger.error("server: failed to record agent startup failure", {
         runId: active.runId,
-        error: active.conversationId ? "aster_run_state_update_failed" : storeError instanceof Error ? redactLikelySecrets(storeError.message) : "unknown",
+        error: active.conversationId ? "dl_run_state_update_failed" : storeError instanceof Error ? redactLikelySecrets(storeError.message) : "unknown",
       });
     }
   });
@@ -987,7 +988,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
     if (!run || run.status !== "running") {
       runStore.close();
       active.running = false;
-      active.finishAsterTurn?.("failed", "run_not_active");
+      active.finishDlTurn?.("failed", "run_not_active");
       return;
     }
     const armRuntimeBudget = (): void => {
@@ -1007,14 +1008,14 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
 
   const callbacks: AgentCallbacks = {
     onTextDelta: (delta) => {
-      if (active.publishAsterEvent) active.publishAsterEvent("assistant.delta", { delta: redactLikelySecrets(delta) });
+      if (active.publishDlEvent) active.publishDlEvent("assistant.delta", { delta: redactLikelySecrets(delta) });
       for (const client of active.sseClients) {
         client.send("assistant.delta", { delta });
       }
     },
     onToolCallFinalized: (call) => {
-      if (active.publishAsterEvent) {
-        active.publishAsterEvent("tool.activity", { tool: call.function.name, activity: "proposed" });
+      if (active.publishDlEvent) {
+        active.publishDlEvent("tool.activity", { tool: call.function.name, activity: "proposed" });
       }
       for (const client of active.sseClients) {
         client.send("tool.call", {
@@ -1025,8 +1026,8 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
       }
     },
     onToolResult: (result) => {
-      if (active.publishAsterEvent) {
-        active.publishAsterEvent("tool.activity", { tool: result.name, activity: result.ok ? "completed" : "failed", ok: result.ok });
+      if (active.publishDlEvent) {
+        active.publishDlEvent("tool.activity", { tool: result.name, activity: result.ok ? "completed" : "failed", ok: result.ok });
       }
       for (const client of active.sseClients) {
         client.send("tool.result", {
@@ -1038,8 +1039,8 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
       }
     },
     onUsage: (usage) => {
-      if (active.publishAsterEvent) {
-        active.publishAsterEvent("usage", {
+      if (active.publishDlEvent) {
+        active.publishDlEvent("usage", {
           promptTokens: usage.prompt_tokens,
           completionTokens: usage.completion_tokens,
           totalTokens: usage.total_tokens,
@@ -1064,7 +1065,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
       if (result.budgetExceededReason) throw new Error(result.budgetExceededReason);
     },
     onWarning: (msg) => {
-      if (active.publishAsterEvent) active.publishAsterEvent("status", { detail: redactLikelySecrets(msg) });
+      if (active.publishDlEvent) active.publishDlEvent("status", { detail: redactLikelySecrets(msg) });
       for (const client of active.sseClients) {
         client.send("warning", { message: msg });
       }
@@ -1072,13 +1073,13 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
     onRunYield: (request) => {
       if (!runStore || !active.runId || request.runId !== active.runId) return;
       runStore.transition(active.runId, "waiting", `timer:${request.timerId}`);
-      active.publishAsterEvent?.("status", { status: "waiting", condition: request.condition, wakeAt: request.wakeAt });
+      active.publishDlEvent?.("status", { status: "waiting", condition: request.condition, wakeAt: request.wakeAt });
       yielded = true;
     },
     onRunBudgetExceeded: (reason) => controller.abort(new Error(reason)),
     askPermission: async (req) => {
       const { tool, args } = req;
-      if (active.askAsterPermission) return active.askAsterPermission(req);
+      if (active.askDlPermission) return active.askDlPermission(req);
       if (active.runId) {
         // Allowing a tool for a run never extends to credentials files.
         if (active.allowedTools?.has(tool.name) && !req.sensitiveReason) return "allow";
@@ -1195,14 +1196,14 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
         runStore.transition(active.runId, "completed");
       }
     }
-    active.finishAsterTurn?.("completed");
+    active.finishDlTurn?.("completed");
 
     for (const client of active.sseClients) {
       client.send("session.completed", { sessionId: sessionFile.id });
     }
   } catch (err) {
     const rawMessage = (err as Error).message;
-    const message = active.conversationId ? "aster_agent_turn_failed" : redactLikelySecrets(rawMessage);
+    const message = active.conversationId ? "dl_agent_turn_failed" : redactLikelySecrets(rawMessage);
     logger.error("server: agent turn failed", { sessionId: sessionFile.id, error: message });
     if (runStore && active.runId) {
       const current = runStore.getRun(active.runId);
@@ -1216,10 +1217,10 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
         }
       }
     }
-    if (active.finishAsterTurn) {
+    if (active.finishDlTurn) {
       const runStatus = active.runId ? runStore?.getRun(active.runId)?.status : undefined;
       const finalStatus = runStatus === "cancelled" ? "cancelled" : runStatus === "completed" ? "completed" : "failed";
-      active.finishAsterTurn(finalStatus, finalStatus === "failed" ? "agent_turn_failed" : undefined);
+      active.finishDlTurn(finalStatus, finalStatus === "failed" ? "agent_turn_failed" : undefined);
     }
     for (const client of active.sseClients) {
       client.send("error", { message, sessionId: sessionFile.id });

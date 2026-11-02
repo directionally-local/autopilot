@@ -86,6 +86,9 @@ describe("loadConfig", () => {
     "AUTOPILOT_SHELL",
     "KIMIFLARE_MEMORY_ENABLED",
     "AUTOPILOT_MEMORY_ENABLED",
+    // #1073: memory extraction policy
+    "AUTOPILOT_MEMORY_EXTRACTION",
+    "KIMIFLARE_MEMORY_EXTRACTION",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -160,6 +163,38 @@ describe("loadConfig", () => {
     assert.strictEqual(cfg.model, DEFAULT_MODEL);
     assert.strictEqual(cfg.coauthorName, "autopilot");
     assert.strictEqual(cfg.coauthorEmail, "kimiflare@proton.me");
+  });
+
+  describe("memoryExtraction policy (#1073)", () => {
+    it("defaults to session", async () => {
+      process.env.OPENROUTER_API_KEY = "sk-or-env";
+      const cfg = await loadConfig();
+      assert.ok(cfg);
+      assert.strictEqual(cfg.memoryExtraction, "session");
+    });
+
+    it("honors a persisted policy", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", memoryExtraction: "deterministic" });
+      const cfg = await loadConfig();
+      assert.ok(cfg);
+      assert.strictEqual(cfg.memoryExtraction, "deterministic");
+    });
+
+    it("lets AUTOPILOT_MEMORY_EXTRACTION override the file", async () => {
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", memoryExtraction: "deterministic" });
+      process.env.AUTOPILOT_MEMORY_EXTRACTION = "aggressive";
+      const cfg = await loadConfig();
+      assert.ok(cfg);
+      assert.strictEqual(cfg.memoryExtraction, "aggressive");
+    });
+
+    it("falls back to session for an unknown policy", async () => {
+      process.env.OPENROUTER_API_KEY = "sk-or-env";
+      process.env.AUTOPILOT_MEMORY_EXTRACTION = "loud";
+      const cfg = await loadConfig();
+      assert.ok(cfg);
+      assert.strictEqual(cfg.memoryExtraction, "session");
+    });
   });
 
   it("loads an old config that still names a UI engine, and drops it on save", async () => {

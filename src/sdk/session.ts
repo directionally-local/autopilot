@@ -69,6 +69,7 @@ export async function createAgentSession(
       model: config.model,
       plumbingModel: config.plumbingModel,
       extractionModel: config.memoryExtractionModel,
+      extraction: config.memoryExtraction,
       embeddingModel: config.memoryEmbeddingModel,
       embeddingAuth: embeddingAuthFromConfig(config),
       maxAgeDays: config.memoryMaxAgeDays,

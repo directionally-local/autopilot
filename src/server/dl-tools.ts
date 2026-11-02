@@ -13,17 +13,17 @@ const SENSITIVE_NAMES = new Set([
   "id_rsa", "id_ed25519", "credentials", "secrets",
 ]);
 
-export function createAsterTools(workspaceRoot: string): ToolSpec[] {
+export function createDlTools(workspaceRoot: string): ToolSpec[] {
   return ASTR_TOOLS.map((tool) => ({
     ...tool,
     run: async (args: Record<string, unknown>, context: ToolContext) => {
-      await assertAsterWorkspacePath(workspaceRoot, args.path, tool.name !== "read");
+      await assertDlWorkspacePath(workspaceRoot, args.path, tool.name !== "read");
       return tool.run(args, { ...context, cwd: workspaceRoot });
     },
   }));
 }
 
-export async function assertAsterWorkspacePath(workspaceRoot: string, value: unknown, allowMissing = false): Promise<string> {
+export async function assertDlWorkspacePath(workspaceRoot: string, value: unknown, allowMissing = false): Promise<string> {
   if (typeof value !== "string" || !value.trim()) throw new Error("workspace_path_invalid");
   const root = await realpath(workspaceRoot);
   const candidate = resolvePath(root, value);
@@ -53,7 +53,7 @@ export async function assertAsterWorkspacePath(workspaceRoot: string, value: unk
   return candidate;
 }
 
-export function assertAsterCellPath(value: unknown): string {
+export function assertDlCellPath(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) throw new Error("workspace_path_invalid");
   const root = "/workspace";
   const candidate = value.startsWith("/") ? posixNormalize(value) : posixNormalize(`${root}/${value}`);

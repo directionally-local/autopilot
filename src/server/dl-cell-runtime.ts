@@ -6,15 +6,15 @@ import type { Sandbox } from "@hotcell/sdk";
 import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import { getModel, type ModelEntry } from "../models/registry.js";
 import { getAppVersion } from "../util/version.js";
-import type { AsterApiRuntime, AsterTurnStart } from "./aster-api.js";
-import type { AsterProviderConfig } from "./aster-workspaces.js";
+import type { DlApiRuntime, DlTurnStart } from "./dl-api.js";
+import type { DlProviderConfig } from "./dl-workspaces.js";
 import type { HotcellProvider } from "./hotcell-provider.js";
-import { redactLikelySecrets } from "./aster-tools.js";
+import { redactLikelySecrets } from "./dl-tools.js";
 
 const execFileAsync = promisify(execFile);
 
 const CELL_WORKSPACE = "/workspace";
-const CELL_STATE_DIR = "/workspace/.aster";
+const CELL_STATE_DIR = "/workspace/.dl";
 const CHECKPOINT_MESSAGE_FILE = `${CELL_STATE_DIR}/checkpoint-message`;
 const CELL_RUNTIME_DIR = "/opt/autopilot/node_modules/autopilot-ai";
 const INSTALLED_RUNTIME_PACKAGE = `${CELL_RUNTIME_DIR}/package.json`;
@@ -34,31 +34,31 @@ const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
 const BRANCH_RE = /^[A-Za-z0-9._/-]{1,200}$/;
 const REPOSITORY_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 // Fixed identity and no signing so commits never depend on cell-local git config.
-const GIT = `git -C ${CELL_WORKSPACE} -c user.name=Autopilot -c user.email=autopilot@aster.invalid -c commit.gpgsign=false`;
+const GIT = `git -C ${CELL_WORKSPACE} -c user.name=Autopilot -c user.email=autopilot@dl.invalid -c commit.gpgsign=false`;
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/;
 const FULL_COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const LOCAL_CHANGES_PATCH = `${CELL_STATE_DIR}/local-changes.patch`;
 // Where a code conversation's own work starts: the clone (and the client's local changes,
 // if any). Commits after it are the agent's. The clone has no origin/<base> ref to compare to.
-const START_REF = "refs/aster/start";
+const START_REF = "refs/dl/start";
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
 const MAX_TOOL_INPUT_CHARS = 2_000;
 const MAX_CHECKPOINTS = 100;
 const CELL_CONTROL_DIR = `${CELL_STATE_DIR}/control`;
-const BRIDGE_MARKER = "startAsterCellBridge";
+const BRIDGE_MARKER = "startDlCellBridge";
 const CONTROL_RUNNER =
   `node --input-type=module -e ` +
-  `'import { executeAsterCellControl } from "/opt/autopilot/node_modules/autopilot-ai/dist/sdk/index.js";` +
-  `const r = await executeAsterCellControl(process.argv[1]);` +
+  `'import { executeDlCellControl } from "/opt/autopilot/node_modules/autopilot-ai/dist/sdk/index.js";` +
+  `const r = await executeDlCellControl(process.argv[1]);` +
   `process.stdout.write(JSON.stringify(r) + "\\n");'`;
 const BRIDGE_RUNNER =
   `node --input-type=module -e ` +
-  `'import { startAsterCellBridge } from "/opt/autopilot/node_modules/autopilot-ai/dist/sdk/index.js"; void startAsterCellBridge()'`;
+  `'import { startDlCellBridge } from "/opt/autopilot/node_modules/autopilot-ai/dist/sdk/index.js"; void startDlCellBridge()'`;
 
 const HEALTH_TIMEOUT_MS = 30_000;
 const EVENT_POLL_MS = 400;
 
-export interface AsterHotcellRuntimeOptions {
+export interface DlHotcellRuntimeOptions {
   /** npm spec installed inside the cell; defaults to the currently running server version. */
   autopilotPackageSpec?: string;
   /** Injected for tests: current server's bundled cell SDK. */
@@ -76,7 +76,7 @@ export interface AsterHotcellRuntimeOptions {
   /**
    * Pause cells idle (no turn, no API activity) this long, releasing CPU and memory.
    * Hotcell's own idle reaper skips cells with a live background process unless it can
-   * snapshot memory, and every Aster cell runs the bridge, so on the container driver
+   * snapshot memory, and every dl server cell runs the bridge, so on the container driver
    * nothing was ever paused. Cold-pausing is safe here: the bridge is restarted and its
    * session restored on the next request. 0 disables.
    */
@@ -91,7 +91,7 @@ export interface AsterHotcellRuntimeOptions {
   modelInfo?: (model: string) => Promise<ModelEntry | undefined>;
 }
 
-export interface AsterCellProject {
+export interface DlCellProject {
   kind: "chat" | "code";
   /** owner/name, for code cells. */
   repository?: string;
@@ -99,7 +99,7 @@ export interface AsterCellProject {
   baseBranch?: string;
   /** Working branch created for this conversation. */
   branch?: string;
-  /** Aster's repository-scoped GitHub proxy (preferred over Hotcell's GitHub gateway). */
+  /** The dl server's repository-scoped GitHub proxy (preferred over Hotcell's GitHub gateway). */
   github?: { token: string; gitUrl: string };
   /** Start from this commit instead of the tip of baseBranch (the client's local base). */
   baseCommit?: string;
@@ -107,7 +107,7 @@ export interface AsterCellProject {
   patch?: string;
 }
 
-export interface AsterArtifact {
+export interface DlArtifact {
   /** Path relative to /workspace/artifacts. */
   path: string;
   name: string;
@@ -116,20 +116,20 @@ export interface AsterArtifact {
   mimeType: string;
 }
 
-export interface AsterCheckpoint {
+export interface DlCheckpoint {
   id: string;
   message: string;
   createdAt: string;
 }
 
 /**
- * AsterApiRuntime backed by one Hotcell per conversation. The provider credentials
+ * DlApiRuntime backed by one Hotcell per conversation. The provider credentials
  * never enter the cell: model egress goes through Hotcell's credential gateway route
  * for the configured provider, scoped to the conversation's model. Only structured SDK
  * events and bounded control payloads leave the cell; prompts and file contents never
  * appear in exec commands or Hotcell logs.
  */
-export class AsterHotcellRuntime implements AsterApiRuntime {
+export class DlHotcellRuntime implements DlApiRuntime {
   private readonly packageSpec: string;
   private readonly cellRuntimeSdkBundle: string | undefined;
   private readonly archiveWorkspace: (workspaceRoot: string) => Promise<string>;
@@ -140,7 +140,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
 
   constructor(
     private readonly provider: HotcellProvider,
-    options: AsterHotcellRuntimeOptions = {},
+    options: DlHotcellRuntimeOptions = {},
   ) {
     this.packageSpec = options.autopilotPackageSpec ?? `autopilot-ai@${getAppVersion()}`;
     this.cellRuntimeSdkBundle = options.cellRuntimeSdkBundle;
@@ -193,11 +193,11 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     workspaceRoot: string;
     model: string;
     /** The LLM provider the cell's egress route and Autopilot runtime are configured for; absent: OpenRouter. */
-    provider?: AsterProviderConfig;
+    provider?: DlProviderConfig;
     allowCreate: boolean;
     onCellCreated: (cellId: string) => void;
     /** Absent: seed the configured workspace (original behavior). */
-    project?: AsterCellProject;
+    project?: DlCellProject;
   }): Promise<{ cellId: string }> {
     let cell = await this.provider.findConversationCell(input.conversationId);
     if (!cell) {
@@ -211,8 +211,8 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
         ...(input.project?.github ? {
           githubViaProxy: true,
           env: {
-            ASTER_GITHUB_TOKEN: input.project.github.token,
-            ASTER_GITHUB_GIT_URL: input.project.github.gitUrl,
+            DL_GITHUB_TOKEN: input.project.github.token,
+            DL_GITHUB_GIT_URL: input.project.github.gitUrl,
           },
         } : {}),
       });
@@ -259,7 +259,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
    * token the daemon minted. OpenRouter keeps the daemon's own OPENROUTER_* injection, which
    * the bridge already understands. Idempotent, so a retried provision re-applies it.
    */
-  private async configureProviderEnv(cell: Sandbox, provider: AsterProviderConfig): Promise<void> {
+  private async configureProviderEnv(cell: Sandbox, provider: DlProviderConfig): Promise<void> {
     if (provider.id === "openrouter") return;
     const { tokens, providers } = await cell.listEgressTokens();
     const route = providers.find((entry) => entry.name === provider.id);
@@ -292,7 +292,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   /** Newest-first git history of the cell workspace; one commit per completed turn. */
-  async listCheckpoints(cellId: string): Promise<AsterCheckpoint[]> {
+  async listCheckpoints(cellId: string): Promise<DlCheckpoint[]> {
     const cell = await this.provider.getCell(cellId);
     if (!(await this.ensureRepository(cell))) return [];
     const result = await cell.exec(`${GIT} log -n ${MAX_CHECKPOINTS} --format=%H%x1f%cI%x1f%s`);
@@ -305,9 +305,9 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
 
   /**
    * Make the workspace match a checkpoint, recorded as a new commit so the restore
-   * itself can be undone. Ignored files (node_modules, .aster state) are untouched.
+   * itself can be undone. Ignored files (node_modules, .dl state) are untouched.
    */
-  async restoreCheckpoint(cellId: string, conversationId: string, checkpointId: string): Promise<AsterCheckpoint> {
+  async restoreCheckpoint(cellId: string, conversationId: string, checkpointId: string): Promise<DlCheckpoint> {
     if (!COMMIT_SHA_RE.test(checkpointId)) throw new Error("invalid_checkpoint");
     const cell = await this.provider.getCell(cellId);
     if (!(await this.ensureRepository(cell))) throw new Error("checkpoints_unavailable");
@@ -330,7 +330,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     return head;
   }
 
-  startTurn(turn: AsterTurnStart): void {
+  startTurn(turn: DlTurnStart): void {
     void this.prepareAndRunTurn(turn).catch(() => {
       turn.finish("failed", "cell_runtime_error");
     });
@@ -340,24 +340,24 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
    * Re-attach to a turn that was running when the server restarted. The cell kept working
    * and journaled its events, so this only resumes reading them from the saved cursor.
    */
-  resumeTurn(turn: AsterTurnStart): void {
+  resumeTurn(turn: DlTurnStart): void {
     void this.prepareAndRunTurn(turn, { resume: true }).catch(() => {
       turn.finish("failed", "cell_runtime_error");
     });
   }
 
   private async prepareAndRunTurn(
-    turn: AsterTurnStart,
+    turn: DlTurnStart,
     options: { resume?: boolean } = {},
   ): Promise<void> {
     const conversationId = turn.conversation.id;
-    if (turn.conversation.kind === "code" && !turn.githubProxy) throw new Error("aster_github_proxy_not_configured");
+    if (turn.conversation.kind === "code" && !turn.githubProxy) throw new Error("dl_github_proxy_not_configured");
     let cellId = turn.cellId;
     if (!cellId) {
       const provisioned = await this.provisionConversation({
         conversationId,
         sessionId: turn.conversation.sessionId,
-        cellName: `aster-${conversationId.slice(0, 8)}`,
+        cellName: `dl-${conversationId.slice(0, 8)}`,
         workspaceId: turn.conversation.workspaceId,
         workspaceRoot: turn.conversation.worktreePath,
         model: turn.conversation.model,
@@ -398,7 +398,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   private async runTurn(
-    turn: AsterTurnStart & { cellId: string; cellEventCursor: number },
+    turn: DlTurnStart & { cellId: string; cellEventCursor: number },
     options: { resume?: boolean } = {},
   ): Promise<void> {
     const { cellId, runId } = turn;
@@ -416,7 +416,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
     };
     let outcome: { status: "completed" | "failed" | "cancelled"; reason: string } | undefined;
 
-    let artifactsBefore: AsterArtifact[] = [];
+    let artifactsBefore: DlArtifact[] = [];
     const usageTotals = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
     // A turn the agent answered without touching a tool (a greeting, a question) was not
     // asked for repository work, so it doesn't get told that none was published.
@@ -653,14 +653,14 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
 
   /**
    * Make /workspace a git repository with an initial commit (idempotent), excluding the
-   * bridge's private .aster state. Returns false when the cell image has no git, in
+   * bridge's private .dl state. Returns false when the cell image has no git, in
    * which case checkpoints are skipped rather than failing the conversation.
    */
   private async ensureRepository(cell: Sandbox, excludeArtifacts = false): Promise<boolean> {
     const result = await cell.exec(
       `command -v git >/dev/null || exit 3; ` +
       `if [ ! -d ${CELL_WORKSPACE}/.git ]; then git init -q ${CELL_WORKSPACE} || exit 1; fi; ` +
-      `grep -qx '.aster/' ${CELL_WORKSPACE}/.git/info/exclude 2>/dev/null || printf '.aster/\\n' >> ${CELL_WORKSPACE}/.git/info/exclude; ` +
+      `grep -qx '.dl/' ${CELL_WORKSPACE}/.git/info/exclude 2>/dev/null || printf '.dl/\\n' >> ${CELL_WORKSPACE}/.git/info/exclude; ` +
       // A code cell's artifacts are for the user, not the repository.
       (excludeArtifacts ? `grep -qx 'artifacts/' ${CELL_WORKSPACE}/.git/info/exclude || printf 'artifacts/\\n' >> ${CELL_WORKSPACE}/.git/info/exclude; ` : "") +
       `${GIT} rev-parse -q --verify HEAD >/dev/null || { ${GIT} add -A && ${GIT} commit -q --allow-empty -m 'Workspace created'; }`,
@@ -684,7 +684,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   /** Commit all workspace changes; returns the new checkpoint, or undefined when nothing changed. */
-  private async checkpoint(cellId: string, userText: string): Promise<AsterCheckpoint | undefined> {
+  private async checkpoint(cellId: string, userText: string): Promise<DlCheckpoint | undefined> {
     const cell = await this.provider.getCell(cellId);
     if (!(await this.ensureRepository(cell))) return undefined;
     // The prompt goes through a 0600 file, never the exec command line.
@@ -704,10 +704,10 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
    * while an image with the runtime baked in skips the install entirely.
    */
   /**
-   * Clone a GitHub repository into /workspace on a new working branch through Aster's
+   * Clone a GitHub repository into /workspace on a new working branch through the dl server's
    * repository-scoped proxy. The cell receives only its per-conversation grant token.
    */
-  private async cloneRepository(cell: Sandbox, project: AsterCellProject): Promise<void> {
+  private async cloneRepository(cell: Sandbox, project: DlCellProject): Promise<void> {
     const seeded = await cell.exec(`test -f ${CELL_STATE_DIR}/.seeded`);
     if (seeded.exitCode === 0) return;
     const { repository, baseBranch, branch, baseCommit } = project;
@@ -724,12 +724,12 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
         `else git checkout -q -b '${branch}'; fi; `;
     const clone = await cell.exec(
       `set -e; cd ${CELL_WORKSPACE}; ` +
-      // Prefer Aster's repository-scoped proxy; fall back to Hotcell's GitHub gateway.
-      `if [ -n "$ASTER_GITHUB_GIT_URL" ]; then remote="$ASTER_GITHUB_GIT_URL/${repository}.git"; ` +
+      // Prefer the dl server's repository-scoped proxy; fall back to Hotcell's GitHub gateway.
+      `if [ -n "$DL_GITHUB_GIT_URL" ]; then remote="$DL_GITHUB_GIT_URL/${repository}.git"; ` +
       `else remote="\${GITHUB_BASE_URL%/github}/github-git/${repository}.git"; fi; ` +
       `git init -q; git remote add origin "$remote" 2>/dev/null || git remote set-url origin "$remote"; ` +
-      `git config credential.helper '!f() { echo username=x-access-token; echo "password=\${ASTER_GITHUB_TOKEN:-$GITHUB_API_KEY}"; }; f'; ` +
-      `git config user.name "Aster Autopilot"; git config user.email "autopilot@aster.invalid"; ` +
+      `git config credential.helper '!f() { echo username=x-access-token; echo "password=\${DL_GITHUB_TOKEN:-$GITHUB_API_KEY}"; }; f'; ` +
+      `git config user.name "Autopilot dl server"; git config user.email "autopilot@dl.invalid"; ` +
       checkout,
     );
     if (clone.exitCode !== 0) throw new Error(baseCommit ? "base_commit_unavailable" : "repository_clone_failed");
@@ -748,7 +748,7 @@ export class AsterHotcellRuntime implements AsterApiRuntime {
   }
 
   /** Files under /workspace/artifacts, the folder the agent saves user-facing deliverables in. */
-  async listArtifacts(cellId: string): Promise<AsterArtifact[]> {
+  async listArtifacts(cellId: string): Promise<DlArtifact[]> {
     const cell = await this.provider.getCell(cellId);
     const result = await cell.exec(
       `[ -d ${ARTIFACTS_DIR} ] || exit 0; cd ${ARTIFACTS_DIR} && ` +
@@ -938,7 +938,7 @@ async function defaultArchiveWorkspace(workspaceRoot: string): Promise<string> {
   return Buffer.from(stdout).toString("base64");
 }
 
-function projectNote(project: AsterCellProject): string {
+function projectNote(project: DlCellProject): string {
   const artifacts =
     "Save anything meant for the user to look at (documents, slides, PDFs, spreadsheets, web pages, images, reports) " +
     "in /workspace/artifacts/. Files there appear in the user's Aster app (an iPhone), where they can preview, download, and share them. " +
@@ -948,12 +948,12 @@ function projectNote(project: AsterCellProject): string {
     "For editable files use python-pptx, python-docx, or openpyxl; matplotlib is available for charts. " +
     "Keep drafts and source files outside artifacts/ so only finished deliverables appear there.";
   if (project.kind === "chat") {
-    return `[Aster chat. /workspace is this conversation's private Linux sandbox with internet access. ${artifacts}]`;
+    return `[dl server chat. /workspace is this conversation's private Linux sandbox with internet access. ${artifacts}]`;
   }
   const { repository, branch, baseBranch } = project;
   return (
-    `[Aster code chat. GitHub repository ${repository} is cloned at /workspace on branch ${branch} (from ${baseBranch}). ` +
-    "Work autonomously, commit the changes, and do not open or merge a pull request yourself; Aster publishes the branch and opens the PR after the turn succeeds. " +
+    `[dl server code chat. GitHub repository ${repository} is cloned at /workspace on branch ${branch} (from ${baseBranch}). ` +
+    "Work autonomously, commit the changes, and do not open or merge a pull request yourself; the dl server publishes the branch and opens the PR after the turn succeeds. " +
     "Credentials are preconfigured for this repository; never print or write tokens. " +
     `${artifacts} The artifacts folder is not committed to the repository.]`
   );
@@ -965,7 +965,7 @@ function projectNote(project: AsterCellProject): string {
  * path ("/v1" for OpenAI-style APIs, none for DeepSeek) is appended to it; `token` (the
  * cell's egress token) goes in the provider's key env and is omitted for keyless routes.
  */
-export function cellProviderEnv(provider: AsterProviderConfig, routeBaseUrl: string, token: string | undefined): Record<string, string> {
+export function cellProviderEnv(provider: DlProviderConfig, routeBaseUrl: string, token: string | undefined): Record<string, string> {
   const root = routeBaseUrl.replace(/\/+$/, "");
   let path = "";
   if (provider.baseUrl) {

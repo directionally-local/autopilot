@@ -11,6 +11,29 @@ import { configPath as userConfigPath } from "./util/app-dirs.js";
 export type ReasoningEffort = "low" | "medium" | "high";
 export const EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high"];
 
+/**
+ * When LLM-based memory extraction runs (#1073).
+ * - `off`: no auto-extraction at all.
+ * - `deterministic`: only the read-time deterministic extractors
+ *   (package_json, tsconfig, entry_point); edit events are not stored.
+ * - `session` (default): deterministic extractors on read, plus edit events
+ *   buffered and synthesized with ONE LLM call at compaction/session end.
+ * - `aggressive`: legacy behavior — LLM synthesis per edit.
+ */
+export type MemoryExtractionPolicy = "off" | "deterministic" | "session" | "aggressive";
+export const MEMORY_EXTRACTION_POLICIES: readonly MemoryExtractionPolicy[] = [
+  "off",
+  "deterministic",
+  "session",
+  "aggressive",
+];
+
+function parseMemoryExtraction(raw: string | undefined): MemoryExtractionPolicy | undefined {
+  return (MEMORY_EXTRACTION_POLICIES as readonly string[]).includes(raw ?? "")
+    ? (raw as MemoryExtractionPolicy)
+    : undefined;
+}
+
 export interface McpServerConfig {
   type: "local" | "remote";
   command?: string[];
@@ -162,6 +185,12 @@ export interface AutopilotConfig {
   plumbingModel?: string;
   /** Model for auto-extracting high-signal edit events. Default: DEFAULT_PLUMBING_MODEL. */
   memoryExtractionModel?: string;
+  /** When LLM-based memory extraction runs (env: MEMORY_EXTRACTION).
+   *  "session" (default) buffers edit events and makes one extraction call at
+   *  compaction/session end; "aggressive" synthesizes per edit (legacy);
+   *  "deterministic" runs only the read-time extractors; "off" disables
+   *  auto-extraction. */
+  memoryExtraction?: MemoryExtractionPolicy;
   /** Enable Code Mode: present tools as a TypeScript API and execute generated code in a sandbox. */
   codeMode?: boolean;
   /** End-of-turn "did the agent finish?" check via Jev (OpenRouter only). Default true. */
@@ -453,6 +482,10 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     plumbingModel: m(readEnv("PLUMBING_MODEL") ?? own(persisted.plumbingModel)) ?? plumbingDefault,
     memoryExtractionModel:
       m(readEnv("MEMORY_EXTRACTION_MODEL") ?? own(persisted.memoryExtractionModel)) ?? plumbingDefault,
+    memoryExtraction:
+      parseMemoryExtraction(readEnv("MEMORY_EXTRACTION")) ??
+      parseMemoryExtraction(persisted.memoryExtraction) ??
+      "session",
     codeMode: readBooleanEnv("CODE_MODE") ?? persisted.codeMode ?? true,
     completionCheck: readBooleanEnv("COMPLETION_CHECK") ?? persisted.completionCheck ?? true,
     lspEnabled: persisted.lspEnabled,

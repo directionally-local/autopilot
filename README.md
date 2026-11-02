@@ -251,7 +251,7 @@ autopilot runs watch <run>                         # follow a run (Ctrl-C detach
 autopilot pull <run>                               # check out the run's branch here
 ```
 
-The run starts from the last commit your branch shares with `origin`. Unpushed commits, staged and unstaged edits, and untracked files that aren't ignored are sent along as a patch, up to 3 MiB. Add `--detach` to return right away and `-m <model>` to pick one of the server's models. Each task gets its own sandbox and branch, so several can run at once. The server keeps the model key and GitHub credentials; your laptop holds only a revocable, 90-day pairing credential in `~/.config/autopilot/remotes.json`. Setting up the server side is covered in [docs/aster-api.md](docs/aster-api.md).
+The run starts from the last commit your branch shares with `origin`. Unpushed commits, staged and unstaged edits, and untracked files that aren't ignored are sent along as a patch, up to 3 MiB. Add `--detach` to return right away and `-m <model>` to pick one of the server's models. Each task gets its own sandbox and branch, so several can run at once. The server keeps the model key and GitHub credentials; your laptop holds only a revocable, 90-day pairing credential in `~/.config/autopilot/remotes.json`. Setting up the server side is covered in [docs/dl-server-api.md](docs/dl-server-api.md).
 
 ### Headless SDK
 

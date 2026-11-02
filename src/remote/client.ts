@@ -1,5 +1,5 @@
 /**
- * Client for a paired server's Aster API (/api/v1). Same contract the iOS app and a
+ * Client for a paired server's dl server API (/api/v1). Same contract the iOS app and a
  * future desktop app use: device pairing, code conversations as runs, resumable SSE.
  */
 
