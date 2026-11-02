@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { AsterGitHubProxy } from "./aster-github-proxy.js";
+import { DlGitHubProxy } from "./dl-github-proxy.js";
 
 function listen(server: Server): Promise<number> {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => {
@@ -24,7 +24,7 @@ function pushBody(ref: string, deleting = false): Buffer {
   ]);
 }
 
-describe("Aster GitHub proxy", () => {
+describe("dl server GitHub proxy", () => {
   it("limits reads to one repository and pushes to its feature branch only", async () => {
     const seen: Array<{ method: string; url: string; authorization: string; body: string }> = [];
     const upstream = createServer((req, res) => {
@@ -38,11 +38,11 @@ describe("Aster GitHub proxy", () => {
     });
     const upstreamPort = await listen(upstream);
     const revoked = new Set<string>();
-    const proxy = new AsterGitHubProxy({
+    const proxy = new DlGitHubProxy({
       token: "real-pat",
       gitUpstream: `http://127.0.0.1:${upstreamPort}`,
       resolveGrant: (grant) => (grant === "grant-a" && !revoked.has(grant)
-        ? { conversationId: "c1", repository: "me/app", branch: "aster/12345678" }
+        ? { conversationId: "c1", repository: "me/app", branch: "dl/12345678" }
         : undefined),
     });
     const port = await proxy.listen(0, "127.0.0.1");
@@ -64,11 +64,11 @@ describe("Aster GitHub proxy", () => {
       });
       assert.equal(mainPush.status, 403);
       const deletePush = await fetch(`${base}/git/me/app.git/git-receive-pack`, {
-        method: "POST", headers: { authorization: basic("grant-a") }, body: pushBody("refs/heads/aster/12345678", true).toString("ascii"),
+        method: "POST", headers: { authorization: basic("grant-a") }, body: pushBody("refs/heads/dl/12345678", true).toString("ascii"),
       });
       assert.equal(deletePush.status, 403);
       const featurePush = await fetch(`${base}/git/me/app.git/git-receive-pack`, {
-        method: "POST", headers: { authorization: basic("grant-a") }, body: pushBody("refs/heads/aster/12345678").toString("ascii"),
+        method: "POST", headers: { authorization: basic("grant-a") }, body: pushBody("refs/heads/dl/12345678").toString("ascii"),
       });
       assert.equal(featurePush.status, 201);
 
@@ -78,7 +78,7 @@ describe("Aster GitHub proxy", () => {
       ]);
       assert.equal(seen[0]!.authorization, "Basic " + Buffer.from("x-access-token:real-pat").toString("base64"));
       assert.ok(seen.every((request) => !request.authorization.includes("grant-a")), "the grant token never reaches GitHub");
-      assert.ok(seen[1]!.body.includes("refs/heads/aster/12345678"));
+      assert.ok(seen[1]!.body.includes("refs/heads/dl/12345678"));
 
       revoked.add("grant-a");
       assert.equal((await fetch(`${base}/git/me/app.git/info/refs?service=git-upload-pack`, { headers: { authorization: "Bearer grant-a" } })).status, 403);

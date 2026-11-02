@@ -1,20 +1,21 @@
 import { SqliteDatabase } from "../util/sqlite.js";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { AsterStore } from "./aster-store.js";
+import { DlStore } from "./dl-store.js";
 
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe("AsterStore", () => {
+describe("DlStore", () => {
   it("issues workspace-scoped bearer credentials and revokes them", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       const created = store.createCredential({
         name: "iPhone",
@@ -22,7 +23,7 @@ describe("AsterStore", () => {
         scopes: ["workspaces:read", "conversations:read", "conversations:write"],
         expiresAt: Date.now() + 60_000,
       });
-      assert.match(created.token, /^aster_[A-Za-z0-9_-]{40,}$/);
+      assert.match(created.token, /^dl_[A-Za-z0-9_-]{40,}$/);
       const principal = store.authenticate(`Bearer ${created.token}`);
       assert.equal(principal?.credentialId, created.id);
       assert.deepEqual(principal?.workspaceIds, ["default"]);
@@ -35,10 +36,32 @@ describe("AsterStore", () => {
     }
   });
 
+  it("accepts credentials issued before the rename with the aster_ prefix", async () => {
+    const root = await fixture();
+    const dbPath = join(root, "state", "dl.db");
+    const store = new DlStore(dbPath);
+    try {
+      const created = store.createCredential({
+        name: "Old phone",
+        workspaceIds: ["default"],
+        scopes: ["conversations:read"],
+        expiresAt: Date.now() + 60_000,
+      });
+      const legacyToken = `aster_${"a".repeat(43)}`;
+      const db = new SqliteDatabase(dbPath);
+      db.prepare("UPDATE aster_credentials SET token_hash = ? WHERE id = ?")
+        .run(createHash("sha256").update(legacyToken).digest("hex"), created.id);
+      db.close();
+      assert.equal(store.authenticate(`Bearer ${legacyToken}`)?.credentialId, created.id);
+    } finally {
+      store.close();
+    }
+  });
+
   it("persists conversations, serializes turns, and replays events after a cursor", async () => {
     const root = await fixture();
-    const dbPath = join(root, "state", "aster.db");
-    let store = new AsterStore(dbPath);
+    const dbPath = join(root, "state", "dl.db");
+    let store = new DlStore(dbPath);
     const conversation = store.createConversation({
       id: "conv-opaque-1",
       workspaceId: "default",
@@ -59,7 +82,7 @@ describe("AsterStore", () => {
       assert.equal(store.beginTurn(conversation.id, "run-2"), true);
       assert.deepEqual(store.eventsAfter(conversation.id, 1).map((event) => event.sequence), [2, 3, 4, 5, 6, 7]);
       store.close();
-      store = new AsterStore(dbPath);
+      store = new DlStore(dbPath);
       const restored = store.getConversation(conversation.id);
       assert.equal(restored?.workspaceId, "default");
       assert.equal(restored?.model, "test/model");
@@ -72,7 +95,7 @@ describe("AsterStore", () => {
 
   it("resolves only hashed GitHub grants bound to their code conversation", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       store.createConversation({
         id: "conv-code-grant",
@@ -81,7 +104,7 @@ describe("AsterStore", () => {
         sessionId: "session-code-grant",
         worktreePath: join(root, "workspace"),
         cwd: join(root, "workspace"),
-        branch: "aster/12345678",
+        branch: "dl/12345678",
         kind: "code",
         repository: "me/app",
         baseBranch: "main",
@@ -91,7 +114,7 @@ describe("AsterStore", () => {
       assert.deepEqual(store.resolveGitHubGrant(token), {
         conversationId: "conv-code-grant",
         repository: "me/app",
-        branch: "aster/12345678",
+        branch: "dl/12345678",
       });
       assert.equal(store.resolveGitHubGrant("not-the-grant"), undefined);
     } finally {
@@ -101,7 +124,7 @@ describe("AsterStore", () => {
 
   it("migrates an existing database additively and persists accepted turn replay across reopen", async () => {
     const root = await fixture();
-    const dbPath = join(root, "state", "aster.db");
+    const dbPath = join(root, "state", "dl.db");
     await mkdir(join(root, "state"));
     const now = Date.now();
     const legacy = new SqliteDatabase(dbPath);
@@ -110,7 +133,7 @@ describe("AsterStore", () => {
       .run("conv-legacy", "default", "test/model", "session-legacy", join(root, "worktree"), join(root, "worktree"), "branch", "ready", null, 0, now, now);
     legacy.close();
 
-    let store = new AsterStore(dbPath);
+    let store = new DlStore(dbPath);
     try {
       assert.equal(store.getConversation("conv-legacy")?.workspaceId, "default");
       const response = { conversationId: "conv-legacy", clientTurnId: "retry-1", runId: "run-legacy", status: "running" };
@@ -123,7 +146,7 @@ describe("AsterStore", () => {
         response,
       }), { kind: "reserved" });
       store.close();
-      store = new AsterStore(dbPath);
+      store = new DlStore(dbPath);
       const replay = store.lookupTurn("conv-legacy", "retry-1", "accepted text");
       assert.equal(replay.kind, "replay");
       if (replay.kind === "replay") {
@@ -139,7 +162,7 @@ describe("AsterStore", () => {
 
   it("makes approval resolution single-use and idempotent; expiry denies", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       store.createConversation({
         id: "conv-approval",
@@ -184,7 +207,7 @@ describe("AsterStore", () => {
 
   it("pairs a device: pending until approved, then exactly one client credential", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       const now = Date.now();
       const started = store.createDeviceAuthorization({ clientName: "Laptop", ttlMs: 600_000, maxPending: 5 }, now)!;
@@ -222,7 +245,7 @@ describe("AsterStore", () => {
 
   it("caps pending pairings so unauthenticated callers can't fill the table", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       const now = Date.now();
       assert.ok(store.createDeviceAuthorization({ clientName: "a", ttlMs: 1_000, maxPending: 2 }, now));
@@ -236,7 +259,7 @@ describe("AsterStore", () => {
 
   it("lists credentials without tokens, with their status", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       const laptop = store.createCredential({ name: "MacBook", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
       const old = store.createCredential({ name: "Old phone", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
@@ -254,12 +277,12 @@ describe("AsterStore", () => {
 
   it("lists every credential's runs, newest first, with who started each", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       const laptop = store.createCredential({ name: "MacBook", workspaceIds: ["default"], scopes: ["conversations:read"], expiresAt: Date.now() + 60_000 });
       for (const [index, id] of ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"].entries()) {
-        store.reserveCellConversation({ conversationId: id, credentialId: laptop.id, workspaceId: "default", model: "m", sessionId: `s-${index}`, cellName: `aster-${id}`, idempotencyKey: `k-${index}` });
-        store.createConversation({ id, workspaceId: "default", model: "m", sessionId: `s-${index}`, worktreePath: "/workspace", cwd: "/workspace", branch: `aster/${index}`, kind: "code", repository: "me/app", baseBranch: "main" });
+        store.reserveCellConversation({ conversationId: id, credentialId: laptop.id, workspaceId: "default", model: "m", sessionId: `s-${index}`, cellName: `dl-${id}`, idempotencyKey: `k-${index}` });
+        store.createConversation({ id, workspaceId: "default", model: "m", sessionId: `s-${index}`, worktreePath: "/workspace", cwd: "/workspace", branch: `dl/${index}`, kind: "code", repository: "me/app", baseBranch: "main" });
       }
       const runs = store.listAllConversations(10);
       assert.equal(runs.length, 2);
@@ -272,16 +295,16 @@ describe("AsterStore", () => {
 
   it("redeems an owner claim once for a pairing:approve-only credential", async () => {
     const root = await fixture();
-    const store = new AsterStore(join(root, "state", "aster.db"));
+    const store = new DlStore(join(root, "state", "dl.db"));
     try {
       const claim = store.createOwnerClaim(60_000);
-      assert.match(claim.token, /^aster_claim_/);
+      assert.match(claim.token, /^dl_claim_/);
       const owner = store.redeemOwnerClaim(claim.token, { workspaceIds: ["default"], credentialTtlMs: 60_000 });
       assert.deepEqual(owner?.scopes, ["pairing:approve"]);
       assert.equal(store.redeemOwnerClaim(claim.token, { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
       const expired = store.createOwnerClaim(1_000, Date.now() - 10_000);
       assert.equal(store.redeemOwnerClaim(expired.token, { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
-      assert.equal(store.redeemOwnerClaim("aster_claim_short", { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
+      assert.equal(store.redeemOwnerClaim("dl_claim_short", { workspaceIds: ["default"], credentialTtlMs: 60_000 }), undefined);
     } finally {
       store.close();
     }
@@ -289,7 +312,7 @@ describe("AsterStore", () => {
 });
 
 async function fixture(): Promise<string> {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-aster-store-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-dl-store-")));
   roots.push(root);
   return root;
 }

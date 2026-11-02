@@ -6,12 +6,12 @@ import { resolveServeConfig } from "./serve-config.js";
 describe("autopilot serve config", () => {
   it("uses the provider config when there is one", () => {
     const cfg = { model: "test/model", openrouterApiKey: "sk-or-test" } as AutopilotConfig;
-    assert.deepEqual(resolveServeConfig(cfg, {}), { config: cfg, asterOnly: false });
+    assert.deepEqual(resolveServeConfig(cfg, {}), { config: cfg, dlOnly: false });
   });
 
-  it("serves the Aster API without a host provider key when Hotcell brings the model", () => {
+  it("serves the dl server API without a host provider key when Hotcell brings the model", () => {
     const resolved = resolveServeConfig(null, { AUTOPILOT_HOTCELL_ENDPOINT: "http://127.0.0.1:4750" });
-    assert.equal(resolved?.asterOnly, true);
+    assert.equal(resolved?.dlOnly, true);
     assert.ok(resolved?.config.model);
     assert.equal(resolved?.config.openrouterApiKey, undefined);
   });

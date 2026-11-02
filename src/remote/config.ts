@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { configDir } from "../util/app-dirs.js";
 
-/** A paired Autopilot server. The token is an Aster client credential, never a provider key. */
+/** A paired Autopilot server. The token is an dl server client credential, never a provider key. */
 export interface RemoteServer {
   name: string;
   url: string;

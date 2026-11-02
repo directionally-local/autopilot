@@ -180,7 +180,7 @@ program
 program
   .command("attach-remote")
   .description(
-    "Open the interactive UI on a conversation running on an Aster server. " +
+    "Open the interactive UI on a conversation running on an dl server. " +
       "Reads AUTOPILOT_REMOTE_URL and AUTOPILOT_REMOTE_TOKEN from the environment. Quitting detaches; the conversation keeps running.",
   )
   .option("--conversation <id>", "reconnect to this conversation (replays its history, then follows it live)")
@@ -235,18 +235,18 @@ program
 registerEvalCommand(program);
 registerInsightsCommand(program);
 
-const asterCommand = program.command("aster").description("Manage the Aster mobile API");
-asterCommand
+function registerServerCommands(dlCommand: Command): void {
+dlCommand
   .command("setup")
-  .description("Configure Aster for one or more local Git workspaces")
+  .description("Configure the dl server for one or more local Git workspaces")
   .requiredOption("-w, --workspace <path>", "Local Git repository root (repeatable)", (value, previous: string[] = []) => [...previous, value])
   .option("--provider <id>", "LLM provider cells use (a provider preset id, e.g. deepseek, ollama); default OpenRouter")
   .option("--base-url <url>", "with --provider: its API base URL instead of the preset's")
   .option("--json", "Print the selected workspace IDs as JSON")
   .action(async (options: { workspace: string[]; provider?: string; baseUrl?: string; json?: boolean }) => {
-    const { setupLocalAsterConfig } = await import("./server/aster-setup.js");
+    const { setupLocalDlConfig } = await import("./server/dl-setup.js");
     try {
-      const setup = await setupLocalAsterConfig({
+      const setup = await setupLocalDlConfig({
         workspacePaths: options.workspace,
         ...(options.provider ? { provider: options.provider } : {}),
         ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
@@ -259,18 +259,18 @@ asterCommand
       if (options.json) {
         console.log(JSON.stringify(result));
       } else {
-        console.log(`Aster config: ${setup.path}`);
+        console.log(`dl server config: ${setup.path}`);
         console.log(`Provider: ${setup.config.provider.name}`);
         for (const workspace of result.workspaces) console.log(`Workspace: ${workspace.id} · ${workspace.displayName}`);
       }
     } catch (error) {
-      console.error(`autopilot aster setup: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`autopilot server setup: ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 2;
     }
   });
 
-const asterTokenCommand = asterCommand.command("token").description("Manage scoped Aster API credentials");
-asterTokenCommand
+const dlTokenCommand = dlCommand.command("token").description("Manage scoped dl server API credentials");
+dlTokenCommand
   .command("create")
   .description("Create a 30-day credential scoped to selected workspace IDs")
   .requiredOption("-n, --name <name>", "Credential label")
@@ -278,10 +278,10 @@ asterTokenCommand
   .option("--expires-in-days <days>", "Expiry in days (1-365)", (value) => Number.parseInt(value, 10), 30)
   .option("--json", "Print the newly created credential as JSON (includes the one-time token)")
   .action(async (options: { name: string; workspace: string[]; expiresInDays: number; json?: boolean }) => {
-    const { loadAsterServerConfig } = await import("./server/aster-workspaces.js");
-    const { AsterStore } = await import("./server/aster-store.js");
+    const { loadDlServerConfig } = await import("./server/dl-workspaces.js");
+    const { DlStore } = await import("./server/dl-store.js");
     try {
-      const config = await loadAsterServerConfig();
+      const config = await loadDlServerConfig();
       const workspaceIds = [...new Set(options.workspace)];
       if (!Number.isInteger(options.expiresInDays) || options.expiresInDays < 1 || options.expiresInDays > 365) {
         throw new Error("--expires-in-days must be an integer from 1 through 365");
@@ -289,7 +289,7 @@ asterTokenCommand
       if (workspaceIds.some((id) => !config.workspaces.some((workspace) => workspace.id === id))) {
         throw new Error("credential includes an unknown workspace ID");
       }
-      const store = new AsterStore();
+      const store = new DlStore();
       try {
         const created = store.createCredential({
           name: options.name,
@@ -321,13 +321,13 @@ asterTokenCommand
       process.exitCode = 2;
     }
   });
-asterTokenCommand
+dlTokenCommand
   .command("list")
   .description("List credentials: paired devices and owner browsers (never the tokens)")
   .option("--json", "Print as JSON")
   .action(async (options: { json?: boolean }) => {
-    const { AsterStore } = await import("./server/aster-store.js");
-    const store = new AsterStore();
+    const { DlStore } = await import("./server/dl-store.js");
+    const store = new DlStore();
     try {
       const credentials = store.listCredentials();
       if (options.json) {
@@ -348,16 +348,16 @@ asterTokenCommand
       store.close();
     }
   });
-asterTokenCommand
+dlTokenCommand
   .command("revoke")
-  .description("Revoke an Aster credential immediately")
+  .description("Revoke a dl server credential immediately")
   .argument("<credential-id>")
   .action(async (credentialId: string) => {
-    const { AsterStore } = await import("./server/aster-store.js");
-    const store = new AsterStore();
+    const { DlStore } = await import("./server/dl-store.js");
+    const store = new DlStore();
     try {
       if (!store.revokeCredential(credentialId)) {
-        console.error("Aster credential not found");
+        console.error("dl server credential not found");
         process.exitCode = 1;
         return;
       }
@@ -367,14 +367,14 @@ asterTokenCommand
     }
   });
 
-asterCommand
+dlCommand
   .command("runs")
   .description("List code runs from every credential, newest first")
   .option("--limit <n>", "How many (1-500)", (value) => Number.parseInt(value, 10), 50)
   .option("--json", "Print as JSON")
   .action(async (options: { limit: number; json?: boolean }) => {
-    const { AsterStore } = await import("./server/aster-store.js");
-    const store = new AsterStore();
+    const { DlStore } = await import("./server/dl-store.js");
+    const store = new DlStore();
     try {
       const limit = Number.isInteger(options.limit) ? Math.min(Math.max(options.limit, 1), 500) : 50;
       const runs = store.listAllConversations(limit).map((run) => ({
@@ -401,13 +401,13 @@ asterCommand
     }
   });
 
-const asterPairCommand = asterCommand.command("pair").description("Approve devices pairing with this server (run on the server)");
-asterPairCommand
+const dlPairCommand = dlCommand.command("pair").description("Approve devices pairing with this server (run on the server)");
+dlPairCommand
   .command("list")
   .description("List pairing codes waiting for approval")
   .action(async () => {
-    const { AsterStore } = await import("./server/aster-store.js");
-    const store = new AsterStore();
+    const { DlStore } = await import("./server/dl-store.js");
+    const store = new DlStore();
     try {
       const pending = store.listPendingDeviceAuthorizations();
       if (pending.length === 0) console.log("No pairings waiting.");
@@ -417,20 +417,20 @@ asterPairCommand
     }
   });
 for (const decision of ["approve", "deny"] as const) {
-  asterPairCommand
+  dlPairCommand
     .command(decision)
     .description(decision === "approve" ? "Approve the code a device shows; it receives a 90-day credential for every workspace" : "Deny the code a device shows")
     .argument("<code>")
     .action(async (code: string) => {
-      const { AsterStore } = await import("./server/aster-store.js");
-      const { CLIENT_CREDENTIAL_TTL_MS, configuredWorkspaceIds } = await import("./server/aster-pairing.js");
+      const { DlStore } = await import("./server/dl-store.js");
+      const { CLIENT_CREDENTIAL_TTL_MS, configuredWorkspaceIds } = await import("./server/dl-pairing.js");
       const workspaceIds = await configuredWorkspaceIds();
       if (!workspaceIds) {
-        console.error("Aster workspaces are not configured on this server (see autopilot aster setup).");
+        console.error("dl server workspaces are not configured on this server (see autopilot server setup).");
         process.exitCode = 2;
         return;
       }
-      const store = new AsterStore();
+      const store = new DlStore();
       try {
         const outcome = store.resolveDeviceAuthorization(code, decision, { workspaceIds, credentialTtlMs: CLIENT_CREDENTIAL_TTL_MS });
         const messages = {
@@ -451,7 +451,7 @@ for (const decision of ["approve", "deny"] as const) {
     });
 }
 
-asterCommand
+dlCommand
   .command("owner")
   .description("Owner access for approving devices in a browser")
   .command("link")
@@ -464,9 +464,9 @@ asterCommand
       process.exitCode = 2;
       return;
     }
-    const { AsterStore } = await import("./server/aster-store.js");
-    const { OWNER_CLAIM_TTL_MS } = await import("./server/aster-pairing.js");
-    const store = new AsterStore();
+    const { DlStore } = await import("./server/dl-store.js");
+    const { OWNER_CLAIM_TTL_MS } = await import("./server/dl-pairing.js");
+    const store = new DlStore();
     try {
       const claim = store.createOwnerClaim(OWNER_CLAIM_TTL_MS);
       console.log(`${base}/api/v1/auth/claim?token=${claim.token}`);
@@ -474,6 +474,17 @@ asterCommand
       store.close();
     }
   });
+}
+
+const serverCommand = program.command("server").description("Manage the dl server API");
+registerServerCommands(serverCommand);
+
+// Pre-rename name, kept as a hidden alias so existing scripts and dl's installer keep working.
+const legacyDlCommand = program.command("aster", { hidden: true }).description("Deprecated alias for `autopilot server`");
+legacyDlCommand.hook("preAction", () => {
+  process.stderr.write("autopilot: `autopilot aster` is deprecated; use `autopilot server`.\n");
+});
+registerServerCommands(legacyDlCommand);
 
 const logsCmd = program
   .command("logs")
@@ -903,8 +914,8 @@ program
       console.error(`autopilot serve: ${await noCredentialsMessage()}`);
       process.exit(2);
     }
-    if (resolved.asterOnly) {
-      console.error("autopilot serve: no provider key on this host; serving the Aster API, whose cells reach the model through Hotcell's gateway.");
+    if (resolved.dlOnly) {
+      console.error("autopilot serve: no provider key on this host; serving the dl server API, whose cells reach the model through Hotcell's gateway.");
     }
     const cfg = resolved.config;
     await initOtel();

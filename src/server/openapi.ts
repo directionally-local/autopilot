@@ -309,8 +309,8 @@ export function getOpenApiSpec(): string {
       },
       "/api/v1/health": {
         get: {
-          summary: "Authenticated Aster capabilities and health",
-          security: [{ asterBearer: [] }],
+          summary: "Authenticated dl server capabilities and health",
+          security: [{ dlBearer: [] }],
           responses: { "200": { description: "API version and supported capabilities; contains no host paths or secrets" }, "401": { description: "Invalid or expired credential" } },
         },
       },
@@ -333,13 +333,13 @@ export function getOpenApiSpec(): string {
         post: { summary: "Same-origin form post: code and decision=approve|deny", responses: { "200": { description: "Decision recorded" }, "403": { description: "Cross-origin request" }, "404": { description: "Unknown code" }, "409": { description: "Already decided" }, "410": { description: "Code expired" } } },
       },
       "/api/v1/auth/claim": {
-        get: { summary: "Owner claim page (HTML) for a one-time link from `autopilot aster owner link`", parameters: [{ name: "token", in: "query", required: true, schema: { type: "string" } }], responses: { "200": { description: "Claim form" } } },
+        get: { summary: "Owner claim page (HTML) for a one-time link from `autopilot server owner link`", parameters: [{ name: "token", in: "query", required: true, schema: { type: "string" } }], responses: { "200": { description: "Claim form" } } },
         post: { summary: "Same-origin form post that redeems the claim and sets the owner cookie", responses: { "303": { description: "Claimed; redirects to the approval page" }, "403": { description: "Cross-origin request" }, "410": { description: "Link expired or already used" } } },
       },
       "/api/v1/github/repositories": {
         get: {
           summary: "List repositories accessible to the server's GitHub token",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "q", in: "query", required: false, schema: { type: "string", maxLength: 200 } }],
           responses: { "200": { description: "Repository owner/name, privacy, and default branch metadata" }, "503": { description: "GitHub token is not configured" } },
         },
@@ -347,14 +347,14 @@ export function getOpenApiSpec(): string {
       "/api/v1/workspaces": {
         get: {
           summary: "List credential-scoped workspaces",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           responses: { "200": { description: "Configured workspace IDs and display names only" } },
         },
       },
       "/api/v1/models": {
         get: {
           summary: "List the models conversations may use, and the provider serving them",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           responses: {
             "200": {
               description: "The selectable model IDs (a fixed list, or the provider's live catalog), their metadata, the configured provider and its default model",
@@ -379,13 +379,13 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations": {
         get: {
           summary: "List the calling credential's conversations, newest first",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } }],
           responses: { "200": { description: "{conversations: [...]} in the conversation metadata shape" }, "400": { description: "Invalid limit" } },
         },
         post: {
           summary: "Create a persistent conversation in its own isolated Hotcell microVM",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" }, description: "Stable per-credential key; safe retries return the original conversation and never duplicate its cell." }],
           requestBody: {
             required: true,
@@ -409,13 +409,13 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}": {
         get: {
           summary: "Get conversation status without returning model/tool history or filesystem paths",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Conversation metadata and last event cursor" }, "404": { description: "Conversation not found or outside credential scope" } },
         },
         delete: {
           summary: "Revoke the cell's egress tokens and destroy the conversation's Hotcell and volume (retryable)",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Destroyed (idempotent)" }, "404": { description: "Conversation not found" }, "503": { description: "cleanup_pending; retry to finish revocation and teardown" } },
         },
@@ -423,7 +423,7 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}/pause": {
         post: {
           summary: "Suspend the conversation's cell at a safe boundary (no active turn)",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Paused (idempotent); session state persists in the cell" }, "409": { description: "turn_active or cell not ready" } },
         },
@@ -431,7 +431,7 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}/resume": {
         post: {
           summary: "Resume a paused cell and restore the same Autopilot session",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Ready again (idempotent)" }, "409": { description: "Cell not ready" } },
         },
@@ -439,7 +439,7 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}/turns": {
         post: {
           summary: "Append a user turn to the persistent conversation",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["text"], properties: { clientTurnId: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", description: "Optional stable idempotency key, scoped to this conversation. Omit only for non-idempotent legacy submission." }, text: { type: "string", maxLength: 20000 } }, additionalProperties: false }, examples: { legacy: { summary: "Legacy text-only submission (do not automatically retry ambiguous requests)", value: { text: "Summarize the failing test and propose a fix." } }, idempotent: { summary: "Retry-safe submission", value: { clientTurnId: "turn-550e8400-e29b-41d4-a716-446655440000", text: "Summarize the failing test and propose a fix." } } } } } },
           responses: { "202": { description: "Turn accepted; keyed submissions replay the persisted response for the same ID and text" }, "400": { description: "clientTurnId, when present, or text is invalid" }, "409": { description: "conversation_busy or idempotency_conflict for a reused key with different text" } },
@@ -448,7 +448,7 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}/pull-request/checks": {
         get: {
           summary: "List check runs for the conversation's pull-request branch",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "GitHub check-run status and conclusion values" }, "404": { description: "Conversation or pull request not found" } },
         },
@@ -456,7 +456,7 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}/pull-request/merge": {
         post: {
           summary: "Merge the conversation's pull request after explicit user confirmation",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Merged conversation metadata" }, "409": { description: "No completed pull request is ready to merge" }, "403": { description: "GitHub token cannot merge this pull request" } },
         },
@@ -464,7 +464,7 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}/events": {
         get: {
           summary: "Reconnectable per-conversation SSE stream",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [
             { name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
             { name: "Last-Event-ID", in: "header", schema: { type: "integer" }, description: "Replay events with larger sequence IDs." },
@@ -476,7 +476,7 @@ export function getOpenApiSpec(): string {
       "/api/v1/conversations/{conversationId}/cancel": {
         post: {
           summary: "Idempotently cancel the active run and abort its agent signal",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "conversationId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Current conversation state" }, "404": { description: "Conversation not found" } },
         },
@@ -484,13 +484,13 @@ export function getOpenApiSpec(): string {
       "/api/v1/approvals/{approvalId}": {
         get: {
           summary: "Review a pending approval action and exact arguments",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "approvalId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           responses: { "200": { description: "Pending action and exact arguments; secret-like actions are rejected before approval" }, "404": { description: "Approval not found" } },
         },
         post: {
           summary: "Allow or deny one pending action; resolution is single-use and idempotent",
-          security: [{ asterBearer: [] }],
+          security: [{ dlBearer: [] }],
           parameters: [{ name: "approvalId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["decision"], properties: { decision: { type: "string", enum: ["allow", "deny"] } }, additionalProperties: false }, example: { decision: "allow" } } } },
           responses: { "200": { description: "Resolved approval" }, "409": { description: "Conflicting prior resolution" }, "410": { description: "Approval expired; action was not executed" } },
@@ -500,7 +500,7 @@ export function getOpenApiSpec(): string {
     components: {
       securitySchemes: {
         basicAuth: { type: "http", scheme: "basic" },
-        asterBearer: { type: "http", scheme: "bearer", bearerFormat: "revocable, workspace-scoped Autopilot credential" },
+        dlBearer: { type: "http", scheme: "bearer", bearerFormat: "revocable, workspace-scoped Autopilot credential" },
       },
     },
   };

@@ -1,6 +1,6 @@
 /**
  * `autopilot attach-remote`: open the interactive UI on a conversation that
- * runs in a sandbox on an Aster server (see docs/aster-api.md, "Interactive
+ * runs in a sandbox on an dl server (see docs/dl-api.md, "Interactive
  * client").
  *
  * The server and credential come from AUTOPILOT_REMOTE_URL and

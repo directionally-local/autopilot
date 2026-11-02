@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { AutopilotConfig } from "../config.js";
-import { AsterApi, type AsterTurnStart } from "../server/aster-api.js";
-import type { AsterCellProject } from "../server/aster-cell-runtime.js";
-import { AsterGitHubError, type AsterGitHub } from "../server/aster-github.js";
-import { AsterStore } from "../server/aster-store.js";
+import { DlApi, type DlTurnStart } from "../server/dl-api.js";
+import type { DlCellProject } from "../server/dl-cell-runtime.js";
+import { DlGitHubError, type DlGitHub } from "../server/dl-github.js";
+import { DlStore } from "../server/dl-store.js";
 import { RunStore } from "../runs/store.js";
 import { saveSession } from "../sessions.js";
 import { listRuns, pullRun, remoteAdd, runOnRemote, watchRun, type RemoteIO } from "./cli.js";
@@ -27,13 +27,13 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe("autopilot remote client against the Aster API", () => {
+describe("autopilot remote client against the dl server API", () => {
   it("pairs, runs a task with local changes, lists, replays, and pulls the run's branch", { timeout: 30_000 }, async () => {
-    const server = await startAsterServer();
+    const server = await startDlServer();
     const stopPairing = new AbortController();
     let pairing: Promise<unknown> = Promise.resolve();
     try {
-      // Pair: the owner approves on the server (`autopilot aster pair approve`) while the CLI polls.
+      // Pair: the owner approves on the server (`autopilot server pair approve`) while the CLI polls.
       const io = captureIO();
       const paired = remoteAdd({
         url: server.baseUrl, name: "box", open: false, signal: stopPairing.signal,
@@ -43,13 +43,13 @@ describe("autopilot remote client against the Aster API", () => {
       // The code is read from what the CLI printed, as a user would.
       const userCode = await waitFor(() => io.text().match(/approve code ([A-Z]{4}-[A-Z]{4}) at:/)?.[1]);
       assert.match(io.text(), new RegExp(`approve code ${userCode} at:\\n  ${server.baseUrl}/api/v1/auth/approve\\?code=${userCode}`));
-      const approver = new AsterStore();
+      const approver = new DlStore();
       assert.equal(approver.resolveDeviceAuthorization(userCode, "approve", { workspaceIds: ["default"], credentialTtlMs: 60_000 }), "approved");
       approver.close();
       const remote = await paired;
       assert.match(io.text(), /Paired as "box"/);
       assert.deepEqual((await loadRemotes()).map((entry) => entry.name), ["box"]);
-      assert.match(remote.token, /^aster_/);
+      assert.match(remote.token, /^dl_/);
 
       // Run: base on the pushed commit, with the uncommitted edit uploaded as a patch.
       const { checkout, origin } = await clonedRepository(server.root);
@@ -78,7 +78,7 @@ describe("autopilot remote client against the Aster API", () => {
       assert.match(replayIO.text(), /Fixed the flaky test\./);
 
       // Pull: the cell pushed the branch to origin; the CLI checks it out.
-      const branch = `aster/${runId}`;
+      const branch = `dl/${runId}`;
       git(checkout, "stash", "--quiet");
       git(checkout, "push", "--quiet", "origin", `HEAD:refs/heads/${branch}`);
       const pullIO = captureIO();
@@ -95,9 +95,9 @@ describe("autopilot remote client against the Aster API", () => {
   });
 
   it("detaches on abort without cancelling the run", { timeout: 30_000 }, async () => {
-    const server = await startAsterServer({ hang: true });
+    const server = await startDlServer({ hang: true });
     try {
-      const store = new AsterStore();
+      const store = new DlStore();
       const credential = store.createCredential({
         name: "laptop", workspaceIds: ["default"], expiresAt: Date.now() + 60_000,
         scopes: ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"],
@@ -121,9 +121,9 @@ describe("autopilot remote client against the Aster API", () => {
   });
 
   it("detaches when aborted before the run starts streaming", { timeout: 30_000 }, async () => {
-    const server = await startAsterServer({ hang: true });
+    const server = await startDlServer({ hang: true });
     try {
-      const store = new AsterStore();
+      const store = new DlStore();
       const credential = store.createCredential({
         name: "laptop", workspaceIds: ["default"], expiresAt: Date.now() + 60_000,
         scopes: ["workspaces:read", "models:read", "conversations:read", "conversations:write", "approvals:resolve"],
@@ -147,46 +147,46 @@ describe("autopilot remote client against the Aster API", () => {
   });
 });
 
-interface AsterTestServer {
+interface DlTestServer {
   root: string;
   baseUrl: string;
-  projects: AsterCellProject[];
-  turns: AsterTurnStart[];
+  projects: DlCellProject[];
+  turns: DlTurnStart[];
   cancelled: string[];
   close(): Promise<void>;
 }
 
-async function startAsterServer(options: { hang?: boolean } = {}): Promise<AsterTestServer> {
+async function startDlServer(options: { hang?: boolean } = {}): Promise<DlTestServer> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-remote-cli-")));
   roots.push(root);
   const workspaceRoot = join(root, "workspace");
   await mkdir(workspaceRoot);
   execFileSync("git", ["init", "--quiet", "--initial-branch=main", workspaceRoot]);
-  const configPath = join(root, "aster.json");
+  const configPath = join(root, "server.json");
   await writeFile(configPath, JSON.stringify({ models: ["test/model"], workspaces: [{ id: "default", displayName: "Default", rootPath: workspaceRoot }] }));
-  setEnv("AUTOPILOT_ASTER_CONFIG", configPath);
-  setEnv("AUTOPILOT_ASTER_DB", join(root, "state", "aster.db"));
+  setEnv("AUTOPILOT_SERVER_CONFIG", configPath);
+  setEnv("AUTOPILOT_SERVER_DB", join(root, "state", "dl.db"));
   setEnv("AUTOPILOT_RUNS_DB", join(root, "state", "runs.db"));
   setEnv("XDG_DATA_HOME", join(root, "data"));
   setEnv("XDG_STATE_HOME", join(root, "state-home"));
-  setEnv("AUTOPILOT_ASTER_MEMORY", "off");
+  setEnv("AUTOPILOT_SERVER_MEMORY", "off");
   setEnv("AUTOPILOT_REMOTES_FILE", join(root, "remotes.json"));
   setEnv("KIMIFLARE_NO_BROWSER", "1");
 
-  const projects: AsterCellProject[] = [];
-  const turns: AsterTurnStart[] = [];
+  const projects: DlCellProject[] = [];
+  const turns: DlTurnStart[] = [];
   const cancelled: string[] = [];
   const repo = (fullName: string) => ({ fullName, name: "app", owner: "me", private: true, description: null, defaultBranch: "main", updatedAt: null });
   const github = {
     configured: true,
     getRepository: async (fullName: string) => {
-      if (fullName !== "me/app") throw new AsterGitHubError("Repository not found", 404, "repository_not_found");
+      if (fullName !== "me/app") throw new DlGitHubError("Repository not found", 404, "repository_not_found");
       return repo(fullName);
     },
     createPullRequest: async (repository: string, input: { title: string; head: string; base: string }) =>
       ({ number: 42, url: `https://github.com/${repository}/pull/42`, title: input.title, state: "open", headBranch: input.head, baseBranch: input.base, merged: false }),
-  } as unknown as AsterGitHub;
-  const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as AutopilotConfig, {
+  } as unknown as DlGitHub;
+  const api = new DlApi({ openrouterApiKey: "test-key", model: "test/model" } as AutopilotConfig, {
     provisionConversation: async (input) => {
       if (input.project) projects.push(input.project);
       input.onCellCreated(`cell-${input.conversationId}`);
@@ -214,7 +214,7 @@ async function startAsterServer(options: { hang?: boolean } = {}): Promise<Aster
   };
 }
 
-async function completeTurn(turn: AsterTurnStart): Promise<void> {
+async function completeTurn(turn: DlTurnStart): Promise<void> {
   await saveSession(turn.sessionFile);
   const runs = new RunStore();
   try {

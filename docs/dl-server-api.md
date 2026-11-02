@@ -1,19 +1,21 @@
-# Aster API v1 and VM runbook
+# dl server API v1 and VM runbook
 
-Aster is a native iOS client. Autopilot on the VM owns model credentials, prompts, tool execution, workspace roots, conversation history, approvals, and run lifecycle. The Aster API is a separate Bearer-authenticated control plane under `/api/v1`; it does not use the legacy `/prompt` or `/runs` contract.
+Aster is a native iOS client. Autopilot on the VM owns model credentials, prompts, tool execution, workspace roots, conversation history, approvals, and run lifecycle. The dl server API is a separate Bearer-authenticated control plane under `/api/v1`; it does not use the legacy `/prompt` or `/runs` contract.
+
+> **Renamed from Aster.** "Aster" now names only the Mac and iPhone apps. The server is the dl server. The pre-rename names still work as deprecated aliases: `autopilot aster …`, `aster.json`, `AUTOPILOT_ASTER_*`, and `aster_…` tokens.
 
 ## Security boundary
 
 - Keep `autopilot serve` bound to `127.0.0.1:4096`. Do not open this port in Hetzner firewall/UFW and do not use Tailscale Funnel or a public reverse proxy.
-- Development access uses an SSH local forward. Physical iPhone access requires a private tailnet (recommended: Tailscale Serve, not Funnel) plus an expiring, workspace-scoped Aster credential stored in the iOS Keychain. The current VM has no Tailscale installation/enrollment; Aster cannot reach it from a phone until the operator enrolls the VM and phone in the same tailnet.
-- `/api/v1/*` requires `Authorization: Bearer aster_…`. Credentials are workspace-scoped, expire (default 30 days), are stored only as SHA-256 hashes, and can be revoked. Legacy routes keep their separate Basic auth.
+- Development access uses an SSH local forward. Physical iPhone access requires a private tailnet (recommended: Tailscale Serve, not Funnel) plus an expiring, workspace-scoped dl server credential stored in the iOS Keychain. The current VM has no Tailscale installation/enrollment; the Aster app cannot reach it from a phone until the operator enrolls the VM and phone in the same tailnet.
+- `/api/v1/*` requires `Authorization: Bearer dl_…`. Credentials are workspace-scoped, expire (default 30 days), are stored only as SHA-256 hashes, and can be revoked. Legacy routes keep their separate Basic auth.
 - The API exposes only `read`, `write`, and `edit`; no shell, external job, browser, web, GitHub, or artifact-expansion tools. Reads/writes/edits resolve inside the conversation worktree, reject traversal/symlinks out of root, and block credential/VCS paths. `write` and `edit` require a per-action human approval.
-- Provider credentials remain in the VM service environment/config. They are never sent to Aster or included in API responses/events. Provider-like secrets in turn text or proposed write arguments are rejected; assistant deltas are redacted defensively.
+- Provider credentials remain in the VM service environment/config. They are never sent to the Aster app or included in API responses/events. Provider-like secrets in turn text or proposed write arguments are rejected; assistant deltas are redacted defensively.
 - Each conversation runs inside its own Hotcell microVM with no host network and no host filesystem. Model access is brokered by Hotcell's credential gateway with a per-conversation, per-model, spend-capped, TTL-bound egress token that is revoked on destroy. Prompts and file contents never appear in Hotcell exec commands or logs; control traffic uses fixed commands with request bodies passed through `0600` files inside the cell.
 
 ## Configure the Hotcell provider
 
-Aster conversation cells require a Hotcell deployment reachable from the service. Set these on `autopilot.service` (conversation creation returns `503 hotcell_unavailable` without them):
+dl server conversation cells require a Hotcell deployment reachable from the service. Set these on `autopilot.service` (conversation creation returns `503 hotcell_unavailable` without them):
 
 | Variable | Purpose |
 | --- | --- |
@@ -34,7 +36,7 @@ The provider fails closed: it refuses to create a cell if the Hotcell API auth i
 
 ### Which LLM provider the cells use
 
-Cells reach their LLM through the Hotcell egress route named after the provider in `aster.json` (below); the route is named exactly like Autopilot's provider preset id (`openrouter`, `openai`, `deepseek`, `moonshot`, `anthropic`, `gemini`, `minimax`, `xai`, `mistral`, `groq`, `cerebras`, `together`, `fireworks`, `deepinfra`, `vercel`, `kimi-code`, `zai`, `zai-coding`, `requesty`, and the keyless `ollama` and `lmstudio`). The daemon mints a per-cell egress token scoped to the conversation's model, and the server configures the cell's Autopilot with:
+Cells reach their LLM through the Hotcell egress route named after the provider in `server.json` (below); the route is named exactly like Autopilot's provider preset id (`openrouter`, `openai`, `deepseek`, `moonshot`, `anthropic`, `gemini`, `minimax`, `xai`, `mistral`, `groq`, `cerebras`, `together`, `fireworks`, `deepinfra`, `vercel`, `kimi-code`, `zai`, `zai-coding`, `requesty`, and the keyless `ollama` and `lmstudio`). The daemon mints a per-cell egress token scoped to the conversation's model, and the server configures the cell's Autopilot with:
 
 | Cell env | Value |
 | --- | --- |
@@ -46,25 +48,25 @@ OpenRouter keeps the daemon's own `OPENROUTER_BASE_URL`/`OPENROUTER_API_KEY` inj
 
 ## Local macOS bootstrap
 
-On a Mac, Autopilot can own the Aster workspace config and issue a short-lived, workspace-scoped credential without a system-wide `/etc` config. The config contains repository roots and model policy only; the database stores only the credential hash. The Mac app stores the one-time bearer token in Keychain.
+On a Mac, Autopilot can own the dl server workspace config and issue a short-lived, workspace-scoped credential without a system-wide `/etc` config. The config contains repository roots and model policy only; the database stores only the credential hash. The Mac app stores the one-time bearer token in Keychain.
 
 ```sh
-autopilot aster setup --workspace "$HOME/src/my-project" --json
+autopilot server setup --workspace "$HOME/src/my-project" --json
 # or, for cells that talk to another provider (optionally at a non-default URL):
-autopilot aster setup --workspace "$HOME/src/my-project" --provider deepseek
-autopilot aster setup --workspace "$HOME/src/my-project" --provider ollama --base-url http://gpu-box:11434/v1
+autopilot server setup --workspace "$HOME/src/my-project" --provider deepseek
+autopilot server setup --workspace "$HOME/src/my-project" --provider ollama --base-url http://gpu-box:11434/v1
 # Use the returned workspace ID:
-autopilot aster token create --name "Aster for Mac" --workspace my-project --expires-in-days 30 --json
+autopilot server token create --name "Aster for Mac" --workspace my-project --expires-in-days 30 --json
 autopilot serve --hostname 127.0.0.1 --port 4096
 ```
 
-`aster setup` writes `~/.config/autopilot/aster.json` with mode `0600` in a mode `0700` directory. It validates that each workspace is an existing Git repository root. Repeating setup for an already-configured root returns its existing workspace ID; it refuses to replace a config or silently widen its workspace list. Set `AUTOPILOT_ASTER_CONFIG` to select another config path. `aster token create --json` emits the token once on stdout for a trusted local caller; never log or persist that output except in Keychain. The default database is `~/.local/state/autopilot/aster.db` and can be overridden with `AUTOPILOT_ASTER_DB`.
+`server setup` writes `~/.config/autopilot/server.json` with mode `0600` in a mode `0700` directory. It validates that each workspace is an existing Git repository root. Repeating setup for an already-configured root returns its existing workspace ID; it refuses to replace a config or silently widen its workspace list. Set `AUTOPILOT_SERVER_CONFIG` to select another config path. `server token create --json` emits the token once on stdout for a trusted local caller; never log or persist that output except in Keychain. The default database is `~/.local/state/autopilot/dl.db` and can be overridden with `AUTOPILOT_SERVER_DB`.
 
-The local Mac app launches Hotcell and Autopilot as loopback-only child processes and supplies the daemon API key to Autopilot through its environment. Provider credentials remain in Autopilot's existing provider configuration and Hotcell's host Keychain keystore; they are not copied into the Aster config or token database.
+The local Mac app launches Hotcell and Autopilot as loopback-only child processes and supplies the daemon API key to Autopilot through its environment. Provider credentials remain in Autopilot's existing provider configuration and Hotcell's host Keychain keystore; they are not copied into the dl server config or token database.
 
 ## Configure server-owned workspaces and models
 
-Create `/etc/autopilot/aster.json` (do not put credentials in it):
+Create `/etc/autopilot/server.json` (do not put credentials in it):
 
 ```json
 {
@@ -81,7 +83,7 @@ Create `/etc/autopilot/aster.json` (do not put credentials in it):
 }
 ```
 
-- `provider` (optional) names the LLM provider every cell uses, by Autopilot provider preset id. Absent, it is OpenRouter, so every aster.json written before the block existed keeps working. `baseUrl` defaults to the preset's API base URL (required for `custom`); `apiKeyEnv` defaults to the preset's key variable and names the env var on the *server* that holds its own key for the catalog call below, and the variable the cell's egress token is handed in.
+- `provider` (optional) names the LLM provider every cell uses, by Autopilot provider preset id. Absent, it is OpenRouter, so every server.json written before the block existed keeps working. `baseUrl` defaults to the preset's API base URL (required for `custom`); `apiKeyEnv` defaults to the preset's key variable and names the env var on the *server* that holds its own key for the catalog call below, and the variable the cell's egress token is handed in.
 - `models` is either a fixed list of model ids (works for any provider) or `"catalog"` (the older spelling `"openrouter"` still means the same): every selectable model of the provider's live list. For OpenRouter that is its public catalog, tool-capable models only (cached on the server, refreshed every 6 hours); for every other provider it is `GET {baseUrl}/models` in the OpenAI-compatible shape, authenticated with the server's `apiKeyEnv` key (or unauthenticated for keyless providers), cached for five minutes, falling back to the preset's default model when the call fails.
 
 `id` is the only workspace selector accepted from clients. The API never accepts a client-supplied cwd or filesystem path. Roots must be existing, non-overlapping directories; each workspace root must be a Git repository so its tracked tree can be seeded into the conversation cell at creation.
@@ -98,18 +100,18 @@ sudo -u autopilot git -C /var/lib/autopilot/workspaces/default add README.md
 sudo -u autopilot git -C /var/lib/autopilot/workspaces/default commit -m "Initialize workspace"
 sudo chown root:autopilot /etc/autopilot
 sudo chmod 0750 /etc/autopilot
-sudo install -o root -g autopilot -m 0640 aster.json /etc/autopilot/aster.json
+sudo install -o root -g autopilot -m 0640 server.json /etc/autopilot/server.json
 ```
 
-Set `AUTOPILOT_ASTER_CONFIG=/etc/autopilot/aster.json` in the existing `autopilot.service` `Environment=` entries, then `systemctl daemon-reload && systemctl restart autopilot`. Do not change `--hostname 127.0.0.1` or open a port.
+Set `AUTOPILOT_SERVER_CONFIG=/etc/autopilot/server.json` in the existing `autopilot.service` `Environment=` entries, then `systemctl daemon-reload && systemctl restart autopilot`. Do not change `--hostname 127.0.0.1` or open a port.
 
 ## Issue/revoke the iPhone credential
 
 Create credentials as the service user so the CLI and daemon share the same private database:
 
 ```sh
-sudo -u autopilot env HOME=/var/lib/autopilot AUTOPILOT_ASTER_CONFIG=/etc/autopilot/aster.json \
-  /usr/bin/node /opt/autopilot/bin/autopilot.mjs aster token create \
+sudo -u autopilot env HOME=/var/lib/autopilot AUTOPILOT_SERVER_CONFIG=/etc/autopilot/server.json \
+  /usr/bin/node /opt/autopilot/bin/autopilot.mjs server token create \
   --name "Aster iPhone" --workspace default
 ```
 
@@ -117,7 +119,7 @@ The token is printed once. Import it into the iOS Keychain; never commit it, put
 
 ```sh
 sudo -u autopilot env HOME=/var/lib/autopilot \
-  /usr/bin/node /opt/autopilot/bin/autopilot.mjs aster token revoke <credential-id>
+  /usr/bin/node /opt/autopilot/bin/autopilot.mjs server token revoke <credential-id>
 ```
 
 ## Access paths
@@ -132,20 +134,20 @@ Then use `http://127.0.0.1:4096` with the scoped Bearer token. For a physical iP
 
 ## Pair a client without copying keys
 
-A laptop CLI or desktop app pairs itself with a device code, like `gh auth login`, and receives an ordinary Aster credential (the five client scopes, every configured workspace, 90 days). Nothing is copied by hand: the server's provider and GitHub credentials never leave it.
+A laptop CLI or desktop app pairs itself with a device code, like `gh auth login`, and receives an ordinary dl server credential (the five client scopes, every configured workspace, 90 days). Nothing is copied by hand: the server's provider and GitHub credentials never leave it.
 
 1. **Owner (once per browser).** On the server, print a one-time link valid for 24 hours. The installer runs this for you:
 
    ```sh
-   autopilot aster owner link --url https://acme.example.com   # or set AUTOPILOT_PUBLIC_URL
+   autopilot server owner link --url https://acme.example.com   # or set AUTOPILOT_PUBLIC_URL
    ```
 
-   Opening it and pressing the button makes that browser the owner: the server issues a `pairing:approve`-only Aster credential (365 days) and stores it in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/auth`. It cannot call any other API. The link is single-use. Revoke an owner browser like any credential (`autopilot aster token revoke <id>`).
+   Opening it and pressing the button makes that browser the owner: the server issues a `pairing:approve`-only dl server credential (365 days) and stores it in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/auth`. It cannot call any other API. The link is single-use. Revoke an owner browser like any credential (`autopilot server token revoke <id>`).
 
 2. **Client.** `POST /api/v1/auth/device` (no auth) with an optional `{"clientName":"MacBook"}` returns:
 
    ```json
-   {"deviceCode":"aster_device_…","userCode":"BCDF-GHJK","verificationUri":"https://acme.example.com/api/v1/auth/approve","verificationUriComplete":"https://acme.example.com/api/v1/auth/approve?code=BCDF-GHJK","expiresIn":600,"interval":5}
+   {"deviceCode":"dl_device_…","userCode":"BCDF-GHJK","verificationUri":"https://acme.example.com/api/v1/auth/approve","verificationUriComplete":"https://acme.example.com/api/v1/auth/approve?code=BCDF-GHJK","expiresIn":600,"interval":5}
    ```
 
    The client shows the user code, opens `verificationUriComplete`, and polls `POST /api/v1/auth/device/token` with `{"deviceCode":"…"}` every `interval` seconds. Until a decision, the poll returns `400` with error code `authorization_pending` (or `slow_down` when polling faster than the interval). It also returns `400` with `access_denied` after a denial and with `expired_token` once the code has expired or was already redeemed. After approval it returns `200` once with `{token, credentialId, name, workspaceIds, scopes, expiresAt}`; keep the token in the OS keychain.
@@ -153,11 +155,11 @@ A laptop CLI or desktop app pairs itself with a device code, like `gh auth login
 3. **Approve.** The owner's browser shows the client name and code with Approve / Deny buttons. Form posts must be same-origin. Without an owner browser, approve on the server instead:
 
    ```sh
-   autopilot aster pair list
-   autopilot aster pair approve BCDF-GHJK    # or: deny
+   autopilot server pair list
+   autopilot server pair approve BCDF-GHJK    # or: deny
    ```
 
-Codes are 8 letters without vowels and expire after 10 minutes. At most 20 can wait at once (`429 too_many_pending`). `verificationUri` uses `AUTOPILOT_PUBLIC_URL` when set; otherwise it uses the request's `X-Forwarded-Host`/`Host` and `X-Forwarded-Proto` (`https` unless the host is loopback). All pairing routes live under `/api/v1`, so a gateway that proxies only the Aster API keeps working.
+Codes are 8 letters without vowels and expire after 10 minutes. At most 20 can wait at once (`429 too_many_pending`). `verificationUri` uses `AUTOPILOT_PUBLIC_URL` when set; otherwise it uses the request's `X-Forwarded-Host`/`Host` and `X-Forwarded-Proto` (`https` unless the host is loopback). All pairing routes live under `/api/v1`, so a gateway that proxies only the dl server API keeps working.
 
 ## API contract
 
@@ -217,7 +219,7 @@ Returns `201` with an opaque conversation ID and cursor; no filesystem paths or 
 
 `GET /api/v1/conversations?limit=50` lists the calling credential's conversations, newest first (limit 1-200, destroyed ones omitted), each in the shape `GET /api/v1/conversations/{conversationId}` returns. For code conversations that includes `repository`, `branch`, and, once opened, `pullRequestURL`.
 
-`GET /api/v1/conversations/{conversationId}` resumes metadata by opaque ID. Conversation history remains server-side; Aster does not replay it on later requests.
+`GET /api/v1/conversations/{conversationId}` resumes metadata by opaque ID. Conversation history remains server-side; the Aster app does not replay it on later requests.
 
 `POST /api/v1/conversations/{conversationId}/turns`
 
@@ -245,7 +247,7 @@ Only one active turn per conversation is allowed. A different, previously unused
 
 The in-cell agent runs in `auto` mode: every tool call (shell, write, edit, …) is auto-approved, so no `approval.required` events are raised for cell conversations. The phone sees what happened instead: `tool.activity` events carry `{tool, toolCallId, activity: "started", input}` (the shell command or file path) and `{tool, toolCallId, activity: "completed" | "failed", output}` (redacted, at most 16,000 characters with the middle elided).
 
-`/workspace` is a git repository. After every turn, including cancelled or failed ones, the server commits whatever changed and emits `checkpoint.created` `{id, message, createdAt}` before the terminal status event. `.aster/` (bridge state) is excluded.
+`/workspace` is a git repository. After every turn, including cancelled or failed ones, the server commits whatever changed and emits `checkpoint.created` `{id, message, createdAt}` before the terminal status event. `.dl/` (bridge state) is excluded.
 
 `GET /api/v1/conversations/{conversationId}/checkpoints` lists up to 100 checkpoints, newest first. `POST /api/v1/conversations/{conversationId}/checkpoints/{sha}/restore` (only between turns; `409 turn_active` otherwise) makes the workspace match that checkpoint, recorded as a new commit so the restore itself can be undone, emits `checkpoint.restored`, and tells the agent about it on its next prompt. Conversation history is not rewound.
 
@@ -312,7 +314,7 @@ Use `deny` to reject. Decisions are single-use; repeating the same decision is i
 `autopilot attach-remote` opens Autopilot's own interactive UI (Camouflage) on a conversation that runs in a cell on the server: a code conversation (a cloned repository on its own branch, the default) or a chat conversation (`--kind chat`: a sandbox in the workspace with no repository, branch or pull request). It is the API's interactive client: other tools (for example Directionally Local's `dl`) launch it with the server and credential in the environment, never in argv.
 
 ```sh
-AUTOPILOT_REMOTE_URL=http://127.0.0.1:53817 AUTOPILOT_REMOTE_TOKEN=aster_… \
+AUTOPILOT_REMOTE_URL=http://127.0.0.1:53817 AUTOPILOT_REMOTE_TOKEN=dl_… \
   autopilot attach-remote --workspace default --repo acme/project --model moonshotai/kimi-k2.6 \
   [--base-commit <40-hex sha> [--patch-file local.patch]] --state-file state.json --title "dl · acme/project"
 # a chat conversation (no --repo; the header shows the workspace's title):
@@ -330,7 +332,7 @@ autopilot attach-remote --conversation <id> --state-file state.json
 ## Operations, retention, and rollback
 
 - Service: `systemctl status autopilot`; logs: `journalctl -u autopilot`. Autopilot is a non-root systemd service with `Restart=on-failure`, loopback bind, and a health endpoint. Keep journald bounded (for example, an operator-approved `/etc/systemd/journald.conf.d/` cap); the current VM has no Autopilot-specific journald retention override.
-- Before an upgrade, stop the service and make an offline backup of the Aster DB, run DB, sessions, worktrees, and workspace data. Encrypt the archive off-host with an operator-held `age` recipient; do not store a private decryption key on the VM.
+- Before an upgrade, stop the service and make an offline backup of the dl server DB, run DB, sessions, worktrees, and workspace data. Encrypt the archive off-host with an operator-held `age` recipient; do not store a private decryption key on the VM.
 - Roll back by stopping the service, checking out the previous known-good commit in `/opt/autopilot`, running `npm ci && npm run build`, and restarting. Keep the databases: schema changes are additive, and deleting them would lose conversations/approvals. Restore a backup only if the migration is incompatible, and restore the matching app version with it.
 - The deployment smoke check must exercise create conversation, first turn, event replay, follow-up turn, approval resolution, and cancellation through an SSH tunnel. A one-turn health check alone is insufficient.
 

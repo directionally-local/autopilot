@@ -1,5 +1,5 @@
 /**
- * An in-process stub of the Aster API endpoints attach-remote uses, for
+ * An in-process stub of the dl server API endpoints attach-remote uses, for
  * tests: create, get, turns, events (SSE with Last-Event-ID), cancel,
  * models, approvals. Turns play a scripted list of events.
  */
@@ -30,7 +30,7 @@ export interface StubConversation {
   updatedAt: string;
 }
 
-export interface AsterStub {
+export interface DlStub {
   url: string;
   token: string;
   conversations: Map<string, StubConversation>;
@@ -70,11 +70,11 @@ export function defaultScript(_id: string, text: string): StubEvent[] {
   ];
 }
 
-export async function startAsterStub(): Promise<AsterStub> {
-  const token = "aster_test_token";
+export async function startDlStub(): Promise<DlStub> {
+  const token = "dl_test_token";
   let seq = 0;
   let held: Array<() => void> = [];
-  const stub: AsterStub = {
+  const stub: DlStub = {
     url: "",
     token,
     conversations: new Map(),
@@ -109,7 +109,7 @@ export async function startAsterStub(): Promise<AsterStub> {
         activeRunId: null,
         kind: "code",
         repository: "acme/project",
-        branch: `aster/${partial.conversationId.slice(0, 8)}`,
+        branch: `dl/${partial.conversationId.slice(0, 8)}`,
         createdAt: now,
         updatedAt: now,
         ...partial,

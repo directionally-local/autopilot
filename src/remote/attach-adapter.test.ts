@@ -1,16 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyAsterEvent, initialAsterState, totalCostUsd, type AsterViewState } from "./attach-adapter.js";
+import { applyDlEvent, initialDlState, totalCostUsd, type DlViewState } from "./attach-adapter.js";
 import type { RemoteEvent } from "./client.js";
 
-function feed(events: Array<Omit<RemoteEvent, "id"> & { id?: number }>, state: AsterViewState = initialAsterState()) {
+function feed(events: Array<Omit<RemoteEvent, "id"> & { id?: number }>, state: DlViewState = initialDlState()) {
   const effects = [];
   let id = state.lastEventId;
-  for (const e of events) effects.push(...applyAsterEvent(state, { id: e.id ?? ++id, type: e.type, data: e.data }));
+  for (const e of events) effects.push(...applyDlEvent(state, { id: e.id ?? ++id, type: e.type, data: e.data }));
   return { state, effects };
 }
 
-describe("attach-remote adapter: Aster events → UI state", () => {
+describe("attach-remote adapter: dl server events → UI state", () => {
   it("assistant.delta streams into one open assistant message (text or delta field)", () => {
     const { state } = feed([
       { type: "assistant.delta", data: { text: "Hello " } },
@@ -92,10 +92,10 @@ describe("attach-remote adapter: Aster events → UI state", () => {
 
   it("terminal events end the turn: completed, failed (error), cancelled, interrupted", () => {
     for (const [type, data, check] of [
-      ["completed", {}, (s: AsterViewState) => !s.events.some((e) => e.kind === "error")],
-      ["failed", { reason: "cell_turn_lost" }, (s: AsterViewState) => s.events.some((e) => e.kind === "error" && /failed: cell_turn_lost/.test(e.text))],
-      ["cancelled", { code: "cancelled_by_client" }, (s: AsterViewState) => s.events.some((e) => e.kind === "info" && e.text === "Turn cancelled.")],
-      ["interrupted", { reason: "server_restart_recovery" }, (s: AsterViewState) => s.events.some((e) => e.kind === "info" && /interrupted/.test(e.text))],
+      ["completed", {}, (s: DlViewState) => !s.events.some((e) => e.kind === "error")],
+      ["failed", { reason: "cell_turn_lost" }, (s: DlViewState) => s.events.some((e) => e.kind === "error" && /failed: cell_turn_lost/.test(e.text))],
+      ["cancelled", { code: "cancelled_by_client" }, (s: DlViewState) => s.events.some((e) => e.kind === "info" && e.text === "Turn cancelled.")],
+      ["interrupted", { reason: "server_restart_recovery" }, (s: DlViewState) => s.events.some((e) => e.kind === "info" && /interrupted/.test(e.text))],
     ] as const) {
       const { state, effects } = feed([
         { type: "assistant.delta", data: { text: "x" } },
@@ -149,10 +149,10 @@ describe("attach-remote adapter: Aster events → UI state", () => {
   });
 
   it("ignores events at or below the last applied ID (at-least-once delivery)", () => {
-    const state = initialAsterState();
-    applyAsterEvent(state, { id: 1, type: "assistant.delta", data: { text: "a" } });
-    assert.deepEqual(applyAsterEvent(state, { id: 1, type: "assistant.delta", data: { text: "a" } }), []);
-    applyAsterEvent(state, { id: 2, type: "assistant.delta", data: { text: "b" } });
+    const state = initialDlState();
+    applyDlEvent(state, { id: 1, type: "assistant.delta", data: { text: "a" } });
+    assert.deepEqual(applyDlEvent(state, { id: 1, type: "assistant.delta", data: { text: "a" } }), []);
+    applyDlEvent(state, { id: 2, type: "assistant.delta", data: { text: "b" } });
     const msg = state.events[0]!;
     assert.ok(msg.kind === "assistant" && msg.text === "ab");
     assert.equal(state.lastEventId, 2);

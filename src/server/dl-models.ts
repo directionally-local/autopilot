@@ -1,7 +1,7 @@
 /**
- * The models an Aster conversation may use, for the configured provider.
+ * The models a dl server conversation may use, for the configured provider.
  *
- * A fixed `models` list in aster.json is offered as is. With `"models": "catalog"` the
+ * A fixed `models` list in server.json is offered as is. With `"models": "catalog"` the
  * list is live: OpenRouter's catalog (tool-calling models only; the cell agent needs tools)
  * for OpenRouter, and `GET {baseUrl}/models` in the OpenAI-compatible shape for every
  * other provider, authenticated with the server's own key from `provider.apiKeyEnv` (or
@@ -12,9 +12,9 @@
 
 import { loadOpenRouterCatalog } from "../models/openrouter-catalog.js";
 import { discoverOpenAiModels } from "../models/provider-catalog.js";
-import type { AsterProviderConfig, AsterServerConfig } from "./aster-workspaces.js";
+import type { DlProviderConfig, DlServerConfig } from "./dl-workspaces.js";
 
-export interface AsterModelInfo {
+export interface DlModelInfo {
   id: string;
   name?: string;
   contextWindow?: number;
@@ -26,14 +26,14 @@ export interface AsterModelInfo {
 }
 
 /** What GET /api/v1/models returns. `models` and `catalog` predate `provider`/`defaultModel`. */
-export interface AsterModelsResponse {
+export interface DlModelsResponse {
   models: string[];
-  catalog: AsterModelInfo[];
+  catalog: DlModelInfo[];
   provider: { id: string; name: string };
   defaultModel: string;
 }
 
-export interface AsterModelCatalogDeps {
+export interface DlModelCatalogDeps {
   fetch?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
@@ -44,7 +44,7 @@ export const PROVIDER_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface CacheEntry {
   fetchedAt: number;
-  models: AsterModelInfo[];
+  models: DlModelInfo[];
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -54,20 +54,20 @@ export function resetProviderCatalogCache(): void {
   cache.clear();
 }
 
-export async function selectableModels(config: AsterServerConfig, deps: AsterModelCatalogDeps = {}): Promise<AsterModelInfo[]> {
+export async function selectableModels(config: DlServerConfig, deps: DlModelCatalogDeps = {}): Promise<DlModelInfo[]> {
   if (config.modelCatalog === "fixed") return config.models.map((id) => ({ id }));
   if (config.provider.id === "openrouter") return openRouterModels();
   return providerModels(config.provider, deps);
 }
 
-export async function isSelectableModel(config: AsterServerConfig, model: string, deps: AsterModelCatalogDeps = {}): Promise<boolean> {
+export async function isSelectableModel(config: DlServerConfig, model: string, deps: DlModelCatalogDeps = {}): Promise<boolean> {
   if (!model.trim() || model.length > 200) return false;
   if (config.modelCatalog === "fixed") return config.models.includes(model);
   return (await selectableModels(config, deps)).some((entry) => entry.id === model);
 }
 
 /** The /models response body; `models` empty means the catalog is unavailable right now. */
-export async function modelsResponse(config: AsterServerConfig, deps: AsterModelCatalogDeps = {}): Promise<AsterModelsResponse> {
+export async function modelsResponse(config: DlServerConfig, deps: DlModelCatalogDeps = {}): Promise<DlModelsResponse> {
   const catalog = await selectableModels(config, deps);
   const models = catalog.map((model) => model.id);
   const preferred = config.provider.defaultModel;
@@ -75,7 +75,7 @@ export async function modelsResponse(config: AsterServerConfig, deps: AsterModel
   return { models, catalog, provider: { id: config.provider.id, name: config.provider.name }, defaultModel };
 }
 
-async function openRouterModels(): Promise<AsterModelInfo[]> {
+async function openRouterModels(): Promise<DlModelInfo[]> {
   const catalog = await loadOpenRouterCatalog();
   return catalog
     .filter((model) => model.supports.tools)
@@ -91,7 +91,7 @@ async function openRouterModels(): Promise<AsterModelInfo[]> {
     }));
 }
 
-async function providerModels(provider: AsterProviderConfig, deps: AsterModelCatalogDeps): Promise<AsterModelInfo[]> {
+async function providerModels(provider: DlProviderConfig, deps: DlModelCatalogDeps): Promise<DlModelInfo[]> {
   const now = deps.now ?? Date.now;
   const ttl = deps.cacheTtlMs ?? PROVIDER_CATALOG_CACHE_TTL_MS;
   const key = `${provider.id} ${provider.baseUrl ?? ""}`;
@@ -103,7 +103,7 @@ async function providerModels(provider: AsterProviderConfig, deps: AsterModelCat
   const apiKey = (deps.env ?? process.env)[provider.apiKeyEnv]?.trim() || undefined;
   try {
     const discovered = await discoverOpenAiModels(provider.baseUrl, apiKey, deps.fetch ?? fetch);
-    const models: AsterModelInfo[] = discovered.map((model) => ({
+    const models: DlModelInfo[] = discovered.map((model) => ({
       id: model.id,
       ...(model.name ? { name: model.name } : {}),
       ...(model.created !== undefined ? { created: model.created } : {}),
