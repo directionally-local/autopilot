@@ -9,7 +9,7 @@ import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "../agent/loo
 import type { AgentCallbacks } from "../agent/loop.js";
 import type { ChatMessage, ContentPart, Usage } from "../agent/messages.js";
 import { buildSystemPrompt, buildSystemMessages, buildSessionPrefix } from "../agent/system-prompt.js";
-import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "../tools/executor.js";
+import { ToolExecutor, ALL_TOOLS, toolsForSession, permissionFromHook } from "../tools/executor.js";
 import { formatHookFailureNotice } from "../hooks/manager.js";
 import type { PermissionDecision, PermissionRequest, ToolResult } from "../tools/executor.js";
 import type { ToolSpec } from "../tools/registry.js";
@@ -121,13 +121,15 @@ export async function createAgentSession(
     };
   }
 
-  // Build initial system prompt
-  const allTools = [...tools, ...lspTools];
+  // Build initial system prompt. Memory is opt-in for SDK sessions (#1077):
+  // when it's off, neither the tools nor the system-prompt bullet are offered.
+  const allTools = toolsForSession({ memoryEnabled, base: [...tools, ...lspTools] });
   const systemPrompt = buildSystemPrompt({
     cwd,
     tools: allTools,
     model: config.model,
     preferPullRequests: config.preferPullRequests,
+    memoryEnabled,
   });
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
@@ -768,6 +770,7 @@ class InternalSession implements AutopilotSession {
           model: this.model,
           mode: this.currentMode,
           preferPullRequests: this.config.preferPullRequests,
+          memoryEnabled: this.memoryManager != null,
         }),
       };
     }

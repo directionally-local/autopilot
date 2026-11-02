@@ -13,7 +13,7 @@ import type { ChatEvent } from "./view-types.js";
 import type { ChatMessage } from "../agent/messages.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { ToolExecutor } from "../tools/executor.js";
-import { ALL_TOOLS } from "../tools/executor.js";
+import { toolsForSession } from "../tools/executor.js";
 import type { McpManager } from "../mcp/manager.js";
 import type { LspManager } from "../lsp/manager.js";
 import { makeLspTools } from "../tools/lsp.js";
@@ -83,14 +83,19 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
     }
   }
   if (totalTools > 0) {
+    const sessionTools = toolsForSession({
+      memoryEnabled: cfg.memoryEnabled,
+      extra: [...mcpToolsRef.current, ...lspToolsRef.current],
+    });
     if (cacheStableRef.current) {
       messagesRef.current[1] = {
         role: "system",
         content: buildSessionPrefix({
           cwd: process.cwd(),
-          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          tools: sessionTools,
           model: cfg.model ?? DEFAULT_MODEL,
           mode: modeRef.current,
+          memoryEnabled: cfg.memoryEnabled,
         }),
       };
     } else {
@@ -98,9 +103,10 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
         role: "system",
         content: buildSystemPrompt({
           cwd: process.cwd(),
-          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          tools: sessionTools,
           model: cfg.model ?? DEFAULT_MODEL,
           mode: modeRef.current,
+          memoryEnabled: cfg.memoryEnabled,
         }),
       };
     }
@@ -159,14 +165,19 @@ export async function initLsp(deps: InitLspDeps): Promise<void> {
       executorRef.current.register(tool);
     }
     lspToolsRef.current = tools;
+    const sessionTools = toolsForSession({
+      memoryEnabled: cfg.memoryEnabled,
+      extra: [...mcpToolsRef.current, ...lspToolsRef.current],
+    });
     if (cacheStableRef.current) {
       messagesRef.current[1] = {
         role: "system",
         content: buildSessionPrefix({
           cwd: process.cwd(),
-          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          tools: sessionTools,
           model: cfg.model ?? DEFAULT_MODEL,
           mode: modeRef.current,
+          memoryEnabled: cfg.memoryEnabled,
         }),
       };
     } else {
@@ -174,9 +185,10 @@ export async function initLsp(deps: InitLspDeps): Promise<void> {
         role: "system",
         content: buildSystemPrompt({
           cwd: process.cwd(),
-          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          tools: sessionTools,
           model: cfg.model ?? DEFAULT_MODEL,
           mode: modeRef.current,
+          memoryEnabled: cfg.memoryEnabled,
         }),
       };
     }

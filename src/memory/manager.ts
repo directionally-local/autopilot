@@ -21,6 +21,12 @@ import {
   type VectorInfo,
   getMemoryById,
   countHighSignalMemoriesSince,
+  deleteMemoriesByIds,
+  recordRecall,
+  getRecallStats,
+  countLowImportanceMemories,
+  listMemoriesForExport,
+  type ExportedMemory,
 } from "./db.js";
 import { embeddingModelFor, fetchEmbeddings } from "./embeddings.js";
 import { DEFAULT_MODEL, DEFAULT_PLUMBING_MODEL } from "../config.js";
@@ -40,6 +46,23 @@ import {
 } from "./migrate-repo.js";
 
 export { redactSecrets } from "./redact.js";
+
+/** What `/memory doctor` reports about a repo's memory store (#1077). */
+export interface MemoryDoctorReport {
+  dbPath: string;
+  open: boolean;
+  dbSizeBytes: number;
+  /** Live (not forgotten, not superseded) memories for the repo. */
+  live: number;
+  byCategory: Record<MemoryCategory, number>;
+  lastCreatedAt: number | null;
+  lastCleanupAt: number | null;
+  embedding: { model: string | null; provider: string; current: number; stale: number };
+  /** Recalls that returned at least one memory, over all recorded recalls. */
+  recalls: { total: number; hits: number; hitRate: number | null };
+  /** Low-importance (≤2) share of live memories: how much is noise. */
+  noise: { lowImportance: number; ratio: number | null };
+}
 
 export interface MemoryManagerOpts extends LlmAuth {
   dbPath: string;
@@ -387,20 +410,29 @@ export class MemoryManager {
     if (!this.db) return [];
 
     const model = this.embeddingModel;
+    let results: HybridResult[];
     if (!model) {
       // No embeddings for this provider: text, topic-key and exact channels only.
-      return retrieveMemories({ db: this.db, query: { ...query, embedding: undefined } });
-    }
-    if (!query.embedding && query.text) {
-      try {
-        const embeddings = await fetchEmbeddings({ ...this.embedAuth, model, texts: [query.text] });
-        query.embedding = embeddings[0];
-      } catch {
-        // Continue without vector search
+      results = await retrieveMemories({ db: this.db, query: { ...query, embedding: undefined } });
+    } else {
+      if (!query.embedding && query.text) {
+        try {
+          const embeddings = await fetchEmbeddings({ ...this.embedAuth, model, texts: [query.text] });
+          query.embedding = embeddings[0];
+        } catch {
+          // Continue without vector search
+        }
       }
+      results = await retrieveMemories({ db: this.db, query: { ...query, embeddingModel: model, repoPath: this.repo(query.repoPath ?? process.cwd()) } });
     }
-
-    return retrieveMemories({ db: this.db, query: { ...query, embeddingModel: model, repoPath: this.repo(query.repoPath ?? process.cwd()) } });
+    // Feed `/memory doctor`'s recall hit rate. Best-effort: a stats write
+    // must never fail a recall.
+    try {
+      recordRecall(this.db, this.repo(query.repoPath ?? process.cwd()), results.length);
+    } catch {
+      /* non-fatal */
+    }
+    return results;
   }
 
   /**
@@ -456,6 +488,12 @@ export class MemoryManager {
     return true;
   }
 
+  /** Per-memory delete: remove one row outright (#1077). */
+  remove(id: string): boolean {
+    if (!this.db) return false;
+    return deleteMemoriesByIds(this.db, [id]) > 0;
+  }
+
   /**
    * Embed memories that have no vector yet, or whose vector came from a
    * different embedding model (the provider or model changed). Runs at
@@ -489,7 +527,7 @@ export class MemoryManager {
   /** Vector-recall status for `/memory`: model, provider, and how many rows still need (re-)embedding. */
   embeddingStatus(repoPath: string): { model: string | null; provider: string; current: number; stale: number } {
     const model = this.embeddingModel;
-    const counts = this.db ? countMemoriesByEmbeddingModel(this.db, repoPath, model) : { current: 0, stale: 0 };
+    const counts = this.db ? countMemoriesByEmbeddingModel(this.db, this.repo(repoPath), model) : { current: 0, stale: 0 };
     return { model, provider: providerPresetOf(this.embedAuth).name, ...counts };
   }
 
@@ -531,9 +569,43 @@ export class MemoryManager {
     return result;
   }
 
-  getStats(): MemoryStats | null {
+  getStats(repoPath?: string): MemoryStats | null {
     if (!this.db) return null;
-    return getMemoryStats(this.db);
+    return getMemoryStats(this.db, repoPath ? this.repo(repoPath) : undefined);
+  }
+
+  /** All memories (optionally one repo) without vectors, for `/memory export`. */
+  list(repoPath?: string): ExportedMemory[] {
+    if (!this.db) return [];
+    return listMemoriesForExport(this.db, repoPath ? this.repo(repoPath) : undefined);
+  }
+
+  /** Health, recall hit rate and noise ratio for `/memory doctor` (#1077). */
+  doctor(repoPath: string): MemoryDoctorReport | null {
+    if (!this.db) return null;
+    const repo = this.repo(repoPath);
+    const stats = getMemoryStats(this.db, repo);
+    const recalls = getRecallStats(this.db, repo);
+    const lowImportance = countLowImportanceMemories(this.db, repo);
+    return {
+      dbPath: this.opts.dbPath,
+      open: true,
+      dbSizeBytes: stats.dbSizeBytes,
+      live: stats.totalCount,
+      byCategory: stats.byCategory,
+      lastCreatedAt: stats.lastCreatedAt,
+      lastCleanupAt: stats.lastCleanupAt,
+      embedding: this.embeddingStatus(repoPath),
+      recalls: {
+        total: recalls.total,
+        hits: recalls.hits,
+        hitRate: recalls.total > 0 ? recalls.hits / recalls.total : null,
+      },
+      noise: {
+        lowImportance,
+        ratio: stats.totalCount > 0 ? lowImportance / stats.totalCount : null,
+      },
+    };
   }
 
   clearRepo(repoPath: string): number {

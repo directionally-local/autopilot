@@ -28,7 +28,7 @@ import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "./agent/loop
 import { llmAuthFromConfig, providerIdOf } from "./agent/llm-auth.js";
 import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
-import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "./tools/executor.js";
+import { ToolExecutor, ALL_TOOLS, toolsForSession, permissionFromHook } from "./tools/executor.js";
 import type { ChatMessage } from "./agent/messages.js";
 import { ApiError, humanizeApiError } from "./util/errors.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
@@ -199,11 +199,16 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
     emit("RuntimeError", { message: formatHookFailureNotice(notice), source: "hooks", kind: "generic", severity: "warn" });
   });
   const sessionId = makeSessionId(opts.prompt);
+  // Print mode is opt-in for memory (#1077): no manager is created here, so
+  // don't advertise the tools or the system-prompt bullet either. The
+  // executor keeps them registered so a stale call from resumed history
+  // fails with a classified "not enabled" (ok: false), not "unknown tool".
+  const sessionTools = toolsForSession({ memoryEnabled: false });
   const executor = new ToolExecutor(ALL_TOOLS, { hooks });
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: buildSystemPrompt({ cwd, tools: ALL_TOOLS, model: opts.model, preferPullRequests: opts.preferPullRequests }),
+      content: buildSystemPrompt({ cwd, tools: sessionTools, model: opts.model, preferPullRequests: opts.preferPullRequests, memoryEnabled: false }),
     },
   ];
 

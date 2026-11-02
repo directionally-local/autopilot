@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { runAgentTurn, AgentLoopError } from "../agent/loop.js";
-import { ALL_TOOLS, type ToolExecutor, type PermissionAsker } from "../tools/executor.js";
+import { ALL_TOOLS, toolsForSession, type ToolExecutor, type PermissionAsker } from "../tools/executor.js";
 import { buildSessionPrefix, buildSystemPrompt } from "../agent/system-prompt.js";
 import { sanitizeString } from "../agent/messages.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
@@ -270,14 +270,19 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
     } }));
 
     if (existsSync(join(cwd, targetFilename))) {
+      const sessionTools = toolsForSession({
+        memoryEnabled: cfg.memoryEnabled,
+        extra: [...mcpToolsRef.current, ...lspToolsRef.current],
+      });
       if (cacheStableRef.current) {
         messagesRef.current[1] = {
           role: "system",
           content: buildSessionPrefix({
             cwd,
-            tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+            tools: sessionTools,
             model: cfg.model,
             mode: modeRef.current,
+            memoryEnabled: cfg.memoryEnabled,
           }),
         };
       } else {
@@ -285,9 +290,10 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
           role: "system",
           content: buildSystemPrompt({
             cwd,
-            tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+            tools: sessionTools,
             model: cfg.model,
             mode: modeRef.current,
+            memoryEnabled: cfg.memoryEnabled,
           }),
         };
       }

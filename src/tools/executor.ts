@@ -76,6 +76,26 @@ export const RESEARCH_WORKER_TOOL_NAMES = new Set([
   "github_list_merged_prs", "github_list_releases",
 ]);
 
+/** The memory tools, advertised only while memory is enabled (#1077). */
+export const MEMORY_TOOL_NAMES = new Set(["memory_remember", "memory_recall", "memory_forget"]);
+
+/**
+ * The tool list a session advertises: `base` (ALL_TOOLS by default) minus the
+ * memory tools when `memoryEnabled === false`, plus any host-registered tools
+ * (MCP, LSP). Passing `undefined` keeps the memory tools — the TUI treats an
+ * unconfigured `memoryEnabled` as on; print/SDK/remote pass an explicit false.
+ */
+export function toolsForSession(
+  opts: { memoryEnabled?: boolean; base?: ToolSpec[]; extra?: ToolSpec[] } = {},
+): ToolSpec[] {
+  const base =
+    opts.memoryEnabled === false
+      ? (opts.base ?? ALL_TOOLS).filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
+      : (opts.base ?? ALL_TOOLS);
+  const extra = opts.extra ?? [];
+  return extra.length > 0 ? [...base, ...extra] : base;
+}
+
 export function getWorkerTools(profile?: "research"): ToolSpec[] {
   return profile === "research"
     ? ALL_TOOLS

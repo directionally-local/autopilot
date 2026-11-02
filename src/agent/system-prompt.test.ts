@@ -61,6 +61,21 @@ describe("buildStaticPrefix", () => {
     assert.ok(!p.includes("kimi-k2.6"), "static prefix must not name a specific model");
     assert.ok(!p.includes("powered by"), "static prefix must not claim a powering model");
   });
+
+  it("advertises the memory tools by default (TUI memory is on, #1077)", () => {
+    const p = buildStaticPrefix({ model: "m" });
+    assert.match(p, /cross-session memory tools/);
+    assert.match(p, /memory_remember/);
+  });
+
+  it("omits the memory bullet when memory is disabled, without leaving a gap (#1077)", () => {
+    const p = buildStaticPrefix({ model: "m", memoryEnabled: false });
+    assert.ok(!p.includes("cross-session memory tools"), "must not advertise disabled tools");
+    assert.ok(!p.includes("memory_remember"));
+    // The bullet list stays contiguous: no blank line where the bullet was.
+    assert.ok(!p.includes("failing CI.\n\n- Use `search_web`"), "no gap after the PR bullets");
+    assert.match(p, /failing CI\.\n- Use `search_web`/);
+  });
 });
 
 describe("buildSessionPrefix", () => {

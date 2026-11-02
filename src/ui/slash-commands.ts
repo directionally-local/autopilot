@@ -11,11 +11,11 @@ import React from "react";
 import { workerRegistry } from "../tools/worker-registry.js";
 import { formatSubagentStats, readSubagentStats } from "../tools/subagent-stats.js";
 import { join } from "node:path";
-import { unlink } from "node:fs/promises";
+import { unlink, writeFile } from "node:fs/promises";
 import { renderTerminalQr } from "./terminal-qr.js";
 
 import type { Cfg } from "../app.js";
-import { configPath, loadConfig, saveConfig, patchPersistedConfig, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
+import { configPath, loadConfig, saveConfig, patchPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
 import type { ChatEvent } from "./view-types.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
@@ -62,7 +62,7 @@ import {
   serializeArtifactStore,
   type SessionState,
 } from "../agent/session-state.js";
-import { ALL_TOOLS, type ToolExecutor } from "../tools/executor.js";
+import { toolsForSession, type ToolExecutor } from "../tools/executor.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { McpManager } from "../mcp/manager.js";
 import type { LspManager } from "../lsp/manager.js";
@@ -286,8 +286,12 @@ export function executeFreshStart(
     ctx.cacheStableRef.current,
     ctx.cfg?.model ?? DEFAULT_MODEL,
     overrideMode ?? ctx.mode,
-    [...ALL_TOOLS, ...ctx.mcpToolsRef.current, ...ctx.lspToolsRef.current],
+    toolsForSession({
+      memoryEnabled: ctx.cfg?.memoryEnabled,
+      extra: [...ctx.mcpToolsRef.current, ...ctx.lspToolsRef.current],
+    }),
     ctx.cfg?.preferPullRequests,
+    ctx.cfg?.memoryEnabled,
   );
 
   // Seed with plan unless the caller will submit it separately (e.g. the
@@ -327,7 +331,7 @@ const handleFresh: Handler = async (ctx) => {
           messages: ctx.messagesRef.current,
           sessionPlan: ctx.sessionPlanRef.current,
           memoryManager: ctx.memoryManagerRef.current,
-          memoryEnabled: cfg?.memoryEnabled,
+          memoryEnabled: tuiMemoryEnabled(cfg),
           repoPath: process.cwd(),
         })
       : await generateContinuationSummary({
@@ -336,7 +340,7 @@ const handleFresh: Handler = async (ctx) => {
           ...llmAuthFromConfig(cfg),
           model: plumbingModelOf(cfg),
           memoryManager: ctx.memoryManagerRef.current,
-          memoryEnabled: cfg?.memoryEnabled,
+          memoryEnabled: tuiMemoryEnabled(cfg),
         });
 
   if (!summary) {
@@ -1151,48 +1155,92 @@ const handleSkills: Handler = (ctx, rest) => {
   return true;
 };
 
+const MEMORY_USAGE = "usage: /memory [on|off|menu|clear|doctor|migrate-repo <old> <new>|export [path]|delete <id>|search <query>]";
+
+/** One-line vector-recall status shared by `/memory` stats and `/memory doctor`. */
+function memoryVectorLine(vec: { model: string | null; provider: string; current: number; stale: number }): string {
+  return vec.model
+    ? `vector recall: ${vec.model} via ${vec.provider} — ${vec.current} indexed` +
+        (vec.stale > 0 ? `, ${vec.stale} waiting to be (re-)embedded (100 per startup)` : "")
+    : `vector recall: off — ${vec.provider} has no embeddings API; recall uses text and topic keys. ` +
+        `Set memoryEmbeddingModel, or embeddingProvider to a provider with embeddings.`;
+}
+
 const handleMemory: Handler = (ctx, rest, arg) => {
   const { cfg, setCfg, setEvents, mkKey, memoryManagerRef } = ctx;
   if (!cfg) return true;
-  if (!arg) {
+
+  // Toggle. Rebuilds the system prompt so the memory bullet and the
+  // advertised tool list match the new setting immediately (#1077).
+  if (arg === "on" || arg === "off") {
+    const enabled = arg === "on";
+    const next = { ...cfg, memoryEnabled: enabled };
+    setCfg(next);
+    void saveConfig(next).catch(() => {});
+    rebuildSystemPromptForMode(
+      ctx.messagesRef.current,
+      ctx.cacheStableRef.current,
+      next.model ?? DEFAULT_MODEL,
+      ctx.mode,
+      toolsForSession({ memoryEnabled: enabled, extra: [...ctx.mcpToolsRef.current, ...ctx.lspToolsRef.current] }),
+      next.preferPullRequests,
+      enabled,
+    );
+    setEvents((e) => [...e, { kind: "memory", key: mkKey(), text: enabled ? "memory enabled" : "memory disabled" }]);
+    return true;
+  }
+
+  if (arg === "menu") {
     ctx.setShowMemoryPicker(true);
     return true;
   }
-  if (arg === "on") {
-    const next = { ...cfg, memoryEnabled: true };
-    setCfg(next);
-    void saveConfig(next).catch(() => {});
-    setEvents((e) => [...e, { kind: "memory", key: mkKey(), text: "memory enabled" }]);
-    return true;
-  }
-  if (arg === "off") {
-    const next = { ...cfg, memoryEnabled: false };
-    setCfg(next);
-    void saveConfig(next).catch(() => {});
-    setEvents((e) => [...e, { kind: "memory", key: mkKey(), text: "memory disabled" }]);
-    return true;
-  }
-  if (!cfg.memoryEnabled) {
+
+  if (cfg.memoryEnabled === false) {
     setEvents((e) => [
       ...e,
       { kind: "info", key: mkKey(), text: "memory is disabled. Use /memory on to enable it, or set AUTOPILOT_MEMORY_ENABLED=1" },
     ]);
     return true;
   }
+
+  const manager = memoryManagerRef.current;
+
   if (arg === "clear") {
-    const cleared = memoryManagerRef.current?.clearRepo(process.cwd()) ?? 0;
+    const cleared = manager?.clearRepo(process.cwd()) ?? 0;
     setEvents((e) => [...e, { kind: "memory", key: mkKey(), text: `cleared ${cleared} memories for this repo` }]);
     return true;
   }
   if (arg === "doctor") {
-    const mgr = memoryManagerRef.current;
-    if (!mgr) {
+    if (!manager) {
       setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "memory manager not initialized" }]);
       return true;
     }
     try {
-      const report = mgr.doctorReport(process.cwd());
-      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: report }]);
+      // Health, recall hit rate and noise ratio (#1077) …
+      const report = manager.doctor(process.cwd());
+      if (!report) {
+        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "memory manager not initialized" }]);
+        return true;
+      }
+      const pct = (n: number) => `${Math.round(n * 100)}%`;
+      const lines = [
+        `health: ${report.open ? "ok" : "closed"} · ${report.dbPath} (${Math.round(report.dbSizeBytes / 1024)} KB)`,
+        `memories: ${report.live} live for this repo` +
+          ` (fact ${report.byCategory.fact}, event ${report.byCategory.event}, instruction ${report.byCategory.instruction}, task ${report.byCategory.task}, preference ${report.byCategory.preference})`,
+        `last write: ${report.lastCreatedAt ? new Date(report.lastCreatedAt).toISOString() : "never"}` +
+          ` · last cleanup: ${report.lastCleanupAt ? new Date(report.lastCleanupAt).toISOString() : "never"}`,
+        memoryVectorLine(report.embedding),
+        report.recalls.total > 0
+          ? `recall hit rate: ${report.recalls.hits}/${report.recalls.total} (${pct(report.recalls.hitRate ?? 0)}) returned at least one memory`
+          : "recall hit rate: no recalls recorded yet",
+        report.noise.ratio !== null
+          ? `noise ratio: ${report.noise.lowImportance}/${report.live} low-importance (≤2) (${pct(report.noise.ratio)})`
+          : "noise ratio: n/a (no live memories)",
+        "",
+        // … plus the orphaned repo_path candidates after a repo move/rename (#1105).
+        manager.doctorReport(process.cwd()),
+      ];
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: lines.join("\n") }]);
     } catch (err) {
       setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `memory doctor failed: ${(err as Error).message}` }]);
     }
@@ -1221,40 +1269,88 @@ const handleMemory: Handler = (ctx, rest, arg) => {
     }
     return true;
   }
+
+  if (arg === "export" || arg.startsWith("export ")) {
+    if (!manager) {
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "memory manager not initialized" }]);
+      return true;
+    }
+    const explicit = rest.slice(1).join(" ").trim();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const target = explicit || join(process.cwd(), `autopilot-memory-export-${stamp}.json`);
+    void (async () => {
+      const memories = manager.list();
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        dbPath: manager.doctor(process.cwd())?.dbPath ?? null,
+        count: memories.length,
+        memories,
+      };
+      await writeFile(target, JSON.stringify(payload, null, 2), "utf8");
+      setEvents((e) => [
+        ...e,
+        { kind: "memory", key: mkKey(), text: `exported ${memories.length} memories to ${target}` },
+      ]);
+    })().catch((err) => {
+      setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `memory export failed: ${(err as Error).message}` }]);
+    });
+    return true;
+  }
+
+  if (arg.startsWith("delete ")) {
+    const id = rest.slice(1).join(" ").trim();
+    if (!id) {
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "usage: /memory delete <id>" }]);
+      return true;
+    }
+    const removed = manager?.remove(id) ?? false;
+    setEvents((e) => [
+      ...e,
+      removed
+        ? { kind: "memory", key: mkKey(), text: `deleted memory ${id}` }
+        : { kind: "info", key: mkKey(), text: `memory ${id} not found (try /memory search <query> to list ids)` },
+    ]);
+    return true;
+  }
+
   if (arg.startsWith("search ")) {
-    const query = arg.slice(7).trim();
+    const query = rest.slice(1).join(" ").trim();
     if (!query) {
       setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "usage: /memory search <query>" }]);
       return true;
     }
-    void memoryManagerRef.current?.recall({ text: query, repoPath: process.cwd(), limit: 10 }).then((results) => {
+    void manager?.recall({ text: query, repoPath: process.cwd(), limit: 10 }).then((results) => {
       if (results.length === 0) {
         setEvents((es) => [...es, { kind: "info", key: mkKey(), text: "no memories found" }]);
       } else {
-        const lines = results.map((r) => `  [${r.memory.category}] ${r.memory.content} (score: ${r.combinedScore.toFixed(2)})`);
+        const lines = results.map(
+          (r) => `  [${r.memory.category}] ${r.memory.content} (score: ${r.combinedScore.toFixed(2)}, id: ${r.memory.id})`,
+        );
         setEvents((es) => [...es, { kind: "info", key: mkKey(), text: `memories:\n${lines.join("\n")}` }]);
       }
     });
     return true;
   }
-  const stats = memoryManagerRef.current?.getStats();
+
+  if (arg && arg !== "stats") {
+    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: MEMORY_USAGE }]);
+    return true;
+  }
+
+  // `/memory` (or `/memory stats`): repo-scoped stats for the current repo (#1077).
+  const stats = manager?.getStats(process.cwd());
   if (stats) {
     const sizeKb = Math.round(stats.dbSizeBytes / 1024);
     const lines = [
-      `total: ${stats.totalCount} memories (${sizeKb} KB)`,
+      `this repo: ${stats.totalCount} memories (db ${sizeKb} KB)`,
       `  fact: ${stats.byCategory.fact}, event: ${stats.byCategory.event}, instruction: ${stats.byCategory.instruction}`,
       `  task: ${stats.byCategory.task}, preference: ${stats.byCategory.preference}`,
+      `last write: ${stats.lastCreatedAt ? new Date(stats.lastCreatedAt).toISOString() : "never"}`,
       `last cleanup: ${stats.lastCleanupAt ? new Date(stats.lastCleanupAt).toISOString() : "never"}`,
     ];
-    const vec = memoryManagerRef.current?.embeddingStatus(process.cwd());
+    const vec = manager?.embeddingStatus(process.cwd());
     if (vec) {
-      lines.push(
-        vec.model
-          ? `vector recall: ${vec.model} via ${vec.provider} — ${vec.current} indexed` +
-              (vec.stale > 0 ? `, ${vec.stale} waiting to be (re-)embedded (100 per startup)` : "")
-          : `vector recall: off — ${vec.provider} has no embeddings API; recall uses text and topic keys. ` +
-              `Set memoryEmbeddingModel, or embeddingProvider to a provider with embeddings.`,
-      );
+      lines.push(memoryVectorLine(vec));
     }
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: lines.join("\n") }]);
   } else {

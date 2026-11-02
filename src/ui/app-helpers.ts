@@ -164,14 +164,15 @@ export function makePrefixMessages(
   mode: Mode,
   tools: ToolSpec[],
   preferPullRequests?: boolean,
+  memoryEnabled?: boolean,
 ): ChatMessage[] {
   if (cacheStable) {
-    return buildSystemMessages({ cwd: process.cwd(), tools, model, mode, preferPullRequests });
+    return buildSystemMessages({ cwd: process.cwd(), tools, model, mode, preferPullRequests, memoryEnabled });
   }
   return [
     {
       role: "system",
-      content: buildSystemPrompt({ cwd: process.cwd(), tools, model, mode, preferPullRequests }),
+      content: buildSystemPrompt({ cwd: process.cwd(), tools, model, mode, preferPullRequests, memoryEnabled }),
     },
   ];
 }
@@ -189,9 +190,10 @@ export function rebuildSystemPromptForMode(
   mode: Mode,
   tools: ToolSpec[],
   preferPullRequests?: boolean,
+  memoryEnabled?: boolean,
 ): void {
   if (cacheStable) {
-    const rebuilt = buildSystemMessages({ cwd: process.cwd(), tools, model, mode, preferPullRequests });
+    const rebuilt = buildSystemMessages({ cwd: process.cwd(), tools, model, mode, preferPullRequests, memoryEnabled });
     messages[0] = rebuilt[0]!;
     if (rebuilt[1]) {
       messages[1] = rebuilt[1];
@@ -199,7 +201,7 @@ export function rebuildSystemPromptForMode(
   } else {
     messages[0] = {
       role: "system",
-      content: buildSystemPrompt({ cwd: process.cwd(), tools, model, mode, preferPullRequests }),
+      content: buildSystemPrompt({ cwd: process.cwd(), tools, model, mode, preferPullRequests, memoryEnabled }),
     };
   }
 }

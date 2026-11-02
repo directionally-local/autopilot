@@ -177,7 +177,7 @@ function baseSnapshot(over: Partial<AppSnapshot> = {}): AppSnapshot {
     model: "vendor/model-x", usage: null, sessionUsage: null, contextLimit: 100_000, turnPhase: "waiting", currentTool: null,
     kimiMdStale: false, codeMode: false, intentTier: null, tasks: [], permission: null, modals: [], providerSetup: null,
     resumeSessions: null, checkpoints: null, planOptions: null, queuePlan: null, customCommands: [],
-    currentShell: "auto", memoryEnabled: false, customCommandDefs: [], commandWizard: null, commandPickerMode: null,
+    currentShell: "auto", memoryEnabled: false, memoryCount: 0, memoryLastWrite: null, customCommandDefs: [], commandWizard: null, commandPickerMode: null,
     changelogImageRepo: null, hooks: [], lsp: { servers: {}, scope: "global", hasProjectDir: false },
     ...over,
   };
@@ -324,6 +324,16 @@ describe("statusSegments", () => {
     assert.strictEqual(seg.code, "code mode");
     assert.match(seg.warn!, /stale · run \/init/);
     assert.strictEqual(statusSegments(baseSnapshot()).code, "");
+  });
+
+  it("shows the memory state: on/off, count, and last write (#1077)", () => {
+    assert.strictEqual(statusSegments(baseSnapshot()).memory, "memory off");
+    const empty = statusSegments(baseSnapshot({ memoryEnabled: true }));
+    assert.strictEqual(empty.memory, "memory on · no memories yet");
+    const written = statusSegments(
+      baseSnapshot({ memoryEnabled: true, memoryCount: 12, memoryLastWrite: Date.now() - 2 * 60 * 60 * 1000 }),
+    );
+    assert.match(written.memory!, /^memory on · 12 · last 2 h ago$/);
   });
 });
 

@@ -21,7 +21,7 @@ import {
   formatRecalledArtifacts,
   type SessionState,
 } from "./agent/session-state.js";
-import { ToolExecutor, ALL_TOOLS } from "./tools/executor.js";
+import { ToolExecutor, ALL_TOOLS, toolsForSession } from "./tools/executor.js";
 import type { ToolSpec } from "./tools/registry.js";
 import { McpManager } from "./mcp/manager.js";
 import { LspManager } from "./lsp/manager.js";
@@ -47,7 +47,7 @@ import { join } from "node:path";
 import { setTerminalTitle } from "./ui/terminal-title.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
@@ -312,7 +312,14 @@ function App({
 
   const cacheStableRef = useRef(initialCfg?.cacheStablePrompts !== false);
   const messagesRef = useRef<ChatMessage[]>(
-    makePrefixMessages(cacheStableRef.current, cfg?.model ?? DEFAULT_MODEL, "edit", ALL_TOOLS, cfg?.preferPullRequests),
+    makePrefixMessages(
+      cacheStableRef.current,
+      cfg?.model ?? DEFAULT_MODEL,
+      "edit",
+      toolsForSession({ memoryEnabled: cfg?.memoryEnabled }),
+      cfg?.preferPullRequests,
+      cfg?.memoryEnabled,
+    ),
   );
   const executorRef = useRef<ToolExecutor>(new ToolExecutor(ALL_TOOLS));
   const activeAsstIdRef = useRef<number | null>(null);
@@ -470,6 +477,7 @@ function App({
     if (!cfg) return;
     runStartupTasks({
       cfg,
+      setCfg,
       setEvents,
       mkKey,
       memoryManagerRef,
@@ -569,10 +577,11 @@ function App({
         role: "system",
         content: buildSessionPrefix({
           cwd: process.cwd(),
-          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          tools: toolsForSession({ memoryEnabled: cfg?.memoryEnabled, extra: [...mcpToolsRef.current, ...lspToolsRef.current] }),
           model: cfg?.model ?? DEFAULT_MODEL,
           mode,
           preferPullRequests: cfg?.preferPullRequests,
+          memoryEnabled: cfg?.memoryEnabled,
         }),
       };
     } else {
@@ -580,10 +589,11 @@ function App({
         role: "system",
         content: buildSystemPrompt({
           cwd: process.cwd(),
-          tools: [...ALL_TOOLS, ...mcpToolsRef.current, ...lspToolsRef.current],
+          tools: toolsForSession({ memoryEnabled: cfg?.memoryEnabled, extra: [...mcpToolsRef.current, ...lspToolsRef.current] }),
           model: cfg?.model ?? DEFAULT_MODEL,
           mode,
           preferPullRequests: cfg?.preferPullRequests,
+          memoryEnabled: cfg?.memoryEnabled,
         }),
       };
     }
@@ -712,7 +722,7 @@ function App({
           ...llmAuthFromConfig(cfg!),
           model: plumbingModelOf(cfg!),
           memoryManager: memoryManagerRef.current,
-          memoryEnabled: cfg!.memoryEnabled,
+          memoryEnabled: tuiMemoryEnabled(cfg!),
         }),
     });
 
@@ -1050,7 +1060,7 @@ function App({
         messages: messagesRef.current,
         sessionPlan: sessionPlanRef.current,
         memoryManager: memoryManagerRef.current,
-        memoryEnabled: cfg?.memoryEnabled,
+        memoryEnabled: tuiMemoryEnabled(cfg),
         repoPath: process.cwd(),
       });
       if (!plan) {
@@ -1602,7 +1612,7 @@ function App({
                 sessionPlanRef.current = plan;
                 // Durable backup: store the plan under a deterministic topic key
                 // so it survives /clear, executeFreshStart, or ref resets.
-                if (cfg?.memoryEnabled && memoryManagerRef.current && sessionIdRef.current) {
+                if (tuiMemoryEnabled(cfg) && memoryManagerRef.current && sessionIdRef.current) {
                   void memoryManagerRef.current.rememberPlan(plan, process.cwd(), sessionIdRef.current).catch(() => {
                     // Non-fatal: the in-session ref is the primary fast path.
                   });
@@ -1964,7 +1974,7 @@ function App({
                 // user picks an execution mode first and the session is only
                 // reset once, right before the plan is submitted.
                 sessionPlanRef.current = option.plan;
-                if (cfg?.memoryEnabled && memoryManagerRef.current && sessionIdRef.current) {
+                if (tuiMemoryEnabled(cfg) && memoryManagerRef.current && sessionIdRef.current) {
                   void memoryManagerRef.current.rememberPlan(option.plan, process.cwd(), sessionIdRef.current).catch(() => {
                     // Non-fatal: the in-session ref is the primary fast path.
                   });
@@ -2091,6 +2101,8 @@ function App({
       },
       exit,
     });
+    // Status-bar memory indicator (#1077): repo-scoped count + last write.
+    const memStats = tuiMemoryEnabled(cfg) ? memoryManagerRef.current?.getStats(process.cwd()) ?? null : null;
     bridge.sync({
       events,
       busy,
@@ -2117,7 +2129,9 @@ function App({
       queuePlan: queuePlanDraft ? { prompts: queuePlanPreview(queuePlanDraft).map((p) => p.text) } : null,
       customCommands: customCommandsRef.current.map((c) => ({ name: c.name, description: c.description })),
       currentShell: cfg?.shell ?? "auto",
-      memoryEnabled: !!cfg?.memoryEnabled,
+      memoryEnabled: tuiMemoryEnabled(cfg),
+      memoryCount: memStats?.totalCount ?? 0,
+      memoryLastWrite: memStats?.lastCreatedAt ?? null,
       customCommandDefs: customCommandsRef.current,
       commandWizard: modals.commandWizard,
       commandPickerMode: modals.commandPicker?.mode ?? null,
