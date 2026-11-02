@@ -288,17 +288,31 @@ describe("Directionally Local free tier", () => {
       assert.deepStrictEqual(waits, [5000, 10000, 15000]);
     });
 
-    for (const [code, pattern] of [
-      ["expired_token", /code expired before it was approved/],
-      ["access_denied", /declined in the browser/],
-      ["not_invited", /isn't on the Directionally Local free tier yet\. Enter an invite code/],
+    for (const [code, reason, expected] of [
+      ["expired_token", undefined, /^The sign-in code expired before it was approved/],
+      ["access_denied", undefined, /^The sign-in was declined in the browser, so nothing was saved\.$/],
+      ["access_denied", "account_too_new", /^Your GitHub account needs to be at least 30 days old for the free tier\.$/],
+      ["access_denied", "device_taken", /^This device already has a free allowance under another GitHub account; sign in with that account instead\.$/],
+      ["access_denied", "something_new", /^The sign-in was declined in the browser/],
+      ["not_invited", undefined, /isn't on the Directionally Local free tier yet\. Enter an invite code/],
     ] as const) {
-      it(`ends the sign-in on ${code} with a plain sentence`, async () => {
-        stub.tokenReplies = [{ status: 400, body: { error: { code } } }];
+      it(`ends the sign-in on ${code}${reason ? ` (${reason})` : ""} with one plain sentence`, async () => {
+        stub.tokenReplies = [{ status: 400, body: { error: { code, message: "service wording", ...(reason ? { reason } : {}) } } }];
         const c = await startDlDeviceFlow();
-        await assert.rejects(pollDlDeviceFlow(c, { sleep: noSleep }), (e: unknown) => e instanceof DlError && e.code === code && pattern.test(e.message));
+        await assert.rejects(pollDlDeviceFlow(c, { sleep: noSleep }), (e: unknown) => e instanceof DlError && e.code === code && expected.test(e.message) && !e.message.includes("\n"));
       });
     }
+
+    it("keeps polling while the person types an invite code (authorization_pending)", async () => {
+      stub.tokenReplies = [
+        { status: 400, body: { error: { code: "authorization_pending" } } },
+        { status: 400, body: { error: { code: "authorization_pending" } } },
+        { status: 400, body: { error: { code: "authorization_pending" } } },
+        { status: 200, body: { access_token: "at-inv", refresh_token: "rt", expires_in: 3600 } },
+      ];
+      const c = await startDlDeviceFlow();
+      assert.strictEqual((await pollDlDeviceFlow(c, { sleep: noSleep })).access_token, "at-inv");
+    });
 
     it("gives up when the code's lifetime runs out", async () => {
       let t = 0;
@@ -375,7 +389,7 @@ describe("Directionally Local free tier", () => {
           "  resets          Mon, Nov 9, 00:00 UTC (in 5 days)",
         ].join("\n"),
       );
-      assert.match(renderDlUsage(me({ usedThisWeek: 50_000_000, remaining: 0 }), NOW), /used up\. To keep going now, switch provider with \/model or `autopilot connect`/);
+      assert.match(renderDlUsage(me({ usedThisWeek: 50_000_000, remaining: 0 }), NOW), /You've used this week's free tokens\. To keep going now, switch provider with \/model or `autopilot connect`/);
     });
 
     it("reads GET /v1/me for /usage on the free tier, and points elsewhere on other providers", async () => {
@@ -415,8 +429,12 @@ describe("Directionally Local free tier", () => {
     it("has a plain sentence for each service error", () => {
       assert.strictEqual(
         describeDlError("quota_exceeded", { resetsAt: "2026-11-09T00:00:00.000Z", now: NOW }),
-        "You've used all of this week's free Directionally Local tokens. They reset Mon, Nov 9, 00:00 UTC (in 5 days). To keep going now, switch provider with /model or `autopilot connect`.",
+        "You've used this week's free tokens. It resets Mon, Nov 9, 00:00 UTC (in 5 days). To keep going now, switch provider with /model or `autopilot connect`.",
       );
+      assert.match(describeDlError("quota_exceeded", { reason: "tokens", resetsAt: "2026-11-09T00:00:00.000Z", now: NOW })!, /^You've used this week's free tokens\. It resets/);
+      assert.match(describeDlError("quota_exceeded", { reason: "spend", resetsAt: "2026-11-09T00:00:00.000Z", now: NOW })!, /^You've reached this week's free usage limit\. It resets Mon, Nov 9/);
+      assert.match(describeDlError("service_paused", { reason: "ended" })!, /free tier has ended/);
+      assert.match(describeDlError("service_paused", { reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z", now: NOW })!, /budget for this week is used up; it resumes Mon, Nov 9/);
       assert.match(describeDlError("not_invited")!, /isn't on the Directionally Local free tier yet/);
       assert.match(describeDlError("suspended")!, /account is suspended/);
       assert.strictEqual(describeDlError("rate_limited", { retryAfter: 12 }), "Directionally Local is limiting how fast you send requests; try again in 12 seconds.");
@@ -426,7 +444,8 @@ describe("Directionally Local free tier", () => {
     });
 
     const cases: Array<[number, unknown, RegExp, number]> = [
-      [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z" } }, /used all of this week's free Directionally Local tokens\. They reset Mon, Nov 9, 00:00 UTC.*\/model or `autopilot connect`/, 1],
+      [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "tokens" } }, /You've used this week's free tokens\. It resets Mon, Nov 9, 00:00 UTC.*\/model or `autopilot connect`/, 1],
+      [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "spend" } }, /You've reached this week's free usage limit\. It resets Mon, Nov 9, 00:00 UTC/, 1],
       [403, { error: { code: "not_invited" } }, /isn't on the Directionally Local free tier yet/, 1],
       [403, { error: { code: "suspended" } }, /account is suspended/, 1],
       [503, { error: { code: "service_paused" } }, /free tier is paused right now/, 1],
@@ -441,6 +460,19 @@ describe("Directionally Local free tier", () => {
         assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, calls);
       });
     }
+
+    it("/usage names the limit that was hit: tokens or spend", async () => {
+      const resetsAt = "2026-11-09T00:00:00.000Z";
+      assert.match(renderDlUsage(me({ usedThisWeek: 50_000_000, remaining: 0 }), NOW), /\n  You've used this week's free tokens\. To keep going now/);
+      assert.match(renderDlUsage(me({ usdPerWeek: 5, spentUsdThisWeek: 5 }), NOW), /\n  You've reached this week's free usage limit\. To keep going now/);
+      assert.ok(!/limit|free tokens\./.test(renderDlUsage(me({ usdPerWeek: 5, spentUsdThisWeek: 1 }), NOW)));
+      // A 402 with reason "spend" seen this week shows up in /usage too.
+      await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+      stub.chatReplies = [{ status: 402, body: { error: { code: "quota_exceeded", resetsAt, reason: "spend" } } }];
+      await assert.rejects(drain(llmAuthFromConfig(await readCfg())), /free usage limit/);
+      assert.match(renderDlUsage(me(), NOW), /You've reached this week's free usage limit\./);
+      assert.ok(!/usage limit/.test(renderDlUsage(me({ resetsAt: "2026-11-16T00:00:00.000Z" }), NOW)), "not after the week resets");
+    });
 
     it("retries a 429 rate_limited after retryAfter, then says when to try again", async () => {
       await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
