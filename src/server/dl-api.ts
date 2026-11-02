@@ -16,9 +16,10 @@ import { serverEnv } from "./dl-compat.js";
 import { DlConfigError, findDlWorkspace, loadDlServerConfig, type DlProviderConfig } from "./dl-workspaces.js";
 import { isSelectableModel, modelsResponse } from "./dl-models.js";
 import type { DlArtifact, DlCellProject } from "./dl-cell-runtime.js";
-import { DlGitHub, DlGitHubError, REPOSITORY_FULL_NAME_RE } from "./dl-github.js";
+import { DlGitHub, DlGitHubError, REPOSITORY_FULL_NAME_RE, type DlCommit } from "./dl-github.js";
 import { DlMemory } from "./dl-memory.js";
 import { DlGitHubProxy, createDlGitHubGrantToken } from "./dl-github-proxy.js";
+import { finalAssistantMessage, pullRequestBody, pullRequestTitle, type DlTurnEvent } from "./dl-pull-request.js";
 import { DlPush } from "./dl-push.js";
 import { handleDlPairing, PairingRequestError } from "./dl-pairing.js";
 import { containsLikelyProviderSecret, createDlTools, findLikelyProviderSecret, redactLikelySecrets, assertDlCellPath } from "./dl-tools.js";
@@ -940,8 +941,18 @@ export class DlApi {
           const current = store.getConversation(conversation.id);
           if (current?.pullRequestNumber && current.pullRequestURL) return;
           const repository = await this.github.getRepository(codeProject.repository!);
-          const summary = collectAssistantText(store, conversation.id, runId, turnStartSequence).trim().slice(0, 10_000) || text;
-          const title = text.replace(/\s+/g, " ").trim().slice(0, 80) || `Changes for ${codeProject.repository}`;
+          // The branch's own commits name the change; the prompt is only the fallback.
+          let commits: DlCommit[] = [];
+          try {
+            commits = await this.github.compareCommits(codeProject.repository!, repository.defaultBranch, codeProject.branch!);
+          } catch { /* any lookup failure falls back to the prompt-derived title */ }
+          const title = pullRequestTitle(commits, text.replace(/\s+/g, " ").trim().slice(0, 80) || `Changes for ${codeProject.repository}`);
+          const summary = pullRequestBody({
+            repository: codeProject.repository!,
+            prompt: text,
+            finalMessage: finalAssistantMessage(turnEvents(store, conversation.id, turnStartSequence), runId),
+            commits,
+          });
           const pullRequest = await this.github.createPullRequest(codeProject.repository!, {
             title,
             body: summary,
@@ -1328,6 +1339,17 @@ function parseCursor(header: string | string[] | undefined, query: string | null
   if (!/^\d{1,16}$/.test(value)) return undefined;
   const cursor = Number(value);
   return Number.isSafeInteger(cursor) ? cursor : undefined;
+}
+
+/** Every journaled event of a conversation after a sequence number, read in pages. */
+function* turnEvents(store: DlStore, conversationId: string, after: number): Generator<DlTurnEvent> {
+  let cursor = after;
+  for (;;) {
+    const events = store.eventsAfter(conversationId, cursor, 500);
+    if (events.length === 0) return;
+    yield* events;
+    cursor = events.at(-1)!.sequence;
+  }
 }
 
 /** The assistant's streamed reply for one run, rebuilt from its journaled deltas. */

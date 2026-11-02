@@ -50,6 +50,21 @@ describe("dl server GitHub REST client", () => {
     assert.equal(calls[0]?.authorization, "Bearer placeholder-github-token");
   });
 
+  it("lists the head branch's commits that are not on the base, oldest first", async () => {
+    const client = new DlGitHub("placeholder-github-token", async (input) => {
+      assert.equal(String(input), "https://api.github.com/repos/me/app/compare/main...dl%2Fabc12345?per_page=250");
+      return Response.json({ commits: [
+        { sha: "a1", commit: { message: "feat: add sessions\n\nBody" }, parents: [{}] },
+        { sha: "b2", commit: { message: "Merge branch 'main'" }, parents: [{}, {}] },
+      ] });
+    });
+    assert.deepEqual(await client.compareCommits("me/app", "main", "dl/abc12345"), [
+      { sha: "a1", message: "feat: add sessions\n\nBody", merge: false },
+      { sha: "b2", message: "Merge branch 'main'", merge: true },
+    ]);
+    await assert.rejects(client.compareCommits("me/app", "main", "../x"), (error: unknown) => error instanceof DlGitHubError && error.code === "invalid_ref");
+  });
+
   it("lists check runs for a repository ref", async () => {
     const client = new DlGitHub("placeholder-github-token", async (input) => {
       assert.equal(String(input), "https://api.github.com/repos/me/app/commits/dl%2Fabc12345/check-runs?per_page=100");

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { AutopilotConfig } from "../config.js";
-import { DlGitHub, DlGitHubError } from "./dl-github.js";
+import { DlGitHub, DlGitHubError, type DlCommit } from "./dl-github.js";
 import { DlApi, type DlTurnStart } from "./dl-api.js";
 import { DlStore } from "./dl-store.js";
 import type { DlPushMessage } from "./dl-push.js";
@@ -432,6 +432,54 @@ describe("dl server control-plane API", () => {
     } finally {
       await harness.close();
     }
+  });
+
+  async function openCodePullRequest(
+    options: { commits?: DlCommit[] | "fail"; turnEvents?: Array<{ type: string; data: Record<string, unknown> }> },
+    text: string,
+  ): Promise<{ title: string; body: string }> {
+    const harness = await createHarness("complete", options);
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", {
+        workspaceId: "default", model: "test/model", kind: "code", repository: "me/app",
+      });
+      const conversation = await created.json() as { conversationId: string };
+      const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, {
+        clientTurnId: "code-turn-1", text,
+      });
+      assert.equal(turn.status, 202);
+      await waitForStatus(harness, conversation.conversationId, "completed");
+      assert.equal(harness.pullRequestCreates.length, 1);
+      const { title, body } = harness.pullRequestCreates[0]!;
+      return { title, body };
+    } finally {
+      await harness.close();
+    }
+  }
+
+  it("titles a code PR from the branch's commits and describes it with the final message only", async () => {
+    const pull = await openCodePullRequest({
+      commits: [
+        { sha: "a1", message: "Scaffold the command", merge: false },
+        { sha: "b2", message: "feat: dl sessions lists every conversation with its state\n\nAdds a state column.", merge: false },
+      ],
+      turnEvents: [
+        { type: "assistant.delta", data: { text: "I'll start by reading the roadmap" } },
+        { type: "tool.activity", data: { tool: "read", activity: "started" } },
+        { type: "tool.activity", data: { tool: "read", activity: "completed" } },
+        { type: "assistant.delta", data: { text: "issue." } },
+        { type: "tool.activity", data: { tool: "bash", activity: "started" } },
+        { type: "tool.activity", data: { tool: "bash", activity: "completed" } },
+      ],
+    }, "Resolve GitHub issue https://github.com/me/app/issues/49 and make dl sessions list every conversation");
+    assert.equal(pull.title, "feat: dl sessions lists every conversation with its state");
+    assert.equal(pull.body, "reply-1\n\nResolves #49");
+  });
+
+  it("falls back to the prompt title and commit-less body when the commit lookup fails", async () => {
+    const pull = await openCodePullRequest({ commits: "fail" }, "Implement   the\nfeature");
+    assert.equal(pull.title, "Implement the feature");
+    assert.equal(pull.body, "reply-1");
   });
 
   it("makes turn submissions idempotent across concurrent retries and busy responses", async () => {
@@ -951,7 +999,7 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function createHarness(mode: "complete" | "hang" | "approval" | "fail", options: { openRouterCatalog?: boolean; pushConfigured?: boolean; provider?: { id: string; models: string[] } } = {}): Promise<Harness> {
+async function createHarness(mode: "complete" | "hang" | "approval" | "fail", options: { openRouterCatalog?: boolean; pushConfigured?: boolean; provider?: { id: string; models: string[] }; commits?: DlCommit[] | "fail"; turnEvents?: Array<{ type: string; data: Record<string, unknown> }> } = {}): Promise<Harness> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "autopilot-dl-api-")));
   tempDirs.push(root);
   const workspaceRoot = join(root, "workspace");
@@ -1047,6 +1095,10 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
       pullRequestCreates.push({ repository, ...input });
       return { number: 42, url: `https://github.com/${repository}/pull/42`, title: input.title, state: "open", headBranch: input.head, baseBranch: input.base, merged: false };
     },
+    compareCommits: async () => {
+      if (options.commits === "fail") throw new DlGitHubError("GitHub could not be reached", 502, "github_unreachable");
+      return options.commits ?? [];
+    },
     listChecks: async (_repository: string, ref: string) => {
       pullRequestChecks.push(ref);
       return [{ id: 7, name: "CI", status: "completed", conclusion: "success", url: null }];
@@ -1068,7 +1120,7 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     resumeCell: async (cellId) => { resumedCells.push(cellId); },
     startTurn: (turn) => {
       turns.push(turn);
-      if (mode === "complete") void completeTurn(turn, `reply-${turns.length}`);
+      if (mode === "complete") void completeTurn(turn, `reply-${turns.length}`, options.turnEvents);
       else if (mode === "approval") void approveWriteTurn(turn, permissionDecisions);
       else if (mode === "fail") void failTurn(turn);
     },
@@ -1159,7 +1211,7 @@ async function failTurn(turn: DlTurnStart): Promise<void> {
   turn.finish("failed", "test_failure");
 }
 
-async function completeTurn(turn: DlTurnStart, text: string): Promise<void> {
+async function completeTurn(turn: DlTurnStart, text: string, before: Array<{ type: string; data: Record<string, unknown> }> = []): Promise<void> {
   turn.messages.push({ role: "assistant", content: text });
   turn.sessionFile.messages = turn.messages;
   turn.sessionFile.updatedAt = new Date().toISOString();
@@ -1170,6 +1222,7 @@ async function completeTurn(turn: DlTurnStart, text: string): Promise<void> {
   } finally {
     runs.close();
   }
+  for (const event of before) turn.publishEvent(event.type, event.data);
   turn.publishEvent("assistant.delta", { delta: text });
   await turn.beforeFinish?.();
   turn.finish("completed");

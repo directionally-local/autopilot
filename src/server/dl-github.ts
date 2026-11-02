@@ -31,6 +31,13 @@ export interface DlCheckRun {
   url: string | null;
 }
 
+/** One commit on a compared branch: its full message (subject and body) and whether it is a merge. */
+export interface DlCommit {
+  sha: string;
+  message: string;
+  merge: boolean;
+}
+
 export class DlGitHubError extends Error {
   constructor(message: string, readonly status: number, readonly code: string) {
     super(message);
@@ -68,6 +75,10 @@ interface RawPullRequest {
 
 interface RawCheckRuns {
   check_runs: Array<{ id: number; name: string; status: string; conclusion: string | null; html_url?: string | null }>;
+}
+
+interface RawCompare {
+  commits?: Array<{ sha: string; commit?: { message?: string }; parents?: unknown[] }>;
 }
 
 export class DlGitHub {
@@ -123,6 +134,21 @@ export class DlGitHub {
       base: input.base,
     });
     return mapPullRequest(raw);
+  }
+
+  /** Commits on `head` that are not on `base`, oldest first (GitHub's compare API). */
+  async compareCommits(repository: string, base: string, head: string): Promise<DlCommit[]> {
+    this.validateRepository(repository);
+    if (!isValidBranch(base) || !isValidBranch(head)) throw new DlGitHubError("Invalid branch", 400, "invalid_ref");
+    const raw = await this.request<RawCompare>(
+      "GET",
+      `/repos/${repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=250`,
+    );
+    return (raw.commits ?? []).map((commit) => ({
+      sha: commit.sha,
+      message: commit.commit?.message ?? "",
+      merge: (commit.parents?.length ?? 0) > 1,
+    }));
   }
 
   async getPullRequest(repository: string, number: number): Promise<DlPullRequest> {
