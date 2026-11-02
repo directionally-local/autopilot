@@ -7,6 +7,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve, basename } from "node:path";
+import { getHerdrReporter } from "./util/herdr.js";
 import { runAgentTurn, BudgetExhaustedError, AgentLoopError } from "./agent/loop.js";
 import type { AgentCallbacks } from "./agent/loop.js";
 import { llmAuthFromConfig } from "./agent/llm-auth.js";
@@ -465,6 +466,12 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       return "deny";
     },
   };
+
+  // herdr pane state (#1103): working until exit, when the shutdown tasks
+  // release the pane. A no-op outside herdr.
+  const herdr = getHerdrReporter();
+  herdr?.setSummary(opts.prompt);
+  herdr?.report("working", { sessionId: sessionFile.id });
 
   try {
     await runAgentTurn(assembleTurn({ cfg: opts, policy, host: {

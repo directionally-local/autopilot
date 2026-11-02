@@ -464,6 +464,17 @@ A message you send mid-turn is triaged instead of always waiting in line:
 
 Clear phrasing is decided instantly; ambiguous messages get a quick model check (OpenRouter only), and anything uncertain is queued. Use `/subagents cancel <n>` to stop a single subagent.
 
+## Running inside herdr
+
+[herdr](https://github.com/herdrdev/herdr) is a terminal multiplexer for coding agents. Run `autopilot` (or `autopilot -p "…"`) in a herdr pane and it reports its own state there, so herdr doesn't have to guess from the screen:
+
+- `working` while a turn runs, `blocked` while a permission prompt or a plan choice waits on you, `idle` when Autopilot is ready for your next message;
+- the first line of the current task as the `summary` token (use `$summary` in herdr's Agent sidebar rows);
+- the command that reopens the conversation (`autopilot --session <id>`, or `autopilot --continue` before the first message), so the pane comes back in the same session after a herdr server restart;
+- a release of the pane when Autopilot exits.
+
+There is nothing to install or configure: Autopilot reports when `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` (or `HERDR_BIN_PATH`) are set, which herdr does for every pane, and does nothing otherwise. Reports go over herdr's socket API (falling back to the `herdr` CLI), run in the background with a 500 ms timeout, and never hold up the agent; a failure is logged once (`herdr.report_failed`). An Autopilot started from inside another one in the same pane leaves the reporting to the outer one. Check what herdr sees with `herdr agent list`. Remote sessions (`autopilot --on <server>`, the dl server) don't report.
+
 ## Logs
 
 autopilot writes structured JSON logs of agent-side activity (tool calls,
