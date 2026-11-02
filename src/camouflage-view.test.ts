@@ -4,7 +4,9 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View } from "./camouflage-view.js";
+import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
+import type { ChatEvent } from "./ui/view-types.js";
 import { listModels } from "./models/registry.js";
 import { bashTool } from "./tools/bash.js";
 import { jobStartTool } from "./tools/jobs.js";
@@ -189,10 +191,12 @@ async function fakeView(answers: { permission?: { choice: "allow_once" | "allow_
   const { View } = await import("./camouflage-view.js");
   const sent: Sent[] = [];
   const prompts: Sent[] = [];
-  const cam = { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 };
+  const cam = attachLifecycle(
+    { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 },
+    { permission: async (spec) => (prompts.push({ type: "permission", payload: spec }), answers.permission!.shift()!) },
+  );
   const sdk = {
     mount: async () => cam,
-    permission: async (_c: unknown, spec: Record<string, unknown>) => (prompts.push({ type: "permission", payload: spec }), answers.permission!.shift()!),
     selectList: async (_c: unknown, spec: Record<string, unknown>) => {
       prompts.push({ type: "select", payload: spec });
       const value = answers.select!.shift();
@@ -340,7 +344,7 @@ describe("statusSegments", () => {
 describe("Camouflage jobs database unavailable", () => {
   function bareView(openJobs?: () => never) {
     const sent: Sent[] = [];
-    const cam = { send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 };
+    const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 });
     const view = new View(cam as never, {} as never, openJobs ? { openJobs } : {});
     view.connect(new Proxy({}, { get: () => () => undefined }) as AppActions);
     return { view, sent };
@@ -382,5 +386,43 @@ describe("Camouflage jobs database unavailable", () => {
       if (previous === undefined) delete process.env.AUTOPILOT_JOBS_DB;
       else process.env.AUTOPILOT_JOBS_DB = previous;
     }
+  });
+});
+
+describe("Camouflage lifecycle auto-settle", () => {
+  const openTurn: ChatEvent[] = [
+    { kind: "assistant", key: "a1", id: 1, text: "half a reply", reasoning: "", streaming: true },
+    { kind: "tool", key: "t1", id: "t1", name: "bash", args: "{}", status: "running" },
+  ];
+
+  it("settles a stream and a tool the run left open when the turn ends", async () => {
+    const { view, sent } = await fakeView({});
+    const types = () => sent.map((s) => s.type);
+
+    view.sync(baseSnapshot({ turnRunning: true, busy: true, events: openTurn }));
+    assert.ok(types().includes("AssistantStreamStarted"), "the stream is announced");
+    assert.ok(types().includes("ToolExecutionStarted"), "the tool is announced");
+    assert.ok(!types().includes("AssistantMessageCompleted"), "still streaming");
+
+    // The run ends without ever finishing them — the forgotten-finish bug
+    // that used to leave the renderer's spinner running forever.
+    view.sync(baseSnapshot({ turnRunning: false, busy: false, events: openTurn }));
+    assert.ok(types().includes("AssistantMessageCompleted"), "open stream settles when the turn ends");
+    assert.ok(types().includes("ToolExecutionFinished"), "open tool settles when the turn ends");
+
+    // Settling is once-only: another idle snapshot doesn't repeat it.
+    const before = types().filter((t) => t === "AssistantMessageCompleted").length;
+    view.sync(baseSnapshot({ turnRunning: false, busy: false, events: openTurn }));
+    assert.equal(types().filter((t) => t === "AssistantMessageCompleted").length, before, "no duplicate settle");
+    view.dispose();
+  });
+
+  it("leaves a permission prompt alone while the app is idle", async () => {
+    const { view, prompts, calls } = await fakeView({ permission: [{ choice: "allow_once" }] });
+    view.sync(baseSnapshot({ permission }));
+    await settle();
+    assert.strictEqual(prompts[0]?.type, "permission", "the prompt is up");
+    assert.deepStrictEqual(calls, [["decidePermission", "allow"]], "the answer still lands");
+    view.dispose();
   });
 });

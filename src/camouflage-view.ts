@@ -70,15 +70,20 @@ import { workerRegistry, type RunningWorker } from "./tools/worker-registry.js";
 import { CamouflageCrashed, CamouflageUnavailable, diagnoseRenderer, mountFailureReason, rendererBlocker } from "./camouflage-launch.js";
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
+// The SDK's lifecycle types — imported, never re-declared, so this glue can't
+// drift from camouflage-tui (2.12.0+).
+import type { StreamHandle, ToolHandle, Turn } from "camouflage-tui";
 
 interface CamouflageHandle {
   send(eventType: string, payload?: Record<string, unknown>): boolean;
+  /** camouflage-tui 2.12.0+: open a turn whose handles auto-settle. */
+  turn(opts?: { id?: string }): Turn;
   on(event: string, listener: (...args: any[]) => void): this;
   close(): Promise<number>;
 }
+
 interface CamouflageSdk {
   mount(opts: Record<string, unknown>): Promise<CamouflageHandle>;
-  permission(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ choice: "allow_once" | "allow_session" | "deny"; feedback?: string }>;
   selectList(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ id: string; value?: string; cancelled: boolean }>;
   confirm(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ id: string; value?: boolean; cancelled: boolean }>;
   form(cam: CamouflageHandle, spec: Record<string, unknown>): Promise<{ id: string; values?: Record<string, string>; cancelled: boolean }>;
@@ -104,7 +109,7 @@ async function loadSdk(): Promise<CamouflageSdk> {
   const sdk = (await import("camouflage-tui").catch((err) => {
     throw unavailable(`camouflage-tui could not be loaded (${(err as Error).message})`);
   })) as unknown as Partial<CamouflageSdk>;
-  if (typeof sdk.permission !== "function" || typeof sdk.mount !== "function" || typeof sdk.selectList !== "function") {
+  if (typeof sdk.mount !== "function" || typeof sdk.selectList !== "function") {
     throw unavailable("the installed camouflage-tui is too old");
   }
   return sdk as CamouflageSdk;
@@ -220,6 +225,12 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   } catch (err) {
     restoreConsole();
     throw unavailable(mountFailureReason((err as Error).message));
+  }
+  if (typeof cam.turn !== "function") {
+    // The lifecycle API is what keeps a forgotten finish event from wedging
+    // the renderer's spinner; without it this integration would be guessing.
+    restoreConsole();
+    throw unavailable("the installed camouflage-tui is too old (the lifecycle API needs 2.12.0 or newer)");
   }
   const renderer = rendererInfo();
   logger.info("camouflage.renderer", { ...renderer });
@@ -417,6 +428,12 @@ export class View implements AppBridge {
   private activityDetailId: string | null = null;
   private activityPoll: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
+  /** The turn the current run's handles belong to; null while the app is idle. */
+  private turn: Turn | null = null;
+  /** Assistant streams still open, keyed by ChatEvent.key. */
+  private readonly streams = new Map<string, StreamHandle>();
+  /** Tools still running, keyed by ChatEvent.key. */
+  private readonly tools = new Map<string, ToolHandle>();
 
   constructor(
     private cam: CamouflageHandle,
@@ -467,6 +484,27 @@ export class View implements AppBridge {
     });
   }
 
+  /** The current run's turn, opened on first use: everything under it settles together. */
+  private ensureTurn(): Turn {
+    return (this.turn ??= this.cam.turn());
+  }
+
+  /**
+   * Settle whatever the run left open — streams that never completed and
+   * tools that never finished. The renderer keeps its spinner while any
+   * entry is open (`is_busy()`), which is how a forgotten finish event used
+   * to wedge the UI. `phase: null`: the footer's phase belongs to
+   * statusSegments(), which already sends "idle" when the App goes quiet.
+   *
+   * Handles stay in their maps, settled, so an idle snapshot that keeps
+   * reporting the same open event doesn't re-announce a stream the renderer
+   * has already finished; the maps are dropped with the transcript itself.
+   */
+  private endTurn(): void {
+    this.turn?.end({ phase: null });
+    this.turn = null;
+  }
+
   sync(s: AppSnapshot): void {
     this.busy = s.turnRunning;
     this.sessionId = s.sessionId;
@@ -488,6 +526,9 @@ export class View implements AppBridge {
     this.syncPermission(s);
     this.syncPrompts(s);
     this.syncActivity(s.workers);
+    // Nothing is running: settle anything the run left open. Skipped while a
+    // permission prompt is up — the user may still answer it.
+    if (!s.turnRunning && !s.permission) this.endTurn();
   }
 
   /** Built-in plus the user's custom commands, re-sent when they change. */
@@ -529,6 +570,7 @@ export class View implements AppBridge {
 
   dispose(): void {
     this.disposed = true;
+    this.endTurn();
     if (this.activityPoll) clearInterval(this.activityPoll);
     this.activityPoll = null;
     this.jobsManager?.close();
@@ -659,6 +701,10 @@ export class View implements AppBridge {
     if (events.length < this.settled || (this.firstKey !== undefined && events[0]?.key !== this.firstKey)) {
       this.cam.send("TranscriptCleared", {});
       this.sent.clear();
+      // New transcript, new handles: the old ones are settled and their
+      // renderer-side entries are gone with the clear.
+      this.streams.clear();
+      this.tools.clear();
       this.settled = 0;
     }
     this.firstKey = events[0]?.key;
@@ -686,26 +732,27 @@ export class View implements AppBridge {
         return this.mark(e.key, 0, true);
       }
       case "assistant": {
-        if (!prev) this.cam.send("AssistantStreamStarted", { stream_id: e.key });
+        const stream = this.streamFor(e.key);
         // Reasoning streams first; the renderer shows it on Ctrl+R.
         const thought = this.reasoningSent.get(e.key) ?? 0;
         if (e.reasoning.length > thought) {
-          this.cam.send("AssistantReasoningDelta", { stream_id: e.key, token: e.reasoning.slice(thought) });
+          stream.reasoning(e.reasoning.slice(thought));
           this.reasoningSent.set(e.key, e.reasoning.length);
         }
         const already = prev?.text ?? 0;
         if (e.text.length > already && e.text.startsWith(e.text.slice(0, already))) {
-          this.cam.send("AssistantTokenDelta", { stream_id: e.key, token: e.text.slice(already) });
+          stream.write(e.text.slice(already));
         }
         if (!e.streaming) {
           this.reasoningSent.delete(e.key);
-          this.cam.send("AssistantMessageCompleted", { stream_id: e.key, text: e.text });
+          stream.end({ text: e.text });
+          this.streams.delete(e.key);
           return this.mark(e.key, e.text.length, true);
         }
         return this.mark(e.key, e.text.length, false);
       }
       case "tool":
-        return this.syncTool(e, prev);
+        return this.syncTool(e);
       case "info":
       case "memory":
         if (e.kind === "info" && !shouldSendSubagentPolicyNotice(e.text, this.sentSubagentPolicyNotices)) {
@@ -726,24 +773,36 @@ export class View implements AppBridge {
     }
   }
 
-  private syncTool(e: { key: string } & ToolEventState, prev: { text: number; done: boolean } | undefined): boolean {
-    if (!prev) {
+  /** The stream handle for an assistant event, opened on first sight. */
+  private streamFor(key: string): StreamHandle {
+    let stream = this.streams.get(key);
+    if (!stream) {
+      stream = this.ensureTurn().stream({ id: key });
+      this.streams.set(key, stream);
+    }
+    return stream;
+  }
+
+  private syncTool(e: { key: string } & ToolEventState): boolean {
+    let tool = this.tools.get(e.key);
+    if (!tool) {
       const { label, args } = toolRow(e.name, e.render?.title, e.args, process.stdout.columns);
-      this.cam.send("ToolExecutionStarted", { tool_id: e.key, tool: label, command: args, started_at_ms: e.startedAt });
+      tool = this.ensureTurn().tool({ id: e.key, name: label, args, started_at_ms: e.startedAt });
+      this.tools.set(e.key, tool);
     }
     if (e.status === "queued" || e.status === "running") return this.mark(e.key, 0, false);
     const ok = e.status === "done";
     const content = e.result ?? "";
     const bang = splitBangResult(e.render?.title, content);
     const output = e.status === "rejected" ? "" : bang.output;
-    this.cam.send("ToolExecutionFinished", {
-      tool_id: e.key,
+    tool.finish({
       exit_code: bang.exitCode ?? (ok ? 0 : 1),
       status: e.status === "rejected" ? "rejected" : e.status === "cancelled" ? "cancelled" : ok ? "done" : "error",
       summary: bang.status ?? toolSummary(e.name, ok, e.status === "rejected", output),
       output: e.status === "rejected" ? "" : toolOutputWithCommand(output, shellCommandArg(e.name, e.args)),
       ...(ok && e.render?.diff ? { diff: e.render.diff } : {}),
     });
+    this.tools.delete(e.key);
     return this.mark(e.key, 0, true);
   }
 
@@ -790,8 +849,8 @@ export class View implements AppBridge {
       render = undefined;
     }
     const cancelsBefore = this.cancels;
-    void this.sdk
-      .permission(this.cam, {
+    void this.ensureTurn()
+      .permission({
         request_id: `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         tool: tool.name,
         action: render?.title ?? tool.name,
