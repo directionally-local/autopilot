@@ -10,6 +10,9 @@ import {
   insertMemory,
   searchMemoriesFts,
   deleteOldMemories,
+  deleteExpiredTasks,
+  getMemoryById,
+  supersedeMemory,
   getMemoryStats,
   recordRecall,
   getRecallStats,
@@ -173,5 +176,69 @@ describe("memory db", () => {
     assert.strictEqual(rows[0]!.repoPath, "/repo/alpha");
     assert.ok(!("embedding" in rows[0]!), "export must not carry embeddings");
     assert.ok(listMemoriesForExport(db).length >= 4, "unscoped export covers the whole DB");
+  });
+
+  it("dedups identical content by hash and keeps categories separate (#1074)", () => {
+    const base = {
+      content: "Shared content for hash dedup.",
+      sourceSessionId: "s1",
+      repoPath: "/repo/hashdedup",
+      importance: 3,
+    };
+    const first = insertMemory(db, { ...base, category: "fact" }, ZERO);
+    const again = insertMemory(db, { ...base, category: "fact" }, ZERO);
+    assert.strictEqual(again.id, first.id, "re-ingestion returns the stored row");
+
+    const otherCategory = insertMemory(db, { ...base, category: "event" }, ZERO);
+    assert.notStrictEqual(otherCategory.id, first.id, "category is part of the hash");
+
+    const rows = db
+      .prepare("SELECT COUNT(*) AS n FROM memories WHERE repo_path = ?")
+      .get("/repo/hashdedup") as { n: number };
+    assert.strictEqual(rows.n, 2, "one row per (content, category, repo)");
+  });
+
+  it("hashes absolute and relative paths to the same content (#1074)", () => {
+    const input = {
+      category: "event" as const,
+      sourceSessionId: "s1",
+      repoPath: "/repo/pathy",
+      importance: 2,
+    };
+    const abs = insertMemory(db, { ...input, content: "File modified: /repo/pathy/src/a.ts." }, ZERO);
+    const rel = insertMemory(db, { ...input, content: "File modified: src/a.ts." }, ZERO);
+    assert.strictEqual(rel.id, abs.id, "repo root is stripped before hashing");
+  });
+
+  it("lets superseded content be written again (#1074)", () => {
+    const input = {
+      content: "Revivable content.",
+      category: "fact" as const,
+      sourceSessionId: "s1",
+      repoPath: "/repo/revive",
+      importance: 3,
+    };
+    const first = insertMemory(db, input, ZERO);
+    supersedeMemory(db, first.id, "some-later-row");
+    const second = insertMemory(db, input, ZERO);
+    assert.notStrictEqual(second.id, first.id, "only live rows block re-ingestion");
+  });
+
+  it("expires task rows after their TTL (#1074)", () => {
+    const stale = insertMemory(
+      db,
+      { content: "Stale plan", category: "task", sourceSessionId: "s1", repoPath: "/repo/taskttl", importance: 4, topicKey: "stale_plan" },
+      ZERO,
+    );
+    const fresh = insertMemory(
+      db,
+      { content: "Fresh plan", category: "task", sourceSessionId: "s1", repoPath: "/repo/taskttl", importance: 4, topicKey: "fresh_plan" },
+      ZERO,
+    );
+    db.prepare("UPDATE memories SET created_at = ? WHERE id = ?").run(Date.now() - 25 * 60 * 60 * 1000, stale.id);
+
+    assert.strictEqual(deleteExpiredTasks(db), 1);
+    assert.strictEqual(getMemoryById(db, stale.id), null, "stale task removed");
+    assert.ok(getMemoryById(db, fresh.id), "recent task survives");
   });
 });
