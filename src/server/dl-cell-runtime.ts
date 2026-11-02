@@ -175,8 +175,9 @@ export class DlHotcellRuntime implements DlApiRuntime {
   private async modelInfo(model: string): Promise<ModelEntry | undefined> {
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<undefined>((resolve) => {
+      // Not unref'd: a caller is waiting on this, and the lookup alone may hold nothing
+      // that keeps the event loop alive. finally clears it as soon as the race settles.
       timer = setTimeout(() => resolve(undefined), this.modelInfoTimeoutMs);
-      timer.unref();
     });
     try {
       return await Promise.race([this.modelInfoLookup(model).catch(() => undefined), timeout]);
