@@ -15,9 +15,11 @@ import { fuzzyFilter } from "../util/fuzzy.js";
 import { getPreset, type ProviderId } from "./presets.js";
 import { detectEnvProviders, resolveActiveProvider, resolveProviderKey } from "./resolve.js";
 import { checkProviderKey, patchProviderSettings, saveProviderKey, switchProvider } from "./keys.js";
+import { DL_DISCLOSURE, DL_FREE_MODEL, DL_FREE_WEEKLY_TOKENS, dlNotFreeLine, dlPickerHint, formatTokens, type DlDeviceCode } from "./directionally-local.js";
 
 /** Every provider we offer, in order, with a one-line hint. */
 export const PROVIDER_CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
+  { id: "directionally-local", hint: dlPickerHint() },
   { id: "openrouter", hint: "recommended — hundreds of models with one account" },
   { id: "anthropic", hint: "Claude models with an Anthropic API key" },
   { id: "openai", hint: "GPT models with an OpenAI API key" },
@@ -61,7 +63,7 @@ export interface ProviderRow {
 
 /** A row's credential status, e.g. "key saved", "key in environment", "needs a key". (Pickers mark the current one themselves.) */
 export function credentialLabel(row: ProviderRow): string {
-  const signIn = row.id === "copilot" || row.id === "chatgpt";
+  const signIn = row.id === "copilot" || row.id === "chatgpt" || row.id === "directionally-local";
   switch (row.credentials) {
     case "env":
       return "key in environment";
@@ -131,6 +133,8 @@ export type ConnectPlan =
   | { kind: "openrouter" }
   /** GitHub device login. */
   | { kind: "copilot" }
+  /** The free tier's GitHub device sign-in (no key to paste). */
+  | { kind: "directionally-local" }
   /** Browser sign-in with token sharing. */
   | { kind: "chatgpt" }
   /** An endpoint first (custom: any URL; azure: resource name or URL), then a key. */
@@ -145,6 +149,7 @@ export type ConnectPlan =
 export function planConnect(id: ProviderId, cfg: Partial<AutopilotConfig> | null, env: NodeJS.ProcessEnv = process.env): ConnectPlan {
   if (id === "openrouter") return { kind: "openrouter" };
   if (id === "copilot") return { kind: "copilot" };
+  if (id === "directionally-local") return { kind: "directionally-local" };
   if (id === "chatgpt") return { kind: "chatgpt" };
   if (id === "custom") return { kind: "baseUrl", purpose: "custom" };
   if (id === "azure" && !resolveActiveProvider({ ...(cfg ?? {}), provider: "azure" } as AutopilotConfig, env).baseUrl) return { kind: "baseUrl", purpose: "azure" };
@@ -259,6 +264,32 @@ export async function copilotSignIn(
   const token = await pollDeviceFlow(code, undefined, signal ? { signal } : {});
   const access = await checkCopilotAccess(token);
   return { key: token, baseUrl: access.apiBase };
+}
+
+/**
+ * The line said before leaving the free tier for `to`: undefined unless the
+ * free tier is active and `to` bills the person's own key.
+ */
+export function leavingFreeTierLine(active: ProviderId | undefined, to: ProviderId): string | undefined {
+  if (active !== "directionally-local" || to === "directionally-local" || !getPreset(to).keyRequired) return undefined;
+  return dlNotFreeLine(getPreset(to).name);
+}
+
+/** What the free tier's sign-in screen says, before and once the code is known. */
+export function dlSignInLines(code?: DlDeviceCode, opened = false): string {
+  const intro = code
+    ? `Your code is ${code.userCode}. ${opened ? "Your browser is open at" : "Open"} ${code.verificationUriComplete}, sign in with GitHub and approve it (enter an invite code there if asked). Esc to cancel.`
+    : `Directionally Local, free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}. Sign in with GitHub to start.`;
+  return `${intro}\n${DL_DISCLOSURE}`;
+}
+
+/** Said when someone picks the free tier but backs out of the sign-in. */
+export const DL_SIGN_IN_NEEDED = "Directionally Local, free needs a GitHub sign-in to work; choose it again when you're ready, or pick another provider.";
+
+/** The free tier's device sign-in: `onCode` shows the code; tokens are saved once approved. */
+export async function directionallyLocalSignIn(onCode: (code: DlDeviceCode) => void, signal?: AbortSignal): Promise<{ key: string }> {
+  const { dlSignIn } = await import("./directionally-local.js");
+  return { key: await dlSignIn(onCode, signal ? { signal } : {}) };
 }
 
 /** "Sign in with ChatGPT": browser sign-in with token sharing. Tokens are saved as soon as it succeeds. */

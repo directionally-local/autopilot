@@ -14,7 +14,10 @@
  * (https://models.dev/api.json) on 2026-10-20.
  */
 
+import { dlApiBase } from "./dl-endpoint.js";
+
 export const PROVIDER_IDS = [
+  "directionally-local",
   "openrouter",
   "requesty",
   "custom",
@@ -107,7 +110,7 @@ export interface EmbeddingPreset {
 export type WireProtocol = "openai-chat" | "anthropic-messages" | "openai-responses" | "bedrock-converse";
 
 /** Where the model list for the picker comes from. */
-export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "chatgpt" | "none";
+export type CatalogSource = "openrouter" | "requesty" | "models.dev" | "ollama" | "openai-models" | "copilot" | "azure" | "chatgpt" | "directionally-local" | "none";
 
 export interface ProviderPreset {
   id: ProviderId;
@@ -158,6 +161,24 @@ const NO_OPENROUTER_FEATURES: ProviderCapabilities = {
 };
 
 export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
+  "directionally-local": {
+    id: "directionally-local",
+    name: "Directionally Local, free",
+    // The managed free tier: OpenAI-compatible, GitHub device sign-in instead of a pasted
+    // key (`autopilot auth directionally-local`), tokens refreshed automatically. The env var
+    // is for sandboxes and short headless runs (no refresh).
+    baseUrl: dlApiBase(),
+    apiKeyEnv: ["AUTOPILOT_DL_FREE_TOKEN"],
+    keyRequired: true,
+    subscription: true,
+    defaultModel: "deepseek/deepseek-v4.1-flash-1017",
+    plumbingModel: "deepseek/deepseek-v4.1-flash-1017",
+    embedding: null,
+    catalog: "directionally-local",
+    // Forwarded to OpenRouter as-is: reasoning comes back the OpenRouter way.
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEffort: false, reasoningEcho: { content: true, details: true } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
   openrouter: {
     id: "openrouter",
     name: "OpenRouter",

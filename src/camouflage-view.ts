@@ -29,6 +29,7 @@ import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from ".
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
+import { DL_FREE_MODEL } from "./providers/directionally-local.js";
 import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
   chatgptSignIn,
@@ -36,6 +37,10 @@ import {
   copilotSignIn,
   credentialLabel,
   describeConnection,
+  directionallyLocalSignIn,
+  dlSignInLines,
+  DL_SIGN_IN_NEEDED,
+  leavingFreeTierLine,
   isVertexProjectId,
   maskKey,
   normalizeEndpoint,
@@ -1396,12 +1401,15 @@ export class View implements AppBridge {
           })),
           current,
           firstRun
-            ? "Billed to your own account with that provider · type to search · Enter to connect · Esc to quit"
+            ? "Directionally Local, free needs only a GitHub sign-in; the others bill your own account · type to search · Enter to connect · Esc to quit"
             : "Conversation history is kept · type to search · Enter to connect",
         );
         if (r === null) return null;
         id = r as ProviderId;
       }
+      // Leaving the free tier for a provider that bills your own key: say so first.
+      const leaving = !firstRun && cfg ? leavingFreeTierLine(resolveActiveProvider(cfg as Cfg).id, id) : undefined;
+      if (leaving) say(leaving);
       const connection = await this.connectProvider(id, cfg, say);
       if (connection === "back") {
         id = undefined;
@@ -1414,12 +1422,16 @@ export class View implements AppBridge {
         say("This key has no credits yet: only free models work (search \"free\"). Add credits at https://openrouter.ai/settings/credits.");
       }
       const models = pickableModels();
-      const modelId = await this.select(
-        `Pick a ${preset.name} model`,
-        modelOptions(models, ""),
-        undefined,
-        "Context · price per Mtok (input / output / cached) · type to search · switch any time with /model",
-      );
+      // The free tier has exactly one model: nothing to pick.
+      const modelId =
+        id === "directionally-local"
+          ? DL_FREE_MODEL
+          : await this.select(
+              `Pick a ${preset.name} model`,
+              modelOptions(models, ""),
+              undefined,
+              "Context · price per Mtok (input / output / cached) · type to search · switch any time with /model",
+            );
       if (modelId === null) {
         id = undefined;
         continue;
@@ -1526,6 +1538,29 @@ export class View implements AppBridge {
         );
         if (!key) return "back";
         return (await verify(key, "signin")) ?? "back";
+      }
+      case "directionally-local": {
+        // Straight into the device sign-in: there is no key to paste.
+        const signedIn = resolveProviderKey(id, cfg);
+        if (signedIn) {
+          const r = await this.select(`Connect ${preset.name}`, [
+            { value: "use", label: "Use your existing GitHub sign-in" },
+            { value: "again", label: "Sign in again" },
+          ]);
+          if (r === null) return "back";
+          if (r === "use") return (await verify(signedIn, "config")) ?? "back";
+        }
+        say(dlSignInLines());
+        const res = await withSignIn((signal) =>
+          directionallyLocalSignIn((code) => {
+            say(dlSignInLines(code, openBrowser(code.verificationUriComplete)));
+          }, signal),
+        );
+        if (!res) {
+          say(DL_SIGN_IN_NEEDED);
+          return "back";
+        }
+        return (await verify(res.key, "signin")) ?? "back";
       }
       case "copilot":
       case "chatgpt": {
