@@ -67,6 +67,7 @@ import type { ToolSpec } from "../tools/registry.js";
 import type { McpManager } from "../mcp/manager.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { MemoryManager } from "../memory/manager.js";
+import { formatMigrationPlan } from "../memory/migrate-repo.js";
 import type { HooksManager } from "../hooks/manager.js";
 import { RECOMMENDED_HOOKS, getRecommendedHook } from "../hooks/recommended.js";
 import {
@@ -1150,7 +1151,7 @@ const handleSkills: Handler = (ctx, rest) => {
   return true;
 };
 
-const handleMemory: Handler = (ctx, _rest, arg) => {
+const handleMemory: Handler = (ctx, rest, arg) => {
   const { cfg, setCfg, setEvents, mkKey, memoryManagerRef } = ctx;
   if (!cfg) return true;
   if (!arg) {
@@ -1181,6 +1182,43 @@ const handleMemory: Handler = (ctx, _rest, arg) => {
   if (arg === "clear") {
     const cleared = memoryManagerRef.current?.clearRepo(process.cwd()) ?? 0;
     setEvents((e) => [...e, { kind: "memory", key: mkKey(), text: `cleared ${cleared} memories for this repo` }]);
+    return true;
+  }
+  if (arg === "doctor") {
+    const mgr = memoryManagerRef.current;
+    if (!mgr) {
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "memory manager not initialized" }]);
+      return true;
+    }
+    try {
+      const report = mgr.doctorReport(process.cwd());
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: report }]);
+    } catch (err) {
+      setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `memory doctor failed: ${(err as Error).message}` }]);
+    }
+    return true;
+  }
+  if (arg === "migrate-repo" || arg.startsWith("migrate-repo ")) {
+    // `arg` is lowercased by the dispatcher; parse the original-case tokens.
+    const tokens = rest.slice(1);
+    const flags = new Set(tokens.filter((t) => t.startsWith("--")).map((t) => t.toLowerCase()));
+    const paths = tokens.filter((t) => !t.startsWith("--"));
+    const usage = "usage: /memory migrate-repo <old-path> <new-path> [--apply] [--merge]";
+    const mgr = memoryManagerRef.current;
+    if (paths.length !== 2 || !mgr) {
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: paths.length !== 2 ? usage : "memory manager not initialized" }]);
+      return true;
+    }
+    try {
+      const plan = mgr.migrateRepo(paths[0]!, paths[1]!, {
+        apply: flags.has("--apply"),
+        merge: flags.has("--merge"),
+      });
+      const kind = plan.blocked ? "error" : "memory";
+      setEvents((e) => [...e, { kind, key: mkKey(), text: formatMigrationPlan(plan) }]);
+    } catch (err) {
+      setEvents((e) => [...e, { kind: "error", key: mkKey(), text: `${(err as Error).message}\n${usage}` }]);
+    }
     return true;
   }
   if (arg.startsWith("search ")) {

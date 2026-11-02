@@ -28,6 +28,16 @@ import { retrieveMemories } from "./retrieval.js";
 import { runCleanup, shouldCleanup } from "./cleanup.js";
 import { redactSecrets } from "./redact.js";
 import { resolveRepoRoot } from "./repo-root.js";
+import {
+  buildDoctorReport,
+  detectMigrationCandidates,
+  listRepoPaths,
+  migrateRepoPath,
+  type MigrationCandidate,
+  type MigrateRepoOptions,
+  type RepoMigrationPlan,
+  type RepoPathCount,
+} from "./migrate-repo.js";
 
 export { redactSecrets } from "./redact.js";
 
@@ -529,6 +539,40 @@ export class MemoryManager {
   clearRepo(repoPath: string): number {
     if (!this.db) return 0;
     return clearMemoriesForRepo(this.db, this.repo(repoPath));
+  }
+
+  /** Path the memory DB was opened with (for `/memory doctor`). */
+  get dbPath(): string {
+    return this.opts.dbPath;
+  }
+
+  /** Every `repo_path` in the DB with its row count (for `/memory doctor`). */
+  repoPaths(): RepoPathCount[] {
+    if (!this.db) return [];
+    return listRepoPaths(this.db);
+  }
+
+  /** Orphaned paths that look like this repo before a move or rename. */
+  migrationCandidates(repoPath: string): MigrationCandidate[] {
+    if (!this.db) return [];
+    return detectMigrationCandidates(this.db, this.repo(repoPath));
+  }
+
+  /**
+   * Plan (dry run by default) or apply a `repo_path` migration, e.g. rows
+   * left behind by the kimiflare → autopilot rename. Paths resolve to their
+   * repo roots, so a subdirectory argument still re-keys to the same identity
+   * recall uses.
+   */
+  migrateRepo(from: string, to: string, opts: MigrateRepoOptions = {}): RepoMigrationPlan {
+    if (!this.db) throw new Error("Memory DB not open");
+    return migrateRepoPath(this.db, this.repo(from), this.repo(to), opts);
+  }
+
+  /** The `/memory doctor` report: DB path, current repo, orphaned candidates. */
+  doctorReport(repoPath: string): string {
+    if (!this.db) throw new Error("Memory DB not open");
+    return buildDoctorReport(this.db, this.repo(repoPath), this.opts.dbPath);
   }
 
   private async verifyMemory(content: string, signal?: AbortSignal): Promise<{ valid: boolean; corrected_content: string | null }> {

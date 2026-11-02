@@ -938,6 +938,7 @@ export class View implements AppBridge {
             { value: s.memoryEnabled ? "/memory off" : "/memory on", label: s.memoryEnabled ? "Disable memory" : "Enable memory", state: s.memoryEnabled ? "on" : "off" },
             { value: "/memory", label: "Show memory stats" },
             { value: "/memory search <query>", label: "Search memories…" },
+            { value: "/memory doctor", label: "Check for memories orphaned by a repo move/rename" },
             { value: "clear", label: "Clear all memories for this repo" },
           ]);
           if (r === "clear") {
