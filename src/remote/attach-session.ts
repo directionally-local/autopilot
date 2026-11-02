@@ -27,6 +27,8 @@ export const REMOTE_COMMANDS: { name: string; description: string; args_hint?: s
   { name: "model", description: "Pick one of the server's models for the next turn (list prints them)", args_hint: "[<id>|list]" },
   { name: "status", description: "Conversation, branch, pull request and model" },
   { name: "pr", description: "Show the conversation's pull request" },
+  { name: "resume", description: "List this credential's conversations and switch to one", args_hint: "[<n>|<id>]" },
+  { name: "clear", description: "Start a fresh conversation here (the old one keeps its history)" },
   { name: "exit", description: "Detach (the conversation keeps running on the server)" },
 ];
 
@@ -35,7 +37,11 @@ const REMOTE_COMMAND_NAMES = new Set([...REMOTE_COMMANDS.map((c) => c.name), "qu
 export const REVOKED_MESSAGE =
   "this laptop's credential was revoked or expired (the server answered 401). Pair this machine with the server again, then reconnect.";
 
-export type AttachOutcome = { kind: "detached" } | { kind: "fatal"; message: string };
+export type AttachOutcome =
+  | { kind: "detached" }
+  | { kind: "fatal"; message: string }
+  /** `/resume` or `/clear`: the caller mounts a new session on this conversation. */
+  | { kind: "switch"; conversation: RemoteConversation; created: boolean };
 
 export interface StateFileContents {
   conversationId: string;
@@ -129,6 +135,8 @@ export class RemoteAttachSession {
   /** `/model` opened the picker (the view draws it from snapshot.modelChoices). */
   private pickingModel = false;
   private shownPullRequest: string | undefined;
+  /** The last `/resume` listing, so `/resume <n>` picks from what the user saw. */
+  private resumeList: RemoteConversation[] | null = null;
   private permission: AppSnapshot["permission"] = null;
   private keySeq = 0;
   private scheduled = false;
@@ -164,6 +172,9 @@ export class RemoteAttachSession {
     if (this.outcome) return;
     this.outcome = outcome;
     this.abort.abort();
+    // A switch mounts a new session on the same bridge: a flush still queued here
+    // must not overwrite the new session's snapshot with this conversation's.
+    this.bridge = null;
     this.finish?.(outcome);
   }
 
@@ -330,6 +341,11 @@ export class RemoteAttachSession {
       }
       case "pr":
         return this.info(this.shownPullRequest ? `Pull request: ${this.shownPullRequest}` : "No pull request yet: the server opens one after a turn that changes the repository.");
+      case "resume":
+        if (!args) return void this.listRemoteConversations();
+        return void this.resume(args);
+      case "clear":
+        return void this.clear();
       default:
         // exit, quit, detach
         return this.end({ kind: "detached" });
@@ -376,6 +392,73 @@ export class RemoteAttachSession {
       return null;
     }
     return this.serverModels;
+  }
+
+  /** `/resume` with no argument: this credential's conversations on the server, newest first. */
+  private async listRemoteConversations(): Promise<void> {
+    const list = await this.fetchConversations();
+    if (!list) return;
+    this.resumeList = list;
+    if (list.length === 0) return this.info("No conversations on this server for this credential yet.");
+    this.info(
+      [
+        "Conversations on the server (newest first):",
+        ...list.map((c, i) => `  ${i + 1}. ${conversationLine(c)}`),
+        "Switch with /resume <n> or /resume <conversation id>.",
+      ].join("\n"),
+    );
+  }
+
+  /** `/resume <n>|<id>`: switch the screen to that conversation. */
+  private async resume(arg: string): Promise<void> {
+    const target = arg.trim();
+    let conversation: RemoteConversation | undefined;
+    if (/^\d+$/.test(target)) {
+      const list = this.resumeList ?? (await this.fetchConversations());
+      if (!list) return;
+      conversation = list[Number(target) - 1];
+      if (!conversation) return this.warn(`There is no conversation #${target}. Type /resume to list them.`);
+    } else {
+      try {
+        conversation = await this.client.getConversation(target);
+      } catch (error) {
+        if (this.fatalIfUnauthorized(error)) return;
+        return this.warn(`Couldn't open ${target}: ${describeRemoteFailure(error)}`);
+      }
+    }
+    if (this.outcome) return;
+    if (conversation.conversationId === this.conversation.conversationId) return this.info("Already in that conversation.");
+    this.end({ kind: "switch", conversation, created: false });
+  }
+
+  /** `/clear`: a fresh conversation of the same kind on the same place; the old one keeps its history. */
+  private async clear(): Promise<void> {
+    const current = this.conversation;
+    const chat = current.kind === "chat" || (!current.repository && current.kind !== "code");
+    if (!chat && !current.repository) return this.error("This conversation has no repository to start a fresh one from.");
+    const model = this.nextModel ?? this.model;
+    let created: RemoteConversation;
+    try {
+      created = chat
+        ? await this.client.createChatConversation({ workspaceId: current.workspaceId, model, idempotencyKey: `attach-${this.newId()}` })
+        : await this.client.createCodeConversation({ workspaceId: current.workspaceId, model, repository: current.repository!, idempotencyKey: `attach-${this.newId()}` });
+    } catch (error) {
+      if (this.fatalIfUnauthorized(error)) return;
+      return this.error(`Couldn't start a fresh conversation: ${describeRemoteFailure(error)}`);
+    }
+    if (this.outcome) return;
+    this.end({ kind: "switch", conversation: created, created: true });
+  }
+
+  private async fetchConversations(): Promise<RemoteConversation[] | null> {
+    try {
+      const list = await this.client.listConversations();
+      return this.outcome ? null : list;
+    } catch (error) {
+      if (this.fatalIfUnauthorized(error)) return null;
+      this.error(`Couldn't list conversations: ${describeRemoteFailure(error)}`);
+      return null;
+    }
   }
 
   /** Send one message as a turn. Keyed by clientTurnId, so the client's retries can't start it twice. */
@@ -602,6 +685,50 @@ export function connectionNote(conversation: RemoteConversation, created: boolea
   if (created) return `Connected to conversation ${short}${branch}, created on the server just now. The agent runs in a sandbox there.`;
   if (conversation.lastEventId <= 1 && !conversation.activeRunId) return `Connected to conversation ${short}${branch}. Nothing has happened in it yet; the agent runs in a sandbox on the server.`;
   return `Reconnected to conversation ${short}${branch}. Earlier output follows (the server's log keeps the agent's side, not your past messages).`;
+}
+
+/**
+ * The server's `status` in the summary words the conversation list shows (the mapping
+ * #1046 adds as `state`; older servers only send `status`).
+ */
+const STATE_FROM_STATUS: Record<string, string> = {
+  running: "working",
+  provisioning: "working",
+  waiting_approval: "blocked",
+  ready: "idle",
+  paused: "idle",
+  completed: "done",
+  merged: "done",
+  failed: "failed",
+  cancelled: "failed",
+  interrupted: "failed",
+};
+
+/** How long ago the conversation last did anything, as `/resume` shows it. */
+export function conversationAge(conversation: RemoteConversation): string {
+  const at = Date.parse(conversation.lastActivityAt ?? conversation.updatedAt ?? conversation.createdAt);
+  if (!Number.isFinite(at)) return "unknown";
+  const seconds = Math.max(0, (Date.now() - at) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 60 * 60) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 60 * 60 * 24) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 60 * 60 * 24 * 30) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(at).toISOString().slice(0, 10);
+}
+
+/**
+ * One line of `/resume`'s list: title, state, age and repository. `title` and `state`
+ * come from the server's summaries (#1046); without them the repository stands in for
+ * the title and `status` is mapped to the same words.
+ */
+export function conversationLine(conversation: RemoteConversation): string {
+  const chat = conversation.kind === "chat" || (!conversation.repository && conversation.kind !== "code");
+  const title = conversation.title?.trim() || (chat ? `Chat in ${conversation.workspaceId}` : conversation.repository || conversation.workspaceId);
+  const state = conversation.state ?? STATE_FROM_STATUS[conversation.status] ?? conversation.status;
+  const place = conversation.repository ?? (chat ? "chat" : conversation.workspaceId);
+  const parts = [title, state, conversationAge(conversation)];
+  if (place && place !== title) parts.push(place);
+  return parts.join(" · ");
 }
 
 /** Absolute (or ~) image paths: files only this laptop has. */

@@ -161,9 +161,19 @@ export async function attachRemote(flags: AttachRemoteFlags, deps: AttachRemoteD
     commands: REMOTE_COMMANDS,
     // Called again with a fresh view if the renderer crashes: replay and follow again.
     run: async (bridge) => {
-      const session = new RemoteAttachSession({ client, conversation, newId, created: mode !== "reconnect" && first });
-      first = false;
-      outcome = await session.run(bridge);
+      let created = mode !== "reconnect" && first;
+      for (;;) {
+        const session = new RemoteAttachSession({ client, conversation, newId, created });
+        first = false;
+        const result = await session.run(bridge);
+        outcome = result;
+        // `/resume` and `/clear` end the session on one conversation and open another
+        // on the same view; the state file follows so dl reconnects to what's shown.
+        if (result.kind !== "switch") return;
+        conversation = result.conversation;
+        created = result.created;
+        if (flags.stateFile) await writeStateFile(flags.stateFile, conversation);
+      }
     },
   });
   const short = conversation.conversationId.slice(0, 8);

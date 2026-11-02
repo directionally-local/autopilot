@@ -435,6 +435,135 @@ describe("attach-remote: session against a stub Aster server", () => {
   });
 });
 
+describe("attach-remote: /resume and /clear", () => {
+  it("/resume lists this credential's conversations newest first with title, state, age and repository", async () => {
+    stub = await startAsterStub();
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    stub.seed({ conversationId: "aaaaaaaa-1111", repository: "acme/old", title: "Fix the flaky test", status: "completed", updatedAt: twoHoursAgo }, [
+      { type: "conversation.created", data: {} },
+      { type: "assistant.delta", data: { text: "Earlier answer." } },
+      { type: "completed", data: {} },
+    ]);
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+
+    bridge.actions.submit("/resume");
+    await waitFor(() => bridge.texts().some((t) => t.includes("Conversations on the server (newest first):")), "list");
+    const listing = bridge.texts().find((t) => t.includes("Conversations on the server"))!;
+    assert.match(listing, /  1\. acme\/project · idle · just now/, "the conversation just created is newest");
+    assert.match(listing, /  2\. Fix the flaky test · done · 2h ago · acme\/old/, "title, state, age and repository");
+    assert.match(listing, /Switch with \/resume <n> or \/resume <conversation id>\./);
+    assert.equal(stub.requests.filter((r) => r.method === "GET" && r.path === "/api/v1/conversations").length, 1);
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
+  it("/resume <n> switches the screen to that conversation and follows it", async () => {
+    stub = await startAsterStub();
+    stub.seed({ conversationId: "aaaaaaaa-1111", repository: "acme/old", title: "Fix the flaky test", status: "completed" }, [
+      { type: "conversation.created", data: {} },
+      { type: "assistant.delta", data: { text: "Earlier answer." } },
+      { type: "completed", data: {} },
+    ]);
+    const stateFile = join(dir, "resume-state.json");
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a", stateFile });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+    const currentId = [...stub.conversations.keys()][1]!;
+
+    bridge.actions.submit("/resume");
+    await waitFor(() => bridge.texts().some((t) => t.includes("Conversations on the server")), "list");
+    bridge.actions.submit("/resume 2");
+
+    await waitFor(() => bridge.texts()[0]?.includes("aaaaaaaa") === true, "switched");
+    assert.match(bridge.texts()[0]!, /^info:Reconnected to conversation aaaaaaaa · branch aster\/aaaaaaaa\. Earlier output follows/);
+    await waitFor(() => bridge.texts().includes("assistant:Earlier answer."), "replayed history");
+    assert.equal(JSON.parse(await readFile(stateFile, "utf8")).conversationId, "aaaaaaaa-1111", "the state file follows the switch");
+    assert.ok(stub.conversations.has(currentId), "the conversation left behind keeps its history");
+
+    bridge.actions.submit("continue here");
+    await waitFor(() => turnRequests().length === 1, "turn");
+    assert.ok(turnRequests()[0]!.path.includes("aaaaaaaa-1111"), "the turn goes to the conversation now shown");
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
+  it("/resume <id> switches without a listing first; the current one and unknown numbers are refused", async () => {
+    stub = await startAsterStub();
+    stub.seed({ conversationId: "bbbbbbbb-2222", repository: "acme/other", status: "ready" }, [{ type: "conversation.created", data: {} }]);
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+
+    bridge.actions.submit("/resume 1");
+    await waitFor(() => bridge.texts().some((t) => t.includes("Already in that conversation.")), "already here");
+    bridge.actions.submit("/resume 9");
+    await waitFor(() => bridge.texts().some((t) => t.includes("There is no conversation #9")), "no such number");
+    assert.equal(stub.conversations.size, 2, "nothing was created");
+
+    bridge.actions.submit("/resume bbbbbbbb-2222");
+    await waitFor(() => bridge.texts()[0]?.includes("bbbbbbbb") === true, "switched");
+    assert.match(bridge.texts()[0]!, /^info:Connected to conversation bbbbbbbb · branch aster\/bbbbbbbb\. Nothing has happened in it yet/);
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
+  it("/clear starts a fresh code conversation on the same repository and switches to it", async () => {
+    stub = await startAsterStub();
+    const stateFile = join(dir, "clear-state.json");
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a", stateFile });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+    const firstId = [...stub.conversations.keys()][0]!;
+
+    bridge.actions.submit("/clear");
+    await waitFor(() => stub.conversations.size === 2, "created");
+    const secondId = [...stub.conversations.keys()][1]!;
+    const create = stub.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/conversations").at(-1)!;
+    assert.deepEqual(create.body, { workspaceId: "default", model: "vendor/model-a", repository: "acme/project", kind: "code" }, "same kind and place, no local patch");
+    assert.equal(create.idempotencyKey, "attach-id-2");
+
+    await waitFor(() => bridge.texts()[0]?.includes(secondId.slice(0, 8)) === true, "switched");
+    assert.match(bridge.texts()[0]!, /^info:Connected to conversation .*created on the server just now/);
+    assert.equal(JSON.parse(await readFile(stateFile, "utf8")).conversationId, secondId, "the state file follows the switch");
+    assert.ok(stub.conversations.has(firstId), "the old conversation keeps its history");
+
+    bridge.actions.submit("hello");
+    await waitFor(() => turnRequests().length === 1, "turn");
+    assert.ok(turnRequests()[0]!.path.includes(secondId), "the turn goes to the fresh conversation");
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
+  it("/clear on a chat conversation creates another chat", async () => {
+    stub = await startAsterStub();
+    const { bridge, done } = await attach({ workspace: "default", kind: "chat", model: "vendor/model-a" });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+
+    bridge.actions.submit("/clear");
+    await waitFor(() => stub.conversations.size === 2, "created");
+    const create = stub.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/conversations").at(-1)!;
+    assert.deepEqual(create.body, { workspaceId: "default", model: "vendor/model-a", kind: "chat" }, "no repository fields");
+    const secondId = [...stub.conversations.keys()][1]!;
+    await waitFor(() => bridge.texts()[0]?.includes(secondId.slice(0, 8)) === true, "switched");
+    assert.ok(!bridge.texts()[0]!.includes("branch"), "a chat has no branch to mention");
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
+  it("/help and the command palette list /resume and /clear", async () => {
+    stub = await startAsterStub();
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+
+    bridge.actions.submit("/help");
+    await waitFor(() => bridge.texts().some((t) => t.includes("Remote session: the agent runs in a sandbox")), "help");
+    const help = bridge.texts().find((t) => t.includes("Remote session:"))!;
+    assert.match(help, /\/resume \[<n>\|<id>\] — List this credential's conversations and switch to one/);
+    assert.match(help, /\/clear — Start a fresh conversation here \(the old one keeps its history\)/);
+    assert.deepEqual(REMOTE_COMMANDS.map((c) => c.name), ["help", "model", "status", "pr", "resume", "clear", "exit"]);
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+});
+
 describe("attach-remote through the Camouflage view (headless)", () => {
   it("renders a remote turn with the same renderer events a local turn produces", async () => {
     stub = await startAsterStub();
@@ -454,7 +583,7 @@ describe("attach-remote through the Camouflage view (headless)", () => {
       assert.ok(types.includes(t), `sends ${t}`);
     }
     const commands = sent.find((s) => s.type === "SlashCommandsRegistered")!.payload.commands as { name: string }[];
-    assert.deepEqual(commands.map((c) => c.name), ["help", "model", "status", "pr", "exit"]);
+    assert.deepEqual(commands.map((c) => c.name), ["help", "model", "status", "pr", "resume", "clear", "exit"]);
     const started = sent.find((s) => s.type === "ToolExecutionStarted")!.payload;
     assert.equal(started.tool, "Bash");
     assert.equal(started.command, "npm test");

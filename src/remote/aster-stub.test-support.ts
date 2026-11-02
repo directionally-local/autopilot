@@ -22,6 +22,10 @@ export interface StubConversation {
   repository: string | null;
   branch: string | null;
   pullRequestURL?: string;
+  /** Conversation-summary fields (#1046); the stub passes them through when a test seeds them. */
+  title?: string;
+  state?: string;
+  lastActivityAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -114,7 +118,12 @@ export async function startAsterStub(): Promise<AsterStub> {
       for (const e of events) stub.append(partial.conversationId, e);
     },
     close: async () => {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        // A regular request's keep-alive socket would otherwise hold close() open
+        // for seconds after the test's last request.
+        server.closeAllConnections();
+      });
     },
   };
 
@@ -151,6 +160,11 @@ export async function startAsterStub(): Promise<AsterStub> {
     if (path === "/api/v1/models" && method === "GET") {
       if (stub.modelsDown) return fail(503, "model_catalog_unavailable");
       return json(200, { models: ["vendor/model-a", "vendor/model-b"], catalog: stub.modelCatalog });
+    }
+    if (path === "/api/v1/conversations" && method === "GET") {
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));
+      // Newest first, like the server: the map holds them in creation order.
+      return json(200, { conversations: [...stub.conversations.values()].reverse().slice(0, limit).map(publicConversation) });
     }
     if (path === "/api/v1/conversations" && method === "POST") {
       if (!req.headers["idempotency-key"]) return fail(400, "idempotency_key_required");
