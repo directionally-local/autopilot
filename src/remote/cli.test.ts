@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { AsterApi, type AsterTurnStart } from "../server/aster-api.js";
 import type { AsterCellProject } from "../server/aster-cell-runtime.js";
 import { AsterGitHubError, type AsterGitHub } from "../server/aster-github.js";
@@ -186,7 +186,7 @@ async function startAsterServer(options: { hang?: boolean } = {}): Promise<Aster
     createPullRequest: async (repository: string, input: { title: string; head: string; base: string }) =>
       ({ number: 42, url: `https://github.com/${repository}/pull/42`, title: input.title, state: "open", headBranch: input.head, baseBranch: input.base, merged: false }),
   } as unknown as AsterGitHub;
-  const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as KimiConfig, {
+  const api = new AsterApi({ openrouterApiKey: "test-key", model: "test/model" } as AutopilotConfig, {
     provisionConversation: async (input) => {
       if (input.project) projects.push(input.project);
       input.onCellCreated(`cell-${input.conversationId}`);

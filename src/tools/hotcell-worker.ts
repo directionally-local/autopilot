@@ -50,12 +50,12 @@ export interface HotcellWorkerOptions {
   timeoutMs?: number;
   /** Timeout for cell setup (checkout + worker CLI install), separate from research. */
   setupTimeoutMs?: number;
-  /** npm spec for the worker CLI. Defaults to KIMIFLARE_WORKER_PACKAGE or the coordinator's own version. */
+  /** npm spec for the worker CLI. Defaults to AUTOPILOT_WORKER_PACKAGE or the coordinator's own version. */
   workerPackage?: string;
-  /** Use the locally cached runtime backup (default true; KIMIFLARE_WORKER_CACHE=0 disables). */
+  /** Use the locally cached runtime backup (default true; AUTOPILOT_WORKER_CACHE=0 disables). */
   useRuntimeCache?: boolean;
   /** Stream the working tree in rather than cloning origin (default true;
-   *  KIMIFLARE_WORKER_ARCHIVE=0 forces cloning). */
+   *  AUTOPILOT_WORKER_ARCHIVE=0 forces cloning). */
   useArchive?: boolean;
   maxParallel?: number;
   cwd?: string;
@@ -381,7 +381,7 @@ export function parseWorkerReport(text: string): WorkerReport | null {
   return { findings, openQuestions: strings(obj.openQuestions, 500), filesRead: strings(obj.filesRead) };
 }
 
-/** npm spec for the worker CLI: explicit option, KIMIFLARE_WORKER_PACKAGE, or
+/** npm spec for the worker CLI: explicit option, AUTOPILOT_WORKER_PACKAGE, or
  *  the coordinator's own published version so worker flags always match. */
 export function resolveWorkerPackage(override?: string): string {
   const spec = (override ?? readEnv("WORKER_PACKAGE") ?? `${PACKAGE_NAME}@${getAppVersion()}`).trim();

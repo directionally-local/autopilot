@@ -19,8 +19,8 @@
  */
 
 import { readSSE } from "../../util/sse.js";
-import { KimiApiError } from "../../util/errors.js";
-import { effortFor, type KimiEvent } from "../client.js";
+import { ApiError } from "../../util/errors.js";
+import { effortFor, type ModelEvent } from "../client.js";
 import type { ChatMessage, ContentPart, ReasoningDetail, ToolDef, Usage } from "../messages.js";
 
 type Item = Record<string, unknown>;
@@ -121,13 +121,13 @@ interface CallBuf {
   args: string;
 }
 
-/** Translate a Responses SSE stream into the loop's KimiEvents. */
+/** Translate a Responses SSE stream into the loop's ModelEvents. */
 export async function* parseResponsesStream(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal | undefined,
   idleTimeoutMs: number,
   postFirstByteIdleTimeoutMs: number,
-): AsyncGenerator<KimiEvent, void, void> {
+): AsyncGenerator<ModelEvent, void, void> {
   const calls = new Map<string, CallBuf>(); // by item id
   let nextIndex = 0;
   let usage: Usage | null = null;
@@ -209,10 +209,10 @@ export async function* parseResponsesStream(
       }
       case "response.failed": {
         const e = ev.response?.error ?? {};
-        throw new KimiApiError(`kimiflare: ${e.message ?? "the response failed"}`, undefined, undefined);
+        throw new ApiError(`autopilot: ${e.message ?? "the response failed"}`, undefined, undefined);
       }
       case "error":
-        throw new KimiApiError(`kimiflare: ${ev.message ?? ev.error?.message ?? "the provider reported an error mid-response"}`, undefined, undefined);
+        throw new ApiError(`autopilot: ${ev.message ?? ev.error?.message ?? "the provider reported an error mid-response"}`, undefined, undefined);
       default:
         break;
     }

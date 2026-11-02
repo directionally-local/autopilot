@@ -10,14 +10,14 @@ import { configPath } from "./app-dirs.js";
  * with a 7-day retention window pruned on startup.
  *
  * Design notes:
- *   - The file sink is independent of `KIMIFLARE_LOG_LEVEL`, which only
+ *   - The file sink is independent of `AUTOPILOT_LOG_LEVEL`, which only
  *     gates stderr output. The file sink is **always on** unless
- *     disabled via `KIMIFLARE_LOG_SINK=off` — log files are
+ *     disabled via `AUTOPILOT_LOG_SINK=off` — log files are
  *     observability infrastructure and should be written even when the
  *     TUI is silent. Disable for tests + the print/RPC modes that
  *     should not touch the user's disk.
  *   - We deliberately do NOT log LLM request/response bodies here.
- *     OpenRouter keeps them per generation (and KIMIFLARE_DUMP_LLM=1
+ *     OpenRouter keeps them per generation (and AUTOPILOT_DUMP_LLM=1
  *     captures full payloads locally on demand); logging every body here
  *     would double disk usage for the loudest event type.
  *     Emit a thin event (`{event: "llm:call", model, request_id, …}`)

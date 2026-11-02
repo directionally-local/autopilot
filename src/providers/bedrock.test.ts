@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bedrockAuth, converseUrl, parseConverseStream, signSigV4, toConverseRequest } from "./bedrock.js";
 import { isProviderUsable, resolveActiveProvider } from "./resolve.js";
-import { runKimi, type KimiEvent } from "../agent/client.js";
+import { runKimi, type ModelEvent } from "../agent/client.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import type { ChatMessage, ReasoningDetail } from "../agent/messages.js";
 import { registerProviderModels } from "../models/registry.js";
@@ -63,15 +63,15 @@ const FRAMES = [
 
 describe("ConverseStream parsing", () => {
   it("decodes event-stream frames split across chunks into text, signed reasoning, tool calls and usage", async () => {
-    const events: KimiEvent[] = [];
+    const events: ModelEvent[] = [];
     for await (const e of parseConverseStream(stream(FRAMES))) events.push(e);
     assert.strictEqual(events.filter((e) => e.type === "text").map((e) => (e as { delta: string }).delta).join(""), "Reading.");
     assert.strictEqual(events.filter((e) => e.type === "reasoning").map((e) => (e as { delta: string }).delta).join(""), "check the file");
     const details = events.filter((e) => e.type === "reasoning_details").flatMap((e) => (e as { details: ReasoningDetail[] }).details);
     assert.deepStrictEqual(details, [{ type: "bedrock.reasoning", index: 0, text: "check the file", signature: "sig-bedrock" }]);
-    const call = events.find((e) => e.type === "tool_call_complete") as Extract<KimiEvent, { type: "tool_call_complete" }>;
+    const call = events.find((e) => e.type === "tool_call_complete") as Extract<ModelEvent, { type: "tool_call_complete" }>;
     assert.deepStrictEqual([call.id, call.name, call.arguments, call.finishReason], ["tooluse_1", "read", '{"path":"a"}', "tool_calls"]);
-    assert.deepStrictEqual((events.at(-1) as Extract<KimiEvent, { type: "done" }>).usage, {
+    assert.deepStrictEqual((events.at(-1) as Extract<ModelEvent, { type: "done" }>).usage, {
       prompt_tokens: 950,
       completion_tokens: 20,
       total_tokens: 970,
@@ -185,7 +185,7 @@ describe("Bedrock credentials and requests", () => {
       });
     }) as typeof fetch;
     const auth = llmAuthFromConfig({ provider: "bedrock", providers: { bedrock: { region: "eu-west-1" } } });
-    const events: KimiEvent[] = [];
+    const events: ModelEvent[] = [];
     for await (const e of runKimi({ ...auth, model: "global.anthropic.claude-sonnet-5-5", messages: [{ role: "user", content: "hi" }] })) events.push(e);
     assert.strictEqual(seen!.url, "https://bedrock-runtime.eu-west-1.amazonaws.com/model/global.anthropic.claude-sonnet-5-5/converse-stream");
     assert.match(seen!.headers.get("authorization")!, /^AWS4-HMAC-SHA256 Credential=AKIA1\/\d{8}\/eu-west-1\/bedrock\/aws4_request/);

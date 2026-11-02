@@ -8,7 +8,7 @@
  * picker) and this module decides what to say and when the session can start.
  */
 
-import type { KimiConfig } from "./config.js";
+import type { AutopilotConfig } from "./config.js";
 
 /** Copy for an upgrading kimiflare user whose config still points at Cloudflare. */
 export const UPGRADE_NOTICE = [
@@ -36,7 +36,7 @@ export function onboardingCancelledMessage(): string {
 }
 
 export type FirstRunOutcome =
-  | { kind: "ready"; cfg: KimiConfig & { model: string } }
+  | { kind: "ready"; cfg: AutopilotConfig & { model: string } }
   | { kind: "cancelled" }
   | { kind: "failed"; message: string };
 
@@ -48,7 +48,7 @@ export interface FirstRunDeps {
   show(lines: string[]): void;
   /** Run provider → credentials → model; true once a provider and model were saved, false if the user backed out. */
   setup(o: { upgrading: boolean }): Promise<boolean>;
-  loadConfig(): Promise<KimiConfig | null>;
+  loadConfig(): Promise<AutopilotConfig | null>;
 }
 
 /**
@@ -60,7 +60,7 @@ export async function runFirstRun(deps: FirstRunDeps): Promise<FirstRunOutcome> 
   const upgrading = await deps.upgrading().catch(() => false);
   deps.show(firstRunIntro({ upgrading, configPath: deps.configPath() }));
   if (!(await deps.setup({ upgrading }))) return { kind: "cancelled" };
-  let cfg: KimiConfig | null;
+  let cfg: AutopilotConfig | null;
   try {
     cfg = await deps.loadConfig();
   } catch (e) {

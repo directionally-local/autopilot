@@ -39,7 +39,7 @@ function filterSessions(sessions: SessionUsage[], start: string, end: string): S
 export async function getCategoryReportText(sessionId?: string): Promise<string | null> {
   const log = await loadLog();
 
-  // Default: last 7 days (big picture, same as `kimiflare cost --week`)
+  // Default: last 7 days (big picture, same as `autopilot cost --week`)
   const startDate = daysAgo(7);
   const endDate = today();
   const prevStart = daysAgo(14);

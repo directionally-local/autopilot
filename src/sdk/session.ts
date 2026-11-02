@@ -28,7 +28,7 @@ import { ensureCatalogForProvider } from "../models/catalog.js";
 import { logger } from "../util/logger.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
 import { resolveSdkConfig } from "./config.js";
-import type { CreateSessionOptions, KimiFlareSession, SessionEvent, SessionUsage, SessionStatus, PromptOptions } from "./types.js";
+import type { CreateSessionOptions, AutopilotSession, SessionEvent, SessionUsage, SessionStatus, PromptOptions } from "./types.js";
 import { createDefaultPermissionHandler } from "./permissions.js";
 import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
 import { toOpenAIToolDefs } from "../tools/registry.js";
@@ -37,7 +37,7 @@ import { dataPath, migrateLegacyDirs } from "../util/app-dirs.js";
 
 export async function createAgentSession(
   opts: CreateSessionOptions,
-): Promise<{ session: KimiFlareSession }> {
+): Promise<{ session: AutopilotSession }> {
   // Same one-time move of the pre-rename kimiflare dirs as the CLI (silent:
   // an embedding host owns stderr).
   migrateLegacyDirs();
@@ -199,7 +199,7 @@ interface InternalSessionOpts {
   handleProcessExit: boolean;
 }
 
-class InternalSession implements KimiFlareSession {
+class InternalSession implements AutopilotSession {
   readonly sessionId: string;
   readonly cwd: string;
   messages: ChatMessage[];

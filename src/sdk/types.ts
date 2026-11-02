@@ -1,17 +1,17 @@
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { Task } from "../tools/registry.js";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import type { OpenRouterProviderPrefs } from "../agent/client.js";
 import type { PermissionRequest, PermissionDecision } from "../tools/executor.js";
 
-export type { ChatMessage, ToolSpec, Task, KimiConfig, PermissionRequest, PermissionDecision };
+export type { ChatMessage, ToolSpec, Task, AutopilotConfig, PermissionRequest, PermissionDecision };
 
 export interface CreateSessionOptions {
   /** Working directory for the agent. Defaults to process.cwd(). */
   cwd?: string;
   /** Override config. If omitted, loads from ~/.config/autopilot/config.json */
-  config?: Partial<KimiConfig>;
+  config?: Partial<AutopilotConfig>;
   /** Session ID for persistence. If omitted, creates a new session. */
   sessionId?: string;
   /** Which tools to enable. Defaults to ALL_TOOLS. */
@@ -130,7 +130,10 @@ export interface SessionStatus {
 
 export type PermissionHandler = (req: PermissionRequest) => Promise<PermissionDecision>;
 
-export interface KimiFlareSession {
+/** @deprecated Renamed to {@link AutopilotSession} (#911); kept so existing SDK imports keep compiling. */
+export type KimiFlareSession = AutopilotSession;
+
+export interface AutopilotSession {
   readonly sessionId: string;
   readonly cwd: string;
   readonly isStreaming: boolean;

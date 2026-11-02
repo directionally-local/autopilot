@@ -53,7 +53,7 @@ On OpenRouter you also get:
 ## Recently shipped
 
 - **OpenRouter as the model provider** — Every OpenRouter model, your own key, billed cost per turn. Replaces Cloudflare Workers AI / AI Gateway (see [Upgrading from Cloudflare](#upgrading-from-the-cloudflare-version)).
-- **OS-aware shell with Windows support** — Auto-detects `cmd.exe`, PowerShell, or bash based on platform. Override with `KIMIFLARE_SHELL` or `/shell`.
+- **OS-aware shell with Windows support** — Auto-detects `cmd.exe`, PowerShell, or bash based on platform. Override with `AUTOPILOT_SHELL` or `/shell`.
 - **Smart permission modal with inline feedback** — Deny a tool and immediately tell the agent what to do instead. Keyboard-native navigation with `↑/↓`, `j/k`, `Alt+1/2/3`.
 - **True message queuing** — Enter queues messages while the agent is busy; Escape interrupts and auto-drains the queue.
 - **Hard-stop loop guardrail** — Stops token-burning cycles when all tools in a turn are blocked.
@@ -118,7 +118,7 @@ To pick up an earlier conversation, run `autopilot resume <id>` (the exact comma
 | Ollama (local) | `ollama` | none | installed models are discovered; `providers.ollama.baseUrl` for another host |
 | LM Studio (local) | `lmstudio` | none | |
 | Requesty | `requesty` | `REQUESTY_API_KEY` | |
-| Any OpenAI-compatible endpoint | `custom` | `KIMIFLARE_API_KEY` (optional) | `KIMIFLARE_BASE_URL` — LiteLLM, vLLM, llama.cpp, a company gateway |
+| Any OpenAI-compatible endpoint | `custom` | `AUTOPILOT_API_KEY` (optional) | `AUTOPILOT_BASE_URL` — LiteLLM, vLLM, llama.cpp, a company gateway |
 
 - **First run** asks which provider to use; providers with a key already in your environment are offered first and used without saving the key.
 - **Switch any time** with `/provider <id> [key]` (`/provider` lists them and where each key comes from), or from the CLI: `autopilot auth <id>` (saves a key and makes it active), `autopilot auth use <id>`, `autopilot auth status`. For one run, set `AUTOPILOT_PROVIDER=<id>`.
@@ -143,7 +143,7 @@ Config file shape (keys can live here instead of the environment):
 
 Three ways to provide it — the first one found wins:
 
-1. **Environment:** `OPENROUTER_API_KEY` (or `KIMIFLARE_OPENROUTER_KEY`). With this set, the setup screen never appears — the way to run kimiflare headless (CI, a VM, a container).
+1. **Environment:** `OPENROUTER_API_KEY` (or `AUTOPILOT_OPENROUTER_KEY`). With this set, the setup screen never appears — the way to run autopilot headless (CI, a VM, a container).
 2. **Sign in / setup screen / CLI:** "Sign in with OpenRouter" on first run, or `autopilot auth openrouter` — approve in the browser and a key is created and saved (OpenRouter's OAuth PKCE flow). Over SSH or in a container it shows a link to open on any device and asks for the code OpenRouter displays (force this with `--code`). `--paste` prompts for an existing key instead, and `autopilot auth openrouter <key>` saves one directly. Inside the TUI, `/key set <key>` replaces it.
 3. **Config file:** `"openrouterApiKey": "sk-or-…"` in `~/.config/autopilot/config.json` (created with mode 600).
 
@@ -196,8 +196,8 @@ host application (CI, an agents platform, a container) fronts model access with 
 doesn't want to hand autopilot a raw provider key:
 
 ```sh
-export KIMIFLARE_BASE_URL="https://your-broker.example.com/v1"  # /chat/completions is appended
-export KIMIFLARE_API_KEY="<bearer for that endpoint>"           # optional; header omitted if unset
+export AUTOPILOT_BASE_URL="https://your-broker.example.com/v1"  # /chat/completions is appended
+export AUTOPILOT_API_KEY="<bearer for that endpoint>"           # optional; header omitted if unset
 autopilot -p "..."        # or --mode rpc — no OpenRouter key needed
 ```
 
@@ -205,7 +205,7 @@ The same pair can be persisted in `~/.config/autopilot/config.json` as `baseUrl`
 (env vars win over the file, field by field). When a base URL is configured:
 
 - Chat requests go to `<baseUrl>/chat/completions` and memory embeddings to `<baseUrl>/embeddings`,
-  with `Authorization: Bearer $KIMIFLARE_API_KEY` (no `Authorization` header at all when the key is
+  with `Authorization: Bearer $AUTOPILOT_API_KEY` (no `Authorization` header at all when the key is
   unset — e.g. a local llama.cpp/Ollama server).
 - Model ids pass through in the request body unchanged; your endpoint owns provider dispatch.
 - Cost is the local estimate only — your endpoint does its own metering.
@@ -327,11 +327,11 @@ const { session } = await createAgentSession({ cwd, handleProcessExit: false });
 The SDK uses the active [provider](#providers) — `provider` in `config` (or `AUTOPILOT_PROVIDER`),
 else OpenRouter — and needs its key: `providers.<id>.apiKey` in `config` or the provider's env var
 (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, …). A [custom gateway endpoint](#custom-gateway-endpoint)
-(`baseUrl` / `apiKey` in `config`, or `KIMIFLARE_BASE_URL` / `KIMIFLARE_API_KEY`) needs no other key.
+(`baseUrl` / `apiKey` in `config`, or `AUTOPILOT_BASE_URL` / `AUTOPILOT_API_KEY`) needs no other key.
 For OpenRouter, the key is resolved in this priority order:
 
 1. **Explicit `config` object** (`openrouterApiKey`) — recommended for apps
-2. **Environment variables**: `OPENROUTER_API_KEY` / `KIMIFLARE_OPENROUTER_KEY`
+2. **Environment variables**: `OPENROUTER_API_KEY` / `AUTOPILOT_OPENROUTER_KEY`
 3. **Config file**: `~/.config/autopilot/config.json`
 
 A [Requesty](#requesty-optional) key (`requestyApiKey` in `config`, or `REQUESTY_API_KEY`) also works
@@ -361,7 +361,7 @@ node bin/autopilot.mjs --mode rpc
 ```
 
 Give the subprocess `OPENROUTER_API_KEY` — or a [custom gateway endpoint](#custom-gateway-endpoint)
-(`KIMIFLARE_BASE_URL` + `KIMIFLARE_API_KEY`), ideal for host apps that broker model access themselves.
+(`AUTOPILOT_BASE_URL` + `AUTOPILOT_API_KEY`), ideal for host apps that broker model access themselves.
 
 ```ts
 import { spawn } from "node:child_process";
@@ -431,13 +431,13 @@ There is no `/thinking` command. In the interactive UI the reasoning effort for 
 
 ### Subagent routing
 
-`/subagents auto` is the default: on substantial tasks the agent is asked to look for independent parts and delegate them, and it decides whether delegation is worth it. `suggest` only hints at delegation for likely parallel work, and `off` disables harness guidance (you can still ask for subagents explicitly). Explicit requests to use subagents or to work without them always win. Set the policy with `/subagents`, `KIMIFLARE_SUBAGENT_POLICY`, or `subagentPolicy` in config.
+`/subagents auto` is the default: on substantial tasks the agent is asked to look for independent parts and delegate them, and it decides whether delegation is worth it. `suggest` only hints at delegation for likely parallel work, and `off` disables harness guidance (you can still ask for subagents explicitly). Explicit requests to use subagents or to work without them always win. Set the policy with `/subagents`, `AUTOPILOT_SUBAGENT_POLICY`, or `subagentPolicy` in config.
 
 The harness never starts a subagent by itself: the agent calls the `subagent` tool, which always needs normal tool permission (one prompt covers a parallel batch) and obeys provider, read-only, spend, concurrency, and timeout limits. In Code Mode the `subagent` tool stays a direct tool next to `execute_code`. Jev (a fast yes/no decision model on OpenRouter) sharpens this: in `auto` mode it checks whether a substantial request has independent parts (strong delegation guidance at ≥80%, otherwise the softer nudge), and in `suggest` mode it decides whether to suggest at all. It receives at most 1,200 characters of redacted request text, runs alongside other pre-turn work, and any failure falls back to the default guidance.
 
 ### Finishing the job
 
-When a substantial turn ends without the agent asking you anything, a Jev yes/no check asks whether it actually finished — or clearly explained a blocker — rather than stopping after a plan or "next I'll…". If it clearly didn't, the agent is told to continue (once per turn), so you don't have to type "go on". Typically under a second; OpenRouter only. Turn it off with `"completionCheck": false` in config or `KIMIFLARE_COMPLETION_CHECK=0`.
+When a substantial turn ends without the agent asking you anything, a Jev yes/no check asks whether it actually finished — or clearly explained a blocker — rather than stopping after a plan or "next I'll…". If it clearly didn't, the agent is told to continue (once per turn), so you don't have to type "go on". Typically under a second; OpenRouter only. Turn it off with `"completionCheck": false` in config or `AUTOPILOT_COMPLETION_CHECK=0`.
 
 ## Running shell commands yourself
 
@@ -473,7 +473,7 @@ retention pruned automatically at startup.
 
 The logs deliberately exclude prompts and completions. To capture full
 request/response payloads locally for debugging, run with
-`KIMIFLARE_DUMP_LLM=1`; each generation is also visible in your
+`AUTOPILOT_DUMP_LLM=1`; each generation is also visible in your
 [OpenRouter activity log](https://openrouter.ai/activity).
 
 ```sh
@@ -489,13 +489,13 @@ jq -r 'select(.event == "tool:end") | "\(.data.duration_ms)\t\(.data.tool)"' \
   $(autopilot logs path) | sort -rn | head
 ```
 
-Disable the file sink entirely with `KIMIFLARE_LOG_SINK=off`. The
-separate `KIMIFLARE_LOG_LEVEL` env var (default `off`) controls stderr
+Disable the file sink entirely with `AUTOPILOT_LOG_SINK=off`. The
+separate `AUTOPILOT_LOG_LEVEL` env var (default `off`) controls stderr
 output — independent of the file sink.
 
 ### Shipping to an OpenTelemetry collector
 
-If you set `KIMIFLARE_OTEL_ENDPOINT`, autopilot also ships each log
+If you set `AUTOPILOT_OTEL_ENDPOINT`, autopilot also ships each log
 entry to that endpoint over [OTLP/HTTP](https://opentelemetry.io/docs/specs/otlp/)
 so it lands in Datadog, Honeycomb, Grafana Loki, an internal collector,
 or any other backend that speaks OTel. Batched every 5 s (or every
@@ -504,18 +504,18 @@ loop.
 
 ```sh
 # Full path:
-export KIMIFLARE_OTEL_ENDPOINT="https://otel.example.com/v1/logs"
+export AUTOPILOT_OTEL_ENDPOINT="https://otel.example.com/v1/logs"
 # Or just the base URL (we auto-append /v1/logs):
-export KIMIFLARE_OTEL_ENDPOINT="https://otel.example.com"
+export AUTOPILOT_OTEL_ENDPOINT="https://otel.example.com"
 
 # Optional headers (comma-separated key=value pairs) — e.g. for auth:
-export KIMIFLARE_OTEL_HEADERS="Authorization=Bearer xyz,X-Tenant=acme"
+export AUTOPILOT_OTEL_HEADERS="Authorization=Bearer xyz,X-Tenant=acme"
 ```
 
 Each log entry maps to one OTel `LogRecord`. Correlation IDs
 (`session_id`, `turn_id`, `request_id`) become record attributes,
 `data.*` fields are flattened to attributes with type-preserving
-encoding, and a `service.name=kimiflare` + `service.version` pair sits
+encoding, and a `service.name=autopilot` + `service.version` pair sits
 on the resource.
 
 ## Session traces and evals
@@ -524,7 +524,7 @@ Autopilot can record its own sessions so you can see how it performs on your wor
 
 ### Session traces
 
-Tracing is off by default. Turn it on for one run with `KIMIFLARE_TRACE=1`, or always with `"trace": { "enabled": true }` in `~/.config/autopilot/config.json`. Each session then writes a `trace.jsonl` under `~/.local/share/autopilot/traces/` (`KIMIFLARE_TRACE_DIR` or `trace.root` to change it), one event per line:
+Tracing is off by default. Turn it on for one run with `AUTOPILOT_TRACE=1`, or always with `"trace": { "enabled": true }` in `~/.config/autopilot/config.json`. Each session then writes a `trace.jsonl` under `~/.local/share/autopilot/traces/` (`AUTOPILOT_TRACE_DIR` or `trace.root` to change it), one event per line:
 
 - every model request and response, with tokens, cost and latency
 - tool calls and their results, and each permission decision

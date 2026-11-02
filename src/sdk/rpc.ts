@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { createAgentSession } from "./session.js";
-import type { KimiFlareSession, SessionEvent, PermissionDecision } from "./types.js";
+import type { AutopilotSession, SessionEvent, PermissionDecision } from "./types.js";
 import { logger } from "../util/logger.js";
 import { endSessions } from "../hooks/session-lifecycle.js";
 
@@ -25,7 +25,7 @@ export async function startRpcServer(
   // Test seam: swap the session factory without touching the wire protocol.
   createSession: typeof createAgentSession = createAgentSession,
 ): Promise<void> {
-  let session: KimiFlareSession | null = null;
+  let session: AutopilotSession | null = null;
   let unsubscribe: (() => void) | null = null;
   // Prompt turns run OFF the read loop. Awaiting `session.prompt()` inline
   // would stop the loop from reading commands until the turn ends — but a

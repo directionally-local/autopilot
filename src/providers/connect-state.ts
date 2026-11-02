@@ -9,7 +9,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { openRouterBaseUrl } from "../models/openrouter.js";
 import { requestyBaseUrl } from "../models/requesty.js";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { getPreset, type ProviderId } from "./presets.js";
 import { resolveActiveProvider, resolveProviderKey } from "./resolve.js";
 
@@ -78,7 +78,7 @@ export function authHeaderFor(id: ProviderId): Pick<ConnectState, "authHeader" |
  * reused saved credentials instead of asking for them. Throws when the
  * provider has no reachable URL (a custom endpoint without one).
  */
-export function buildConnectState(result: ConnectResult, cfg: Partial<KimiConfig> | null, env: NodeJS.ProcessEnv = process.env): ConnectState {
+export function buildConnectState(result: ConnectResult, cfg: Partial<AutopilotConfig> | null, env: NodeJS.ProcessEnv = process.env): ConnectState {
   const { id, model } = result;
   const preset = getPreset(id);
   let baseUrl: string | undefined;

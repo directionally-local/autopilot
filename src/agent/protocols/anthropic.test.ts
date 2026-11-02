@@ -1,7 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import { parseAnthropicStream, sanitizeToolId, toAnthropicMessages, toAnthropicRequest } from "./anthropic.js";
-import { runKimi, type KimiEvent } from "../client.js";
+import { runKimi, type ModelEvent } from "../client.js";
 import { llmAuthFromConfig } from "../llm-auth.js";
 import { mergeReasoningDetails, type ChatMessage, type ReasoningDetail } from "../messages.js";
 import { runAgentTurn } from "../loop.js";
@@ -106,15 +106,15 @@ describe("toAnthropicRequest", () => {
 
 describe("parseAnthropicStream", () => {
   it("yields text, reasoning with its signature, tool calls and cache-aware usage", async () => {
-    const events: KimiEvent[] = [];
+    const events: ModelEvent[] = [];
     for await (const e of parseAnthropicStream(sseStream(STREAM), undefined, 5_000, 5_000)) events.push(e);
     assert.strictEqual(events.filter((e) => e.type === "text").map((e) => (e as { delta: string }).delta).join(""), "Reading it.");
     assert.strictEqual(events.filter((e) => e.type === "reasoning").map((e) => (e as { delta: string }).delta).join(""), "Look at the readme.");
     const details = events.filter((e) => e.type === "reasoning_details").flatMap((e) => (e as { details: ReasoningDetail[] }).details);
     assert.deepStrictEqual(details, [{ type: "anthropic.thinking", index: 0, text: "Look at the readme.", signature: "sig-abc" }]);
-    const complete = events.find((e) => e.type === "tool_call_complete") as Extract<KimiEvent, { type: "tool_call_complete" }>;
+    const complete = events.find((e) => e.type === "tool_call_complete") as Extract<ModelEvent, { type: "tool_call_complete" }>;
     assert.deepStrictEqual([complete.id, complete.name, complete.arguments, complete.finishReason], ["toolu_01", "read", '{"path":"README.md"}', "tool_calls"]);
-    const done = events.at(-1) as Extract<KimiEvent, { type: "done" }>;
+    const done = events.at(-1) as Extract<ModelEvent, { type: "done" }>;
     assert.deepStrictEqual(done.usage, {
       prompt_tokens: 1000,
       completion_tokens: 42,

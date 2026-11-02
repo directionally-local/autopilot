@@ -93,7 +93,7 @@ export function stripTypescript(code: string): string {
 
 async function loadTypescript(cwd: string): Promise<typeof import("typescript") | null> {
   // First, try to resolve typescript relative to this module (kimiflare's own dependencies).
-  // This works when kimiflare is installed globally or in any project, regardless of cwd.
+  // This works when autopilot is installed globally or in any project, regardless of cwd.
   try {
     const tsPath = await import.meta.resolve("typescript");
     return await import(tsPath);

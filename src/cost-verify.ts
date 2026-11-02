@@ -1,11 +1,11 @@
 /**
- * Ground-truth check for the numbers kimiflare shows (`autopilot cost --verify`,
+ * Ground-truth check for the numbers autopilot shows (`autopilot cost --verify`,
  * `/cost verify`).
  *
  * For every recorded turn that has an OpenRouter generation id, fetch
  * OpenRouter's own record of that generation (GET /generation?id=…, the same
  * data behind openrouter.ai/activity and your bill) and compare it field by
- * field with what kimiflare recorded: input tokens, output tokens, cached
+ * field with what autopilot recorded: input tokens, output tokens, cached
  * tokens and USD cost. Tokens must match exactly; cost within a
  * hundred-millionth of a dollar (float rounding).
  */

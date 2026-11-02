@@ -47,7 +47,7 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
           hook: {
             id: "stop-notify-macos",
             command:
-              "osascript -e 'display notification \"Turn complete\" with title \"kimiflare\"'",
+              "osascript -e 'display notification \"Turn complete\" with title \"autopilot\"'",
             enabled: false,
             description: "macOS desktop notification when the agent finishes.",
           },
@@ -73,7 +73,7 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
       id: "block-env-file-writes",
       matcher: "^(edit|write)$",
       command:
-        'case "$KIMIFLARE_HOOK_PATH" in *.env|.env.*|*secrets*|*.pem|*.key) ' +
+        'case "$AUTOPILOT_HOOK_PATH" in *.env|.env.*|*secrets*|*.pem|*.key) ' +
         'echo "blocked: paths matching .env / secrets / *.pem are off-limits" >&2; exit 2;; esac',
       enabled: false,
       description:
@@ -87,7 +87,7 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
       id: "block-git-internals",
       matcher: "^(edit|write)$",
       command:
-        'case "$KIMIFLARE_HOOK_PATH" in *.git/*|.git/*) ' +
+        'case "$AUTOPILOT_HOOK_PATH" in *.git/*|.git/*) ' +
         'echo "blocked: cannot edit files inside .git/" >&2; exit 2;; esac',
       enabled: false,
       description:
@@ -106,8 +106,8 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
       // on a missing dev dep.
       command:
         'command -v npx >/dev/null 2>&1 || exit 0; ' +
-        'case "$KIMIFLARE_HOOK_PATH" in *.ts|*.tsx|*.js|*.jsx|*.json|*.md|*.css|*.html) ' +
-        'npx --no-install prettier --write "$KIMIFLARE_HOOK_PATH" >/dev/null 2>&1 || true ;; ' +
+        'case "$AUTOPILOT_HOOK_PATH" in *.ts|*.tsx|*.js|*.jsx|*.json|*.md|*.css|*.html) ' +
+        'npx --no-install prettier --write "$AUTOPILOT_HOOK_PATH" >/dev/null 2>&1 || true ;; ' +
         'esac',
       enabled: false,
       description:
@@ -125,9 +125,9 @@ export const RECOMMENDED_HOOKS: RecommendedHook[] = [
         'mkdir -p ~/.local/state/autopilot && ' +
         'printf "%s\\t%s\\t%s\\t%s\\n" ' +
         '"$(date -u +%Y-%m-%dT%H:%M:%SZ)" ' +
-        '"$KIMIFLARE_HOOK_SESSION_ID" ' +
-        '"$KIMIFLARE_HOOK_TOOL" ' +
-        '"$KIMIFLARE_HOOK_RESULT_OK" ' +
+        '"$AUTOPILOT_HOOK_SESSION_ID" ' +
+        '"$AUTOPILOT_HOOK_TOOL" ' +
+        '"$AUTOPILOT_HOOK_RESULT_OK" ' +
         '>> ~/.local/state/autopilot/tool-audit.log',
       enabled: false,
       description:

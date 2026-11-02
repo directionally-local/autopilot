@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, type KimiConfig } from "../config.js";
+import { DEFAULT_MODEL, type AutopilotConfig } from "../config.js";
 
 /**
  * The config `autopilot serve` runs with. Without provider credentials it still serves
@@ -8,10 +8,10 @@ import { DEFAULT_MODEL, type KimiConfig } from "../config.js";
  * stay unavailable. Returns undefined when serving makes no sense.
  */
 export function resolveServeConfig(
-  cfg: KimiConfig | null,
+  cfg: AutopilotConfig | null,
   env: NodeJS.ProcessEnv = process.env,
-): { config: KimiConfig; asterOnly: boolean } | undefined {
+): { config: AutopilotConfig; asterOnly: boolean } | undefined {
   if (cfg) return { config: cfg, asterOnly: false };
   if (!env.AUTOPILOT_HOTCELL_ENDPOINT?.trim()) return undefined;
-  return { config: { model: DEFAULT_MODEL } as KimiConfig, asterOnly: true };
+  return { config: { model: DEFAULT_MODEL } as AutopilotConfig, asterOnly: true };
 }

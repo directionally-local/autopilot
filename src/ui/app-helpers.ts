@@ -104,7 +104,7 @@ export function costLookupFromConfig(cfg: Cfg, meta: ResponseMeta | null | undef
 
 /**
  * Open `url` in the user's browser. Returns false when opening is disabled
- * (KIMIFLARE_NO_BROWSER=1 or BROWSER=none — tests, headless boxes) so the
+ * (AUTOPILOT_NO_BROWSER=1 or BROWSER=none — tests, headless boxes) so the
  * caller can fall back to printing the URL. Never throws: a missing opener
  * (no xdg-open on a server) must not crash the app.
  */

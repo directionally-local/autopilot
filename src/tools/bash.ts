@@ -158,7 +158,7 @@ export async function guardGitPush(command: string, ctx: ToolContext): Promise<T
     const msg =
       `Blocked: \`${trimmed}\` may push the default branch (${defaultBranch}). ` +
       `Create a feature branch, push it, and open a PR with \`github_create_pr\`. ` +
-      `To allow direct pushes, set \`allowDirectPush: true\` in config or run with \`KIMIFLARE_ALLOW_DIRECT_PUSH=1\`.` +
+      `To allow direct pushes, set \`allowDirectPush: true\` in config or run with \`AUTOPILOT_ALLOW_DIRECT_PUSH=1\`.` +
       (hint ? `\n${hint}` : "");
     return makeErrorOutput(msg);
   }
@@ -171,7 +171,7 @@ export async function guardGitPush(command: string, ctx: ToolContext): Promise<T
     const msg =
       `Blocked: \`${trimmed}\` would push directly to the default branch (${defaultBranch}). ` +
       `Create a feature branch, push it, and open a PR with \`github_create_pr\`. ` +
-      `To allow direct pushes, set \`allowDirectPush: true\` in config or run with \`KIMIFLARE_ALLOW_DIRECT_PUSH=1\`.` +
+      `To allow direct pushes, set \`allowDirectPush: true\` in config or run with \`AUTOPILOT_ALLOW_DIRECT_PUSH=1\`.` +
       (hint ? `\n${hint}` : "");
     return makeErrorOutput(msg);
   }
@@ -215,7 +215,7 @@ export async function guardGitCommit(command: string, ctx: ToolContext): Promise
   const msg =
     `Blocked: \`git ${verb}\` on the default branch (${defaultBranch}). ` +
     `Create a feature branch first (\`git switch -c <name>\`), then commit and open a PR with \`github_create_pr\`. ` +
-    `To allow direct commits, set \`allowDirectPush: true\` in config or run with \`KIMIFLARE_ALLOW_DIRECT_PUSH=1\`.`;
+    `To allow direct commits, set \`allowDirectPush: true\` in config or run with \`AUTOPILOT_ALLOW_DIRECT_PUSH=1\`.`;
   return makeErrorOutput(msg);
 }
 

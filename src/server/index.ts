@@ -1,5 +1,5 @@
 /**
- * KimiFlare headless HTTP server.
+ * Autopilot headless HTTP server.
  *
  * Provides a local REST API + SSE event stream for CI integration,
  * editor plugins, and scripting. Built on Node's built-in `http` module
@@ -8,7 +8,7 @@
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { logger } from "../util/logger.js";
 import { installExitHandlers, onShutdown } from "../util/exit.js";
 import { setupRoutes } from "./routes.js";
@@ -16,10 +16,13 @@ import { hasDotSegment, requestPathname } from "./request-path.js";
 import type { AsterApiRuntime } from "./aster-api.js";
 import { readEnv } from "../util/env.js";
 
+/** Basic-auth usernames accepted by the legacy local API, canonical name first (#911). */
+const BASIC_AUTH_USERS = ["autopilot", "kimiflare"] as const;
+
 export interface ServerOpts {
   port: number;
   hostname: string;
-  config: KimiConfig;
+  config: AutopilotConfig;
   /** Injectable Aster runtime; defaults to the Hotcell-backed runtime when its env is configured. */
   asterRuntime?: AsterApiRuntime;
 }
@@ -29,7 +32,7 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
 
   const password = readEnv("SERVER_PASSWORD");
   if (!password && !isLoopbackHost(opts.hostname)) {
-    throw new Error(`Refusing to listen on ${opts.hostname} without KIMIFLARE_SERVER_PASSWORD: the API can run tools on this machine.`);
+    throw new Error(`Refusing to listen on ${opts.hostname} without AUTOPILOT_SERVER_PASSWORD: the API can run tools on this machine.`);
   }
   const corsOrigins = parseOrigins(readEnv("SERVER_CORS_ORIGINS"));
 
@@ -66,11 +69,15 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
     }
 
     // Legacy local API Basic auth. The versioned Aster API authenticates its own scoped bearer token.
+    // The username is `autopilot`; the pre-rename `kimiflare` username is still
+    // accepted so existing curl commands, scripts and editor plugins keep working (#911).
     if (!isAsterApi && password) {
       const auth = req.headers.authorization ?? "";
-      const expected = "Basic " + Buffer.from(`kimiflare:${password}`).toString("base64");
-      if (auth !== expected) {
-        res.writeHead(401, { "WWW-Authenticate": 'Basic realm="kimiflare"' });
+      const ok = BASIC_AUTH_USERS.some(
+        (user) => auth === "Basic " + Buffer.from(`${user}:${password}`).toString("base64"),
+      );
+      if (!ok) {
+        res.writeHead(401, { "WWW-Authenticate": 'Basic realm="autopilot"' });
         res.end(JSON.stringify({ error: "Unauthorized" }));
         return;
       }
@@ -113,7 +120,7 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
   return new Promise((resolve, reject) => {
     server.listen(opts.port, opts.hostname, () => {
       logger.info("server: listening", { hostname: opts.hostname, port: opts.port });
-      console.log(`kimiflare serve: http://${opts.hostname}:${opts.port}`);
+      console.log(`autopilot serve: http://${opts.hostname}:${opts.port}`);
       console.log(`  API docs: http://${opts.hostname}:${opts.port}/doc`);
       console.log(`  SSE stream: http://${opts.hostname}:${opts.port}/event`);
       resolve(server);
@@ -142,7 +149,7 @@ function hostName(header: string): string {
  * Browser protections for the legacy local API, which can run tools on this
  * machine. A web page the user has open must not be able to reach it:
  *  - cross-origin requests are refused unless the origin is listed in
- *    KIMIFLARE_SERVER_CORS_ORIGINS (no wildcard CORS);
+ *    AUTOPILOT_SERVER_CORS_ORIGINS (no wildcard CORS);
  *  - on a loopback listener the Host header must be a loopback name, which
  *    defeats DNS rebinding (attacker.example resolving to 127.0.0.1).
  * Non-browser clients (curl, SDKs, editor plugins) send no Origin and are unaffected.
@@ -163,5 +170,5 @@ export function checkLegacyRequest(
   } catch {
     // malformed Origin: refuse below
   }
-  return { ok: false, error: "Cross-origin request refused; set KIMIFLARE_SERVER_CORS_ORIGINS to allow an origin" };
+  return { ok: false, error: "Cross-origin request refused; set AUTOPILOT_SERVER_CORS_ORIGINS to allow an origin" };
 }

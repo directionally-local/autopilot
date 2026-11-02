@@ -9,7 +9,7 @@ import {
   HOOK_EVENTS,
   type HookConfig,
   type HookEvent,
-  type KimiflareSettings,
+  type HookSettings,
 } from "./types.js";
 
 // ── Where hook settings live ─────────────────────────────────────────────
@@ -76,7 +76,7 @@ function sameFile(a: string, b: string): boolean {
   }
 }
 
-function readSettingsFile(path: string): KimiflareSettings | null {
+function readSettingsFile(path: string): HookSettings | null {
   if (!existsSync(path)) return null;
   let raw: string;
   try {
@@ -88,10 +88,10 @@ function readSettingsFile(path: string): KimiflareSettings | null {
   return parseSettings(raw, path);
 }
 
-function parseSettings(raw: string, path: string): KimiflareSettings | null {
+function parseSettings(raw: string, path: string): HookSettings | null {
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as KimiflareSettings;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as HookSettings;
     logger.warn("hooks:settings_not_object", { path });
     return null;
   } catch (e) {
@@ -117,7 +117,7 @@ export class SettingsFileError extends Error {
  * with a typo (or one holding other tools' settings) is never silently
  * replaced by a hooks-only file.
  */
-function readSettingsFileForWrite(path: string): KimiflareSettings {
+function readSettingsFileForWrite(path: string): HookSettings {
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {
@@ -128,7 +128,7 @@ function readSettingsFileForWrite(path: string): KimiflareSettings {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new SettingsFileError(path, "it does not contain a JSON object");
   }
-  const settings = parsed as KimiflareSettings;
+  const settings = parsed as HookSettings;
   if (settings.hooks !== undefined && (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks))) {
     throw new SettingsFileError(path, `its "hooks" key is not an object`);
   }
@@ -171,8 +171,8 @@ function normalizeHook(
  *  event, and an entry whose id is already present replaces the earlier
  *  one (taking the later file's position), so a hook copied from the
  *  legacy file to the autopilot one runs once. */
-function mergeHookMaps(...maps: KimiflareSettings["hooks"][]): KimiflareSettings["hooks"] {
-  const out: KimiflareSettings["hooks"] = {};
+function mergeHookMaps(...maps: HookSettings["hooks"][]): HookSettings["hooks"] {
+  const out: HookSettings["hooks"] = {};
   for (const ev of HOOK_EVENTS) {
     // normalizeHook always sets an id (explicit, or derived from event+command).
     const byId = new Map<string, HookConfig>();
@@ -190,15 +190,15 @@ function mergeHookMaps(...maps: KimiflareSettings["hooks"][]): KimiflareSettings
 
 /**
  * Load + merge every hook settings file (see hookSettingsLocations).
- * Always returns a valid (possibly empty) `KimiflareSettings`. Hook
+ * Always returns a valid (possibly empty) `HookSettings`. Hook
  * entries are normalized and stamped with their `source` scope.
  */
-export function loadHooksSettings(cwd: string): KimiflareSettings {
+export function loadHooksSettings(cwd: string): HookSettings {
   const normalized = (
-    raw: KimiflareSettings | null,
+    raw: HookSettings | null,
     source: NonNullable<HookConfig["source"]>,
-  ): KimiflareSettings["hooks"] => {
-    const out: KimiflareSettings["hooks"] = {};
+  ): HookSettings["hooks"] => {
+    const out: HookSettings["hooks"] = {};
     for (const ev of HOOK_EVENTS) {
       const list = raw?.hooks?.[ev];
       if (!Array.isArray(list)) continue;
@@ -223,7 +223,7 @@ const warnedUntrusted = new Set<string>();
  * chose, so they load only when the user trusted their current content
  * (see src/util/project-trust.ts); otherwise they are skipped.
  */
-function readHookSettings(loc: HookSettingsLocation): KimiflareSettings | null {
+function readHookSettings(loc: HookSettingsLocation): HookSettings | null {
   if (loc.scope === "global") return readSettingsFile(loc.path);
   const read = readProjectFile(loc.path);
   if (!read) return null;
@@ -243,7 +243,7 @@ function readHookSettings(loc: HookSettingsLocation): KimiflareSettings | null {
  * through /hooks. An untrusted file stays untrusted, so a user edit never
  * vouches for hooks the repository added.
  */
-function writeSettingsFile(path: string, scope: "global" | "project", settings: KimiflareSettings): void {
+function writeSettingsFile(path: string, scope: "global" | "project", settings: HookSettings): void {
   const keepTrust = scope === "project" && isProjectFileTrusted(path);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(settings, null, 2) + "\n", "utf8");

@@ -1,11 +1,11 @@
-export class KimiApiError extends Error {
+export class ApiError extends Error {
   constructor(
     message: string,
     public readonly code?: number,
     public readonly httpStatus?: number,
   ) {
     super(message);
-    this.name = "KimiApiError";
+    this.name = "ApiError";
   }
 }
 
@@ -16,15 +16,19 @@ export class PermissionDeniedError extends Error {
   }
 }
 
+/** Friendly-message prefixes the client sets itself; the legacy `kimiflare: `
+ *  spelling is still stripped so pre-rename messages humanize too (#911). */
+const FRIENDLY_PREFIXES = ["autopilot: ", "kimiflare: "] as const;
+
 /** Map an API error to a human-readable, actionable message. Messages the
- *  client already made friendly ("kimiflare: …" — bad key, out of credits,
+ *  client already made friendly ("autopilot: …" — bad key, out of credits,
  *  moderation block, missing key) pass through; the rest are bucketed by
  *  HTTP status with any embedded JSON stripped. */
-export function humanizeApiError(err: KimiApiError): string {
+export function humanizeApiError(err: ApiError): string {
   const { code, httpStatus, message } = err;
 
-  if (message.startsWith("kimiflare: ")) {
-    return message.slice("kimiflare: ".length);
+  for (const prefix of FRIENDLY_PREFIXES) {
+    if (message.startsWith(prefix)) return message.slice(prefix.length);
   }
 
   const codeStr = code !== undefined ? ` (code: ${code})` : "";

@@ -1,14 +1,14 @@
 /**
- * OpenAPI 3.1 specification for the KimiFlare headless server.
+ * OpenAPI 3.1 specification for the Autopilot headless server.
  */
 
 export function getOpenApiSpec(): string {
   const spec = {
     openapi: "3.1.0",
     info: {
-      title: "KimiFlare Headless Server API",
+      title: "Autopilot Headless Server API",
       version: "1.0.0",
-      description: "HTTP API for running KimiFlare agent sessions headlessly.",
+      description: "HTTP API for running Autopilot agent sessions headlessly.",
     },
     servers: [{ url: "/", description: "Local server" }],
     paths: {
@@ -509,7 +509,7 @@ export function getOpenApiSpec(): string {
 <html>
 <head>
   <meta charset="utf-8">
-  <title>KimiFlare Headless Server API</title>
+  <title>Autopilot Headless Server API</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; }
     pre { background: #f5f5f5; padding: 16px; border-radius: 8px; overflow-x: auto; }
@@ -519,7 +519,7 @@ export function getOpenApiSpec(): string {
   </style>
 </head>
 <body>
-  <h1>KimiFlare Headless Server API</h1>
+  <h1>Autopilot Headless Server API</h1>
   <p>OpenAPI 3.1 specification for the local HTTP server.</p>
   <h2>Spec</h2>
   <pre>${JSON.stringify(spec, null, 2)}</pre>

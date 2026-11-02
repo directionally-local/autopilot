@@ -5,7 +5,7 @@
 Autopilot exposes the two signals Beacon reads:
 
 - **Hooks.** Every hook payload carries Claude Code's field names: `hook_event_name`, `session_id`, `cwd`, `tool_name`, `tool_input`, `tool_response`, `tool_call_id` and `transcript_path`, with Claude Code's tool names and shapes (see [Tool names and result shapes](#tool-names-and-result-shapes)). `Stop` carries `last_assistant_message`, and every payload carries `"beacon.harness.name": "autopilot"`. Autopilot also fires `SessionStart` and `SessionEnd`.
-- **OpenTelemetry events.** With `KIMIFLARE_OTEL_ENDPOINT` set, Autopilot emits OTLP log events named `autopilot.session.start`, `autopilot.api_request`, `autopilot.tool_result` and `autopilot.session.end`. They carry the OpenTelemetry GenAI attributes (`gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cached_input_tokens`), plus `cost.usd`. These cover token usage and cost, which hooks can't carry.
+- **OpenTelemetry events.** With `AUTOPILOT_OTEL_ENDPOINT` set, Autopilot emits OTLP log events named `autopilot.session.start`, `autopilot.api_request`, `autopilot.tool_result` and `autopilot.session.end`. They carry the OpenTelemetry GenAI attributes (`gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cached_input_tokens`), plus `cost.usd`. These cover token usage and cost, which hooks can't carry.
 
 Neither ever contains API keys or provider tokens. OTel events carry sizes, names, ids, usage and outcomes, never prompt or tool content.
 
@@ -143,11 +143,11 @@ Every entry also carries `uuid`, `parentUuid` (the previous entry's `uuid`, so t
 - **Images** in a prompt are written as a `[Image]` text block, never as base64.
 - **Not written:** the system prompt and Autopilot's internal nudges (system messages).
 
-**Redaction and size.** The transcript is redacted the same way as the session trace (`KIMIFLARE_TRACE`): OpenRouter keys, GitHub tokens, `Bearer`/`Basic` credentials, private-key blocks, and the values of `api_key=`, `token:`, `secret`, `password` and `authorization` pairs become `<redacted>`. A block over 256 KB is cut and marked `[truncated: N bytes total]`, the way the trace cuts its blobs. A transcript stops growing at the trace's per-session cap (200 MB). Transcripts are kept with their session files and only deleted by `autopilot history prune`.
+**Redaction and size.** The transcript is redacted the same way as the session trace (`AUTOPILOT_TRACE`): OpenRouter keys, GitHub tokens, `Bearer`/`Basic` credentials, private-key blocks, and the values of `api_key=`, `token:`, `secret`, `password` and `authorization` pairs become `<redacted>`. A block over 256 KB is cut and marked `[truncated: N bytes total]`, the way the trace cuts its blobs. A transcript stops growing at the trace's per-session cap (200 MB). Transcripts are kept with their session files and only deleted by `autopilot history prune`.
 
 **Resume.** A resumed session (`--continue`, `--session`, `/resume`) appends to its existing transcript and continues the `parentUuid` chain.
 
-**Turning it off.** Set `KIMIFLARE_TRANSCRIPT=0`. Hook payloads then point `transcript_path` at the session JSON, with `transcript_format: "autopilot-json"`.
+**Turning it off.** Set `AUTOPILOT_TRANSCRIPT=0`. Hook payloads then point `transcript_path` at the session JSON, with `transcript_format: "autopilot-json"`.
 
 With Beacon's Claude mode, hooks read the newest `promptId` from the transcript and stamp it as `prompt.id` on `tool.invoked`, `command.executed` and `agent.message`. Beacon's Claude session reader also parses the file: it finds the prompt, each assistant message, the tool calls and their results, and a `token.usage` event per response.
 
@@ -156,7 +156,7 @@ With Beacon's Claude mode, hooks read the newest `promptId` from the transcript 
 Point Autopilot at Beacon's local OTLP/HTTP collector:
 
 ```sh
-export KIMIFLARE_OTEL_ENDPOINT=http://127.0.0.1:4318   # /v1/logs is appended
+export AUTOPILOT_OTEL_ENDPOINT=http://127.0.0.1:4318   # /v1/logs is appended
 ```
 
 The resource carries `service.name: autopilot` and `beacon.harness.name: autopilot`, and the instrumentation scope is `autopilot`.

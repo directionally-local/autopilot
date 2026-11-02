@@ -41,7 +41,7 @@ export async function classifyWithLlm(
   const commands = input.commandsRun.slice(0, 10).join(", ");
   const firstMsg = redactSecrets(input.firstUserMessage.slice(0, 200));
 
-  const prompt = `Classify this kimiflare session into one literal category.
+  const prompt = `Classify this autopilot session into one literal category.
 
 First user message: ${firstMsg}
 Tool calls: ${toolSummary}

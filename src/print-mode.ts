@@ -1,5 +1,5 @@
 /**
- * Enhanced print (headless) mode for KimiFlare.
+ * Enhanced print (headless) mode for Autopilot.
  *
  * Supports one-shot prompts with optional session continuation,
  * file attachments, structured output formats, and cwd override.
@@ -15,7 +15,7 @@ import { buildSystemPrompt } from "./agent/system-prompt.js";
 import { ToolExecutor, getWorkerTools, RESEARCH_WORKER_TOOL_NAMES, permissionFromHook } from "./tools/executor.js";
 import type { HookFailureNotice } from "./hooks/manager.js";
 import type { ChatMessage, ContentPart } from "./agent/messages.js";
-import { KimiApiError, humanizeApiError } from "./util/errors.js";
+import { ApiError, humanizeApiError } from "./util/errors.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "./sessions.js";
 import { sessionFileCompactionTarget } from "./agent/context-budget.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
@@ -28,14 +28,14 @@ import type { UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
 import { evaluatePermissionRules } from "./permissions-evaluator.js";
 import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
-import type { KimiConfig, PermissionRules, ReasoningEffort } from "./config.js";
+import type { AutopilotConfig, PermissionRules, ReasoningEffort } from "./config.js";
 import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 
 export type PrintFormat = "text" | "json" | "stream-json";
 
 export interface PrintModeOpts
-  extends Pick<KimiConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck" | "imageMaxEdge" | "imageQuality"> {
+  extends Pick<AutopilotConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck" | "imageMaxEdge" | "imageQuality"> {
   model: string;
   reasoningEffort?: ReasoningEffort;
   prompt: string;
@@ -70,9 +70,9 @@ export interface PrintModeOpts
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
   /** Local session tracing (off unless `trace.enabled`). */
-  trace?: KimiConfig["trace"];
+  trace?: AutopilotConfig["trace"];
   /** Full config, recorded (redacted) on the trace's `session_start` event. */
-  traceConfigSnapshot?: KimiConfig;
+  traceConfigSnapshot?: AutopilotConfig;
 }
 
 interface JsonToolCall {
@@ -164,7 +164,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   if (opts.updateResult.hasUpdate) {
     process.stderr.write(
-      `\x1b[33mkimiflare update available: ${opts.updateResult.localVersion} → ${opts.updateResult.latestVersion}\x1b[0m\n` +
+      `\x1b[33mautopilot update available: ${opts.updateResult.localVersion} → ${opts.updateResult.latestVersion}\x1b[0m\n` +
         `\x1b[33m  npm i -g autopilot-ai@latest  then restart\x1b[0m\n\n`,
     );
   }
@@ -413,14 +413,14 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     },
     onGuardrail: (ev) => {
       if (format === "text") {
-        process.stderr.write(`\x1b[33mkimiflare: ${ev.message}\x1b[0m\n`);
+        process.stderr.write(`\x1b[33mautopilot: ${ev.message}\x1b[0m\n`);
       } else if (format === "stream-json") {
         emitStreamJson("warning", { message: ev.message, guardrail: ev.kind });
       }
     },
     onWarning: (msg) => {
       if (format === "text") {
-        process.stderr.write(`\x1b[33mkimiflare: ${msg}\x1b[0m\n`);
+        process.stderr.write(`\x1b[33mautopilot: ${msg}\x1b[0m\n`);
       } else if (format === "stream-json") {
         emitStreamJson("warning", { message: msg });
       }
@@ -509,7 +509,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       process.exitCode = 43;
       return;
     }
-    if (err instanceof KimiApiError) {
+    if (err instanceof ApiError) {
       const msg = `Error: ${humanizeApiError(err)}`;
       if (format === "text") process.stderr.write(`\n\x1b[31m${msg}\x1b[0m\n`);
       else if (format === "stream-json") emitStreamJson("error", { message: msg, code: 1 });

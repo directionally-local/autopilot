@@ -27,7 +27,7 @@ import type { ReasoningEffort } from "../config.js";
 import type { TurnPhase } from "../ui/view-types.js";
 import type { DailyUsage } from "../usage-tracker.js";
 import type { TurnSupervisor } from "../agent/supervisor.js";
-import { KimiApiError, humanizeApiError } from "../util/errors.js";
+import { ApiError, humanizeApiError } from "../util/errors.js";
 import { logger } from "../util/logger.js";
 import { recordUsage, getCostReport } from "../usage-tracker.js";
 import { buildInitPrompt } from "./context-generator.js";
@@ -330,7 +330,7 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
         },
       ]);
     } else if (
-      e instanceof KimiApiError &&
+      e instanceof ApiError &&
       (e.httpStatus === 429 || (e.httpStatus !== undefined && e.httpStatus >= 500))
     ) {
       const err = { httpStatus: e.httpStatus, code: e.code, message: humanizeApiError(e) };
@@ -339,7 +339,7 @@ export async function runInit(deps: RunInitDeps): Promise<void> {
       setEvents((es) => [...es, { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) }]);
     } else {
       const displayText =
-        e instanceof KimiApiError ? humanizeApiError(e) : `init failed: ${(e as Error).message}`;
+        e instanceof ApiError ? humanizeApiError(e) : `init failed: ${(e as Error).message}`;
       setEvents((es) => [...es, { kind: "error", key: mkKey(), text: displayText }]);
     }
   } finally {

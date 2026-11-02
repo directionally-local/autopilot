@@ -58,7 +58,7 @@ export interface TurnCost {
   /** OpenRouter generation id ("gen-…"). */
   logId?: string;
   /** Model the request went to, and the token counts the stream reported —
-   *  kept per turn so `kimiflare cost --verify` can check them against
+   *  kept per turn so `autopilot cost --verify` can check them against
    *  OpenRouter's own record of the generation. */
   model?: string;
   promptTokens?: number;

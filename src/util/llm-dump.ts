@@ -6,13 +6,13 @@ import { readEnv } from "./env.js";
 import { configPath } from "./app-dirs.js";
 
 /**
- * Debug-only recorder for the *complete* payload KimiFlare sends to the LLM,
+ * Debug-only recorder for the *complete* payload Autopilot sends to the LLM,
  * plus the response it gets back. This is a research/instrumentation toggle —
  * NOT a user-facing feature, NOT documented, default OFF.
  *
  * It exists to study what fraction of the outbound context is unhelpful
- * (inspired by the "Headroom" experiment). Gate it with `KIMIFLARE_DUMP_LLM=1`,
- * take KimiFlare for a test drive, then fan analysis agents at the dumps.
+ * (inspired by the "Headroom" experiment). Gate it with `AUTOPILOT_DUMP_LLM=1`,
+ * take Autopilot for a test drive, then fan analysis agents at the dumps.
  *
  * Design (mirrors src/util/log-sink.ts):
  *   - Best-effort, silent on every failure. The agent loop must never crash

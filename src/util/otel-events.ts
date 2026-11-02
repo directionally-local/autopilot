@@ -1,7 +1,7 @@
 /**
  * Structured OpenTelemetry events (#871): session, prompt, model request
  * and tool events as OTLP log records with an `event.name`, shipped through
- * the same exporter as logs (KIMIFLARE_OTEL_ENDPOINT) but independent of
+ * the same exporter as logs (AUTOPILOT_OTEL_ENDPOINT) but independent of
  * the log level. Attributes follow the OpenTelemetry GenAI semantic
  * conventions where one exists (`gen_ai.request.model`,
  * `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, …), so collectors

@@ -40,7 +40,7 @@ export async function runAttachMode(opts: AttachModeOpts): Promise<void> {
 
   if (!response.ok) {
     const text = await response.text().catch(() => "unknown error");
-    console.error(`kimiflare attach: ${response.status} ${text}`);
+    console.error(`autopilot attach: ${response.status} ${text}`);
     // 403 prompt_blocked: a UserPromptSubmit hook on the server blocked it.
     process.exit(response.status === 403 && text.includes('"prompt_blocked"') ? PROMPT_BLOCKED_EXIT_CODE : 1);
   }
@@ -98,7 +98,7 @@ async function streamSse(url: string, sessionId: string, format: PrintFormat): P
             break;
           case "warning":
             if (format === "text") {
-              process.stderr.write(`\x1b[33mkimiflare: ${data.message}\x1b[0m\n`);
+              process.stderr.write(`\x1b[33mautopilot: ${data.message}\x1b[0m\n`);
             } else if (format === "stream-json") {
               process.stdout.write(JSON.stringify({ event: "warning", message: data.message }) + "\n");
             }

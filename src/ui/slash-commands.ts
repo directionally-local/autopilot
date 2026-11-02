@@ -921,7 +921,7 @@ const handleProvider: Handler = async (ctx, rest) => {
   } else if (target === "custom" ? !(cfg?.baseUrl || readEnv("BASE_URL")) : preset.keyRequired && !resolveProviderKey(target, cfg)) {
     info(
       target === "custom"
-        ? "set the endpoint first: KIMIFLARE_BASE_URL, or `baseUrl` (and `apiKey`) in config"
+        ? "set the endpoint first: AUTOPILOT_BASE_URL, or `baseUrl` (and `apiKey`) in config"
         : target === "copilot"
           ? "sign in to GitHub Copilot first: run `autopilot auth copilot` in a terminal (GitHub device login), then /provider copilot"
           : `no ${preset.name} key — run /provider ${target} <key>${preset.apiKeyEnv[0] ? ` or set ${preset.apiKeyEnv[0]}` : ""}${preset.keysUrl ? ` (create one at ${preset.keysUrl})` : ""}`,
@@ -1175,7 +1175,7 @@ const handleMemory: Handler = (ctx, rest, arg) => {
   if (!cfg.memoryEnabled) {
     setEvents((e) => [
       ...e,
-      { kind: "info", key: mkKey(), text: "memory is disabled. Use /memory on to enable it, or set KIMIFLARE_MEMORY_ENABLED=1" },
+      { kind: "info", key: mkKey(), text: "memory is disabled. Use /memory on to enable it, or set AUTOPILOT_MEMORY_ENABLED=1" },
     ]);
     return true;
   }
@@ -1894,7 +1894,7 @@ function rateLastTurn(ctx: SlashContext, value: "good" | "bad", reason: string):
   if (!trace.enabled) {
     setEvents((e) => [
       ...e,
-      { kind: "info", key: mkKey(), text: "session tracing is off, so the rating was not recorded (enable with KIMIFLARE_TRACE=1)" },
+      { kind: "info", key: mkKey(), text: "session tracing is off, so the rating was not recorded (enable with AUTOPILOT_TRACE=1)" },
     ]);
     return true;
   }

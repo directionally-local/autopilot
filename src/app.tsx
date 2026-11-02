@@ -47,7 +47,7 @@ import { join } from "node:path";
 import { setTerminalTitle } from "./ui/terminal-title.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type KimiConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
@@ -124,7 +124,7 @@ import {
 import { projectDirsToRead } from "./util/app-dirs.js";
 
 /** The TUI's config is exactly the loaded config. */
-export type Cfg = KimiConfig;
+export type Cfg = AutopilotConfig;
 
 interface PendingPromptEdit {
   key: string;
@@ -942,7 +942,7 @@ function App({
 
   /** `/provider` finished: the new config is saved and its catalog loaded. */
   const handleProviderSwitched = useCallback(
-    async (next: KimiConfig | null, to: ProviderId) => {
+    async (next: AutopilotConfig | null, to: ProviderId) => {
       const loaded = next ?? (await loadConfig());
       if (!loaded) {
         setEvents((e) => [...e, { kind: "error", key: mkKey(), text: "couldn't load the config after switching provider" }]);

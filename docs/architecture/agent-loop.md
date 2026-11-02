@@ -131,7 +131,7 @@ a coarse phase, and a kill flag; actual cancellation goes through the
   selected model, otherwise the loop throws and suggests `/compact`.
   Compaction is the host's job (#717).
 - **Optional history shaping:** strip historical reasoning
-  (`KIMIFLARE_STRIP_REASONING`) and drop images older than
+  (`AUTOPILOT_STRIP_REASONING`) and drop images older than
   `keepLastImageTurns`.
 - **Tool scheduling:** the calls of one response are split into contiguous
   segments by scheduling class.

@@ -7,8 +7,8 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
-import { runKimi, type KimiEvent } from "./client.js";
-import { KimiApiError } from "../util/errors.js";
+import { runKimi, type ModelEvent } from "./client.js";
+import { ApiError } from "../util/errors.js";
 
 function sse(...events: (string | object)[]): string {
   return events.map((e) => `data: ${typeof e === "string" ? e : JSON.stringify(e)}`).join("\n\n") + "\n\n";
@@ -28,9 +28,9 @@ describe("runKimi: OpenRouter stream parsing", () => {
     globalThis.fetch = originalFetch;
   });
 
-  async function collect(body: string): Promise<KimiEvent[]> {
+  async function collect(body: string): Promise<ModelEvent[]> {
     nextBody = body;
-    const out: KimiEvent[] = [];
+    const out: ModelEvent[] = [];
     for await (const ev of runKimi({
       openrouterApiKey: "sk-or-test-key-123456",
       model: "moonshotai/kimi-k2.6",
@@ -175,7 +175,7 @@ describe("runKimi: OpenRouter stream parsing", () => {
     );
   });
 
-  it("throws a KimiApiError on a mid-stream error chunk (HTTP 200 already sent)", async () => {
+  it("throws a ApiError on a mid-stream error chunk (HTTP 200 already sent)", async () => {
     await assert.rejects(
       collect(
         sse(
@@ -188,7 +188,7 @@ describe("runKimi: OpenRouter stream parsing", () => {
         ),
       ),
       (err: unknown) => {
-        assert.ok(err instanceof KimiApiError);
+        assert.ok(err instanceof ApiError);
         assert.match(err.message, /Provider disconnected/);
         assert.strictEqual(err.httpStatus, 502);
         return true;

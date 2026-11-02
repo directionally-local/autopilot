@@ -23,8 +23,8 @@ import { createHash, createHmac } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { KimiApiError } from "../util/errors.js";
-import type { KimiEvent } from "../agent/client.js";
+import { ApiError } from "../util/errors.js";
+import type { ModelEvent } from "../agent/client.js";
 import type { ChatMessage, ContentPart, ReasoningDetail, ToolDef, Usage } from "../agent/messages.js";
 
 export interface AwsCredentials {
@@ -317,8 +317,8 @@ export async function* readEventStream(body: ReadableStream<Uint8Array>, signal?
 
 const STOP: Record<string, string> = { end_turn: "stop", stop_sequence: "stop", tool_use: "tool_calls", max_tokens: "length", content_filtered: "content_filter", guardrail_intervened: "content_filter" };
 
-/** Translate ConverseStream events into the loop's KimiEvents. */
-export async function* parseConverseStream(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<KimiEvent, void, void> {
+/** Translate ConverseStream events into the loop's ModelEvents. */
+export async function* parseConverseStream(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<ModelEvent, void, void> {
   const tools = new Map<number, { id: string; name: string; args: string }>();
   const reasoning = new Map<number, { text: string; signature?: string; redacted?: string }>();
   let finishReason: string | null = null;
@@ -334,7 +334,7 @@ export async function* parseConverseStream(body: ReadableStream<Uint8Array>, sig
     }
     if (type === "exception" || type === "error") {
       const status = event === "throttlingException" ? 429 : event === "serviceUnavailableException" || event === "internalServerException" ? 503 : undefined;
-      throw new KimiApiError(`kimiflare: Bedrock ${event ?? "error"}: ${data.message ?? data.Message ?? "request failed"}`, undefined, status);
+      throw new ApiError(`autopilot: Bedrock ${event ?? "error"}: ${data.message ?? data.Message ?? "request failed"}`, undefined, status);
     }
     const idx = typeof data.contentBlockIndex === "number" ? data.contentBlockIndex : 0;
     switch (event) {

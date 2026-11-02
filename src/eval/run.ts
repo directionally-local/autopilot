@@ -12,7 +12,7 @@ import { appendFile, copyFile, mkdir, readFile, writeFile } from "node:fs/promis
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { redactConfig } from "../trace/redact.js";
 import type { TraceEvent } from "../trace/types.js";
 import { loadEvalConfig, type EvalConfig } from "./config.js";
@@ -215,7 +215,7 @@ async function runOne(
     }
 
     ctx.log(`[${task.id}#${sample}] agent (${ctx.model})`);
-    const config: Partial<KimiConfig> = {
+    const config: Partial<AutopilotConfig> = {
       ...ctx.evalConfig.config,
       model: ctx.model,
       trace: { enabled: true, root: ctx.tracesRoot },

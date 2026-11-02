@@ -1,7 +1,7 @@
 /**
  * OTLP/HTTP log exporter (M5.2). Ships each log entry as one OTel
  * `LogRecord` to an external collector. Gated entirely on the
- * `KIMIFLARE_OTEL_ENDPOINT` env var — unset = no-op.
+ * `AUTOPILOT_OTEL_ENDPOINT` env var — unset = no-op.
  *
  * Design notes:
  *   - Hand-rolled rather than pulled in via `@opentelemetry/exporter-…`
@@ -12,8 +12,8 @@
  *     whichever fires first. Drops are silent — observability data must
  *     never block or crash the agent loop.
  *   - Drop counter is exposed (`getOtelDropCount`) so tests + a future
- *     `kimiflare logs status` subcommand can surface it.
- *   - Auth: `KIMIFLARE_OTEL_HEADERS=Authorization=Bearer xyz,X-Foo=bar`
+ *     `autopilot logs status` subcommand can surface it.
+ *   - Auth: `AUTOPILOT_OTEL_HEADERS=Authorization=Bearer xyz,X-Foo=bar`
  *     (comma-separated key=value). Common pattern across OTel docs.
  *
  * Endpoint URL convention:
@@ -306,7 +306,7 @@ export function buildOtlpPayload(
 let exitHookInstalled = false;
 
 /** Register a best-effort exit drain. Without this, a fast process exit
- *  (e.g. `kimiflare -p "..."` print mode) could drop the last batch
+ *  (e.g. `autopilot -p "..."` print mode) could drop the last batch
  *  before the 5s flush timer fires. */
 export function installOtelExitHook(): void {
   if (exitHookInstalled) return;

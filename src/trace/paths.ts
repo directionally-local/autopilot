@@ -4,7 +4,7 @@
  *   <root>/<session_id>/trace.jsonl
  *   <root>/<session_id>/blobs/<sha256>
  *
- * Root resolution: `KIMIFLARE_TRACE_DIR` env, then the configured
+ * Root resolution: `AUTOPILOT_TRACE_DIR` env, then the configured
  * `trace.root`, then `${XDG_DATA_HOME:-~/.local/share}/autopilot/traces`.
  */
 

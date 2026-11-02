@@ -1,7 +1,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
-import type { KimiConfig, LspServerConfig } from "../config.js";
+import type { AutopilotConfig, LspServerConfig } from "../config.js";
 import { legacyProjectDir, projectDir, PROJECT_DIR_NAME } from "./app-dirs.js";
 import { isProjectFileTrusted, readProjectFile, trustProjectFiles } from "./project-trust.js";
 
@@ -49,13 +49,13 @@ export function findProjectLspConfigPath(cwd: string): string | null {
  * trusted. The file names commands that are spawned at startup, so a
  * repository's copy is only honoured once the user has trusted it.
  */
-export async function loadProjectLspConfig(cwd: string): Promise<Partial<Pick<KimiConfig, "lspEnabled" | "lspServers">> | null> {
+export async function loadProjectLspConfig(cwd: string): Promise<Partial<Pick<AutopilotConfig, "lspEnabled" | "lspServers">> | null> {
   const path = findProjectLspConfigPath(cwd);
   if (!path) return null;
   const read = readProjectFile(path);
   if (!read?.trusted) return null;
   try {
-    const parsed = JSON.parse(read.content) as Partial<KimiConfig>;
+    const parsed = JSON.parse(read.content) as Partial<AutopilotConfig>;
     return {
       lspEnabled: parsed.lspEnabled,
       lspServers: parsed.lspServers,
@@ -79,7 +79,7 @@ async function ensureGitignore(cwd: string): Promise<void> {
 
 export async function saveProjectLspConfig(
   cwd: string,
-  cfg: Partial<Pick<KimiConfig, "lspEnabled" | "lspServers">>,
+  cfg: Partial<Pick<AutopilotConfig, "lspEnabled" | "lspServers">>,
 ): Promise<string> {
   const dir = projectDir(cwd);
   await mkdir(dir, { recursive: true });
@@ -98,7 +98,7 @@ export async function saveProjectLspConfig(
  * If project config is empty {}, treat as explicitly disabled.
  */
 export async function resolveLspConfig(
-  globalCfg: KimiConfig,
+  globalCfg: AutopilotConfig,
   cwd: string,
 ): Promise<ResolvedLspConfig> {
   const project = await loadProjectLspConfig(cwd);

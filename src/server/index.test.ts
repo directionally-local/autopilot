@@ -4,7 +4,7 @@ import { request } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { checkLegacyRequest, isLoopbackHost, startServer } from "./index.js";
 
 const local = { listenHost: "127.0.0.1", corsOrigins: [] as string[] };
@@ -41,10 +41,10 @@ describe("startServer without a password", () => {
   after(() => {
     process.env = prev;
   });
-  const config = { openrouterApiKey: "k", model: "m/m" } as KimiConfig;
+  const config = { openrouterApiKey: "k", model: "m/m" } as AutopilotConfig;
 
   it("refuses to listen beyond loopback", async () => {
-    await assert.rejects(startServer({ port: 0, hostname: "0.0.0.0", config }), /KIMIFLARE_SERVER_PASSWORD/);
+    await assert.rejects(startServer({ port: 0, hostname: "0.0.0.0", config }), /AUTOPILOT_SERVER_PASSWORD/);
   });
 
   it("blocks browser and rebinding requests but serves local clients", async () => {
@@ -71,8 +71,8 @@ describe("startServer without a password", () => {
 });
 
 describe("startServer with a password", () => {
-  const config = { openrouterApiKey: "k", model: "m/m" } as KimiConfig;
-  const basic = "Basic " + Buffer.from("kimiflare:s3cret").toString("base64");
+  const config = { openrouterApiKey: "k", model: "m/m" } as AutopilotConfig;
+  const basic = "Basic " + Buffer.from("autopilot:s3cret").toString("base64");
 
   it("cannot be bypassed by dot segments that resolve out of /api/v1/", async () => {
     const prev = { ...process.env };
@@ -108,8 +108,9 @@ describe("startServer with a password", () => {
 });
 
 describe("startServer with AUTOPILOT_SERVER_PASSWORD (#911)", () => {
-  const config = { openrouterApiKey: "k", model: "m/m" } as KimiConfig;
-  const basic = (pw: string) => "Basic " + Buffer.from(`kimiflare:${pw}`).toString("base64");
+  const config = { openrouterApiKey: "k", model: "m/m" } as AutopilotConfig;
+  const basic = (pw: string) => "Basic " + Buffer.from(`autopilot:${pw}`).toString("base64");
+  const legacyBasic = (pw: string) => "Basic " + Buffer.from(`kimiflare:${pw}`).toString("base64");
 
   async function statusWith(env: Record<string, string>, auth?: string): Promise<number> {
     const prev = { ...process.env };
@@ -142,6 +143,11 @@ describe("startServer with AUTOPILOT_SERVER_PASSWORD (#911)", () => {
     assert.equal(await statusWith({ AUTOPILOT_SERVER_PASSWORD: "n3w" }, basic("n3w")), 200);
   });
 
+  it("still accepts the pre-rename kimiflare username (#911)", async () => {
+    assert.equal(await statusWith({ AUTOPILOT_SERVER_PASSWORD: "n3w" }, legacyBasic("n3w")), 200);
+    assert.equal(await statusWith({ AUTOPILOT_SERVER_PASSWORD: "n3w" }, legacyBasic("wrong")), 401);
+  });
+
   it("prefers the new name when both are set", async () => {
     const env = { AUTOPILOT_SERVER_PASSWORD: "n3w", KIMIFLARE_SERVER_PASSWORD: "old" };
     assert.equal(await statusWith(env, basic("old")), 401);
@@ -150,13 +156,15 @@ describe("startServer with AUTOPILOT_SERVER_PASSWORD (#911)", () => {
 });
 
 describe("startServer with a malformed Host header", () => {
-  const config = { openrouterApiKey: "k", model: "m/m" } as KimiConfig;
+  const config = { openrouterApiKey: "k", model: "m/m" } as AutopilotConfig;
 
   it("answers the request instead of crashing the server", async () => {
     const prev = { ...process.env };
     process.env.HOME = mkdtempSync(join(tmpdir(), "serve-host-"));
     delete process.env.KIMIFLARE_SERVER_PASSWORD;
+    delete process.env.AUTOPILOT_SERVER_PASSWORD;
     delete process.env.KIMIFLARE_SERVER_CORS_ORIGINS;
+    delete process.env.AUTOPILOT_SERVER_CORS_ORIGINS;
     let server;
     try {
       server = await startServer({ port: 0, hostname: "127.0.0.1", config });

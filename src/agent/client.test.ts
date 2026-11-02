@@ -8,7 +8,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert";
 import { networkRetryCount, networkRetryDelay, runKimi, type RunKimiOpts } from "./client.js";
 import { registerOpenRouterModels, type ModelEntry } from "../models/registry.js";
-import { KimiApiError } from "../util/errors.js";
+import { ApiError } from "../util/errors.js";
 
 const KEY = "sk-or-test-key-123456";
 
@@ -163,7 +163,7 @@ describe("runKimi: OpenRouter request", () => {
   it("sends OpenRouter's app-attribution headers", async () => {
     const { req } = await send();
     assert.strictEqual(req.headers.get("HTTP-Referer"), "https://kimiflare.com");
-    assert.strictEqual(req.headers.get("X-Title"), "kimiflare");
+    assert.strictEqual(req.headers.get("X-Title"), "autopilot");
   });
 
   it("honours OPENROUTER_BASE_URL (tests, local mocks, proxies)", async () => {
@@ -270,7 +270,7 @@ describe("runKimi: OpenRouter request", () => {
     assert.strictEqual(lastRequest, null);
   });
 
-  it("throws a 401 KimiApiError pointing at /key set when no key is configured", async () => {
+  it("throws a 401 ApiError pointing at /key set when no key is configured", async () => {
     await assert.rejects(
       async () => {
         for await (const _ of runKimi({ ...base, openrouterApiKey: undefined })) {
@@ -278,7 +278,7 @@ describe("runKimi: OpenRouter request", () => {
         }
       },
       (err: unknown) => {
-        assert.ok(err instanceof KimiApiError);
+        assert.ok(err instanceof ApiError);
         assert.strictEqual(err.httpStatus, 401);
         assert.match(err.message, /\/key set/);
         return true;
@@ -311,7 +311,7 @@ describe("runKimi: OpenRouter HTTP errors", () => {
     };
   }
 
-  async function failure(): Promise<KimiApiError> {
+  async function failure(): Promise<ApiError> {
     try {
       for await (const _ of runKimi({
         openrouterApiKey: KEY,
@@ -321,7 +321,7 @@ describe("runKimi: OpenRouter HTTP errors", () => {
         /* drain */
       }
     } catch (e) {
-      assert.ok(e instanceof KimiApiError, `expected KimiApiError, got ${String(e)}`);
+      assert.ok(e instanceof ApiError, `expected ApiError, got ${String(e)}`);
       return e;
     }
     assert.fail("expected runKimi to throw");

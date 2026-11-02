@@ -53,7 +53,7 @@ export interface SessionStartPayload {
   repo_head?: string | null;
   model: string;
   mode: TraceSessionMode;
-  /** KimiConfig with credential-bearing keys replaced by "<redacted>". */
+  /** AutopilotConfig with credential-bearing keys replaced by "<redacted>". */
   config: Record<string, unknown>;
   tool_profile: string;
   /** Active model profile (#999), absent when the model uses the default behavior. */

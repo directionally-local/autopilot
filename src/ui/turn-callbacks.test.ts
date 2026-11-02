@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents, toolResultPatch, type TurnCallbackDeps } from "./turn-callbacks.js";
 import type { ChatEvent } from "./view-types.js";
-import { KimiApiError } from "../util/errors.js";
+import { ApiError } from "../util/errors.js";
 
 function harness() {
   let events: ChatEvent[] = [];
@@ -117,10 +117,10 @@ describe("settleTurnEvents", () => {
 describe("classifyTurnFailure", () => {
   it("separates aborts, transient provider errors and everything else", () => {
     assert.deepStrictEqual(classifyTurnFailure(new DOMException("x", "AbortError")), { kind: "aborted" });
-    const busy = classifyTurnFailure(new KimiApiError("Too many requests", 7, 429));
+    const busy = classifyTurnFailure(new ApiError("Too many requests", 7, 429));
     assert.strictEqual(busy.kind, "api_error");
     assert.strictEqual(busy.kind === "api_error" && busy.httpStatus, 429);
-    assert.strictEqual(classifyTurnFailure(new KimiApiError("bad request", undefined, 400)).kind, "error");
+    assert.strictEqual(classifyTurnFailure(new ApiError("bad request", undefined, 400)).kind, "error");
     assert.deepStrictEqual(classifyTurnFailure(new Error("nope")), { kind: "error", text: "nope" });
   });
 });

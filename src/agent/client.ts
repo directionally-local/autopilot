@@ -1,7 +1,7 @@
 import { largeBodyWarning, largestBodyParts, shouldWarnLargeBody } from "./request-size.js";
 import * as zlib from "node:zlib";
 import { readSSE } from "../util/sse.js";
-import { KimiApiError } from "../util/errors.js";
+import { ApiError } from "../util/errors.js";
 import { getUserAgent } from "../util/version.js";
 import { jsonReplacer, mergeReasoningDetails, sanitizeString, stableStringify } from "./messages.js";
 import type { ChatMessage, ReasoningDetail, ToolDef, Usage } from "./messages.js";
@@ -34,7 +34,7 @@ import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/reque
 import { resolveCustomEndpoint, customChatCompletionsUrl, type CustomEndpoint } from "./custom-endpoint.js";
 import type { LlmAuth } from "./llm-auth.js";
 
-export type KimiEvent =
+export type ModelEvent =
   | { type: "response_meta"; meta: ResponseMeta }
   | { type: "reasoning"; delta: string }
   | { type: "reasoning_details"; details: ReasoningDetail[] }
@@ -118,7 +118,7 @@ export function networkRetryDelay(retryIndex: number, retryAfterMs?: number, ran
   return Math.round(base * (0.8 + Math.max(0, Math.min(1, random)) * 0.4));
 }
 
-function isRetryable(err: KimiApiError, attempt: number, maxRetries: number, openrouter = true): boolean {
+function isRetryable(err: ApiError, attempt: number, maxRetries: number, openrouter = true): boolean {
   if (attempt >= maxRetries) return false;
   // ChatGPT token sharing: usage limits and eligibility don't change on retry (even as a 429).
   if (NON_RETRYABLE_SHARING_CODES.some((c) => err.message.includes(c))) return false;
@@ -131,7 +131,7 @@ function isRetryable(err: KimiApiError, attempt: number, maxRetries: number, ope
   return false;
 }
 
-export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, void, void> {
+export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, void, void> {
   // Custom endpoint wins over OpenRouter. The env fallback means side-call
   // paths (memory extraction, summarization, …) are rerouted too.
   const customEndpoint = opts.customEndpoint ?? resolveCustomEndpoint();
@@ -211,7 +211,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     if (Object.keys(provider).length > 0) body.provider = provider;
     // Anthropic models only cache with explicit breakpoints; the top-level
     // directive makes OpenRouter place them automatically. Everyone else
-    // kimiflare defaults to (Moonshot, DeepSeek, Z.AI, OpenAI, …) caches
+    // autopilot defaults to (Moonshot, DeepSeek, Z.AI, OpenAI, …) caches
     // implicitly.
     if (vendorOf(opts.model) === "anthropic") body.cache_control = { type: "ephemeral" };
   }
@@ -279,8 +279,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     url = converseUrl(customEndpoint.baseUrl, opts.model);
     targetHeaders = {};
     if (!bedrock) {
-      throw new KimiApiError(
-        "kimiflare: no AWS credentials for Bedrock — set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials.",
+      throw new ApiError(
+        "autopilot: no AWS credentials for Bedrock — set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials.",
         undefined,
         401,
       );
@@ -304,7 +304,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
   }
 
   // Observers of the finalized request body: the debug payload dump
-  // (KIMIFLARE_DUMP_LLM=1) and the session trace. Both read the body
+  // (AUTOPILOT_DUMP_LLM=1) and the session trace. Both read the body
   // immediately before fetch — they cannot alter what is sent — and share
   // one capture so the trace sees exactly what the dump sees.
   const dumpEnabled = isLlmDumpEnabled();
@@ -439,8 +439,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
         continue;
       }
       const local = customEndpoint?.providerId && !preset.keyRequired;
-      throw new KimiApiError(
-        `kimiflare: network error: ${msg}` +
+      throw new ApiError(
+        `autopilot: network error: ${msg}` +
           (local ? `\n\nIs ${preset.name} running at ${customEndpoint!.baseUrl}? Start it, or set providers.${preset.id}.baseUrl in config.` : ""),
         undefined,
         undefined,
@@ -458,8 +458,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     const streaming = protocol === "bedrock-converse" ? res.ok && contentType.includes("eventstream") : contentType.includes("text/event-stream");
     if (!streaming) {
       if (res.bodyUsed) {
-        throw new KimiApiError(
-          `kimiflare: Received HTTP ${res.status} but could not read the response body. Please try again.`,
+        throw new ApiError(
+          `autopilot: Received HTTP ${res.status} but could not read the response body. Please try again.`,
           undefined,
           res.status,
         );
@@ -474,8 +474,8 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
       const err = extractApiError(parsed, text);
       const msg = err?.message ?? `HTTP ${res.status}: ${text.slice(0, 300)}`;
       const status = err?.status ?? res.status;
-      const apiErr = new KimiApiError(
-        `kimiflare: ${describeHttpError(opts.model, status, msg, customEndpoint, requesty)}`,
+      const apiErr = new ApiError(
+        `autopilot: ${describeHttpError(opts.model, status, msg, customEndpoint, requesty)}`,
         err?.code,
         status,
       );
@@ -496,7 +496,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<KimiEvent, voi
     }
 
     if (!res.body) {
-      const emptyErr = new KimiApiError("kimiflare: empty response body", undefined, res.status);
+      const emptyErr = new ApiError("autopilot: empty response body", undefined, res.status);
       traceResponse(attemptStartedAt, emptyErr.message);
       throw emptyErr;
     }
@@ -581,7 +581,7 @@ function describeHttpError(
       return [
         `${model} rejected the request (HTTP ${status}): ${msg || "authentication failed"}.`,
         ``,
-        `Check that KIMIFLARE_API_KEY (or \`apiKey\` in config) matches what ${customEndpoint.baseUrl} expects.`,
+        `Check that AUTOPILOT_API_KEY (or \`apiKey\` in config) matches what ${customEndpoint.baseUrl} expects.`,
       ].join("\n");
     }
     return msg;
@@ -724,7 +724,7 @@ function captureRequest(body: Record<string, unknown>): CapturedRequest {
 /** Fold a streamed event into the response accumulator shared by the debug
  *  dump and the session trace. Read-only side-effect — never affects the
  *  yielded stream. Only invoked when one of the two observers is enabled. */
-function accumulateDumpResponse(resp: LlmDumpResponse, ev: KimiEvent): void {
+function accumulateDumpResponse(resp: LlmDumpResponse, ev: ModelEvent): void {
   switch (ev.type) {
     case "response_meta":
       if (ev.meta.generationId) resp.generationId = ev.meta.generationId;
@@ -759,9 +759,9 @@ function accumulateDumpResponse(resp: LlmDumpResponse, ev: KimiEvent): void {
  *  alnum/-/_; the model segment may contain ./-/_ but no slashes or
  *  whitespace. */
 export function validateModelId(model: string): void {
-  if (!model) throw new KimiApiError(`Invalid model ID: ${model}`, 400);
+  if (!model) throw new ApiError(`Invalid model ID: ${model}`, 400);
   if (/^~?[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+(:[a-zA-Z0-9._-]+)?$/.test(model)) return;
-  throw new KimiApiError(`Invalid model ID: ${model}`, 400);
+  throw new ApiError(`Invalid model ID: ${model}`, 400);
 }
 
 function buildKimiRequestTarget(
@@ -773,7 +773,7 @@ function buildKimiRequestTarget(
   // The model id only rides in the JSON body on this path, so any non-empty
   // id passes through.
   if (customEndpoint) {
-    if (!opts.model) throw new KimiApiError(`Invalid model ID: ${opts.model}`, 400);
+    if (!opts.model) throw new ApiError(`Invalid model ID: ${opts.model}`, 400);
     const protocol = customEndpoint.providerId ? getPreset(customEndpoint.providerId).protocol : undefined;
     const base = customEndpoint.baseUrl.replace(/\/+$/, "");
     if (protocol === "anthropic-messages") return { url: `${base}/messages`, headers: anthropicHeaders(customEndpoint.apiKey) };
@@ -792,7 +792,7 @@ function buildKimiRequestTarget(
   // Requesty managed policy ids ("claude-sonnet-4-5") have no vendor
   // prefix, so only the OpenRouter id shape is validated.
   if (requesty && opts.requestyApiKey) {
-    if (!opts.model) throw new KimiApiError(`Invalid model ID: ${opts.model}`, 400);
+    if (!opts.model) throw new ApiError(`Invalid model ID: ${opts.model}`, 400);
     return {
       url: requestyUrl("chat/completions"),
       headers: requestyHeaders(opts.requestyApiKey),
@@ -801,9 +801,9 @@ function buildKimiRequestTarget(
 
   validateModelId(opts.model);
   if (!opts.openrouterApiKey) {
-    throw new KimiApiError(
+    throw new ApiError(
       [
-        `kimiflare: no OpenRouter API key configured.`,
+        `autopilot: no OpenRouter API key configured.`,
         ``,
         `Fix: run  /key set <your-key>  with a key from ${OPENROUTER_KEYS_URL}`,
         `(or set OPENROUTER_API_KEY in the environment).`,
@@ -872,7 +872,7 @@ async function* parseStream(
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   postFirstByteIdleTimeoutMs = DEFAULT_POST_FIRST_BYTE_IDLE_TIMEOUT_MS,
   thinkTags = false,
-): AsyncGenerator<KimiEvent, void, void> {
+): AsyncGenerator<ModelEvent, void, void> {
   const splitter = thinkTags ? new ThinkTagSplitter() : null;
   const toolCalls = new Map<number, { id: string; name: string; args: string; extra?: Record<string, unknown> }>();
   let lastUsage: Usage | null = null;
@@ -893,8 +893,8 @@ async function* parseStream(
     // mid-generation) arrives as a chunk carrying `error`, not an HTTP status.
     if (chunk.error) {
       const code = typeof chunk.error.code === "number" ? chunk.error.code : undefined;
-      throw new KimiApiError(
-        `kimiflare: ${chunk.error.message ?? "the model provider failed mid-response"}`,
+      throw new ApiError(
+        `autopilot: ${chunk.error.message ?? "the model provider failed mid-response"}`,
         undefined,
         code,
       );

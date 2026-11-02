@@ -125,7 +125,7 @@ export interface WorkerResultMessage {
   prUrl?: string;
   /** Execute-mode workers populate this with the branch they pushed. */
   branchName?: string;
-  /** Raw stdout from the in-sandbox kimiflare run (for debugging). */
+  /** Raw stdout from the in-sandbox autopilot run (for debugging). */
   rawOutput?: string;
   error?: string;
   /** Phase timing breakdown from the worker (for debugging cold-start). */

@@ -143,7 +143,7 @@ export const CATEGORIES: Category[] = [
       { command: "/shell bash", description: "force bash" },
       { command: "/shell cmd", description: "force cmd.exe (Windows)" },
       { command: "/shell powershell", description: "force PowerShell" },
-      { command: "filePicker", description: "enabled by default; disable with KIMIFLARE_FILE_PICKER=0 or filePicker: false in config", selectable: false },
+      { command: "filePicker", description: "enabled by default; disable with AUTOPILOT_FILE_PICKER=0 or filePicker: false in config", selectable: false },
     ],
   },
 ];

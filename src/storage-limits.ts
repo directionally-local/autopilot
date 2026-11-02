@@ -2,7 +2,7 @@ import { readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
- * Shared retention policy for on-disk kimiflare data. Session files and
+ * Shared retention policy for on-disk autopilot data. Session files and
  * session traces are deliberately absent: they are the user's history and
  * are only deleted on request (`autopilot history prune`).
  */

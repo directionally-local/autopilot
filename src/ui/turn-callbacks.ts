@@ -12,7 +12,7 @@ import type { ToolCall, Usage } from "../agent/messages.js";
 import type { PermissionAsker, ToolResult } from "../tools/executor.js";
 import type { PlanOption, Task, ToolRender, ToolSpec } from "../tools/registry.js";
 import type { ChatEvent } from "./view-types.js";
-import { KimiApiError, humanizeApiError } from "../util/errors.js";
+import { ApiError, humanizeApiError } from "../util/errors.js";
 
 type ToolEvent = Extract<ChatEvent, { kind: "tool" }>;
 type AssistantEvent = Extract<ChatEvent, { kind: "assistant" }>;
@@ -79,10 +79,10 @@ export type TurnFailure =
 /** Classify a failed turn: an abort, a transient provider error (429/5xx, shown with a status link), or anything else. */
 export function classifyTurnFailure(e: Error): TurnFailure {
   if (e.name === "AbortError") return { kind: "aborted" };
-  if (e instanceof KimiApiError && (e.httpStatus === 429 || (e.httpStatus !== undefined && e.httpStatus >= 500))) {
+  if (e instanceof ApiError && (e.httpStatus === 429 || (e.httpStatus !== undefined && e.httpStatus >= 500))) {
     return { kind: "api_error", httpStatus: e.httpStatus, ...(e.code !== undefined ? { code: e.code } : {}), message: humanizeApiError(e) };
   }
-  return { kind: "error", text: e instanceof KimiApiError ? humanizeApiError(e) : e.message ?? String(e) };
+  return { kind: "error", text: e instanceof ApiError ? humanizeApiError(e) : e.message ?? String(e) };
 }
 
 export interface TurnCallbackDeps {

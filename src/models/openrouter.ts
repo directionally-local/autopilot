@@ -36,7 +36,7 @@ export function openRouterHeaders(apiKey: string): Record<string, string> {
   return {
     Authorization: `Bearer ${apiKey}`,
     "HTTP-Referer": "https://kimiflare.com",
-    "X-Title": "kimiflare",
+    "X-Title": "autopilot",
     "User-Agent": getUserAgent(),
   };
 }

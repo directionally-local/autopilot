@@ -52,7 +52,7 @@ export interface TraceRecorder {
 export interface CreateRecorderOptions extends BlobStoreOptions {
   enabled: boolean;
   sessionId: string;
-  /** Trace root override; env `KIMIFLARE_TRACE_DIR` still wins (see paths.ts). */
+  /** Trace root override; env `AUTOPILOT_TRACE_DIR` still wins (see paths.ts). */
   root?: string | null;
   /** Per-session byte cap; defaults to RETENTION.traceMaxSessionBytes. */
   maxSessionBytes?: number;

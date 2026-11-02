@@ -1,5 +1,5 @@
 /**
- * HTTP route handlers for the KimiFlare headless server.
+ * HTTP route handlers for the Autopilot headless server.
  */
 
 import { runStopForError } from "../agent/session-core.js";
@@ -16,7 +16,7 @@ import { notificationSettingsFromConfig, startNotificationDispatcher } from "../
 import { handleDecisionMail } from "../runs/decisions.js";
 import { imapSettingsFromEnv, startDecisionPoller } from "../runs/decisions-imap.js";
 import { URL } from "node:url";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
 import { assembleTurn, lastUserText, resolveTurnPolicy } from "../agent/session-core.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
@@ -41,7 +41,7 @@ import { isImagePath } from "../util/image.js";
 import { buildAttachmentMessage } from "../util/attachments.js";
 import { readEnv } from "../util/env.js";
 
-const imageOptions = (config: KimiConfig) => ({ maxEdge: config.imageMaxEdge, quality: config.imageQuality });
+const imageOptions = (config: AutopilotConfig) => ({ maxEdge: config.imageMaxEdge, quality: config.imageQuality });
 import { glob } from "../util/glob.js";
 import { RunStore } from "../runs/store.js";
 import { RunWorktreeManager, type RunWorktree } from "../runs/worktrees.js";
@@ -95,7 +95,7 @@ interface ActiveSession {
 
 /** Create the session trace and record `session_start`; a no-op recorder when tracing is off. */
 async function startSessionTrace(
-  config: KimiConfig,
+  config: AutopilotConfig,
   sessionFile: SessionFile,
   tools: ToolSpec[],
   messages: ChatMessage[],
@@ -210,7 +210,7 @@ async function resolveFiles(filePatterns: string[], cwd: string): Promise<string
 export const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 
 /** Why a run can't start or resume right now: the kill switch is on, or too many runs are active. */
-function runAdmissionRefusal(config: KimiConfig): { status: number; error: string } | null {
+function runAdmissionRefusal(config: AutopilotConfig): { status: number; error: string } | null {
   const store = new RunStore();
   try {
     const halted = store.haltState();
@@ -229,7 +229,7 @@ function runAdmissionRefusal(config: KimiConfig): { status: number; error: strin
   }
 }
 
-export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterApiRuntime } = {}) {
+export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: AsterApiRuntime } = {}) {
   /**
    * Resume a run paused for input: optionally switch model, revise budgets
    * and pass the operator's answer, then start the next turn. Shared by the
@@ -401,7 +401,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       // Operator kill switch: cancel every active run and refuse new ones until lifted.
       if (pathname === "/runs/stop-all" && (method === "POST" || method === "DELETE")) {
         if (!readEnv("SERVER_PASSWORD")) {
-          json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before managing unattended runs" });
+          json(res, 503, { error: "Set AUTOPILOT_SERVER_PASSWORD before managing unattended runs" });
           return;
         }
         const store = new RunStore();
@@ -449,7 +449,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       const runPathMatch = pathname.match(/^\/runs\/([^/]+)(?:\/(events|cancel|resume))?$/);
       if (pathname === "/runs" && method === "GET") {
         if (!readEnv("SERVER_PASSWORD")) {
-          json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before accessing unattended runs" });
+          json(res, 503, { error: "Set AUTOPILOT_SERVER_PASSWORD before accessing unattended runs" });
           return;
         }
         const store = new RunStore();
@@ -463,7 +463,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       }
       if (pathname === "/runs" && method === "POST") {
         if (!readEnv("SERVER_PASSWORD")) {
-          json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before creating unattended runs" });
+          json(res, 503, { error: "Set AUTOPILOT_SERVER_PASSWORD before creating unattended runs" });
           return;
         }
         const refusal = runAdmissionRefusal(config);
@@ -627,7 +627,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
       }
       if (runPathMatch) {
         if (!readEnv("SERVER_PASSWORD")) {
-          json(res, 503, { error: "Set KIMIFLARE_SERVER_PASSWORD before accessing unattended runs" });
+          json(res, 503, { error: "Set AUTOPILOT_SERVER_PASSWORD before accessing unattended runs" });
           return;
         }
         const runId = runPathMatch[1]!;
@@ -937,7 +937,7 @@ export function setupRoutes(config: KimiConfig, options: { asterRuntime?: AsterA
   return { handleRequest, cleanup };
 }
 
-function launchAgentTurnForSession(active: ActiveSession, config: KimiConfig, allowAll: boolean): void {
+function launchAgentTurnForSession(active: ActiveSession, config: AutopilotConfig, allowAll: boolean): void {
   void runAgentTurnForSession(active, config, allowAll).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     logger.error("server: agent turn startup failed", {
@@ -967,7 +967,7 @@ function launchAgentTurnForSession(active: ActiveSession, config: KimiConfig, al
   });
 }
 
-async function runAgentTurnForSession(active: ActiveSession, config: KimiConfig, allowAll: boolean): Promise<void> {
+async function runAgentTurnForSession(active: ActiveSession, config: AutopilotConfig, allowAll: boolean): Promise<void> {
   if (active.running) return;
   active.running = true;
   const controller = new AbortController();

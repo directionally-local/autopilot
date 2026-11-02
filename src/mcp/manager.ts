@@ -36,7 +36,7 @@ export class McpManager {
       stderr: "pipe",
     });
 
-    const client = new Client({ name: "kimiflare", version: "0.13.7" });
+    const client = new Client({ name: "autopilot", version: "0.13.7" });
     await client.connect(transport);
 
     const listResult = await client.listTools();
@@ -59,7 +59,7 @@ export class McpManager {
       requestInit: headers ? { headers } : undefined,
     });
 
-    const client = new Client({ name: "kimiflare", version: "0.13.7" });
+    const client = new Client({ name: "autopilot", version: "0.13.7" });
     await client.connect(transport);
 
     const listResult = await client.listTools();

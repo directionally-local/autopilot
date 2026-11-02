@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { KimiConfig } from "../config.js";
+import type { AutopilotConfig } from "../config.js";
 import { resolveServeConfig } from "./serve-config.js";
 
 describe("autopilot serve config", () => {
   it("uses the provider config when there is one", () => {
-    const cfg = { model: "test/model", openrouterApiKey: "sk-or-test" } as KimiConfig;
+    const cfg = { model: "test/model", openrouterApiKey: "sk-or-test" } as AutopilotConfig;
     assert.deepEqual(resolveServeConfig(cfg, {}), { config: cfg, asterOnly: false });
   });
 
