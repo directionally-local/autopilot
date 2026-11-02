@@ -26,7 +26,7 @@ import type { ToolSpec } from "../tools/registry.js";
 import { runAgentTurn } from "../agent/loop.js";
 import type { AgentCallbacks } from "../agent/loop.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
-import { ToolExecutor, ALL_TOOLS, permissionFromHook } from "../tools/executor.js";
+import { ToolExecutor, ALL_TOOLS, toolsForSession, permissionFromHook } from "../tools/executor.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
 import type { ChatMessage, ContentPart } from "../agent/messages.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "../sessions.js";
@@ -262,7 +262,9 @@ export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: A
     const sessionFile = await loadSession(resolve(sessionsDir(), run.sessionId + ".json"));
     const allowedTools = new Set(run.allowedTools);
     allowedTools.add("wait_for");
-    const tools = ALL_TOOLS.filter((tool) => allowedTools.has(tool.name));
+    // Server sessions never create a MemoryManager, so memory stays opt-in
+    // and its tools are not advertised (#1077).
+    const tools = toolsForSession({ memoryEnabled: false, base: ALL_TOOLS.filter((tool) => allowedTools.has(tool.name)) });
     const active: ActiveSession = {
       sessionFile,
       messages: sessionFile.messages,
@@ -542,7 +544,9 @@ export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: A
         }
         const toolNames = new Set(allowedTools);
         toolNames.add("wait_for");
-        const tools = ALL_TOOLS.filter((tool) => toolNames.has(tool.name));
+        // No MemoryManager on the server: keep memory tools out of the
+        // advertised set and the system prompt (#1077).
+        const tools = toolsForSession({ memoryEnabled: false, base: ALL_TOOLS.filter((tool) => toolNames.has(tool.name)) });
         const executor = new ToolExecutor(tools);
         const { makeSessionId } = await import("../sessions.js");
         const sessionId = makeSessionId(task);
@@ -568,7 +572,7 @@ export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: A
           title: task.slice(0, 80),
         };
         const messages: ChatMessage[] = [
-          { role: "system", content: buildSystemPrompt({ cwd: runCwd, tools, model, preferPullRequests: config.preferPullRequests }) },
+          { role: "system", content: buildSystemPrompt({ cwd: runCwd, tools, model, preferPullRequests: config.preferPullRequests, memoryEnabled: false }) },
           { role: "system", content: `This is an unattended run. Only these tools are authorized: ${[...allowedTools, "wait_for"].join(", ")}. Do not request or attempt any other tool.` },
           { role: "user", content: task },
         ];
@@ -810,7 +814,7 @@ export function setupRoutes(config: AutopilotConfig, options: { asterRuntime?: A
         const messages: ChatMessage[] = [
           {
             role: "system",
-            content: buildSystemPrompt({ cwd, tools: ALL_TOOLS, model, preferPullRequests: config.preferPullRequests }),
+            content: buildSystemPrompt({ cwd, tools: toolsForSession({ memoryEnabled: false }), model, preferPullRequests: config.preferPullRequests, memoryEnabled: false }),
           },
         ];
 

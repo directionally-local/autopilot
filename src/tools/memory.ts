@@ -1,4 +1,5 @@
 import type { MemoryManager } from "../memory/manager.js";
+import { ToolError } from "./tool-error.js";
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
 
 export interface MemoryToolContext extends ToolContext {
@@ -8,6 +9,17 @@ export interface MemoryToolContext extends ToolContext {
 
 function isMemoryCtx(ctx: ToolContext): ctx is MemoryToolContext {
   return "memoryManager" in ctx;
+}
+
+/** Thrown when a memory tool is called while memory is disabled. The executor
+ *  maps it to `ok: false` (policy_rejection) so a disabled memory never looks
+ *  like a successful no-op to the model (#1077). */
+function memoryDisabledError(): ToolError {
+  return new ToolError({
+    code: "policy_rejection",
+    message: "Memory is not enabled.",
+    suggestion: "the user has memory turned off — do not retry; continue without memories",
+  });
 }
 
 export const memoryRememberTool: ToolSpec = {
@@ -45,7 +57,7 @@ export const memoryRememberTool: ToolSpec = {
   }),
   run: async (args: { content: string; category: string; importance: number }, ctx: ToolContext): Promise<ToolOutput> => {
     if (!isMemoryCtx(ctx) || !ctx.memoryManager) {
-      return { content: "Memory is not enabled.", rawBytes: 0, reducedBytes: 0 };
+      throw memoryDisabledError();
     }
     const { content, category, importance } = args;
     const validCategories = ["fact", "event", "instruction", "task", "preference"] as const;
@@ -105,7 +117,7 @@ export const memoryRecallTool: ToolSpec = {
   }),
   run: async (args: { query: string; limit?: number }, ctx: ToolContext): Promise<ToolOutput> => {
     if (!isMemoryCtx(ctx) || !ctx.memoryManager) {
-      return { content: "Memory is not enabled.", rawBytes: 0, reducedBytes: 0 };
+      throw memoryDisabledError();
     }
     try {
       const results = await ctx.memoryManager.recall({
@@ -154,7 +166,7 @@ export const memoryForgetTool: ToolSpec = {
   }),
   run: async (args: { memory_id: string }, ctx: ToolContext): Promise<ToolOutput> => {
     if (!isMemoryCtx(ctx) || !ctx.memoryManager) {
-      return { content: "Memory is not enabled.", rawBytes: 0, reducedBytes: 0 };
+      throw memoryDisabledError();
     }
     const ok = await ctx.memoryManager.forget(args.memory_id);
     const msg = ok ? `Memory ${args.memory_id} marked as forgotten.` : `Memory ${args.memory_id} not found.`;

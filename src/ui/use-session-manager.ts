@@ -31,7 +31,7 @@ import type { SessionEndReason, TraceSessionMode } from "../trace/types.js";
 import type { Mode } from "../mode.js";
 import { DEFAULT_AUTO_FRESH_SUGGESTION_TURNS } from "./app-helpers.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
-import { plumbingModelOf } from "../config.js";
+import { plumbingModelOf, tuiMemoryEnabled } from "../config.js";
 
 /**
  * Pull the first chunk of user text out of a message list — used to
@@ -356,7 +356,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
               ...llmAuthFromConfig(d.cfg),
               model: plumbingModelOf(d.cfg),
               memoryManager: d.memoryManagerRef.current,
-              memoryEnabled: d.cfg.memoryEnabled,
+              memoryEnabled: tuiMemoryEnabled(d.cfg),
             });
             if (summary) {
               d.setEvents((es) => [

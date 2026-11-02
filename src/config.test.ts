@@ -8,6 +8,7 @@ import { getModelOrInfer } from "./models/registry.js";
 import {
   loadConfig,
   hasLegacyCloudflareConfig,
+  tuiMemoryEnabled,
   DEFAULT_MODEL,
   DEFAULT_PLUMBING_MODEL,
   REQUESTY_DEFAULT_MODEL,
@@ -83,6 +84,8 @@ describe("loadConfig", () => {
     "AUTOPILOT_TRACE_DIR",
     "AUTOPILOT_PLUMBING_MODEL",
     "AUTOPILOT_SHELL",
+    "KIMIFLARE_MEMORY_ENABLED",
+    "AUTOPILOT_MEMORY_ENABLED",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -118,6 +121,30 @@ describe("loadConfig", () => {
 
   it("returns null with no key and no custom endpoint", async () => {
     assert.strictEqual(await loadConfig(), null);
+  });
+
+  it("leaves memoryEnabled unset by default; the TUI turns memory on (#1077)", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const cfg = await loadConfig();
+    assert.strictEqual(cfg?.memoryEnabled, undefined, "unconfigured memory stays unset, not false");
+    assert.strictEqual(tuiMemoryEnabled(cfg), true, "the TUI defaults memory on");
+    assert.strictEqual(tuiMemoryEnabled(null), true);
+    assert.strictEqual(tuiMemoryEnabled({ memoryEnabled: false }), false, "/memory off stays off");
+    assert.strictEqual(tuiMemoryEnabled({ memoryEnabled: true }), true);
+  });
+
+  it("keeps SDK/print/remote opt-in: an explicit false or env wins (#1077)", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    await writeConfigFile({ memoryEnabled: false });
+    assert.strictEqual((await loadConfig())?.memoryEnabled, false);
+
+    await writeConfigFile({});
+    process.env.AUTOPILOT_MEMORY_ENABLED = "0";
+    assert.strictEqual((await loadConfig())?.memoryEnabled, false, "env off wins over the default");
+
+    delete process.env.AUTOPILOT_MEMORY_ENABLED;
+    process.env.AUTOPILOT_MEMORY_ENABLED = "1";
+    assert.strictEqual((await loadConfig())?.memoryEnabled, true, "env on is an explicit opt-in");
   });
 
   it("returns null when the file only has Cloudflare credentials (upgrading user → onboarding)", async () => {

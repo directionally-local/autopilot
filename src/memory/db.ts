@@ -58,6 +58,15 @@ function initSchema(db: SqliteDatabase): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS memory_recalls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repo_path TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      hits INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_recalls_repo ON memory_recalls(repo_path);
   `);
 }
 
@@ -359,8 +368,10 @@ export function listMemoriesForVectorSearch(
   return rows.map(rowToMemory);
 }
 
-export function getMemoryStats(db: SqliteDatabase): MemoryStats {
-  const totalCount = (db.prepare("SELECT COUNT(*) as c FROM memories WHERE forgotten = 0 AND superseded_by IS NULL").get() as { c: number }).c;
+export function getMemoryStats(db: SqliteDatabase, repoPath?: string): MemoryStats {
+  const liveWhere = `WHERE ${repoPath ? "repo_path = ? AND " : ""}forgotten = 0 AND superseded_by IS NULL`;
+  const liveParams = repoPath ? [repoPath] : [];
+  const totalCount = (db.prepare(`SELECT COUNT(*) as c FROM memories ${liveWhere}`).get(...liveParams) as { c: number }).c;
   const dbPath = db.name;
   let dbSizeBytes = 0;
   try {
@@ -373,10 +384,13 @@ export function getMemoryStats(db: SqliteDatabase): MemoryStats {
     | { value: string }
     | undefined;
 
-  const categories = db.prepare("SELECT category, COUNT(*) as c FROM memories WHERE forgotten = 0 AND superseded_by IS NULL GROUP BY category").all() as Array<{
-    category: MemoryCategory;
-    c: number;
-  }>;
+  const categories = db
+    .prepare(`SELECT category, COUNT(*) as c FROM memories ${liveWhere} GROUP BY category`)
+    .all(...liveParams) as Array<{ category: MemoryCategory; c: number }>;
+
+  const lastRow = db
+    .prepare(`SELECT MAX(created_at) as m FROM memories${repoPath ? " WHERE repo_path = ?" : ""}`)
+    .get(...(repoPath ? [repoPath] : [])) as { m: number | null } | undefined;
 
   const byCategory: Record<MemoryCategory, number> = {
     fact: 0,
@@ -393,6 +407,7 @@ export function getMemoryStats(db: SqliteDatabase): MemoryStats {
     totalCount,
     dbSizeBytes,
     lastCleanupAt: lastCleanup ? parseInt(lastCleanup.value, 10) : null,
+    lastCreatedAt: lastRow?.m ?? null,
     byCategory,
   };
 }
@@ -402,6 +417,82 @@ export function deleteMemoriesByIds(db: SqliteDatabase, ids: string[]): number {
   const placeholders = ids.map(() => "?").join(",");
   const result = db.prepare(`DELETE FROM memories WHERE id IN (${placeholders})`).run(...ids);
   return result.changes;
+}
+
+/** Record one recall so `/memory doctor` can report a hit rate (#1077). */
+export function recordRecall(db: SqliteDatabase, repoPath: string, hits: number): void {
+  db.prepare("INSERT INTO memory_recalls (repo_path, at, hits) VALUES (?, ?, ?)").run(repoPath, Date.now(), hits);
+}
+
+/** Recall outcomes for a repo: how often a search found something. */
+export function getRecallStats(db: SqliteDatabase, repoPath: string): { total: number; hits: number } {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as total, SUM(CASE WHEN hits > 0 THEN 1 ELSE 0 END) as hits
+       FROM memory_recalls WHERE repo_path = ?`,
+    )
+    .get(repoPath) as { total: number; hits: number | null };
+  return { total: row.total, hits: row.hits ?? 0 };
+}
+
+/** Live memories at or below `maxImportance` — the "noise" a doctor reports. */
+export function countLowImportanceMemories(db: SqliteDatabase, repoPath: string, maxImportance = 2): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM memories
+       WHERE repo_path = ? AND forgotten = 0 AND superseded_by IS NULL AND importance <= ?`,
+    )
+    .get(repoPath, maxImportance) as { c: number };
+  return row.c;
+}
+
+/** A memory without its vector payload — what `/memory export` writes out. */
+export interface ExportedMemory {
+  id: string;
+  content: string;
+  category: MemoryCategory;
+  repoPath: string;
+  sourceSessionId: string;
+  createdAt: number;
+  accessedAt: number;
+  importance: number;
+  relatedFiles: string[];
+  topicKey: string | null;
+  supersededBy: string | null;
+  forgotten: boolean;
+  vectorized: boolean;
+  embeddingModel: string | null;
+  agentRole: string | null;
+}
+
+/** All memories (optionally one repo) without embeddings, for export. */
+export function listMemoriesForExport(db: SqliteDatabase, repoPath?: string): ExportedMemory[] {
+  const rows = db
+    .prepare(
+      `SELECT id, content, category, repo_path, source_session_id, created_at, accessed_at,
+              importance, related_files, topic_key, superseded_by, forgotten, vectorized,
+              embedding_model, agent_role
+       FROM memories${repoPath ? " WHERE repo_path = ?" : ""}
+       ORDER BY created_at ASC`,
+    )
+    .all(...(repoPath ? [repoPath] : [])) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: row.id as string,
+    content: row.content as string,
+    category: row.category as MemoryCategory,
+    repoPath: row.repo_path as string,
+    sourceSessionId: row.source_session_id as string,
+    createdAt: row.created_at as number,
+    accessedAt: row.accessed_at as number,
+    importance: row.importance as number,
+    relatedFiles: JSON.parse(row.related_files as string) as string[],
+    topicKey: (row.topic_key as string | null) ?? null,
+    supersededBy: (row.superseded_by as string | null) ?? null,
+    forgotten: row.forgotten === 1,
+    vectorized: row.vectorized === 1,
+    embeddingModel: (row.embedding_model as string | null) ?? null,
+    agentRole: (row.agent_role as string | null) ?? null,
+  }));
 }
 
 export function deleteOldMemories(db: SqliteDatabase, maxAgeMs: number): number {

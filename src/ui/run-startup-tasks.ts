@@ -9,6 +9,7 @@
  * the prior in-component implementation.
  */
 import { embeddingAuthFromConfig, llmAuthFromConfig } from "../agent/llm-auth.js";
+import { patchPersistedConfig, tuiMemoryEnabled } from "../config.js";
 import React from "react";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -31,6 +32,7 @@ type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
 export interface RunStartupTasksDeps {
   cfg: Cfg;
+  setCfg: (cfg: Cfg) => void;
   setEvents: SetEvents;
   mkKey: () => string;
   memoryManagerRef: React.MutableRefObject<MemoryManager | null>;
@@ -42,7 +44,7 @@ export interface RunStartupTasksDeps {
 
 export function runStartupTasks(deps: RunStartupTasksDeps): void {
   const {
-    cfg, setEvents, mkKey,
+    cfg, setCfg, setEvents, mkKey,
     memoryManagerRef, sessionStartRecallRef, setKimiMdStale,
     customCommandsRef, setCustomCommandsVersion,
   } = deps;
@@ -69,8 +71,8 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
     }
   });
 
-  // Initialize memory manager if enabled
-  if (cfg.memoryEnabled) {
+  // Initialize memory manager if enabled (on by default in the TUI, #1077)
+  if (tuiMemoryEnabled(cfg)) {
     const repoRoot = resolveRepoRoot(process.cwd());
     const dbPath = cfg.memoryDbPath ?? projectPath(repoRoot, "memory.db");
     const manager = new MemoryManager({
@@ -121,6 +123,23 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
       if (driftCount >= 5) {
         setKimiMdStale(true);
       }
+    }
+
+    // First-run disclosure (#1077): memory is on by default now, so say so
+    // once — where the data lands and how to turn it off — and never again.
+    if (cfg.memoryDisclosureShown !== true) {
+      setEvents((e) => [
+        ...e,
+        {
+          kind: "memory",
+          key: mkKey(),
+          text:
+            `memory is on — autopilot remembers project facts across sessions in ${dbPath} (repo-scoped, secrets redacted). ` +
+            `/memory off to disable · /memory doctor for health · /memory export to back up.`,
+        },
+      ]);
+      setCfg({ ...cfg, memoryDisclosureShown: true });
+      void patchPersistedConfig({ memoryDisclosureShown: true }).catch(() => {});
     }
   } else {
     memoryManagerRef.current?.close();

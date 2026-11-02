@@ -226,6 +226,8 @@ export class RemoteAttachSession {
       customCommands: [],
       currentShell: "auto",
       memoryEnabled: false,
+      memoryCount: 0,
+      memoryLastWrite: null,
       customCommandDefs: [],
       commandWizard: null,
       commandPickerMode: null,

@@ -136,8 +136,13 @@ export interface AutopilotConfig {
   /** Hard safety ceiling on tool iterations per turn, across automatic
    *  200-call counter resets. Defaults to 1000. */
   maxTotalToolIterations?: number;
-  /** Enable local structured memory (SQLite + embeddings). */
+  /** Enable local structured memory (SQLite + embeddings).
+   *  Unset means "not configured": the interactive TUI defaults it ON
+   *  (see `tuiMemoryEnabled`), while SDK/print/remote sessions stay
+   *  opt-in. Set explicitly with `/memory on|off` or AUTOPILOT_MEMORY_ENABLED. */
   memoryEnabled?: boolean;
+  /** The TUI showed the first-run memory disclosure (one-time notice). */
+  memoryDisclosureShown?: boolean;
   /** Path to memory database. Defaults to .autopilot/memory.db in repo root (an existing .kimiflare/memory.db is still used), or ~/.local/share/autopilot/memory.db. */
   memoryDbPath?: string;
   /** Max age of memories in days before cleanup. Default: 90. */
@@ -249,6 +254,17 @@ export function plumbingModelOf(cfg: Pick<AutopilotConfig, "plumbingModel" | "mo
   return cfg?.plumbingModel || sessionModel || cfg?.model || "";
 }
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
+
+/**
+ * Whether memory is on for an interactive TUI session. `cfg.memoryEnabled`
+ * is undefined until the user (or AUTOPILOT_MEMORY_ENABLED) configures it;
+ * the TUI treats that as ON — memory is a headline feature and nobody should
+ * have to opt in — while SDK/print/remote sessions read the raw value and
+ * stay opt-in. An explicit `false` (`/memory off`, MEMORY_ENABLED=0) is off.
+ */
+export function tuiMemoryEnabled(cfg: Pick<KimiConfig, "memoryEnabled"> | null | undefined): boolean {
+  return cfg?.memoryEnabled ?? true;
+}
 
 export function configPath(): string {
   return userConfigPath("config.json");
@@ -424,7 +440,11 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     imageQuality: readNumberEnv("IMAGE_QUALITY") ?? persisted.imageQuality,
     maxTotalToolIterations:
       readNumberEnv("MAX_TOTAL_TOOL_ITERATIONS") ?? persisted.maxTotalToolIterations,
-    memoryEnabled: readBooleanEnv("MEMORY_ENABLED") ?? persisted.memoryEnabled ?? false,
+    // Unset (not `false`) when the user never configured memory: the TUI
+    // then defaults it on via `tuiMemoryEnabled`, while SDK/print/remote
+    // sessions — which read this value directly — stay opt-in.
+    memoryEnabled: readBooleanEnv("MEMORY_ENABLED") ?? persisted.memoryEnabled,
+    memoryDisclosureShown: persisted.memoryDisclosureShown,
     memoryDbPath: readEnv("MEMORY_DB_PATH") ?? persisted.memoryDbPath,
     memoryMaxAgeDays: readNumberEnv("MEMORY_MAX_AGE_DAYS") ?? persisted.memoryMaxAgeDays,
     memoryMaxEntries: readNumberEnv("MEMORY_MAX_ENTRIES") ?? persisted.memoryMaxEntries,

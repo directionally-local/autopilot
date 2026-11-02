@@ -95,6 +95,10 @@ export interface AppSnapshot {
   customCommands: { name: string; description?: string }[];
   currentShell: string;
   memoryEnabled: boolean;
+  /** Live memories for the current repo (0 when memory is off). */
+  memoryCount: number;
+  /** Epoch ms of the most recent memory write, null when there are none. */
+  memoryLastWrite: number | null;
   /** Full custom command definitions (for editing). */
   customCommandDefs: CustomCommand[];
   /** The custom-command editor App wants open. */

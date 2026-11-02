@@ -937,8 +937,9 @@ export class View implements AppBridge {
           const r = await this.select("Memory", [
             { value: s.memoryEnabled ? "/memory off" : "/memory on", label: s.memoryEnabled ? "Disable memory" : "Enable memory", state: s.memoryEnabled ? "on" : "off" },
             { value: "/memory", label: "Show memory stats" },
+            { value: "/memory doctor", label: "Check memory health, hit rate, noise, orphaned rows" },
+            { value: "/memory export", label: "Export memories to JSON…" },
             { value: "/memory search <query>", label: "Search memories…" },
-            { value: "/memory doctor", label: "Check for memories orphaned by a repo move/rename" },
             { value: "clear", label: "Clear all memories for this repo" },
           ]);
           if (r === "clear") {
@@ -1984,7 +1985,7 @@ export function queuePlanSplash(prompts: string[]): string {
 
 export type StatusInput = Pick<
   AppSnapshot,
-  "modesEnabled" | "mode" | "busy" | "model" | "usage" | "sessionUsage" | "contextLimit" | "turnPhase" | "currentTool" | "kimiMdStale" | "codeMode" | "intentTier"
+  "modesEnabled" | "mode" | "busy" | "model" | "usage" | "sessionUsage" | "contextLimit" | "turnPhase" | "currentTool" | "kimiMdStale" | "codeMode" | "intentTier" | "memoryEnabled" | "memoryCount" | "memoryLastWrite"
 >;
 
 /**
@@ -2012,6 +2013,12 @@ export function statusSegments(s: StatusInput): Record<string, string> {
     cost: s.sessionUsage ? `${s.sessionUsage.reconcilePending ? "≈" : ""}$${s.sessionUsage.cost.toFixed(2)}` : "",
     code: s.codeMode ? "code mode" : "",
     intent: s.busy && tier ? `${tier} task` : "",
+    // Memory state at a glance (#1077): on/off, how many, when last written.
+    memory: !s.memoryEnabled
+      ? "memory off"
+      : s.memoryCount === 0
+        ? "memory on · no memories yet"
+        : `memory on · ${s.memoryCount} · last ${relTime(new Date(s.memoryLastWrite ?? Date.now()).toISOString())}`,
     warn: warn.join(" · "),
   };
 }

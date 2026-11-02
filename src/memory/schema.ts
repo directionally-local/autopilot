@@ -64,6 +64,8 @@ export interface MemoryStats {
   totalCount: number;
   dbSizeBytes: number;
   lastCleanupAt: number | null;
+  /** When the most recent memory was written (epoch ms), null when empty. */
+  lastCreatedAt: number | null;
   byCategory: Record<MemoryCategory, number>;
 }
 
