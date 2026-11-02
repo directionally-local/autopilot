@@ -27,6 +27,7 @@ import { getPreset, isProviderId, type ProviderId } from "../providers/presets.j
 import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { switchedMessage } from "../providers/connect.js";
+import { DL_FREE_MODEL, dlNotFreeLine, fetchDlMe, renderDlUsage } from "../providers/directionally-local.js";
 import { endSession } from "../hooks/session-lifecycle.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { checkRequestyKey } from "../models/requesty.js";
@@ -730,6 +731,12 @@ const handleModel: Handler = (ctx, rest, arg) => {
             : `invalid model id: ${id || "(empty)"} — pick one from /model list`,
       },
     ]);
+    return true;
+  }
+  // Free only: any other model needs the person's own key, so connect a provider for it.
+  if (provider.id === "directionally-local" && id !== DL_FREE_MODEL) {
+    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `${dlNotFreeLine(id)} Connect a provider for it (OpenRouter serves ids like this one); /model ${DL_FREE_MODEL} keeps you on the free tier.` }]);
+    ctx.setProviderSetup(id.includes("/") ? { initial: "openrouter" } : {});
     return true;
   }
   const entry = getModelOrInfer(id);
@@ -2005,6 +2012,28 @@ function rateLastTurn(ctx: SlashContext, value: "good" | "bad", reason: string):
 const handleGood: Handler = (ctx, rest) => rateLastTurn(ctx, "good", rest.join(" ").trim());
 const handleBad: Handler = (ctx, rest) => rateLastTurn(ctx, "bad", rest.join(" ").trim());
 
+/**
+ * `/usage`: the free tier's weekly allowance — tokens used and left this
+ * week and when it resets (GET /v1/me). Other providers: a pointer to /cost.
+ */
+export async function usageText(cfg: Cfg | null, opts: { fetchImpl?: typeof fetch; now?: number } = {}): Promise<string> {
+  const provider = providerPresetOf(llmAuthFromConfig(cfg));
+  if (provider.id !== "directionally-local") {
+    return `/usage shows the Directionally Local free tier's weekly allowance; you're on ${provider.name}. Use /cost for this session's spend, or /provider to switch to the free tier.`;
+  }
+  try {
+    return renderDlUsage(await fetchDlMe(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}), opts.now);
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+const handleUsage: Handler = async (ctx) => {
+  const text = await usageText(ctx.cfg);
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
+  return true;
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const handlers: Record<string, Handler> = {
@@ -2013,6 +2042,7 @@ const handlers: Record<string, Handler> = {
   "/fresh": handleFresh,
   "/reasoning": handleReasoning,
   "/cost": handleCost,
+  "/usage": handleUsage,
   "/shell": handleShell,
   "/model": handleModel,
   "/jev": handleJev,

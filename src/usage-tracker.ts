@@ -602,6 +602,7 @@ export function formatGenerationsSection(recent: GenerationSnapshot[] = []): str
  */
 export function costNote(preset: Pick<ProviderPreset, "id" | "name" | "keyRequired" | "capabilities" | "subscription">): string | undefined {
   if (preset.capabilities.costConfirmation) return undefined;
+  if (preset.id === "directionally-local") return `${preset.name}: tokens come from your weekly free allowance, so costs show as $0; /usage shows what's left.`;
   if (preset.subscription) return `${preset.name} is billed by your plan (premium requests), not per token, so costs show as $0.`;
   if (preset.id === "custom") return "Custom endpoint: costs are estimated only for models found in a catalog; your gateway's own metering is authoritative.";
   if (!preset.keyRequired) return `${preset.name} runs locally: no per-token cost.`;

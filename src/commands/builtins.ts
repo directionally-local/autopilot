@@ -12,6 +12,7 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "now", description: "Run your latest queued message now instead of after the current turn", source: "builtin" },
   { name: "mode", argHint: "[edit|plan|auto]", description: "Switch agent mode", source: "builtin" },
   { name: "memory", argHint: "[on|off|menu|doctor|migrate-repo <old> <new>|clear|delete <id>|export [path]|search ...]", description: "Manage memory", source: "builtin" },
+  { name: "usage", description: "Show the free tier's tokens used and left this week, and when it resets", source: "builtin" },
   { name: "cost", argHint: "[verify|on|off]", description: "Show cost report or toggle attribution", source: "builtin" },
   { name: "settings", argHint: "[modes on|off]", description: "Show or change feature settings (e.g. plan/edit/auto modes)", source: "builtin" },
   { name: "key", argHint: "[set <key>|clear]", description: "Show or replace the active provider's API key", source: "builtin" },

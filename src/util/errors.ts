@@ -1,4 +1,6 @@
 export class ApiError extends Error {
+  /** A provider's own error code when it sends a string one (e.g. Directionally Local's "quota_exceeded"). */
+  providerCode?: string;
   constructor(
     message: string,
     public readonly code?: number,

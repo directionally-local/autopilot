@@ -387,6 +387,25 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
     model: opts.model,
     provider,
   });
+  // Free tier only: usage events (counts and outcomes, never content).
+  let dl: { toolCalls: Record<string, number> } | null = null;
+  if (provider === "directionally-local" && opts.sessionId) {
+    const events = await import("../providers/dl-events.js");
+    await events.noteDlSessionStart(opts.sessionId, { model: opts.model, cwd: opts.cwd }).catch(() => undefined);
+    const wrapped = events.withDlEvents(opts.callbacks, opts.sessionId);
+    opts = { ...opts, callbacks: wrapped.callbacks };
+    dl = { toolCalls: wrapped.toolCalls };
+  }
+  const dlTurnEnd = (reason: string, err?: unknown): void => {
+    if (!dl || !opts.sessionId) return;
+    const sessionId = opts.sessionId;
+    const toolCalls = dl.toolCalls;
+    const durationMs = Math.round(performance.now() - tr.startedAt);
+    void import("../providers/dl-events.js").then((events) => {
+      if (err !== undefined) events.noteDlError(sessionId, err, opts.model);
+      events.noteDlTurnEnd(sessionId, { toolCalls, durationMs, exitReason: reason, model: opts.model });
+    }, () => undefined);
+  };
   const tr: TurnTrace = {
     trace: opts.trace ?? createNoopRecorder(opts.sessionId ?? ""),
     turnId: opts.turnId ?? makeTurnId(),
@@ -420,13 +439,17 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
   try {
     await runAgentTurnInner(opts, tr);
     endTurn(tr.endReason ?? "complete", tr.finalText);
+    dlTurnEnd(tr.endReason ?? "complete");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       endTurn("aborted", tr.partialText || tr.finalText);
+      dlTurnEnd("aborted");
     } else if (err instanceof AgentLoopError || err instanceof BudgetExhaustedError) {
       endTurn("guardrail", tr.finalText);
+      dlTurnEnd("guardrail");
     } else {
       endTurn("error", tr.partialText || tr.finalText);
+      dlTurnEnd("error", err);
     }
     throw err;
   } finally {
@@ -996,6 +1019,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     const events = runKimi({
       onLargeBody: (warning) => opts.callbacks.onWarning?.(warning),
       onRetry: (message) => opts.callbacks.onInfo?.(message),
+      onNotice: (message) => opts.callbacks.onInfo?.(message),
       ...llmAuthOf(opts),
       model: opts.model,
       messages: apiMessages,

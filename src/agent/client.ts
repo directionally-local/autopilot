@@ -21,6 +21,7 @@ import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from 
 import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
+import { describeDlError, dlAccessToken, DlError, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
 import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
 import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
 
@@ -70,6 +71,8 @@ export interface RunKimiOpts extends LlmAuth {
   networkRetries?: number;
   /** Called before a network retry, for visible progress in interactive hosts. */
   onRetry?: (message: string) => void;
+  /** One-line notices from the provider (e.g. the free tier's 80%-of-allowance notice). */
+  onNotice?: (message: string) => void;
 }
 
 /**
@@ -303,6 +306,25 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
     targetHeaders = { ...targetHeaders, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...chatgptSessionHeaders(opts.sessionId) };
   }
 
+  // Directionally Local free tier: a fresh token (refreshed before expiry, and once after a 401).
+  const dlFree = customEndpoint?.providerId === "directionally-local";
+  let dlRefreshed = false;
+  const dlAuthorize = async (force: boolean): Promise<void> => {
+    let token: string | undefined;
+    try {
+      token = (await dlAccessToken({ force })) ?? customEndpoint?.apiKey;
+    } catch (e) {
+      if (e instanceof DlError) {
+        const err = new ApiError(`autopilot: ${e.message}`, undefined, e.status ?? 401);
+        err.providerCode = e.code;
+        throw err;
+      }
+      throw e;
+    }
+    targetHeaders = { ...targetHeaders, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  };
+  if (dlFree) await dlAuthorize(false);
+
   // Observers of the finalized request body: the debug payload dump
   // (AUTOPILOT_DUMP_LLM=1) and the session trace. Both read the body
   // immediately before fetch — they cannot alter what is sent — and share
@@ -471,18 +493,32 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       } catch {
         /* ignore */
       }
+      const dlErr = dlFree ? parseDlError(parsed) : null;
+      if (dlErr?.code === "invalid_token" && !dlRefreshed) {
+        // The access token was rejected: refresh once and resend (not counted as a retry).
+        dlRefreshed = true;
+        traceResponse(attemptStartedAt, "invalid_token");
+        await dlAuthorize(true);
+        attempt--;
+        continue;
+      }
       const err = extractApiError(parsed, text);
       const msg = err?.message ?? `HTTP ${res.status}: ${text.slice(0, 300)}`;
       const status = err?.status ?? res.status;
+      const dlRetryAfter = dlErr?.retryAfter ?? (Number(res.headers.get("retry-after")) || undefined);
+      const dlMessage = dlErr ? describeDlError(dlErr.code, { ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}), ...(dlRetryAfter ? { retryAfter: dlRetryAfter } : {}) }) : undefined;
       const apiErr = new ApiError(
-        `autopilot: ${describeHttpError(opts.model, status, msg, customEndpoint, requesty)}`,
+        `autopilot: ${dlMessage ?? describeHttpError(opts.model, status, msg, customEndpoint, requesty)}`,
         err?.code,
-        status,
+        dlErr ? res.status : status,
       );
+      if (dlErr) apiErr.providerCode = dlErr.code;
       traceResponse(attemptStartedAt, apiErr.message);
-      if (isRetryable(apiErr, attempt, maxRetries, !customEndpoint && !requesty)) {
+      // Free tier: only rate limits are worth retrying; quota, invites, suspensions and pauses aren't.
+      const retryable = dlErr ? dlErr.code === "rate_limited" && attempt < maxRetries : isRetryable(apiErr, attempt, maxRetries, !customEndpoint && !requesty);
+      if (retryable) {
         // Retry-After may be a number of seconds or an HTTP date.
-        const retryAfter = res.headers.get("retry-after");
+        const retryAfter = dlErr?.retryAfter !== undefined ? String(dlErr.retryAfter) : res.headers.get("retry-after");
         const retryAfterMs = retryAfter ? (/^\d+(?:\.\d+)?$/.test(retryAfter)
           ? Number(retryAfter) * 1000
           : Date.parse(retryAfter) - Date.now()) : undefined;
@@ -493,6 +529,11 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
         continue;
       }
       throw apiErr;
+    }
+
+    if (dlFree) {
+      const notice = quotaNoticeFromHeaders(res.headers);
+      if (notice) opts.onNotice?.(notice);
     }
 
     if (!res.body) {

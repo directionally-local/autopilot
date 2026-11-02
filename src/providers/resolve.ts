@@ -17,6 +17,7 @@ import { getPreset, isProviderId, type ProviderId, type ProviderPreset } from ".
 import { vertexBase, vertexLocation, vertexProject } from "./vertex.js";
 import { bedrockAuth, bedrockBase, bedrockRegion } from "./bedrock.js";
 import { readEnv } from "../util/env.js";
+import { dlApiBase } from "./dl-endpoint.js";
 
 /** Per-provider settings persisted under `providers.<id>` in config.json. */
 export interface ProviderSettings {
@@ -110,6 +111,10 @@ export function resolveActiveProvider(
   } else if (id === "bedrock") {
     const settings = cfg?.providers?.bedrock;
     baseUrl = nonEmpty(settings?.baseUrl) ?? bedrockBase(bedrockRegion(settings, env));
+  } else if (id === "directionally-local") {
+    // AUTOPILOT_PROVIDER + AUTOPILOT_BASE_URL: a sandbox's Hotcell route; else AUTOPILOT_DL_FREE_URL.
+    const envBaseUrl = isProviderId(nonEmpty(env.AUTOPILOT_PROVIDER)?.toLowerCase()) ? nonEmpty(readEnv("BASE_URL", env)) : undefined;
+    baseUrl = envBaseUrl ?? nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? dlApiBase(env);
   } else if (id !== "openrouter" && id !== "requesty") {
     // AUTOPILOT_PROVIDER + AUTOPILOT_BASE_URL route a preset through another endpoint (a
     // gateway such as Hotcell's). Without AUTOPILOT_PROVIDER the URL alone means "custom".

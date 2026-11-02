@@ -82,6 +82,17 @@ export async function checkProviderKey(
     // Tokens come from the browser sign-in; there is nothing cheap to check them against.
     return key ? { ok: true } : { ok: false, reason: "invalid", message: "Sign in with `autopilot auth chatgpt`." };
   }
+  if (id === "directionally-local") {
+    if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth directionally-local` (GitHub device login)." };
+    try {
+      const { fetchDlMe, formatTokens } = await import("./directionally-local.js");
+      const me = await fetchDlMe({ token: key, fetchImpl });
+      return { ok: true, detail: `(@${me.login} · ${formatTokens(Math.max(0, me.allowance.remaining))} tokens left this week)` };
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      return { ok: false, reason: status === undefined ? "network" : "invalid", message: e instanceof Error ? e.message : String(e) };
+    }
+  }
   if (id === "copilot") {
     if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth copilot` (GitHub device login)." };
     try {
@@ -165,7 +176,8 @@ export async function switchProvider(cfg: AutopilotConfig | null, to: ProviderId
   const providers = await persistedProviders();
   const from = cfg ? resolveActiveProvider(cfg).id : undefined;
   if (from && cfg?.model) providers[from] = { ...providers[from], model: cfg.model };
-  const nextModel = model ?? providers[to]?.model ?? getPreset(to).defaultModel;
+  // The free tier serves one model: switching back always restores it.
+  const nextModel = to === "directionally-local" ? getPreset(to).defaultModel : model ?? providers[to]?.model ?? getPreset(to).defaultModel;
   if (nextModel) providers[to] = { ...providers[to], model: nextModel };
   return patchPersistedConfig({ provider: to, providers, model: nextModel });
 }

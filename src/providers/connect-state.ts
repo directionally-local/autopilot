@@ -27,6 +27,11 @@ export const CONNECT_EXIT = {
  * Providers a plain key gateway (one upstream URL, one key, one auth header)
  * cannot proxy: OAuth or device sign-ins, cloud SDK credentials, and
  * per-account URLs. Hidden when `--state-file` is given.
+ *
+ * The Directionally Local free tier is offered: its state file carries the
+ * signed-in access token as `apiKey` (a Bearer token, valid for an hour), so
+ * dl can hand it to a Hotcell route. Refreshing it on the dl/Hotcell side for
+ * long-lived sandboxes is not done here.
  */
 export const HIDDEN_WITHOUT_GATEWAY: ReadonlySet<ProviderId> = new Set<ProviderId>([
   "copilot",

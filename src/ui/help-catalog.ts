@@ -90,6 +90,7 @@ export const CATEGORIES: Category[] = [
       { command: "/cost", description: "show cost report" },
       { command: "/cost on", description: "enable cost attribution by task type" },
       { command: "/cost off", description: "disable cost attribution by task type" },
+      { command: "/usage", description: "free tier: tokens used and left this week, and when it resets" },
     ],
   },
   {

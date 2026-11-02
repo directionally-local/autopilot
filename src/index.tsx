@@ -711,7 +711,7 @@ const authCommand = program
   )
   .addCommand(
     new Command("use")
-      .description("Make a provider the active one: openrouter, requesty, anthropic, openai, chatgpt, gemini, vertex, bedrock, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
+      .description("Make a provider the active one: directionally-local, openrouter, requesty, anthropic, openai, chatgpt, gemini, vertex, bedrock, minimax, copilot, xai, mistral, groq, cerebras, together, fireworks, deepinfra, vercel, cloudflare, azure, deepseek, moonshot, kimi-code, zai, zai-coding, ollama, lmstudio, custom")
       .argument("<provider>", "provider id")
       .action(async (id: string) => {
         const { isProviderId, getPreset } = await import("./providers/presets.js");
@@ -722,6 +722,10 @@ const authCommand = program
           process.exit(2);
         }
         const cfg = await loadConfig();
+        if (cfg && resolveActiveProvider(cfg).id === "directionally-local" && id !== "directionally-local" && getPreset(id).keyRequired) {
+          const { dlNotFreeLine } = await import("./providers/directionally-local.js");
+          console.log(dlNotFreeLine(getPreset(id).name));
+        }
         await switchProvider(cfg, id);
         const next = resolveActiveProvider({ ...(cfg ?? {}), provider: id });
         console.log(`✓ ${getPreset(id).name} is now the active provider.`);
@@ -854,6 +858,34 @@ authCommand.addCommand(
         await saveChatGPTSettings(await signIn.done);
         await switchProvider(await loadConfig().catch(() => null), "chatgpt");
         console.log("✓ Signed in with ChatGPT — now the active provider. Usage counts against your ChatGPT plan.");
+      } catch (e) {
+        console.error(e instanceof Error ? e.message : String(e));
+        process.exit(1);
+      }
+    }),
+);
+
+authCommand.addCommand(
+  new Command("directionally-local")
+    .description("Sign in to the Directionally Local free tier with GitHub (device code) and make it the active provider")
+    .action(async () => {
+      const dl = await import("./providers/directionally-local.js");
+      const { switchProvider } = await import("./providers/keys.js");
+      const { openBrowser } = await import("./ui/app-helpers.js");
+      try {
+        console.log(`Directionally Local, free: ${dl.formatTokens(dl.DL_FREE_WEEKLY_TOKENS)} tokens a week on ${dl.DL_FREE_MODEL}.`);
+        console.log(dl.DL_DISCLOSURE);
+        await dl.dlSignIn((code) => {
+          const opened = openBrowser(code.verificationUriComplete);
+          console.log(`\nYour code: ${code.userCode}`);
+          console.log(`${opened ? "Opened" : "Open"} ${code.verificationUriComplete} — sign in with GitHub and approve it (enter an invite code there if asked).`);
+          console.log("Waiting for you to approve…");
+        });
+        await switchProvider(await loadConfig().catch(() => null), "directionally-local");
+        const me = await dl.fetchDlMe().catch(() => null);
+        console.log(`✓ Signed in${me ? ` as @${me.login}` : ""} — Directionally Local, free is now the active provider.`);
+        if (me) console.log(dl.renderDlUsage(me));
+        console.log("Run `autopilot` to start; /usage shows what's left this week.");
       } catch (e) {
         console.error(e instanceof Error ? e.message : String(e));
         process.exit(1);
