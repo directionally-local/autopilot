@@ -101,11 +101,23 @@ export class DlError extends Error {
 }
 
 interface DlErrorBody {
-  error?: { code?: string; message?: string; resetsAt?: string; retryAfter?: number };
+  error?: { code?: string; message?: string; resetsAt?: string; retryAfter?: number; reason?: string };
+}
+
+/** What the service adds as `reason`, for errors where it changes what to say. */
+export interface DlErrorExtra {
+  resetsAt?: string;
+  retryAfter?: number;
+  /**
+   * access_denied: "account_too_new" | "device_taken"; quota_exceeded:
+   * "tokens" | "spend"; service_paused: "paused" | "ended" | "weekly_budget".
+   */
+  reason?: string;
+  now?: number;
 }
 
 /** The service's `{error:{code,…}}`, if the body is one. */
-export function parseDlError(body: unknown): { code: string; message?: string; resetsAt?: string; retryAfter?: number } | null {
+export function parseDlError(body: unknown): { code: string; message?: string; resetsAt?: string; retryAfter?: number; reason?: string } | null {
   const e = (body as DlErrorBody | null)?.error;
   if (!e || typeof e !== "object" || typeof e.code !== "string") return null;
   return {
@@ -113,6 +125,7 @@ export function parseDlError(body: unknown): { code: string; message?: string; r
     ...(typeof e.message === "string" ? { message: e.message } : {}),
     ...(typeof e.resetsAt === "string" ? { resetsAt: e.resetsAt } : {}),
     ...(typeof e.retryAfter === "number" ? { retryAfter: e.retryAfter } : {}),
+    ...(typeof e.reason === "string" ? { reason: e.reason } : {}),
   };
 }
 
@@ -121,13 +134,15 @@ export function parseDlError(body: unknown): { code: string; message?: string; r
  * retryAfter from the error body or headers. Undefined for codes this
  * client doesn't know (the caller shows the service's own message).
  */
-export function describeDlError(code: string, extra: { resetsAt?: string; retryAfter?: number; now?: number } = {}): string | undefined {
+export function describeDlError(code: string, extra: DlErrorExtra = {}): string | undefined {
   switch (code) {
     case "authorization_pending":
       return "Still waiting for you to approve the sign-in in your browser.";
     case "expired_token":
       return "The sign-in code expired before it was approved. Run the sign-in again to get a new code.";
     case "access_denied":
+      if (extra.reason === "account_too_new") return "Your GitHub account needs to be at least 30 days old for the free tier.";
+      if (extra.reason === "device_taken") return "This device already has a free allowance under another GitHub account; sign in with that account instead.";
       return "The sign-in was declined in the browser, so nothing was saved.";
     case "not_invited":
       return `This GitHub account isn't on the Directionally Local free tier yet. Enter an invite code on the sign-in page, or ${SWITCH_HINT}.`;
@@ -136,7 +151,7 @@ export function describeDlError(code: string, extra: { resetsAt?: string; retryA
     case "invalid_token":
       return `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
     case "quota_exceeded":
-      return `You've used all of this week's free Directionally Local tokens. They reset ${formatReset(extra.resetsAt, extra.now)}. To keep going now, ${SWITCH_HINT}.`;
+      return `${quotaLimitLine(extra.reason)} It resets ${formatReset(extra.resetsAt, extra.now)}. To keep going now, ${SWITCH_HINT}.`;
     case "suspended":
       return `This Directionally Local account is suspended, so its requests are refused. To keep going, ${SWITCH_HINT}.`;
     case "rate_limited": {
@@ -144,12 +159,21 @@ export function describeDlError(code: string, extra: { resetsAt?: string; retryA
       return `Directionally Local is limiting how fast you send requests; try again${s ? ` in ${s} second${s === 1 ? "" : "s"}` : " shortly"}.`;
     }
     case "service_paused":
+      if (extra.reason === "ended") return `The Directionally Local free tier has ended. To keep going, ${SWITCH_HINT}.`;
+      if (extra.reason === "weekly_budget") {
+        return `The Directionally Local free tier's budget for this week is used up; it resumes ${formatReset(extra.resetsAt, extra.now)}. To keep going now, ${SWITCH_HINT}.`;
+      }
       return `The Directionally Local free tier is paused right now. Try again later, or ${SWITCH_HINT}.`;
     case "model_not_allowed":
       return `The free tier only serves ${DL_FREE_MODEL}; pick it with /model.`;
     default:
       return undefined;
   }
+}
+
+/** The weekly limit someone hit: tokens (the default) or the spending allowance. */
+export function quotaLimitLine(reason?: string): string {
+  return reason === "spend" ? "You've reached this week's free usage limit." : "You've used this week's free tokens.";
 }
 
 // ── Device sign-in ───────────────────────────────────────────────────────
@@ -367,6 +391,9 @@ export interface DlAllowance {
   usedThisWeek: number;
   remaining: number;
   resetsAt: string;
+  /** The weekly spending allowance and what's spent of it (the service limits both). */
+  usdPerWeek?: number;
+  spentUsdThisWeek?: number;
 }
 
 export interface DlMe {
@@ -404,6 +431,12 @@ export async function fetchDlMe(opts: { fetchImpl?: typeof fetch; env?: NodeJS.P
   return me;
 }
 
+/** The last 402 quota_exceeded this process saw, so /usage can say which limit was hit. */
+let lastQuota: { reason?: string; resetsAt?: string } | null = null;
+export function noteDlQuotaExceeded(info: { reason?: string; resetsAt?: string }): void {
+  lastQuota = { ...(info.reason ? { reason: info.reason } : {}), ...(info.resetsAt ? { resetsAt: info.resetsAt } : {}) };
+}
+
 /** `/usage`: used and left this week, and when it resets. */
 export function renderDlUsage(me: DlMe, now = Date.now()): string {
   const a = me.allowance;
@@ -414,7 +447,12 @@ export function renderDlUsage(me: DlMe, now = Date.now()): string {
     `  left            ${formatTokens(Math.max(0, a.remaining))} tokens`,
     `  resets          ${formatReset(a.resetsAt, now)}`,
   ];
-  if (a.remaining <= 0) lines.push(`  This week's tokens are used up. To keep going now, ${SWITCH_HINT}.`);
+  // A 402 from this week (same reset) still counts when /v1/me rounds it differently.
+  const seen = lastQuota && (!lastQuota.resetsAt || lastQuota.resetsAt === a.resetsAt) ? lastQuota : null;
+  const spendHit =
+    (typeof a.usdPerWeek === "number" && a.usdPerWeek > 0 && typeof a.spentUsdThisWeek === "number" && a.spentUsdThisWeek >= a.usdPerWeek) ||
+    seen?.reason === "spend";
+  if (a.remaining <= 0 || spendHit) lines.push(`  ${quotaLimitLine(a.remaining <= 0 ? "tokens" : "spend")} To keep going now, ${SWITCH_HINT}.`);
   else if (pct >= 80) lines.push(`  You've used ${pct}% of this week's tokens.`);
   return lines.join("\n");
 }
@@ -442,6 +480,7 @@ export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: 
 /** Test hook: forget the shown notice and the cached weekly grant. */
 export function resetDlNoticeState(): void {
   noticeShownFor = null;
+  lastQuota = null;
   knownWeeklyTokens = undefined;
 }
 

@@ -21,7 +21,7 @@ import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from 
 import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
-import { describeDlError, dlAccessToken, DlError, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
+import { describeDlError, dlAccessToken, DlError, noteDlQuotaExceeded, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
 import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
 import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
 
@@ -506,13 +506,14 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       const msg = err?.message ?? `HTTP ${res.status}: ${text.slice(0, 300)}`;
       const status = err?.status ?? res.status;
       const dlRetryAfter = dlErr?.retryAfter ?? (Number(res.headers.get("retry-after")) || undefined);
-      const dlMessage = dlErr ? describeDlError(dlErr.code, { ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}), ...(dlRetryAfter ? { retryAfter: dlRetryAfter } : {}) }) : undefined;
+      const dlMessage = dlErr ? describeDlError(dlErr.code, { ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}), ...(dlRetryAfter ? { retryAfter: dlRetryAfter } : {}), ...(dlErr.reason ? { reason: dlErr.reason } : {}) }) : undefined;
       const apiErr = new ApiError(
         `autopilot: ${dlMessage ?? describeHttpError(opts.model, status, msg, customEndpoint, requesty)}`,
         err?.code,
         dlErr ? res.status : status,
       );
       if (dlErr) apiErr.providerCode = dlErr.code;
+      if (dlErr?.code === "quota_exceeded") noteDlQuotaExceeded({ ...(dlErr.reason ? { reason: dlErr.reason } : {}), ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}) });
       traceResponse(attemptStartedAt, apiErr.message);
       // Free tier: only rate limits are worth retrying; quota, invites, suspensions and pauses aren't.
       const retryable = dlErr ? dlErr.code === "rate_limited" && attempt < maxRetries : isRetryable(apiErr, attempt, maxRetries, !customEndpoint && !requesty);
