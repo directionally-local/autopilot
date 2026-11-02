@@ -19,6 +19,8 @@
  */
 import { basename, dirname, sep } from "node:path";
 import type { SqliteDatabase } from "../util/sqlite.js";
+import { computeContentHash, findLiveMemoryByContentHash } from "./db.js";
+import type { MemoryCategory } from "./schema.js";
 
 export interface RepoPathCount {
   path: string;
@@ -191,15 +193,27 @@ function applyMigration(db: SqliteDatabase, from: string, to: string, rows: RawR
   const ftsInsert = db.prepare(
     `INSERT INTO memories_fts(rowid, content, category, repo_path) VALUES (?, ?, ?, ?)`,
   );
-  const update = db.prepare(`UPDATE memories SET repo_path = ?, related_files = ? WHERE rowid = ?`);
+  const update = db.prepare(`UPDATE memories SET repo_path = ?, related_files = ?, content_hash = ? WHERE rowid = ?`);
+  const supersede = db.prepare(`UPDATE memories SET superseded_by = ? WHERE rowid = ?`);
 
   db.transaction(() => {
     for (const row of rows) {
       const { json } = rewriteRelatedFiles(row.related_files, from, to);
+      // The hash covers the repo, so re-keying must rehash (#1074). If the
+      // destination already holds the same live content (merge), keep one row:
+      // the migrating copy is superseded before it can violate the unique index.
+      const hash = computeContentHash(row.content, row.category as MemoryCategory, to);
+      const clash = findLiveMemoryByContentHash(db, hash);
+      if (clash) {
+        const clashRow = db.prepare(`SELECT rowid AS rid FROM memories WHERE id = ?`).get(clash.id) as { rid: number } | undefined;
+        if (clashRow && clashRow.rid !== row.rid) {
+          supersede.run(clash.id, row.rid);
+        }
+      }
       // `memories_fts` is external content: an UPDATE on `memories` does not
       // reindex it, so drop the old tokens and re-add them with the new path.
       ftsDelete.run(row.rid, row.content, row.category, from);
-      update.run(to, json, row.rid);
+      update.run(to, json, hash, row.rid);
       ftsInsert.run(row.rid, row.content, row.category, to);
     }
   })();

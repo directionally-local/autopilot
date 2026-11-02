@@ -208,6 +208,88 @@ describe("MemoryManager embeddings follow the provider", () => {
   });
 });
 
+describe("MemoryManager content-addressed lifecycle (#1074)", () => {
+  let tmpDir: string;
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "kimiflare-memory-lifecycle-test-"));
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      if (url.endsWith("/embeddings")) {
+        const n = (body.input as string[]).length;
+        return new Response(JSON.stringify({ data: Array.from({ length: n }, (_, index) => ({ index, embedding: [1, 0, 0] })) }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const chunk = { choices: [{ index: 0, delta: { content: '{"valid":true,"corrected_content":null}' }, finish_reason: "stop" }] };
+      return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function open(): MemoryManager {
+    const m = new MemoryManager({
+      dbPath: join(tmpDir, "memory.db"),
+      model: "m",
+      providerId: "openai",
+      customEndpoint: { baseUrl: "https://api.openai.com/v1", apiKey: "k", providerId: "openai" as const },
+    });
+    m.open();
+    return m;
+  }
+
+  it("events accumulate instead of superseding each other", async () => {
+    const m = open();
+    try {
+      const first = await m.remember("File modified: src/a.ts.", "event", 2, "/repo", "s1", undefined, undefined, "event_edit_src_a_ts");
+      const second = await m.remember("Fixed race condition in src/a.ts loop.", "event", 3, "/repo", "s1", undefined, undefined, "event_edit_src_a_ts");
+      assert.notStrictEqual(second.id, first.id, "a later edit is a new row");
+
+      const results = await m.recall({ text: "src/a.ts", repoPath: "/repo" });
+      const contents = results.map((r) => r.memory.content);
+      assert.ok(contents.includes("File modified: src/a.ts."), "the earlier event stays live");
+      assert.ok(contents.includes("Fixed race condition in src/a.ts loop."), "the later event is live too");
+    } finally {
+      m.close();
+    }
+  });
+
+  it("re-ingesting identical content returns the stored row", async () => {
+    const m = open();
+    try {
+      const first = await m.remember("The build uses tsup for bundling", "fact", 3, "/repo", "s1");
+      const second = await m.remember("The build uses tsup for bundling", "fact", 3, "/repo", "s1");
+      assert.strictEqual(second.id, first.id, "same content, same row");
+      assert.strictEqual(m.getStats("/repo")?.totalCount, 1, "no duplicate row");
+    } finally {
+      m.close();
+    }
+  });
+
+  it("facts still supersede on the same topic key", async () => {
+    const m = open();
+    try {
+      const first = await m.remember("The build uses tsup for bundling", "fact", 3, "/repo", "s1", undefined, undefined, "build_tool");
+      const second = await m.remember("The build uses esbuild for bundling", "fact", 3, "/repo", "s1", undefined, undefined, "build_tool");
+      assert.notStrictEqual(second.id, first.id, "changed content is a new row");
+
+      const results = await m.recall({ text: "bundling", repoPath: "/repo" });
+      const contents = results.map((r) => r.memory.content);
+      assert.ok(!contents.includes("The build uses tsup for bundling"), "the old fact is superseded");
+      assert.ok(contents.includes("The build uses esbuild for bundling"), "the new fact is live");
+    } finally {
+      m.close();
+    }
+  });
+});
+
 describe("session-end edit extraction (memoryExtraction: session, #1073)", () => {
   let tmpDir: string;
   const originalFetch = globalThis.fetch;

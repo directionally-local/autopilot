@@ -9,6 +9,9 @@ import {
   closeMemoryDb,
   insertMemory,
   insertMemories,
+  computeContentHash,
+  findLiveMemoryByContentHash,
+  deleteExpiredTasks,
   getMemoryStats,
   clearMemoriesForRepo,
   listTopicKeys,
@@ -418,12 +421,24 @@ export class MemoryManager {
       safeContent = verified.corrected_content;
     }
 
+    // 2b. Content-addressed dedup (#1074): identical live content is already
+    // stored — return it instead of re-verifying, re-embedding, or churning
+    // supersession pointers.
+    const duplicate = findLiveMemoryByContentHash(
+      this.db,
+      computeContentHash(safeContent, category, repo),
+    );
+    if (duplicate) {
+      return { id: duplicate.id };
+    }
+
     // 3. Normalize topic key (trust caller-provided key for auto-extracted memories)
     const resolvedTopicKey = topicKey?.trim() || this.normalizeTopicKey(safeContent, repo);
 
-    // 4. Check for supersession
+    // 4. Supersede durable knowledge on the same topic. Events accumulate:
+    //    a later edit must never hide an earlier one (#1074).
     const supersededIds: string[] = [];
-    if (resolvedTopicKey) {
+    if (resolvedTopicKey && category !== "event") {
       const existing = findMemoriesByTopicKey(this.db, repo, resolvedTopicKey);
       for (const old of existing) {
         // Simple heuristic: same topic key + similar content length = likely superseded
@@ -485,6 +500,15 @@ export class MemoryManager {
     const normalizedKey = topicKey.trim();
     if (!normalizedKey) {
       throw new Error("Plan topic key cannot be empty");
+    }
+
+    // Idempotent: the same plan content stored twice is one row (#1074).
+    const duplicate = findLiveMemoryByContentHash(
+      this.db,
+      computeContentHash(safeContent, "task", repo),
+    );
+    if (duplicate) {
+      return { id: duplicate.id };
     }
 
     // Supersede any previous plan under the same key.
@@ -557,11 +581,22 @@ export class MemoryManager {
   async recordKimiMdRefresh(repoPath: string, sessionId: string): Promise<void> {
     if (!this.db) return;
     const repo = this.repo(repoPath);
+    const content = `KIMI.md refreshed for ${repo}`;
+    // Content-addressed dedup would freeze the refresh timestamp on the first
+    // write, so an existing row is touched instead of re-inserted (#1074).
+    const existing = findLiveMemoryByContentHash(this.db, computeContentHash(content, "event", repo));
+    if (existing) {
+      const now = Date.now();
+      this.db
+        .prepare(`UPDATE memories SET created_at = ?, accessed_at = ? WHERE id = ?`)
+        .run(now, now, existing.id);
+      return;
+    }
     const embedding = new Float32Array(DEFAULT_EMBEDDING_DIM);
     insertMemory(
       this.db,
       {
-        content: `KIMI.md refreshed for ${repo}`,
+        content,
         category: "event",
         sourceSessionId: sessionId,
         repoPath: repo,
@@ -717,14 +752,14 @@ export class MemoryManager {
     return { embedding: new Float32Array(0), vector: { pending: true } };
   }
 
-  async cleanup(repoPath: string): Promise<{ oldDeleted: number; excessDeleted: number; duplicatesMerged: number }> {
-    if (!this.db) return { oldDeleted: 0, excessDeleted: 0, duplicatesMerged: 0 };
+  async cleanup(repoPath: string): Promise<{ oldDeleted: number; excessDeleted: number; duplicatesMerged: number; tasksExpired: number }> {
+    if (!this.db) return { oldDeleted: 0, excessDeleted: 0, duplicatesMerged: 0, tasksExpired: 0 };
 
     const maxAgeDays = this.opts.maxAgeDays ?? 90;
     const maxEntries = this.opts.maxEntries ?? 1000;
 
     if (!shouldCleanup(this.db)) {
-      return { oldDeleted: 0, excessDeleted: 0, duplicatesMerged: 0 };
+      return { oldDeleted: 0, excessDeleted: 0, duplicatesMerged: 0, tasksExpired: 0 };
     }
 
     const result = await runCleanup({

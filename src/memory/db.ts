@@ -1,6 +1,7 @@
 import { SqliteDatabase } from "../util/sqlite.js";
 import { join, dirname } from "node:path";
 import { mkdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { Memory, MemoryInput, MemoryStats, MemoryCategory } from "./schema.js";
 import { vectorFromBlob } from "./embeddings.js";
 
@@ -25,7 +26,8 @@ function initSchema(db: SqliteDatabase): void {
       forgotten INTEGER NOT NULL DEFAULT 0,
       vectorized INTEGER NOT NULL DEFAULT 0,
       agent_role TEXT,
-      embedding_model TEXT
+      embedding_model TEXT,
+      content_hash TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_memories_repo ON memories(repo_path);
@@ -103,6 +105,17 @@ function migrateV1(db: SqliteDatabase): void {
       WHERE vectorized = 1 AND category != 'task'
     `);
   }
+  if (!names.has("content_hash")) {
+    db.exec("ALTER TABLE memories ADD COLUMN content_hash TEXT");
+  }
+  // Content-addressed dedup (#1074): only live rows are indexed, so a
+  // superseded or forgotten copy never blocks the content from being written
+  // again. NULL hashes (legacy rows) are distinct in a SQLite unique index.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_content_hash
+      ON memories(content_hash)
+      WHERE superseded_by IS NULL AND forgotten = 0
+  `);
   // Create new indexes if missing
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_memories_topic_key ON memories(topic_key);
@@ -173,6 +186,44 @@ export interface VectorInfo {
   pending?: boolean;
 }
 
+/**
+ * Normalize content before hashing so re-ingestion collides reliably (#1074):
+ * - line endings and trailing whitespace are insignificant
+ * - the repo root is stripped from absolute paths, so an edit recorded as
+ *   `/abs/repo/src/a.ts` hashes the same as `src/a.ts`
+ * - a leading `./` on a path is dropped
+ */
+export function normalizeContentForHash(content: string, repoPath: string): string {
+  let s = content.replace(/\r\n?/g, "\n");
+  const roots = new Set<string>([repoPath, repoPath.replace(/\\/g, "/")]);
+  for (const root of roots) {
+    if (!root || root === "/" || root === ".") continue;
+    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    s = s.replace(new RegExp(`${escaped}[/\\\\]?`, "g"), "");
+  }
+  s = s.replace(/(^|[\s"'`([{])\.\//g, "$1");
+  s = s.replace(/[ \t]+$/gm, "");
+  return s.trim();
+}
+
+/** SHA-256 of normalized content + category + repo: the dedup key (#1074). */
+export function computeContentHash(content: string, category: MemoryCategory, repoPath: string): string {
+  const normalized = normalizeContentForHash(content, repoPath);
+  return createHash("sha256").update(`${normalized}\u0000${category}\u0000${repoPath}`).digest("hex");
+}
+
+/** The live row already holding this content, if any (#1074). */
+export function findLiveMemoryByContentHash(db: SqliteDatabase, contentHash: string): Memory | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM memories
+       WHERE content_hash = ? AND forgotten = 0 AND superseded_by IS NULL
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(contentHash) as Record<string, unknown> | undefined;
+  return row ? rowToMemory(row) : null;
+}
+
 export function insertMemory(db: SqliteDatabase, mem: MemoryInput, embedding: Float32Array, vector: VectorInfo = {}): Memory {
   const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const now = Date.now();
@@ -194,10 +245,11 @@ export function insertMemory(db: SqliteDatabase, mem: MemoryInput, embedding: Fl
     embeddingModel: vector.model ?? null,
     agentRole: mem.agentRole ?? null,
   };
+  const contentHash = computeContentHash(mem.content, mem.category, mem.repoPath);
 
-  db.prepare(
-    `INSERT INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role, embedding_model)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  const result = db.prepare(
+    `INSERT OR IGNORE INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role, embedding_model, content_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     memory.id,
     memory.content,
@@ -214,16 +266,23 @@ export function insertMemory(db: SqliteDatabase, mem: MemoryInput, embedding: Fl
     memory.forgotten ? 1 : 0,
     memory.vectorized ? 1 : 0,
     memory.agentRole,
-    memory.embeddingModel
+    memory.embeddingModel,
+    contentHash
   );
+
+  if (result.changes === 0) {
+    // Identical live content already stored: re-ingestion is idempotent.
+    const existing = findLiveMemoryByContentHash(db, contentHash);
+    if (existing) return existing;
+  }
 
   return memory;
 }
 
 export function insertMemories(db: SqliteDatabase, items: { input: MemoryInput; embedding: Float32Array; vector?: VectorInfo }[]): Memory[] {
   const insert = db.prepare(
-    `INSERT INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role, embedding_model)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO memories (id, content, embedding, category, source_session_id, repo_path, created_at, accessed_at, importance, related_files, topic_key, superseded_by, forgotten, vectorized, agent_role, embedding_model, content_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const inserted: Memory[] = [];
@@ -249,7 +308,8 @@ export function insertMemories(db: SqliteDatabase, items: { input: MemoryInput; 
         embeddingModel: vector.model ?? null,
         agentRole: input.agentRole ?? null,
       };
-      insert.run(
+      const contentHash = computeContentHash(input.content, input.category, input.repoPath);
+      const result = insert.run(
         memory.id,
         memory.content,
         Buffer.from(memory.embedding.buffer),
@@ -265,8 +325,14 @@ export function insertMemories(db: SqliteDatabase, items: { input: MemoryInput; 
         memory.forgotten ? 1 : 0,
         memory.vectorized ? 1 : 0,
         memory.agentRole,
-        memory.embeddingModel
+        memory.embeddingModel,
+        contentHash
       );
+      if (result.changes === 0) {
+        const existing = findLiveMemoryByContentHash(db, contentHash);
+        inserted.push(existing ?? memory);
+        continue;
+      }
       inserted.push(memory);
     }
   });
@@ -509,6 +575,15 @@ export function deleteOldMemories(db: SqliteDatabase, maxAgeMs: number): number 
     )
     .run(cutoff);
   return result.changes;
+}
+
+/** Default TTL for task rows (plans): ephemeral, unlike durable knowledge. */
+export const DEFAULT_TASK_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Expire task rows older than `ttlMs` — tasks are ephemeral (#1074). */
+export function deleteExpiredTasks(db: SqliteDatabase, ttlMs: number = DEFAULT_TASK_TTL_MS): number {
+  const cutoff = Date.now() - ttlMs;
+  return db.prepare(`DELETE FROM memories WHERE category = 'task' AND created_at < ?`).run(cutoff).changes;
 }
 
 export function deleteExcessMemories(db: SqliteDatabase, repoPath: string, keep: number): number {

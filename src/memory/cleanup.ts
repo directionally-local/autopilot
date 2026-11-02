@@ -2,6 +2,7 @@ import type { SqliteDatabase } from "../util/sqlite.js";
 import {
   deleteOldMemories,
   deleteExcessMemories,
+  deleteExpiredTasks,
   setLastCleanup,
   getMemoryStats,
   supersedeMemory,
@@ -18,12 +19,15 @@ export interface CleanupOpts {
   deduplicate?: boolean;
   /** Only rows embedded by this model are compared; null skips vector dedup. */
   embeddingModel?: string | null;
+  /** TTL for task rows; defaults to DEFAULT_TASK_TTL_MS (24h). */
+  taskTtlMs?: number;
 }
 
 export interface CleanupResult {
   oldDeleted: number;
   excessDeleted: number;
   duplicatesMerged: number;
+  tasksExpired: number;
 }
 
 function findDuplicates(memories: Memory[], threshold = 0.95): Array<[string, string]> {
@@ -51,17 +55,23 @@ function findDuplicates(memories: Memory[], threshold = 0.95): Array<[string, st
 }
 
 export async function runCleanup(opts: CleanupOpts): Promise<CleanupResult> {
-  const result: CleanupResult = { oldDeleted: 0, excessDeleted: 0, duplicatesMerged: 0 };
+  const result: CleanupResult = { oldDeleted: 0, excessDeleted: 0, duplicatesMerged: 0, tasksExpired: 0 };
 
   // 1. Delete old memories
   const maxAgeMs = opts.maxAgeDays * 24 * 60 * 60 * 1000;
   result.oldDeleted = deleteOldMemories(opts.db, maxAgeMs);
 
+  // 1b. Tasks (plans) are ephemeral: expire them on a short TTL (#1074).
+  result.tasksExpired = deleteExpiredTasks(opts.db, opts.taskTtlMs);
+
   // 2. Deduplicate if requested
   if (opts.deduplicate !== false && opts.embeddingModel !== null) {
     const { listMemoriesForVectorSearch } = await import("./db.js");
     const since = Date.now() - opts.maxAgeDays * 24 * 60 * 60 * 1000;
-    const candidates = listMemoriesForVectorSearch(opts.db, opts.repoPath, since, 5000, undefined, opts.embeddingModel);
+    // Events accumulate and are deduped only by content hash at write time,
+    // never superseded by similarity (#1074).
+    const candidates = listMemoriesForVectorSearch(opts.db, opts.repoPath, since, 5000, undefined, opts.embeddingModel)
+      .filter((m) => m.category !== "event");
     const duplicates = findDuplicates(candidates);
 
     if (duplicates.length > 0) {
