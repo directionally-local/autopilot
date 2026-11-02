@@ -4,7 +4,7 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DlHotcellRuntime, cellProviderEnv } from "./dl-cell-runtime.js";
+import { DlHotcellRuntime, cellProviderEnv, type DlHotcellRuntimeOptions } from "./dl-cell-runtime.js";
 import type { HotcellProvider } from "./hotcell-provider.js";
 import type { DlTurnStart } from "./dl-api.js";
 import { providerConfig } from "./dl-workspaces.js";
@@ -240,6 +240,15 @@ function fakeProvider(cells: Map<string, FakeCellState>, defaults: Pick<FakeCell
   } as unknown as HotcellProvider;
 }
 
+/**
+ * A runtime that never looks a model up in the live OpenRouter catalog: on a runner
+ * without a cached catalog that is a network fetch, and a slow one stalled provisioning
+ * past the test timeout (#1091). Tests that exercise the lookup pass their own.
+ */
+function newRuntime(provider: HotcellProvider, options: DlHotcellRuntimeOptions = {}): DlHotcellRuntime {
+  return new DlHotcellRuntime(provider, { modelInfo: async () => undefined, ...options });
+}
+
 function fakeTurn(overrides: Partial<DlTurnStart>): DlTurnStart & { events: Array<{ type: string; data?: Record<string, unknown> }>; finished: string[]; cursors: number[] } {
   const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
   const finished: string[] = [];
@@ -270,7 +279,7 @@ function fakeTurn(overrides: Partial<DlTurnStart>): DlTurnStart & { events: Arra
 describe("dl server Hotcell runtime", () => {
   it("provisions distinct cells per conversation, adopts on retry, and reuses the seeded workspace", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
 
     const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
     const first = await runtime.provisionConversation({ conversationId: crypto.randomUUID(), ...base });
@@ -296,7 +305,7 @@ describe("dl server Hotcell runtime", () => {
   it("configures a DeepSeek cell's Autopilot for the provider's gateway route with the cell's egress token", async () => {
     const cells = new Map<string, FakeCellState>();
     const egress = { tokens: [{ token: "egress-token-1" }], providers: [{ name: "deepseek", baseUrl: "http://host.docker.internal:4752/deepseek/" }] };
-    const runtime = new DlHotcellRuntime(fakeProvider(cells, { egress }), { archiveWorkspace: async () => "QUJD" });
+    const runtime = newRuntime(fakeProvider(cells, { egress }), { archiveWorkspace: async () => "QUJD" });
     const conversationId = crypto.randomUUID();
     const created = await runtime.provisionConversation({
       conversationId, sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
@@ -313,21 +322,21 @@ describe("dl server Hotcell runtime", () => {
   it("configures a keyless Ollama cell without a key env and keeps OpenRouter on the daemon's own injection", async () => {
     const ollamaCells = new Map<string, FakeCellState>();
     const egress = { tokens: [], providers: [{ name: "ollama", baseUrl: "http://host.docker.internal:4752/ollama" }] };
-    const ollama = new DlHotcellRuntime(fakeProvider(ollamaCells, { egress }), { archiveWorkspace: async () => "QUJD" });
+    const ollama = newRuntime(fakeProvider(ollamaCells, { egress }), { archiveWorkspace: async () => "QUJD" });
     const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", allowCreate: true, onCellCreated: () => {} };
     const created = await ollama.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "qwen3:32b", provider: providerConfig("ollama") });
     const state = [...ollamaCells.values()].find((cell) => cell.id === created.cellId)!;
     assert.deepEqual(state.envVars, { AUTOPILOT_PROVIDER: "ollama", AUTOPILOT_BASE_URL: "http://host.docker.internal:4752/ollama/v1" });
 
     const openrouterCells = new Map<string, FakeCellState>();
-    const openrouter = new DlHotcellRuntime(fakeProvider(openrouterCells), { archiveWorkspace: async () => "QUJD" });
+    const openrouter = newRuntime(fakeProvider(openrouterCells), { archiveWorkspace: async () => "QUJD" });
     const orCreated = await openrouter.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "test/model", provider: providerConfig("openrouter") });
     const orState = [...openrouterCells.values()].find((cell) => cell.id === orCreated.cellId)!;
     assert.equal(orState.envVars, undefined, "OPENROUTER_BASE_URL/_API_KEY come from the daemon, as before");
     assert.equal(orState.createInput?.provider, "openrouter");
 
     // A route the daemon doesn't offer fails provisioning instead of leaving a cell that can't reach a model.
-    const missing = new DlHotcellRuntime(fakeProvider(new Map(), { egress: { tokens: [{ token: "t" }], providers: [{ name: "openrouter", baseUrl: "http://gw/openrouter" }] } }), { archiveWorkspace: async () => "QUJD" });
+    const missing = newRuntime(fakeProvider(new Map(), { egress: { tokens: [{ token: "t" }], providers: [{ name: "openrouter", baseUrl: "http://gw/openrouter" }] } }), { archiveWorkspace: async () => "QUJD" });
     await assert.rejects(
       missing.provisionConversation({ conversationId: crypto.randomUUID(), ...base, model: "deepseek-v4-pro", provider: providerConfig("deepseek") }),
       /hotcell_egress_route_missing/,
@@ -351,7 +360,7 @@ describe("dl server Hotcell runtime", () => {
     const cells = new Map([[conversationId, state]]);
     const sdkBundle = "updated runtime — 📦\n".repeat(8_000);
     const expectedVersion = "1.19.2-aster.13";
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), {
+    const runtime = newRuntime(fakeProvider(cells), {
       autopilotPackageSpec: `autopilot-ai@${expectedVersion}`,
       cellRuntimeSdkBundle: sdkBundle,
       archiveWorkspace: async () => "QUJD",
@@ -379,7 +388,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("provisions a cell from the API conversation and streams its first turn", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const conversationId = crypto.randomUUID();
     const sessionId = crypto.randomUUID();
     const turn = fakeTurn({
@@ -423,7 +432,7 @@ describe("dl server Hotcell runtime", () => {
     const state = emptyCellState("repo-cell");
     state.commitAhead = true;
     cells.set(conversationId, state);
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { pollIntervalMs: 5 });
+    const runtime = newRuntime(fakeProvider(cells), { pollIntervalMs: 5 });
     let published = 0;
     const turn = fakeTurn({
       cellId: state.id,
@@ -482,7 +491,7 @@ describe("dl server Hotcell runtime", () => {
         id: "conv-commits", sessionId: "s", kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/12345678", pullRequestNumber: null,
       } as never;
       const state = emptyCellState();
-      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = newRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
       let published = 0;
 
@@ -549,7 +558,7 @@ describe("dl server Hotcell runtime", () => {
       const githubProxy = { token: "conversation-scoped-placeholder-grant-token", gitUrl: "http://proxy.test/api/v1/github-proxy/git" };
       const state = emptyCellState();
       state.promptEvents = [{ type: "session.end", reason: "error", error: "context window exceeded" }];
-      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = newRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       let published = 0;
 
       // Nothing done yet: nothing to push.
@@ -582,7 +591,7 @@ describe("dl server Hotcell runtime", () => {
   it("maps cell events to dl server events, advances the cursor, and finishes completed turns", async () => {
     const cells = new Map<string, FakeCellState>();
     const provider = fakeProvider(cells);
-    const runtime = new DlHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = newRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const conversationId = crypto.randomUUID();
     const { cellId } = await runtime.provisionConversation({
       conversationId, sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
@@ -604,7 +613,7 @@ describe("dl server Hotcell runtime", () => {
     ];
     const turn = fakeTurn({ cellId });
     runtime.startTurn(turn);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await waitFor(() => turn.finished.length > 0);
     assert.deepEqual(state.prompts, [{ id: turn.runId, message: "hello cell" }]);
     assert.ok(turn.events.some((event) => event.type === "assistant.delta"));
     assert.deepEqual(turn.events.filter((event) => event.type === "usage"), [
@@ -625,7 +634,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("sends 150k prompts through bounded Hotcell control-file writes", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
@@ -646,7 +655,7 @@ describe("dl server Hotcell runtime", () => {
   it("cancels an active turn with an in-cell abort and completes pause/resume/destroy through the provider", async () => {
     const cells = new Map<string, FakeCellState>();
     const provider = fakeProvider(cells);
-    const runtime = new DlHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = newRuntime(provider, { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const conversationId = crypto.randomUUID();
     const { cellId } = await runtime.provisionConversation({
       conversationId, sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
@@ -677,7 +686,7 @@ describe("dl server Hotcell runtime", () => {
         { cursor: 1, runId: null, event: { type: "tool.start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } } },
         { cursor: 2, runId: null, event: { type: "tool.result", toolCallId: "t1", toolName: "bash", result: "README.md\nsk-or-v1-abcdefghijklmnopqrstuvwxyz", isError: false } },
       );
-      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = newRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       await runtime.listCheckpoints(state.id); // provisioning creates the repo before any turn
       // Simulate the agent's work landing in the workspace during the turn.
       writeFileSync(join(root, "hello.txt"), "made by the agent\n");
@@ -711,7 +720,7 @@ describe("dl server Hotcell runtime", () => {
     try {
       writeFileSync(join(root, "a.txt"), "one\n");
       const state = emptyCellState();
-      const runtime = new DlHotcellRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
+      const runtime = newRuntime(realWorkspaceProvider(state, root), { pollIntervalMs: 5 });
       const conversation = { id: "conv-restore", sessionId: "s" } as never;
 
       const first = fakeTurn({ cellId: state.id, conversation, userText: "noop turn" });
@@ -749,7 +758,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("restarts the bridge before prompting a cell that was paused while idle", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},
@@ -768,7 +777,7 @@ describe("dl server Hotcell runtime", () => {
   it("clones code projects through the GitHub gateway and leaves chat cells unseeded", async () => {
     const cells = new Map<string, FakeCellState>();
     let archived = 0;
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => { archived++; return "QUJD"; } });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => { archived++; return "QUJD"; } });
     const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
 
     await runtime.provisionConversation({ ...base, conversationId: crypto.randomUUID(), project: { kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/abcd1234" } });
@@ -794,7 +803,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("starts a code cell from the client's base commit and commits its uploaded patch first", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells));
+    const runtime = newRuntime(fakeProvider(cells));
     const base = { sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo", model: "test/model", allowCreate: true, onCellCreated: () => {} };
     const baseCommit = "a".repeat(40);
     const patch = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n";
@@ -822,7 +831,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("only reads artifacts by safe relative paths", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
@@ -855,7 +864,7 @@ describe("dl server Hotcell runtime", () => {
       },
       getCell: async () => { throw new Error("unused"); },
     } as unknown as HotcellProvider;
-    const runtime = new DlHotcellRuntime(provider, { archiveWorkspace: async () => "QUJD" });
+    const runtime = newRuntime(provider, { archiveWorkspace: async () => "QUJD" });
 
     assert.deepEqual(await runtime.pauseIdleCells(15 * 60_000, 1), ["older"]);
     assert.deepEqual(await runtime.pauseIdleCells(15 * 60_000), ["old"]);
@@ -873,7 +882,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("re-attaches to a turn after a server restart without re-sending the prompt", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 5 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
@@ -895,7 +904,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("ends a turn the cell no longer runs instead of leaving the chat busy", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, livenessCheckMs: 50 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, livenessCheckMs: 50 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
@@ -908,7 +917,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("fails a turn that stops making progress, and aborts it in the cell", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 80 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 80 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
@@ -926,7 +935,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("keeps a quiet turn that's still within the stall limit", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 60_000 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 60_000 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
@@ -943,7 +952,7 @@ describe("dl server Hotcell runtime", () => {
 
   it("fails a turn whose cell stops answering", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 0, unreachableTimeoutMs: 80 });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD", pollIntervalMs: 1, stallTimeoutMs: 0, unreachableTimeoutMs: 80 });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {}, project: { kind: "chat" },
@@ -964,7 +973,7 @@ describe("dl server Hotcell runtime", () => {
     const entries: Record<string, unknown> = {
       "deepseek/deepseek-v4.1-flash-1017": { id: "deepseek/deepseek-v4.1-flash-1017", contextWindow: 1_048_576, pricing: { inputPerMtok: 0.3, outputPerMtok: 1.2 }, supports: { tools: true, streaming: true } },
     };
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), {
+    const runtime = newRuntime(fakeProvider(cells), {
       archiveWorkspace: async () => "QUJD",
       modelInfo: async (model) => entries[model] as never,
     });
@@ -982,9 +991,28 @@ describe("dl server Hotcell runtime", () => {
     assert.ok(!("modelInfo" in switched), "no entry, nothing sent: the cell guesses as before");
   });
 
+  it("provisions and switches models without waiting on a model lookup that never answers", { timeout: 10_000 }, async () => {
+    const cells = new Map<string, FakeCellState>();
+    const runtime = newRuntime(fakeProvider(cells), {
+      archiveWorkspace: async () => "QUJD",
+      // A catalog fetch stuck on an unresponsive connection.
+      modelInfo: () => new Promise<never>(() => {}),
+      modelInfoTimeoutMs: 20,
+    });
+    const { cellId } = await runtime.provisionConversation({
+      conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
+      model: "test/model", allowCreate: true, onCellCreated: () => {},
+    });
+    const state = [...cells.values()][0]!;
+    const started = state.rpcs!.find((rpc) => rpc.type === "new_session")!;
+    assert.ok(!("modelInfo" in started), "the session starts without an entry rather than waiting for one");
+    await runtime.setModel(cellId, "someone/slow");
+    assert.deepEqual(state.modelSwitches, ["someone/slow"]);
+  });
+
   it("switches the cell session's model through the bridge", async () => {
     const cells = new Map<string, FakeCellState>();
-    const runtime = new DlHotcellRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
+    const runtime = newRuntime(fakeProvider(cells), { archiveWorkspace: async () => "QUJD" });
     const { cellId } = await runtime.provisionConversation({
       conversationId: crypto.randomUUID(), sessionId: "s-1", cellName: "dl-1", workspaceId: "default", workspaceRoot: "/tmp/repo",
       model: "test/model", allowCreate: true, onCellCreated: () => {},

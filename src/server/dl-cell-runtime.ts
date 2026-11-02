@@ -28,6 +28,9 @@ const LIVENESS_CHECK_MS = 20_000;
 const STALL_TIMEOUT_MS = 30 * 60_000;
 // Every control request failing this long means the cell is gone, not briefly busy.
 const UNREACHABLE_TIMEOUT_MS = 5 * 60_000;
+// The model's catalog entry is optional context for the cell; a slow or hanging catalog
+// fetch must not hold up provisioning or a model switch.
+const MODEL_INFO_TIMEOUT_MS = 5_000;
 const ARTIFACTS_DIR = `${CELL_WORKSPACE}/artifacts`;
 const MAX_ARTIFACTS = 500;
 const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
@@ -89,6 +92,8 @@ export interface DlHotcellRuntimeOptions {
    * Defaults to this server's registry, then its cached OpenRouter catalog.
    */
   modelInfo?: (model: string) => Promise<ModelEntry | undefined>;
+  /** Give up on modelInfo after this long and send no entry (default 5s). */
+  modelInfoTimeoutMs?: number;
 }
 
 export interface DlCellProject {
@@ -151,7 +156,8 @@ export class DlHotcellRuntime implements DlApiRuntime {
     this.unreachableTimeoutMs = options.unreachableTimeoutMs ?? UNREACHABLE_TIMEOUT_MS;
     this.livenessCheckMs = options.livenessCheckMs ?? LIVENESS_CHECK_MS;
     this.idlePauseMs = options.idlePauseMs ?? 0;
-    this.modelInfo = options.modelInfo ?? defaultModelInfo;
+    this.modelInfoLookup = options.modelInfo ?? defaultModelInfo;
+    this.modelInfoTimeoutMs = options.modelInfoTimeoutMs ?? MODEL_INFO_TIMEOUT_MS;
     if (this.idlePauseMs > 0) {
       const timer = setInterval(() => { void this.pauseIdleCells(this.idlePauseMs).catch(() => {}); }, options.idleSweepIntervalMs ?? 60_000);
       timer.unref();
@@ -162,7 +168,23 @@ export class DlHotcellRuntime implements DlApiRuntime {
   private readonly stallTimeoutMs: number;
   private readonly unreachableTimeoutMs: number;
   private readonly livenessCheckMs: number;
-  private readonly modelInfo: (model: string) => Promise<ModelEntry | undefined>;
+  private readonly modelInfoLookup: (model: string) => Promise<ModelEntry | undefined>;
+  private readonly modelInfoTimeoutMs: number;
+
+  /** The model's catalog entry, or undefined when the lookup fails or takes too long. */
+  private async modelInfo(model: string): Promise<ModelEntry | undefined> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      // Not unref'd: a caller is waiting on this, and the lookup alone may hold nothing
+      // that keeps the event loop alive. finally clears it as soon as the race settles.
+      timer = setTimeout(() => resolve(undefined), this.modelInfoTimeoutMs);
+    });
+    try {
+      return await Promise.race([this.modelInfoLookup(model).catch(() => undefined), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   /**
    * Pause running cells that have no active turn and no API activity within `idleMs`,
@@ -237,7 +259,7 @@ export class DlHotcellRuntime implements DlApiRuntime {
     if (input.project) await this.addNote(cell, projectNote(input.project));
     await this.installRuntime(cell);
     await this.ensureBridge(cell);
-    const modelInfo = await this.modelInfo(input.model).catch(() => undefined);
+    const modelInfo = await this.modelInfo(input.model);
     await this.control(cell, "POST", "/rpc", {
       id: randomUUID(),
       type: "new_session",
@@ -280,7 +302,7 @@ export class DlHotcellRuntime implements DlApiRuntime {
   /** Switch the cell session's model between turns. The bridge persists it for session restore. */
   async setModel(cellId: string, model: string): Promise<void> {
     await this.ensureReady(cellId);
-    const modelInfo = await this.modelInfo(model).catch(() => undefined);
+    const modelInfo = await this.modelInfo(model);
     await this.controlById(cellId, "POST", "/rpc", { id: randomUUID(), type: "set_model", modelId: model, ...(modelInfo ? { modelInfo } : {}) });
   }
 
