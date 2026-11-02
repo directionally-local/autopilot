@@ -17,6 +17,10 @@ export interface RemoteConversation {
   branch?: string | null;
   pullRequestNumber?: number;
   pullRequestURL?: string;
+  /** Conversation summaries (#1046): absent on servers that predate them. */
+  title?: string;
+  state?: string;
+  lastActivityAt?: string;
 }
 
 export interface RemoteEvent {
