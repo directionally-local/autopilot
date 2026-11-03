@@ -20,13 +20,70 @@ interface Args {
 const TIMEOUT_MS = 30_000;
 const NAV_TIMEOUT_MS = 20_000;
 
+/**
+ * Oldest Chromium build this tool will load a page in. 156.0.8078.73 fixes
+ * CVE-2026-118306, -118331, -118344 and -118348 (memory corruption reachable
+ * from a web page). Playwright's bundled Chromium lags Chrome stable, so the
+ * tool prefers an installed Chrome and refuses an older build rather than
+ * pointing it at pages a prompt injection can choose.
+ */
+export const MIN_CHROMIUM_VERSION = "156.0.8078.73";
+
+/** True when dotted version `v` is at least `min`. Unparseable counts as too old. */
+export function chromiumVersionAtLeast(v: string, min: string = MIN_CHROMIUM_VERSION): boolean {
+  const a = v.trim().split(".").map(Number);
+  const b = min.split(".").map(Number);
+  if (a.length < 2 || a.some((n) => !Number.isInteger(n) || n < 0)) return false;
+  for (let i = 0; i < b.length; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+
+type Playwright = typeof import("playwright");
+type LaunchResult = { browser: import("playwright").Browser } | { error: string };
+
+/**
+ * Launch with the Chromium sandbox on (Playwright turns it off by default),
+ * trying the installed Chrome channel first since it auto-updates, then the
+ * bundled Chromium. Either one must meet MIN_CHROMIUM_VERSION.
+ */
+export async function launchPatchedChromium(playwright: Playwright): Promise<LaunchResult> {
+  const tried: string[] = [];
+  for (const channel of ["chrome", undefined] as const) {
+    const label = channel ? "installed Chrome" : "Playwright's bundled Chromium";
+    let browser: import("playwright").Browser;
+    try {
+      browser = await playwright.chromium.launch({ headless: true, chromiumSandbox: true, ...(channel ? { channel } : {}) });
+    } catch (e) {
+      const first = (e instanceof Error ? e.message : String(e)).split("\n")[0];
+      tried.push(`${label}: did not start with the sandbox on (${first})`);
+      continue;
+    }
+    const version = browser.version();
+    if (chromiumVersionAtLeast(version)) return { browser };
+    await browser.close().catch(() => {});
+    tried.push(`${label}: version ${version} is older than ${MIN_CHROMIUM_VERSION}`);
+  }
+  return {
+    error:
+      `browser_fetch needs Chromium ${MIN_CHROMIUM_VERSION} or newer with its sandbox on; older builds have ` +
+      "page-reachable memory bugs (CVE-2026-118306, CVE-2026-118331, CVE-2026-118344, CVE-2026-118348).\n" +
+      tried.map((t) => `  - ${t}`).join("\n") +
+      "\nFix: install or update Google Chrome (`npx playwright install chrome`), then try again. " +
+      "Use web_fetch for pages that do not need JavaScript.",
+  };
+}
+
 export const browserFetchTool: ToolSpec<Args> = {
   name: "browser_fetch",
   description:
     "Fetch a URL using a headless Chromium browser via Playwright. " +
     "Use this for JavaScript-rendered pages where `web_fetch` returns empty or incomplete content. " +
     "Returns the extracted page text. Optionally takes a screenshot and saves it to a temp file. " +
-    "Requires Playwright to be installed (`npm install -g playwright` or `npx playwright install chromium`).",
+    "Requires Playwright plus Chrome or Chromium 156.0.8078.73 or newer (`npm install -g playwright`, then `npx playwright install chrome`).",
   parameters: {
     type: "object",
     properties: {
@@ -66,7 +123,7 @@ export const browserFetchTool: ToolSpec<Args> = {
       const msg =
         "Playwright is not installed. To use the browser tool, install it:\n" +
         "  npm install -g playwright\n" +
-        "  npx playwright install chromium";
+        "  npx playwright install chrome";
       const bytes = Buffer.byteLength(msg, "utf8");
       return { content: msg, rawBytes: bytes, reducedBytes: bytes };
     }
@@ -85,7 +142,12 @@ export const browserFetchTool: ToolSpec<Args> = {
       throw new Error(`${args.url} points to ${initial}, which needs the user's approval; it was not approved for this call. Call browser_fetch again to ask the user.`);
     }
 
-    const browser = await playwright.chromium.launch({ headless: true });
+    const launched = await launchPatchedChromium(playwright);
+    if ("error" in launched) {
+      const bytes = Buffer.byteLength(launched.error, "utf8");
+      return { content: launched.error, rawBytes: bytes, reducedBytes: bytes };
+    }
+    const { browser } = launched;
     try {
       const page = await browser.newPage();
       const blocked: string[] = [];

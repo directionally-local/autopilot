@@ -22,9 +22,10 @@ declare module "playwright" {
   export interface Browser {
     newPage(): Promise<Page>;
     close(): Promise<void>;
+    version(): string;
   }
 
   export const chromium: {
-    launch(options?: { headless?: boolean }): Promise<Browser>;
+    launch(options?: { headless?: boolean; channel?: string; chromiumSandbox?: boolean }): Promise<Browser>;
   };
 }
