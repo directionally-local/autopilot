@@ -57,3 +57,13 @@ describe("waitWithoutInput", () => {
     assert.strictEqual(await waitWithoutInput("w", () => undefined, { suspend: async () => false, resume: () => undefined }, fakeIo().io), null);
   });
 });
+
+describe("textRows", () => {
+  it("counts the rows wrapped lines take", async () => {
+    const { textRows } = await import("./terminal-wait.js");
+    assert.strictEqual(textRows("abc", 80), 1);
+    assert.strictEqual(textRows("x".repeat(80), 80), 1);
+    assert.strictEqual(textRows(`${"x".repeat(81)}\nwaiting`, 80), 3);
+    assert.strictEqual(textRows("\n", 80), 2);
+  });
+});

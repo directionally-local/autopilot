@@ -289,8 +289,18 @@ export function dlSignInLines(code?: DlDeviceCode, opened = false): string {
   return `Your code is ${code.userCode}. ${where} (enter an invite code there if asked).`;
 }
 
-/** Shown while the free tier's sign-in waits for the browser, in place of the chat input. */
+/** The last line shown while the free tier's sign-in waits for the browser. */
 export const DL_WAITING_LINE = "Waiting for you to approve in the browser… Esc to cancel";
+
+/**
+ * Shown while the free tier's sign-in waits for the browser, in place of the
+ * chat input: the code and where to enter it, then the waiting line. The
+ * code is part of this text (not only of the line said before it) so it is
+ * on screen for the whole wait, however late the renderer draws that line.
+ */
+export function dlWaitingText(code: DlDeviceCode): string {
+  return `Your code is ${code.userCode} · open ${code.verificationUriComplete} in a browser on any device\n${DL_WAITING_LINE}`;
+}
 
 /** Said when someone backs out of the free tier's sign-in: nothing was saved, and the question is asked again. */
 export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved.";

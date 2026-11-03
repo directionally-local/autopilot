@@ -5,6 +5,7 @@ import { repairDanglingToolCalls } from "./agent/messages.js";
 import type { SessionState, SerializedArtifact } from "./agent/session-state.js";
 import { listFilesByMtime, pruneFiles } from "./storage-limits.js";
 import { dataPath } from "./util/app-dirs.js";
+import { cutAtWord } from "./session-title.js";
 
 export interface SessionSummary {
   id: string;
@@ -61,6 +62,7 @@ function sanitize(text: string): string {
     .slice(0, 40);
 }
 
+// A question needs no label: its title is just the question.
 const INTENT_PREFIX_MAP: Record<string, string> = {
   diagnose: "Bug:",
   feature_bounded: "Feature:",
@@ -68,22 +70,19 @@ const INTENT_PREFIX_MAP: Record<string, string> = {
   polish: "Refactor:",
   meta: "Plan:",
   explore: "Explore:",
-  qa: "Q&A:",
+  qa: "",
   verify: "Verify:",
   small_edit: "Edit:",
   default: "Task:",
 };
 
+const TITLE_MAX_CHARS = 40;
+const TITLE_MAX_WORDS = 6;
 /** Generate a short human-readable title from the first user prompt. */
 export function generateSessionTitle(firstPrompt: string, intent: string): string {
-  const prefix = INTENT_PREFIX_MAP[intent] ?? INTENT_PREFIX_MAP.default;
-  const cleaned = firstPrompt
-    .replace(/\s+/g, " ")
-    .replace(/[\n\r]/g, " ")
-    .trim();
-  const words = cleaned.split(" ").slice(0, 6).join(" ");
-  const title = `${prefix} ${words}`;
-  return title.length > 40 ? title.slice(0, 37) + "..." : title;
+  const prefix = INTENT_PREFIX_MAP[intent] ?? INTENT_PREFIX_MAP.default!;
+  const words = cutAtWord(firstPrompt, TITLE_MAX_CHARS - (prefix ? prefix.length + 1 : 0), TITLE_MAX_WORDS);
+  return prefix ? `${prefix} ${words}` : words;
 }
 
 export function makeSessionId(firstPrompt: string): string {

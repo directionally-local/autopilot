@@ -23,6 +23,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { statePath } from "../util/app-dirs.js";
+import { simpleCommands, writesFile, type SimpleCommand } from "./shell-commands.js";
 
 export type SetupKind = "install" | "fetch-run" | "write";
 
@@ -31,48 +32,6 @@ export interface SetupCommand {
   kind: SetupKind;
   /** The segment of the command that installs or writes, e.g. `npm install`. */
   segment: string;
-}
-
-const WRAPPERS = new Set(["sudo", "env", "time", "command", "nohup", "exec", "nice"]);
-
-/** Split on shell separators outside quotes: `&&`, `||`, `;`, `|`, `&`, newlines. */
-function segments(command: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let q: string | null = null;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i]!;
-    if (q) {
-      if (ch === q) q = null;
-      cur += ch;
-    } else if (ch === '"' || ch === "'") {
-      q = ch;
-      cur += ch;
-    } else if (ch === ";" || ch === "\n" || ch === "|" || (ch === "&" && command[i - 1] !== ">" && command[i + 1] !== ">")) {
-      out.push(cur);
-      cur = "";
-      if ((ch === "|" || ch === "&") && command[i + 1] === ch) i++;
-    } else {
-      cur += ch;
-    }
-  }
-  out.push(cur);
-  return out.map((s) => s.trim()).filter(Boolean);
-}
-
-function words(segment: string): string[] {
-  const toks = segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-  return toks.map((t) => t.replace(/^["']|["']$/g, ""));
-}
-
-/** The command words after env assignments and wrappers like sudo. */
-function commandWords(segment: string): string[] {
-  const w = words(segment);
-  let i = 0;
-  while (i < w.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i]!) || WRAPPERS.has(w[i]!) || (i > 0 && WRAPPERS.has(w[i - 1]!) && w[i]!.startsWith("-")))) i++;
-  const rest = w.slice(i);
-  if (rest[0]) rest[0] = rest[0].split("/").pop()!;
-  return rest;
 }
 
 const NPM_INSTALL = new Set(["install", "i", "in", "ci", "add", "update", "up", "upgrade", "isntall", "install-test", "it", "install-ci-test"]);
@@ -90,10 +49,9 @@ function sub(w: string[], from = 1): string | undefined {
   return w.slice(from).find((a) => !a.startsWith("-"));
 }
 
-function classifySegment(segment: string): SetupKind | null {
-  const w = commandWords(segment);
-  const cmd = w[0];
-  if (!cmd) return null;
+function classify(sc: SimpleCommand): SetupKind | null {
+  const w = [sc.name, ...sc.argv.slice(1)];
+  const cmd = sc.name;
   const s = sub(w);
   switch (cmd) {
     case "npm":
@@ -185,29 +143,29 @@ function classifySegment(segment: string): SetupKind | null {
       break;
     case "unzip":
       return w.includes("-l") ? null : "write";
+    case "":
+      break;
     default:
       if (FILE_WRITES.has(cmd)) return "write";
   }
   // Output redirected into a file (not /dev/null, not another descriptor).
-  const redirect = /(?:^|[^0-9&<>])&?>>?\s*([^\s&|;]+)/g;
-  for (const m of segment.replace(/"[^"]*"|'[^']*'/g, "''").matchAll(redirect)) {
-    const target = m[1]!;
-    if (target !== "/dev/null" && !target.startsWith("&")) return "write";
-  }
+  if (sc.redirects.some(writesFile)) return "write";
   return null;
 }
 
 /**
  * The install, fetch-and-run or write in a bash command, if any: the
- * strongest one across a compound command (install > fetch-run > write).
+ * strongest one across every command it runs (install > fetch-run > write),
+ * wrappers like `timeout 120`, `sudo -u x` or `bash -c "…"` included (see
+ * shell-commands.ts).
  */
 export function setupCommandOf(command: string): SetupCommand | null {
   let best: SetupCommand | null = null;
   const rank: Record<SetupKind, number> = { install: 3, "fetch-run": 2, write: 1 };
-  for (const segment of segments(command)) {
-    const kind = classifySegment(segment);
+  for (const sc of simpleCommands(command)) {
+    const kind = classify(sc);
     // Shown in the question: descriptor redirections like `2>&1` add nothing there.
-    if (kind && (!best || rank[kind] > rank[best.kind])) best = { kind, segment: segment.replace(/\s+\d*>&\d+/g, "").trim() };
+    if (kind && (!best || rank[kind] > rank[best.kind])) best = { kind, segment: sc.text.replace(/\s*\d*>&\d+/g, "").trim() };
   }
   return best;
 }
