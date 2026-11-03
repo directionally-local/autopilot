@@ -107,16 +107,26 @@ describe("dl server config path resolution", () => {
     const configHome = join(root, "config-home");
     const env = { XDG_CONFIG_HOME: configHome };
     const localPath = localDlConfigPath(env);
+    // Stand-ins for /etc/autopilot, so the machine's real config is never read.
+    const system = { server: join(root, "etc", "server.json"), legacyAster: join(root, "etc", "aster.json") };
 
     assert.equal(localPath, join(configHome, "autopilot", "server.json"));
-    assert.equal(resolveDlServerConfigPath(env), "/etc/autopilot/server.json");
+    // Nothing exists: the system path is the default.
+    assert.equal(resolveDlServerConfigPath(env, system), system.server);
+    // Only the pre-rename system config exists: it is read.
+    await mkdir(join(root, "etc"), { recursive: true });
+    await writeFile(system.legacyAster, "{}");
+    assert.equal(resolveDlServerConfigPath(env, system), system.legacyAster);
+    // The system server.json wins over the pre-rename one.
+    await writeFile(system.server, "{}");
+    assert.equal(resolveDlServerConfigPath(env, system), system.server);
 
     await mkdir(join(configHome, "autopilot"), { recursive: true });
     await writeFile(localPath, "{}");
-    assert.equal(resolveDlServerConfigPath(env), localPath);
-    assert.equal(resolveDlServerConfigPath({ ...env, AUTOPILOT_SERVER_CONFIG: join(root, "override.json") }), join(root, "override.json"));
+    assert.equal(resolveDlServerConfigPath(env, system), localPath);
+    assert.equal(resolveDlServerConfigPath({ ...env, AUTOPILOT_SERVER_CONFIG: join(root, "override.json") }, system), join(root, "override.json"));
     // The pre-rename variable is still read.
-    assert.equal(resolveDlServerConfigPath({ ...env, AUTOPILOT_ASTER_CONFIG: join(root, "legacy.json") }), join(root, "legacy.json"));
+    assert.equal(resolveDlServerConfigPath({ ...env, AUTOPILOT_ASTER_CONFIG: join(root, "legacy.json") }, system), join(root, "legacy.json"));
   });
 });
 
