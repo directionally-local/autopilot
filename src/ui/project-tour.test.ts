@@ -147,10 +147,16 @@ describe("suggestions", () => {
 
   it("falls back to local suggestions when the model is slower than the timeout, and aborts it", async () => {
     let aborted = false;
+    // Like a real request: it settles (rejects) when aborted, and its timer
+    // is a normal one, so nothing depends on unref'd timers keeping the loop alive.
     const slow: AskModel = (o) =>
-      new Promise((resolve) => {
-        o.signal.addEventListener("abort", () => (aborted = true));
-        setTimeout(() => resolve("too late"), 1_000).unref();
+      new Promise((resolve, reject) => {
+        const t = setTimeout(() => resolve("too late"), 1_000);
+        o.signal.addEventListener("abort", () => {
+          aborted = true;
+          clearTimeout(t);
+          reject(new DOMException("aborted", "AbortError"));
+        });
       });
     const started = Date.now();
     const r = await suggestTasks(facts(), slow, { timeoutMs: 50 });
@@ -162,6 +168,21 @@ describe("suggestions", () => {
       "Pick up issue #12: “discount applied twice”",
     ]);
     assert.ok(aborted);
+  });
+
+  it("stops waiting as soon as the caller aborts, even if the model never answers", async () => {
+    const ctrl = new AbortController();
+    let sawAbort = false;
+    const hanging: AskModel = (o) =>
+      new Promise(() => {
+        o.signal.addEventListener("abort", () => (sawAbort = true));
+        setTimeout(() => ctrl.abort(), 10);
+      });
+    const started = Date.now();
+    const r = await suggestTasks(facts(), hanging, { timeoutMs: 5_000, signal: ctrl.signal });
+    assert.ok(Date.now() - started < 1_000);
+    assert.strictEqual(r.source, "local");
+    assert.ok(sawAbort);
   });
 
   it("falls back when the call fails, and tops up a short reply", async () => {
