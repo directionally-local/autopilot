@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -23,6 +23,7 @@ import {
   configPath,
   dataDir,
   dataPath,
+  ignoreProjectDir,
   migrateLegacyDirs,
   migrationNoticeText,
   projectDirsToRead,
@@ -32,6 +33,7 @@ import {
 import { writeState } from "./state.js";
 import { saveProjectLspConfig } from "./lsp-config.js";
 import { hookSettingsLocations } from "../hooks/settings.js";
+import { closeMemoryDb, openMemoryDb } from "../memory/db.js";
 
 const ENV_KEYS = ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "AUTOPILOT_TRUST_PROJECT"] as const;
 let saved: Record<string, string | undefined>;
@@ -258,5 +260,44 @@ describe("project dir", () => {
 
     migrateLegacyDirs();
     assert.ok(existsSync(join(repo, ".kimiflare", "memory.db")), "project dirs are never moved");
+  });
+});
+
+describe("project .autopilot/ ignores itself", () => {
+  let repo: string;
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "ap-gitignore-"));
+    git("init", "-q");
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+  const status = () => execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: repo, encoding: "utf8" });
+
+  it("creating the project memory database writes .autopilot/.gitignore with *, and git status stays clean", () => {
+    const db = join(repo, ".autopilot", "memory.db");
+    openMemoryDb(db);
+    closeMemoryDb();
+    assert.equal(readFileSync(join(repo, ".autopilot", ".gitignore"), "utf8"), "*\n");
+    assert.equal(status(), "", "nothing untracked in the user's repo");
+    assert.ok(!existsSync(join(repo, ".gitignore")), "the user's own .gitignore is never touched");
+  });
+
+  it("adds one to an existing folder that lacks it, and leaves an existing one alone", () => {
+    mkdirSync(join(repo, ".autopilot"));
+    writeFileSync(join(repo, ".autopilot", "memory.db"), "");
+    assert.equal(ignoreProjectDir(join(repo, ".autopilot")), true);
+    assert.equal(status(), "");
+    writeFileSync(join(repo, ".autopilot", ".gitignore"), "memory.db\n");
+    assert.equal(ignoreProjectDir(join(repo, ".autopilot")), false);
+    assert.equal(readFileSync(join(repo, ".autopilot", ".gitignore"), "utf8"), "memory.db\n");
+  });
+
+  it("leaves a folder alone when git already tracks files in it, and does nothing when there is no folder", () => {
+    mkdirSync(join(repo, ".autopilot", "commands"), { recursive: true });
+    writeFileSync(join(repo, ".autopilot", "commands", "review.md"), "# review\n");
+    git("add", ".autopilot");
+    assert.equal(ignoreProjectDir(join(repo, ".autopilot")), false);
+    assert.ok(!existsSync(join(repo, ".autopilot", ".gitignore")));
+    assert.equal(ignoreProjectDir(join(repo, "nowhere", ".autopilot")), false);
   });
 });

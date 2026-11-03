@@ -4,6 +4,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { Memory, MemoryInput, MemoryStats, MemoryCategory } from "./schema.js";
 import { vectorFromBlob } from "./embeddings.js";
+import { ignoreProjectDirOf } from "../util/app-dirs.js";
 
 let dbInstance: SqliteDatabase | null = null;
 let dbPathInstance: string | null = null;
@@ -132,6 +133,8 @@ export function openMemoryDb(dbPath: string): SqliteDatabase {
     dbInstance.close();
   }
   mkdirSync(dirname(dbPath), { recursive: true });
+  // A project's `.autopilot/memory.db`: keep the folder out of the user's `git status`.
+  ignoreProjectDirOf(dirname(dbPath));
   dbInstance = new SqliteDatabase(dbPath);
   dbInstance.pragma("journal_mode = WAL");
   dbInstance.pragma("foreign_keys = ON");

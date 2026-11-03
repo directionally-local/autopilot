@@ -31,7 +31,9 @@ function deps(over: Partial<FirstRunDeps> & { calls?: string[] } = {}): FirstRun
 describe("firstRunIntro", () => {
   it("welcomes a new user and says where keys are stored", () => {
     const text = firstRunIntro({ upgrading: false, configPath: "/x/config.json" }).join("\n");
-    assert.match(text, /Welcome to autopilot/);
+    assert.match(text, /Welcome to Autopilot\./);
+    const dl = firstRunIntro({ upgrading: false, configPath: "/x/config.json", env: { AUTOPILOT_LAUNCHED_BY: "dl" } });
+    assert.strictEqual(dl[0], "Welcome to Directionally Local.");
     assert.match(text, /saved only in \/x\/config\.json/);
     assert.match(text, /OPENROUTER_API_KEY/);
     assert.doesNotMatch(text, /Cloudflare/);
@@ -99,7 +101,7 @@ describe("runFirstRun", () => {
     const d = deps({ envKey: () => envKey, setup: async (o) => ((seen = o.envKey), true) });
     assert.strictEqual((await runFirstRun(d)).kind, "ready");
     assert.deepStrictEqual(seen, envKey);
-    assert.deepStrictEqual(d.shown[0], ["Welcome to autopilot.", "Using Anthropic with ANTHROPIC_API_KEY from your environment."]);
+    assert.deepStrictEqual(d.shown[0], ["Welcome to Autopilot.", "Using Anthropic with ANTHROPIC_API_KEY from your environment."]);
   });
 
   it("without one, setup gets no env key (the question is asked)", async () => {

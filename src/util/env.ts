@@ -87,3 +87,12 @@ export function legacyEnvVarsUsed(): string[] {
 export function resetLegacyEnvNotices(): void {
   noted.clear();
 }
+
+/**
+ * True when the `dl` installer started this process (it sets
+ * AUTOPILOT_LAUNCHED_BY=dl). dl users don't have `autopilot` on their PATH,
+ * so hints name `dl` commands instead.
+ */
+export function launchedByDl(env: EnvLike = process.env): boolean {
+  return env.AUTOPILOT_LAUNCHED_BY?.trim().toLowerCase() === "dl";
+}

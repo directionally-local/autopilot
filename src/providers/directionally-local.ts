@@ -112,18 +112,44 @@ export function localResetWeekday(at: string | undefined, o: DlTimeOpts = {}): s
   return new Date(when).toLocaleDateString("en-US", { weekday: "long", ...(o.timeZone ? { timeZone: o.timeZone } : {}) });
 }
 
-/** "Mon 09:00 (in 5 days)" in local time; the service's week end when `iso` is missing. */
+/** The short name of the time zone a time is shown in: "UTC", "PST", "GMT+9". */
+export function timeZoneLabel(at: number, timeZone?: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZoneName: "short", ...(timeZone ? { timeZone } : {}) }).formatToParts(new Date(at));
+    return parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** "in 5 days 15 h", "in 1 day", "in 3 hours", "in under an hour": to the nearest hour. */
+export function formatCountdown(ms: number): string {
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 1) return "in under an hour";
+  if (hours < 24) return `in ${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.floor(hours / 24);
+  const rest = hours % 24;
+  return `in ${days} day${days === 1 ? "" : "s"}${rest ? ` ${rest} h` : ""}`;
+}
+
+/** "Mon 09:00 GMT+9 (in 5 days 15 h)" in local time, zone named; the service's week end when `iso` is missing. */
 export function formatReset(iso: string | undefined, now = Date.now(), timeZone?: string): string {
   const parsed = iso ? Date.parse(iso) : NaN;
   const t = Number.isFinite(parsed) ? parsed : nextWeekStart(now);
   const at = formatLocalTime(t, { now, ...(timeZone ? { timeZone } : {}) })!;
+  const zone = timeZoneLabel(t, timeZone);
   const ms = t - now;
-  let rel = "";
-  if (ms > 0) {
-    const hours = Math.round(ms / 3_600_000);
-    rel = hours >= 48 ? ` (in ${Math.round(hours / 24)} days)` : hours >= 1 ? ` (in ${hours} hour${hours === 1 ? "" : "s"})` : " (in under an hour)";
-  }
-  return `${at}${rel}`;
+  return `${at}${zone ? ` ${zone}` : ""}${ms > 0 ? ` (${formatCountdown(ms)})` : ""}`;
+}
+
+/** The free tier's weekly spending limit per person, when the service didn't say. */
+export const DL_FREE_WEEKLY_USD = 5;
+
+/** "$5", "$0.01"; under a cent reads "under $0.01". */
+export function formatUsd(n: number): string {
+  if (n <= 0) return "$0";
+  if (n < 0.01) return "under $0.01";
+  return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
 }
 
 /** A free-tier error with the service's code and a sentence for the person. */
@@ -537,8 +563,8 @@ export interface DlAllowance {
   usedThisWeek: number;
   remaining: number;
   resetsAt: string;
-  /** The weekly spending allowance and what's spent of it (the service limits both). */
-  usdPerWeek?: number;
+  /** The weekly spending allowance and what's spent of it (the service limits both). Null: no spending limit. */
+  usdPerWeek?: number | null;
   spentUsdThisWeek?: number;
 }
 
@@ -591,8 +617,14 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
     `Directionally Local free tier${me.login ? ` · signed in as @${me.login}` : ""}`,
     `  used this week  ${formatTokens(a.usedThisWeek)} of ${formatTokens(a.tokensPerWeek)} tokens (${pct}%)`,
     `  left            ${formatTokens(Math.max(0, a.remaining))} tokens`,
-    `  resets          ${formatReset(a.resetsAt, now, timeZone)}`,
   ];
+  // The weekly spending limit counts too ($5 unless the service says otherwise; null from the service means none).
+  const limit = a.usdPerWeek === undefined ? DL_FREE_WEEKLY_USD : a.usdPerWeek;
+  if (typeof limit === "number" && limit > 0) {
+    const spent = typeof a.spentUsdThisWeek === "number" ? a.spentUsdThisWeek : undefined;
+    lines.push(`  spending limit  ${spent === undefined ? `${formatUsd(limit)} a week` : `spent ${formatUsd(spent)} of ${formatUsd(limit)}`}`);
+  }
+  lines.push(`  resets          ${formatReset(a.resetsAt, now, timeZone)}`);
   // A 402 from this week (same reset) still counts when /v1/me rounds it differently.
   const seen = lastQuota && (!lastQuota.resetsAt || lastQuota.resetsAt === a.resetsAt) ? lastQuota : null;
   const spendHit =
