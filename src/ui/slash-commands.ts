@@ -156,6 +156,8 @@ export interface SlashContext {
   initMcp: () => Promise<void> | void;
   initLsp: () => Promise<void> | void;
   ensureSessionId: () => unknown;
+  /** Show the project tour now (`/tour`), even if it was shown before or is turned off. */
+  startTour?: (force: boolean) => void;
 
   // Refs
   lspManagerRef: React.MutableRefObject<LspManager>;
@@ -770,7 +772,7 @@ const handleModel: Handler = (ctx, rest, arg) => {
  * /settings — feature toggles. `/settings` lists them; `/settings <name> on|off`
  * flips one and persists it to the config file.
  */
-const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics"; describe: string }> = {
+const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "projectTour" | "refocusTerminal"; describe: string }> = {
   modes: {
     key: "modesEnabled",
     describe: "plan / edit / auto permission modes (off: every turn runs in auto)",
@@ -778,6 +780,14 @@ const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics"; de
   diagnostics: {
     key: "postEditDiagnostics",
     describe: "append LSP/syntax diagnostics to edit and write results",
+  },
+  tour: {
+    key: "projectTour",
+    describe: "project summary and three starter tasks on the first session in a repository (/tour shows it any time)",
+  },
+  refocus: {
+    key: "refocusTerminal",
+    describe: "macOS: bring this terminal back to the front after a browser sign-in",
   },
 };
 
@@ -812,6 +822,13 @@ const handleSettings: Handler = (ctx, rest) => {
   } else {
     info(`${name} ${on ? "on" : "off"}`);
   }
+  return true;
+};
+
+/** /tour — the project summary and three starter tasks, again. */
+const handleTour: Handler = (ctx) => {
+  if (ctx.startTour) ctx.startTour(true);
+  else ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text: "/tour isn't available in this session." }]);
   return true;
 };
 
@@ -2078,6 +2095,7 @@ const handlers: Record<string, Handler> = {
   "/key": handleKey,
   "/provider": handleProvider,
   "/settings": handleSettings,
+  "/tour": handleTour,
   "/mode": handleMode,
   "/plan": handlePlan,
   "/auto": handleAuto,

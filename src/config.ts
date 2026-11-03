@@ -203,6 +203,10 @@ export interface AutopilotConfig {
   costAttribution?: boolean;
   /** Enable @ file mention picker in chat input. Default: true. */
   filePicker?: boolean;
+  /** Show the project summary and three starter tasks on the first session in a git repository (and on /tour). Default: true. Env: AUTOPILOT_PROJECT_TOUR. */
+  projectTour?: boolean;
+  /** On macOS, bring the terminal running Autopilot back to the front when a browser sign-in completes. Default: true. Env: AUTOPILOT_REFOCUS_TERMINAL. */
+  refocusTerminal?: boolean;
   /** URL of the remote orchestrator Worker. */
   remoteWorkerUrl?: string;
   /** Shared secret for authenticating with the remote Worker. */
@@ -492,6 +496,8 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     lspServers: persisted.lspServers,
     costAttribution: parseBooleanEnv(process.env.KIMI_COST_ATTRIBUTION) ?? persisted.costAttribution ?? true,
     filePicker: readBooleanEnv("FILE_PICKER") ?? persisted.filePicker ?? true,
+    projectTour: readBooleanEnv("PROJECT_TOUR") ?? persisted.projectTour ?? true,
+    refocusTerminal: readBooleanEnv("REFOCUS_TERMINAL") ?? persisted.refocusTerminal ?? true,
     shell: readEnv("SHELL") ?? persisted.shell,
     remoteWorkerUrl: persisted.remoteWorkerUrl,
     remoteAuthSecret: persisted.remoteAuthSecret,

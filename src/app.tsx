@@ -88,6 +88,8 @@ import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt } from "./hooks/prompt-submit.js";
 import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
+import { buildTour, resolveTourInput } from "./ui/project-tour.js";
+import { tourAskModel } from "./ui/project-tour-model.js";
 import type { SetupGate } from "./ui/use-permission-controller.js";
 import { resolveRepoRoot } from "./memory/repo-root.js";
 import { evaluatePermissionRules } from "./permissions-evaluator.js";
@@ -505,6 +507,45 @@ function App({
       setCustomCommandsVersion,
     });
   }, [cfg, setEvents]);
+
+  // The project tour: a summary and three starter tasks, built in the
+  // background so typing is never delayed. Typing anything cancels a tour
+  // that isn't ready yet; once shown, the first input may be 1–3.
+  const tourTasksRef = useRef<string[] | null>(null);
+  const tourAbortRef = useRef<AbortController | null>(null);
+  const startTour = useCallback(
+    (force: boolean) => {
+      if (!cfg) return;
+      tourAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      tourAbortRef.current = ctrl;
+      const info = (text: string) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
+      void buildTour({ cwd: process.cwd(), force, enabled: cfg.projectTour !== false, ask: tourAskModel(cfg), signal: ctrl.signal })
+        .then((r) => {
+          if (ctrl.signal.aborted) return;
+          tourAbortRef.current = null;
+          if (r.kind === "shown") {
+            tourTasksRef.current = r.tasks;
+            info(r.text);
+          } else if (force && r.reason === "not-a-repo") {
+            info("/tour works inside a git repository.");
+          }
+        })
+        .catch(() => {
+          // Best effort: no tour is better than an error at session start.
+        });
+    },
+    [cfg, setEvents],
+  );
+  const tourCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!cfg || tourCheckedRef.current) return;
+    tourCheckedRef.current = true;
+    // Only a brand-new conversation: not a resumed one or the resume picker.
+    if (initialResumeSessionId || initialOpenResumePicker) return;
+    if (messagesRef.current.some((m) => m.role === "user")) return;
+    startTour(false);
+  }, [cfg, initialResumeSessionId, initialOpenResumePicker, startTour]);
 
   // Periodically clear performance marks to prevent perf_hooks buffer overflow
   // in long-running sessions (react-devtools-core causes marks on every render).
@@ -1020,6 +1061,7 @@ function App({
     initMcp,
     initLsp,
     ensureSessionId,
+    startTour,
     lspManagerRef,
     mcpManagerRef,
     hooksManagerRef,
@@ -1061,7 +1103,7 @@ function App({
     setCommandWizard, setCommandPicker,
     turn.setShowReasoning, turn.setTasks,
     resetSession, clearTaskTracking, openResumePicker, runCompact, runInit,
-    initMcp, initLsp, ensureSessionId,
+    initMcp, initLsp, ensureSessionId, startTour,
   ]);
 
   const handlePlanCompletePick = useCallback(
@@ -1770,6 +1812,18 @@ function App({
 
   const submit = useCallback(
     (full: string, display?: string) => {
+      if (full.trim()) {
+        // The first input after the tour: 1–3 sends that task. Any input
+        // ends the tour, and cancels one still being prepared.
+        tourAbortRef.current?.abort();
+        tourAbortRef.current = null;
+        const picked = resolveTourInput(full.trim(), tourTasksRef.current);
+        tourTasksRef.current = null;
+        if (picked !== full.trim()) {
+          full = picked;
+          display = picked;
+        }
+      }
       const trimmedFull = full.trim();
       const trimmedDisplay = (display ?? full).trim() || trimmedFull;
       // Bare `exit` quits, exactly like `/exit`. Only the whole input counts,
