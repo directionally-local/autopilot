@@ -28,6 +28,8 @@ export interface Redirect {
   /** The operator without its descriptor number: `>`, `>>`, `>|`, `&>`, `&>>`, `>&`, `<`, `<&`, `<>`, `<<`, `<<<`. */
   op: string;
   target: string;
+  /** A here-document's text, for `<<` (the destructive-action check reads SQL from it). */
+  body?: string;
 }
 
 /** One command the shell would run. */
@@ -43,6 +45,8 @@ export interface SimpleCommand {
   /** Leading `VAR=value` assignments. */
   assignments: string[];
   redirects: Redirect[];
+  /** The command before it in a pipeline (`echo "…" | psql`), whose output this one reads. */
+  pipedFrom?: SimpleCommand;
 }
 
 /** How deep scripts inside scripts (`bash -c "sh -c '…'"`) are followed. */
@@ -53,7 +57,7 @@ const MAX_DEPTH = 8;
 type Token =
   | { kind: "word"; value: string; start: number; end: number }
   | { kind: "op"; value: string; start: number; end: number }
-  | { kind: "redir"; op: string; target: string; start: number; end: number }
+  | { kind: "redir"; op: string; target: string; start: number; end: number; body?: string }
   | { kind: "group"; start: number; end: number };
 
 const SPACE = /[ \t\r]/;
@@ -98,7 +102,7 @@ function closingBacktick(src: string, from: number): number {
  */
 function lex(src: string, nested: (inner: string) => void): Token[] {
   const tokens: Token[] = [];
-  const heredocs: Array<{ delim: string; strip: boolean }> = [];
+  const heredocs: Array<{ delim: string; strip: boolean; token: Token & { kind: "redir" } }> = [];
   let i = 0;
   const n = src.length;
 
@@ -173,16 +177,19 @@ function lex(src: string, nested: (inner: string) => void): Token[] {
     return end + 1;
   };
 
-  /** After a newline: skip the bodies of here-documents opened on the line before. */
+  /** After a newline: skip the bodies of here-documents opened on the line before, keeping their text. */
   const skipHeredocs = () => {
     while (heredocs.length > 0) {
-      const { delim, strip } = heredocs.shift()!;
+      const { delim, strip, token } = heredocs.shift()!;
+      const lines: string[] = [];
       while (i < n) {
         const eol = src.indexOf("\n", i);
         const line = src.slice(i, eol < 0 ? n : eol);
         i = eol < 0 ? n : eol + 1;
         if ((strip ? line.replace(/^\t+/, "") : line).trim() === delim) break;
+        lines.push(line);
       }
+      token.body = lines.join("\n");
     }
   };
 
@@ -213,8 +220,9 @@ function lex(src: string, nested: (inner: string) => void): Token[] {
       i += redir[0].length;
       while (i < n && SPACE.test(src[i]!)) i++;
       const target = readWord();
-      if (op === "<<" || op === "<<-") heredocs.push({ delim: target, strip: op === "<<-" });
-      tokens.push({ kind: "redir", op, target, start, end: i });
+      const token: Token & { kind: "redir" } = { kind: "redir", op, target, start, end: i };
+      if (op === "<<" || op === "<<-") heredocs.push({ delim: target, strip: op === "<<-", token });
+      tokens.push(token);
       continue;
     }
     if (c === "&" || c === "|" || c === ";") {
@@ -392,20 +400,30 @@ function collect(src: string, depth: number, out: SimpleCommand[]): void {
   if (depth > MAX_DEPTH) return;
   const tokens = lex(src, (inner) => collect(inner, depth + 1, out));
   let seg: Token[] = [];
+  let piped = false;
+  let prev: SimpleCommand | undefined;
   const flush = () => {
-    if (seg.length > 0) segment(src, seg, depth, out);
+    if (seg.length > 0) {
+      const before = out.length;
+      segment(src, seg, depth, out);
+      const cmd = out.length > before ? out[out.length - 1] : undefined;
+      if (cmd && piped && prev) cmd.pipedFrom = prev;
+      prev = cmd;
+    }
     seg = [];
   };
   for (const t of tokens) {
-    if (t.kind === "op") flush();
-    else seg.push(t);
+    if (t.kind === "op") {
+      flush();
+      piped = t.value === "|" || t.value === "|&";
+    } else seg.push(t);
   }
   flush();
 }
 
 function segment(src: string, seg: Token[], depth: number, out: SimpleCommand[]): void {
   const words = seg.flatMap((t) => (t.kind === "word" ? [t.value] : []));
-  const redirects = seg.flatMap((t) => (t.kind === "redir" ? [{ op: t.op, target: t.target }] : []));
+  const redirects = seg.flatMap((t) => (t.kind === "redir" ? [{ op: t.op, target: t.target, ...(t.body !== undefined ? { body: t.body } : {}) }] : []));
   const text = src.slice(seg[0]!.start, seg[seg.length - 1]!.end).trim();
   const wrappers: string[] = [];
   const assignments: string[] = [];

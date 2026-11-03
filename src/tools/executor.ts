@@ -8,6 +8,8 @@ import { classifyVerification } from "../trace/verification.js";
 import { detectGitRevert } from "../trace/git-delta.js";
 import type { PermissionDecision as TracePermissionDecision, ToolCallPayload, ToolResultPayload } from "../trace/types.js";
 import { readTool } from "./read.js";
+import { destructivePrompt, guardToolCall, projectOf, unconfirmedMessage, type DestructivePrompt } from "../permissions/guardrails.js";
+import { createRecoveryPoint, describeRecoveryPoint } from "../permissions/recovery.js";
 import { collectPostEditDiagnostics } from "./post-edit-diagnostics.js";
 import { writeTool } from "./write.js";
 import { editTool } from "./edit.js";
@@ -196,6 +198,10 @@ export interface PermissionDecisionResult {
    *  trace's `permission_decision`; the text itself reaches the model as the
    *  next user message. */
   feedback?: string;
+  /** Set only by a host that asked a person about an irreversible action
+   *  (`PermissionRequest.destructive`) and got a yes, or matched a rule
+   *  naming that exact action. Without it, an irreversible call is denied. */
+  irreversibleConfirmed?: boolean;
 }
 
 /**
@@ -228,6 +234,10 @@ export interface PermissionRequest {
    *  must not auto-allow such a request on the strength of
    *  `tool.needsPermission` being false. */
   sensitiveReason?: string;
+  /** Set when the call is irreversible (permissions/guardrails.ts): every
+   *  host must ask a person, or deny. Auto mode, --dangerously-allow-all,
+   *  allow rules and session approvals don't cover it. */
+  destructive?: DestructivePrompt;
   /**
    * Fires the `PermissionRequest` hooks for this call. Hosts call it right
    * before they would prompt the user — after plan mode, `--dangerously-
@@ -548,7 +558,10 @@ export class ToolExecutor {
     }
 
     const sensitiveReason = (await tool.permissionReason?.(args, ctx)) ?? null;
-    if (tool.needsPermission || hookForcesAsk || sensitiveReason) {
+    // Destructive actions (#1125): irreversible ones always ask, in every mode.
+    const guard = guardToolCall(tool.name, args, ctx.cwd);
+    const destructive = guard?.verdict === "irreversible" ? destructivePrompt(guard, typeof args.command === "string" ? args.command : undefined) : null;
+    if (tool.needsPermission || hookForcesAsk || sensitiveReason || destructive) {
       // A sensitive call is approved per target, never for the whole tool.
       const sessionKey = sensitiveReason
         ? `${tool.name}:sensitive:${
@@ -556,7 +569,7 @@ export class ToolExecutor {
             (typeof args.path === "string" ? resolvePath(ctx.cwd, args.path) : JSON.stringify(args))
           }`
         : this.permissionKey(tool, args, ctx.cwd);
-      if (hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
+      if (destructive || hookForcesAsk || !this.sessionAllowed.has(sessionKey)) {
         const askedAt = performance.now();
         // PermissionRequest hooks (#891): the host calls this right before
         // it would prompt; we remember a deny so the model hears who denied.
@@ -574,13 +587,26 @@ export class ToolExecutor {
           sessionKey,
           ...(hookForcesAsk && hookAskReason ? { hookAskReason } : {}),
           ...(sensitiveReason ? { sensitiveReason } : {}),
+          ...(destructive ? { destructive } : {}),
           ...(firePermissionHook ? { firePermissionHook } : {}),
         });
-        const result = toPermissionResult(raw);
+        let result = toPermissionResult(raw);
+        const unconfirmed = destructive !== null && result.decision === "allow" && result.irreversibleConfirmed !== true;
+        if (unconfirmed) result = { decision: "deny", scope: "once" };
         tr?.permission(tracePermissionDecision(result), Math.round(performance.now() - askedAt), result.feedback, true);
         if (result.decision === "deny") {
           const byHook = hookDenial as PermissionHookResult | null;
-          const denied: ToolResult = byHook
+          const denied: ToolResult = unconfirmed
+            ? {
+                tool_call_id: call.id,
+                name: call.name,
+                content: unconfirmedMessage(destructive!),
+                ok: false,
+                errorCode: "policy_rejection",
+                recoverable: false,
+                suggestion: "tell the user what you wanted to run and why",
+              }
+            : byHook
             ? {
                 tool_call_id: call.id,
                 name: call.name,
@@ -606,7 +632,7 @@ export class ToolExecutor {
         // intentionally not cached (we re-ask), and `pattern` allows
         // come from settings.json so the pattern itself is the durable
         // record — no in-memory cache needed.
-        if (result.scope === "session") this.sessionAllowed.add(sessionKey);
+        if (result.scope === "session" && !destructive) this.sessionAllowed.add(sessionKey);
       } else {
         tr?.permission("auto", 0);
       }
@@ -639,6 +665,9 @@ export class ToolExecutor {
         fileReadHashes,
         ...(sensitiveReason ? { approvedSensitiveReason: sensitiveReason } : {}),
       };
+      // Approved destructive file or git action: save what it loses first, for /undo.
+      const recoveryPoint = guard ? createRecoveryPoint(guard.findings, { project: projectOf(ctx.cwd), tool: tool.name }) : null;
+      const recoveryNote = recoveryPoint ? `\n\n[autopilot] ${describeRecoveryPoint(recoveryPoint)}` : "";
       const result = await tool.run(args as never, runCtx);
       toolCompleted = true;
       const fileChange = before ? await fileChangeAfter(call.name, args, ctx.cwd, before) : undefined;
@@ -725,7 +754,7 @@ export class ToolExecutor {
         isFileReadCommand(args.command)
           ? "\n\n[autopilot] That bash call only read a file. Use the `read` tool instead: it returns line numbers, caps output, and registers the file as read for edit staleness checks."
           : "";
-      const finalContent = content + readHint;
+      const finalContent = content + readHint + recoveryNote;
       const success: ToolResult = {
         tool_call_id: call.id,
         name: call.name,
