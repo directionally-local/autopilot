@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { after, afterEach, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
@@ -521,9 +522,11 @@ describe("attach-remote: /resume and /clear", () => {
     assert.deepEqual(create.body, { workspaceId: "default", model: "vendor/model-a", repository: "acme/project", kind: "code" }, "same kind and place, no local patch");
     assert.equal(create.idempotencyKey, "attach-id-2");
 
+    // Wait for the state file, not the screen: the stub's ids share their first 8 characters, so the
+    // old conversation's "Connected to c0ffee00…" line also matches a short-id check.
+    await waitFor(() => stateFileConversation(stateFile) === secondId, "the state file follows the switch");
     await waitFor(() => bridge.texts()[0]?.includes(secondId.slice(0, 8)) === true, "switched");
     assert.match(bridge.texts()[0]!, /^info:Connected to conversation .*created on the server just now/);
-    assert.equal(JSON.parse(await readFile(stateFile, "utf8")).conversationId, secondId, "the state file follows the switch");
     assert.ok(stub.conversations.has(firstId), "the old conversation keeps its history");
 
     bridge.actions.submit("hello");
@@ -543,7 +546,10 @@ describe("attach-remote: /resume and /clear", () => {
     const create = stub.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/conversations").at(-1)!;
     assert.deepEqual(create.body, { workspaceId: "default", model: "vendor/model-a", kind: "chat" }, "no repository fields");
     const secondId = [...stub.conversations.keys()][1]!;
-    await waitFor(() => bridge.texts()[0]?.includes(secondId.slice(0, 8)) === true, "switched");
+    // The new session reading the second conversation marks the switch; a short-id check can't tell
+    // the two conversations apart because the stub's ids share their first 8 characters.
+    await waitFor(() => stub.requests.some((r) => r.method === "GET" && r.path.includes(`/conversations/${secondId}`)), "switched");
+    await waitFor(() => bridge.texts()[0]?.includes(secondId.slice(0, 8)) === true, "the screen shows it");
     assert.ok(!bridge.texts()[0]!.includes("branch"), "a chat has no branch to mention");
     bridge.actions.exit();
     assert.equal(await done, 0);
@@ -636,3 +642,12 @@ describe("attach-remote through the Camouflage view (headless)", () => {
     view.dispose();
   });
 });
+
+/** The conversation id in an attach-remote state file, or undefined while it's missing or mid-write. */
+function stateFileConversation(path: string): string | undefined {
+  try {
+    return (JSON.parse(readFileSync(path, "utf8")) as { conversationId?: string }).conversationId;
+  } catch {
+    return undefined;
+  }
+}
