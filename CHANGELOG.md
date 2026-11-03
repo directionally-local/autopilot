@@ -1,5 +1,31 @@
 # Changelog
 
+## [3.2.0](https://github.com/directionally-local/autopilot/compare/v3.1.2...v3.2.0) (2026-11-03)
+
+
+### Features
+
+* accept the autopilot Basic-auth username and finish the kimiflare rename ([#911](https://github.com/directionally-local/autopilot/issues/911)) ([#1108](https://github.com/directionally-local/autopilot/issues/1108)) ([c138c64](https://github.com/directionally-local/autopilot/commit/c138c64ecfc70c4bbde6584e71ecd9ab36fe00ea))
+* add /memory migrate-repo and /memory doctor for orphaned repo_path rows ([#1105](https://github.com/directionally-local/autopilot/issues/1105)) ([4de94c6](https://github.com/directionally-local/autopilot/commit/4de94c661d07ccc9d0de681cc76271d5ffbb9fb3)), closes [#1078](https://github.com/directionally-local/autopilot/issues/1078)
+* **camouflage:** drive turns through the SDK lifecycle API ([#1112](https://github.com/directionally-local/autopilot/issues/1112)) ([719ed09](https://github.com/directionally-local/autopilot/commit/719ed099cbcd65b2a822a71c282eba4552f911b4))
+* default memory on in the TUI with disclosure, gating, and management UX ([#1107](https://github.com/directionally-local/autopilot/issues/1107)) ([9c0bd82](https://github.com/directionally-local/autopilot/commit/9c0bd8268517ce5a76e90916fecc96198f384522)), closes [#1077](https://github.com/directionally-local/autopilot/issues/1077)
+* Directionally Local free tier provider, sign-in and /usage ([#1116](https://github.com/directionally-local/autopilot/issues/1116)) ([c142379](https://github.com/directionally-local/autopilot/commit/c1423798201ff5ecbb1a3744442d03ebc165ec6e))
+* **free-tier:** one first-run question, specific denials, local reset times, sign-out ([#1128](https://github.com/directionally-local/autopilot/issues/1128)) ([aeb076d](https://github.com/directionally-local/autopilot/commit/aeb076dc7e64b88623f2dddf9cf8bd174bc314d4))
+* **memory:** add memoryExtraction policy and batch edit extraction at session end ([#1110](https://github.com/directionally-local/autopilot/issues/1110)) ([ddb10f1](https://github.com/directionally-local/autopilot/commit/ddb10f12eb1894431910557b0b1aad5c86dbc7d5))
+* **providers:** explain free-tier sign-in denials and which weekly limit was hit ([#1118](https://github.com/directionally-local/autopilot/issues/1118)) ([2417d93](https://github.com/directionally-local/autopilot/commit/2417d9386bde1ae7cd522a588d473b831401c0fb)), closes [#1102](https://github.com/directionally-local/autopilot/issues/1102)
+* **remote:** /resume and /clear in attach-remote sessions ([#1109](https://github.com/directionally-local/autopilot/issues/1109)) ([3ecc60e](https://github.com/directionally-local/autopilot/commit/3ecc60e1505f528a7c67d2385230b5d9bad49ec3))
+* report Autopilot's state to herdr ([#1115](https://github.com/directionally-local/autopilot/issues/1115)) ([fe68c93](https://github.com/directionally-local/autopilot/commit/fe68c930f9baff4226b0d3aabff8beb7734eb5be))
+* **server:** title and describe a conversation's PR from its commits and final summary ([#1114](https://github.com/directionally-local/autopilot/issues/1114)) ([caaccdd](https://github.com/directionally-local/autopilot/commit/caaccdd5451efcbf65bf79c8fbc3b1aa530be4d6)), closes [#1049](https://github.com/directionally-local/autopilot/issues/1049)
+
+
+### Bug Fixes
+
+* **agent:** page Code Mode reads and only throw AgentLoopError on real thrash ([#1088](https://github.com/directionally-local/autopilot/issues/1088)) ([8a04bde](https://github.com/directionally-local/autopilot/commit/8a04bde8233c8e39f67b2d6d1483efd6863f4837)), closes [#1080](https://github.com/directionally-local/autopilot/issues/1080)
+* **browser:** refuse Chromium older than 156.0.8078.73, sandbox on ([#1123](https://github.com/directionally-local/autopilot/issues/1123)) ([2e45a20](https://github.com/directionally-local/autopilot/commit/2e45a20caf4e264f956b1ec7ff244482957541a3))
+* **memory:** content-addressed dedup and category lifecycle rules ([#1113](https://github.com/directionally-local/autopilot/issues/1113)) ([4f738af](https://github.com/directionally-local/autopilot/commit/4f738af5b54fc04f5636aeb426fce22d6a0256b1))
+* **server:** bound the cell model-info lookup; keep dl cell runtime tests off the network ([#1117](https://github.com/directionally-local/autopilot/issues/1117)) ([a802bb3](https://github.com/directionally-local/autopilot/commit/a802bb32adbe73cbd5cb2f6720153706d4e9f530))
+* **test:** wait for the /clear switch itself, not a short-id match ([#1124](https://github.com/directionally-local/autopilot/issues/1124)) ([d56f198](https://github.com/directionally-local/autopilot/commit/d56f1981c395bc75a7480b64c9c99e7ab78bfcea))
+
 ## [3.1.2](https://github.com/directionally-local/autopilot/compare/v3.1.1...v3.1.2) (2026-10-30)
 
 
