@@ -174,7 +174,8 @@ export function readManifest(root: string): Manifest {
     const ts = "typescript" in deps || existsSync(join(root, "tsconfig.json"));
     const language = ts ? "TypeScript" : "JavaScript";
     const framework = JS_FRAMEWORKS.find(([dep]) => dep in deps)?.[1];
-    const kind = framework ? `${framework} app` : pkg.bin ? `${language} CLI` : `${language} package`;
+    // A package with a `bin` is a CLI even when it renders with React (Ink) or serves with Express.
+    const kind = pkg.bin ? `${language} CLI` : framework ? `${framework} app` : `${language} package`;
     const scripts = (pkg.scripts ?? {}) as Record<string, unknown>;
     const pm = nodePackageManager(root);
     const testCommand = realTestScript(scripts.test)

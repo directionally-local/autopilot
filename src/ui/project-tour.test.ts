@@ -91,6 +91,11 @@ describe("project facts", () => {
     assert.deepStrictEqual(readManifest(root), { name: "lib", kind: "JavaScript package", language: "JavaScript", testCommand: "make test" });
   });
 
+  it("calls a package with a bin a CLI, even when it uses React", () => {
+    const root = repo({ "package.json": JSON.stringify({ name: "tool", bin: { tool: "cli.js" }, dependencies: { react: "19", ink: "5" }, devDependencies: { typescript: "5" } }) });
+    assert.strictEqual(readManifest(root).kind, "TypeScript CLI");
+  });
+
   it("reads a Python project from pyproject.toml", async () => {
     const root = repo({
       "pyproject.toml": '[project]\nname = "slugify"\ndependencies = ["fastapi"]\n[project.optional-dependencies]\ndev = ["pytest"]\n',
