@@ -34,8 +34,8 @@ import {
   writeSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export const APP_DIR_NAME = "autopilot";
 const LEGACY_DIR_NAME = "kimiflare";
@@ -45,16 +45,64 @@ export const LEGACY_PROJECT_DIR_NAME = ".kimiflare";
 type Env = NodeJS.ProcessEnv;
 
 function home(env: Env): string {
-  return env.HOME || homedir();
+  return guardTestPath(env.HOME || homedir());
 }
 function configHome(env: Env): string {
-  return env.XDG_CONFIG_HOME?.trim() || join(home(env), ".config");
+  return guardTestPath(env.XDG_CONFIG_HOME?.trim() || join(home(env), ".config"));
 }
 function dataHome(env: Env): string {
-  return env.XDG_DATA_HOME?.trim() || join(home(env), ".local", "share");
+  return guardTestPath(env.XDG_DATA_HOME?.trim() || join(home(env), ".local", "share"));
 }
 function stateHome(env: Env): string {
-  return env.XDG_STATE_HOME?.trim() || join(home(env), ".local", "state");
+  return guardTestPath(env.XDG_STATE_HOME?.trim() || join(home(env), ".local", "state"));
+}
+
+// ── Test guard ───────────────────────────────────────────────────────────
+
+/**
+ * True while Autopilot's own tests run: the marker set by
+ * scripts/test-setup.mjs, or NODE_ENV=test / Node's test runner while this
+ * module is loaded from source (a .ts file). The built package (dist/) only
+ * honours the marker, so an app that embeds Autopilot in its own test suite
+ * keeps the normal behaviour.
+ */
+export function isAutopilotTestRun(env: Env = process.env): boolean {
+  if (env.AUTOPILOT_TEST_ROOT) return true;
+  if (!RUNNING_FROM_SOURCE) return false;
+  return env.NODE_ENV === "test" || !!env.NODE_TEST_CONTEXT;
+}
+const RUNNING_FROM_SOURCE = /\.tsx?$/.test(new URL(import.meta.url).pathname);
+
+/** The account's real home directory (from the user database, not $HOME). */
+function realHomeDir(): string | null {
+  try {
+    const dir = userInfo().homedir;
+    return dir ? resolve(dir) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * During tests, refuse a directory that is the real home or inside one of its
+ * dot-directories (~/.config, ~/.local, ~/.claude, …): a test that reaches here
+ * did not get the isolated home from scripts/test-setup.mjs and would read or
+ * write the user's real files.
+ */
+function guardTestPath(path: string): string {
+  if (!isAutopilotTestRun()) return path;
+  const real = realHomeDir();
+  if (!real) return path;
+  const rel = relative(real, resolve(path));
+  const inRealHome = rel === "" || (!rel.startsWith("..") && rel.split(sep)[0]!.startsWith("."));
+  if (inRealHome) {
+    throw new Error(
+      `autopilot tests must not use the real home directory (${path}). ` +
+        "Run tests through `npm test` or `npm run test:file -- <file>`, which load scripts/test-setup.mjs, " +
+        "or set HOME / XDG_*_HOME to a temporary directory.",
+    );
+  }
+  return path;
 }
 
 export function configDir(env: Env = process.env): string {

@@ -19,9 +19,12 @@
 | npm run build | Bundle CLI and SDK with tsup into dist/ |
 | npm run typecheck | Type-check with tsc --noEmit |
 | npm test | Run co-located tests with Node's test runner through tsx |
+| npm run test:file -- <files> | Run chosen test files with the same isolation as npm test |
 | npm start | Run the built CLI |
 
-Run a focused test with npx tsx --test src/path/to/file.test.ts. Tests use node:test and node:assert; there is no Jest/Vitest setup.
+Run a focused test with `npm run test:file -- src/path/to/file.test.ts` (or `npx tsx --test --import ./scripts/test-setup.mjs src/path/to/file.test.ts`). Tests use node:test and node:assert; there is no Jest/Vitest setup.
+
+Tests never touch the real home. scripts/test-setup.mjs is loaded with `--import` before any test module, in the runner and in every test process: it creates a fresh temporary root per process and points HOME, USERPROFILE, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, XDG_CACHE_HOME, CLAUDE_CONFIG_DIR and AUTOPILOT_SERVER_CONFIG inside it, clears inherited AUTOPILOT_/KIMIFLARE_ path overrides (TRACE_DIR, DUMP_LLM_DIR, REMOTES_FILE, ASTER_CONFIG), and removes the root on exit (AUTOPILOT_TEST_KEEP_ROOT=1 keeps it). A bare `npx tsx --test file` skips that setup; src/util/app-dirs.ts then throws when a test resolves a directory in the real home, so such a run fails instead of reading or writing your files. A test that needs its own home sets HOME or XDG_*_HOME to its own temp directory, or passes an env to the app-dirs helpers. Code that reads machine-wide files (such as /etc/autopilot) takes the path as a parameter so tests can pass a temp one.
 
 ## Repository map
 

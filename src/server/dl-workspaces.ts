@@ -57,6 +57,16 @@ export class DlConfigError extends Error {
 const SYSTEM_SERVER_CONFIG_PATH = "/etc/autopilot/server.json";
 const LEGACY_SYSTEM_ASTER_CONFIG_PATH = "/etc/autopilot/aster.json";
 
+/** The machine-wide config files, read after the user's own. Tests pass their own. */
+export interface DlSystemConfigPaths {
+  server: string;
+  legacyAster: string;
+}
+const SYSTEM_CONFIG_PATHS: DlSystemConfigPaths = {
+  server: SYSTEM_SERVER_CONFIG_PATH,
+  legacyAster: LEGACY_SYSTEM_ASTER_CONFIG_PATH,
+};
+
 export function localDlConfigPath(env: NodeJS.ProcessEnv = process.env): string {
   return resolve(configDir(env), "server.json");
 }
@@ -66,7 +76,10 @@ export function legacyLocalAsterConfigPath(env: NodeJS.ProcessEnv = process.env)
   return resolve(configDir(env), "aster.json");
 }
 
-export function resolveDlServerConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveDlServerConfigPath(
+  env: NodeJS.ProcessEnv = process.env,
+  system: DlSystemConfigPaths = SYSTEM_CONFIG_PATHS,
+): string {
   const configuredPath = serverEnv(env, "CONFIG");
   if (configuredPath) return resolve(configuredPath);
   const userConfigPath = localDlConfigPath(env);
@@ -79,15 +92,15 @@ export function resolveDlServerConfigPath(env: NodeJS.ProcessEnv = process.env):
     );
     return legacyUserConfigPath;
   }
-  if (existsSync(SYSTEM_SERVER_CONFIG_PATH)) return SYSTEM_SERVER_CONFIG_PATH;
-  if (existsSync(LEGACY_SYSTEM_ASTER_CONFIG_PATH)) {
+  if (existsSync(system.server)) return system.server;
+  if (existsSync(system.legacyAster)) {
     warnDeprecated(
-      "config:/etc/autopilot/aster.json",
-      `reading the pre-rename config at ${LEGACY_SYSTEM_ASTER_CONFIG_PATH}; rename it to ${SYSTEM_SERVER_CONFIG_PATH} when convenient.`,
+      `config:${system.legacyAster}`,
+      `reading the pre-rename config at ${system.legacyAster}; rename it to ${system.server} when convenient.`,
     );
-    return LEGACY_SYSTEM_ASTER_CONFIG_PATH;
+    return system.legacyAster;
   }
-  return SYSTEM_SERVER_CONFIG_PATH;
+  return system.server;
 }
 
 export async function loadDlServerConfig(
