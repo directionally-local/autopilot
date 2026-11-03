@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolExecutor, type PermissionAsker, type PermissionDecision, type PermissionRequest } from "../tools/executor.js";
 import type { ToolSpec } from "../tools/registry.js";
+import type { PermissionRules } from "../config.js";
 import { resolvePermission } from "../ui/use-permission-controller.js";
 import { classifyCommand } from "./destructive.js";
 import { CONFIRMED_IRREVERSIBLE, destructivePrompt, exactRuleAllows, unattendedDestructiveDecision } from "./guardrails.js";
@@ -167,7 +168,8 @@ describe("headless runs and server sessions", () => {
   });
 
   it("deny unless a rule names the exact action; ** and globs never count", () => {
-    for (const rules of [{ bash: { "**": "allow" as const } }, { bash: { "terraform *": "allow" as const } }, { bash: { terraform: "allow" as const } }, undefined]) {
+    const cases: Array<Record<string, PermissionRules> | undefined> = [{ bash: { "**": "allow" } }, { bash: { "terraform *": "allow" } }, { bash: { terraform: "allow" } }, undefined];
+    for (const rules of cases) {
       const { decision, message } = unattendedDestructiveDecision(req("terraform destroy"), rules, T);
       assert.strictEqual(decision.decision, "deny", JSON.stringify(rules));
       assert.match(message, /To allow exactly this, add "permissions": \{ "bash": \{ "terraform destroy": "allow" \} \} to config\.json/);
