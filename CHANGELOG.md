@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.3.0](https://github.com/directionally-local/autopilot/compare/v3.2.0...v3.3.0) (2026-11-03)
+
+
+### Features
+
+* ask before installs and writes once per project; show the earlier conversation on -c ([#1132](https://github.com/directionally-local/autopilot/issues/1132)) ([f60f911](https://github.com/directionally-local/autopilot/commit/f60f91158b21438263ce112a71250a566a3aecda))
+
+
+### Bug Fixes
+
+* **first-run:** polish what a new user sees on first run and exit ([#1131](https://github.com/directionally-local/autopilot/issues/1131)) ([12b7cb5](https://github.com/directionally-local/autopilot/commit/12b7cb513cdf99a0724e485b0de5fb9348c28a0a))
+
 ## [3.2.0](https://github.com/directionally-local/autopilot/compare/v3.1.2...v3.2.0) (2026-11-03)
 
 
