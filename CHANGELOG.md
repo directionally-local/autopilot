@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.5.0](https://github.com/directionally-local/autopilot/compare/v3.4.0...v3.5.0) (2026-11-03)
+
+
+### Features
+
+* bring your setup from other coding agents on first run ([#1140](https://github.com/directionally-local/autopilot/issues/1140)) ([5e08c57](https://github.com/directionally-local/autopilot/commit/5e08c57d6a0898919bda0c2e1c5d616cbd884a0d))
+* continue a Claude Code conversation with --from-claude-code ([#1138](https://github.com/directionally-local/autopilot/issues/1138)) ([0a4bf93](https://github.com/directionally-local/autopilot/commit/0a4bf936342610ecb1758f62ca9e5e52c05e1d07))
+* **permissions:** guardrails and /undo for destructive actions ([#1141](https://github.com/directionally-local/autopilot/issues/1141)) ([dd81da9](https://github.com/directionally-local/autopilot/commit/dd81da9060f221a593d604d676f75ea9baca1520))
+* project tour on first session, and bring the terminal back after browser sign-in ([#1137](https://github.com/directionally-local/autopilot/issues/1137)) ([a1ff685](https://github.com/directionally-local/autopilot/commit/a1ff685017064d736a1ebb1d8996f3b93d432a55))
+
+
+### Bug Fixes
+
+* free-tier sign-in code stays visible; ask before wrapped installs; tidy titles ([#1139](https://github.com/directionally-local/autopilot/issues/1139)) ([2e91f2b](https://github.com/directionally-local/autopilot/commit/2e91f2b2e60f75f425d94f81102aec90a07f6b14))
+* project tour tests on Node 22 ([#1144](https://github.com/directionally-local/autopilot/issues/1144)) ([2c1c7b4](https://github.com/directionally-local/autopilot/commit/2c1c7b4ce19c487d1a5773a8267382dc56c7d5ee))
+
 ## [3.4.0](https://github.com/directionally-local/autopilot/compare/v3.3.0...v3.4.0) (2026-11-03)
 
 
