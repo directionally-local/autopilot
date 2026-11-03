@@ -36,7 +36,7 @@ describe("openRouterHeaders", () => {
   it("sends the key as a bearer plus app attribution", () => {
     const h = openRouterHeaders("sk-or-abc");
     assert.strictEqual(h.Authorization, "Bearer sk-or-abc");
-    assert.strictEqual(h["X-Title"], "autopilot");
+    assert.strictEqual(h["X-Title"], "Autopilot");
     assert.ok(h["HTTP-Referer"]);
   });
 });

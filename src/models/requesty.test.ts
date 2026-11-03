@@ -56,7 +56,7 @@ describe("requestyHeaders", () => {
   it("sends the key as a bearer plus app attribution", () => {
     const h = requestyHeaders("rq-key");
     assert.strictEqual(h.Authorization, "Bearer rq-key");
-    assert.strictEqual(h["X-Title"], "autopilot");
+    assert.strictEqual(h["X-Title"], "Autopilot");
     assert.ok(h["HTTP-Referer"]);
   });
 });
