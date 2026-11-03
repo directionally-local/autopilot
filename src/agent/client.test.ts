@@ -162,8 +162,10 @@ describe("runKimi: OpenRouter request", () => {
 
   it("sends OpenRouter's app-attribution headers", async () => {
     const { req } = await send();
-    assert.strictEqual(req.headers.get("HTTP-Referer"), "https://kimiflare.com");
-    assert.strictEqual(req.headers.get("X-Title"), "autopilot");
+    assert.strictEqual(req.headers.get("HTTP-Referer"), "https://directionallylocal.com");
+    assert.strictEqual(req.headers.get("X-Title"), "Autopilot");
+    assert.strictEqual(req.headers.get("X-OpenRouter-Title"), "Autopilot");
+    assert.strictEqual(req.headers.get("X-OpenRouter-Categories"), "cli-agent,cloud-agent");
   });
 
   it("honours OPENROUTER_BASE_URL (tests, local mocks, proxies)", async () => {

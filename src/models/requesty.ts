@@ -15,7 +15,7 @@
  */
 
 import { getUserAgent } from "../util/version.js";
-import { fetchWithNetworkRetry } from "./openrouter.js";
+import { APP_TITLE, APP_URL, fetchWithNetworkRetry } from "./openrouter.js";
 
 export const REQUESTY_DEFAULT_BASE_URL = "https://router.requesty.ai/v1";
 export const REQUESTY_KEYS_URL = "https://app.requesty.ai/api-keys";
@@ -67,8 +67,8 @@ export function requestyUrl(path: string): string {
 export function requestyHeaders(apiKey: string): Record<string, string> {
   return {
     Authorization: `Bearer ${apiKey}`,
-    "HTTP-Referer": "https://kimiflare.com",
-    "X-Title": "autopilot",
+    "HTTP-Referer": APP_URL,
+    "X-Title": APP_TITLE,
     "User-Agent": getUserAgent(),
   };
 }

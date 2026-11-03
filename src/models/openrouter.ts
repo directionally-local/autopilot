@@ -28,15 +28,25 @@ export function openRouterAlphaUrl(path: string): string {
 }
 
 /**
- * Headers for an authenticated OpenRouter request. `HTTP-Referer` and
- * `X-Title` are OpenRouter's app-attribution headers — optional, but they're
- * how a project shows up in OpenRouter's public rankings.
+ * Headers for an authenticated OpenRouter request. `HTTP-Referer`,
+ * `X-OpenRouter-Title` and `X-OpenRouter-Categories` are OpenRouter's
+ * app-attribution headers (https://openrouter.ai/docs/app-attribution):
+ * optional, but they're how a project shows up in OpenRouter's public
+ * rankings and category pages. `X-Title` is the older name for the title.
  */
+/** App identity for attribution. The URL is OpenRouter's key for the app page. */
+export const APP_URL = "https://directionallylocal.com";
+export const APP_TITLE = "Autopilot";
+/** Up to 2 per request: terminal coding agent, and agents that run in the background. */
+export const APP_CATEGORIES = "cli-agent,cloud-agent";
+
 export function openRouterHeaders(apiKey: string): Record<string, string> {
   return {
     Authorization: `Bearer ${apiKey}`,
-    "HTTP-Referer": "https://kimiflare.com",
-    "X-Title": "autopilot",
+    "HTTP-Referer": APP_URL,
+    "X-OpenRouter-Title": APP_TITLE,
+    "X-Title": APP_TITLE,
+    "X-OpenRouter-Categories": APP_CATEGORIES,
     "User-Agent": getUserAgent(),
   };
 }
