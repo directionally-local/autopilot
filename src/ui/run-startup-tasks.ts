@@ -19,6 +19,7 @@ import type { ChatEvent } from "./view-types.js";
 import type { CustomCommand } from "../commands/types.js";
 import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
 import { loadCustomCommands } from "../commands/loader.js";
+import { sessionStartNotice } from "../import/setup.js";
 import { MemoryManager } from "../memory/manager.js";
 import { getMemoryDb, openMemoryDb } from "../memory/db.js";
 import { resolveRepoRoot } from "../memory/repo-root.js";
@@ -172,6 +173,15 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
       }
     }
   });
+
+  // Setup from other coding agents (#1126): the checklist the first time
+  // anything is found on this machine, then at most one line per session.
+  try {
+    const notice = sessionStartNotice(process.cwd(), { configuredMcp: Object.keys(cfg.mcpServers ?? {}) });
+    if (notice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
+  } catch {
+    // Best effort: never in the way of starting.
+  }
 
   void loadCustomCommands(process.cwd()).then(({ commands, warnings }) => {
     customCommandsRef.current = commands;

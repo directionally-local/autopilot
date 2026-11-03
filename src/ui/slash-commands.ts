@@ -7,6 +7,8 @@
  * registry. Behaviorally identical to the previous in-component
  * `handleSlash` callback.
  */
+import { setupImportReport } from "../import/setup.js";
+import { importedMcpListLines } from "../import/mcp.js";
 import React from "react";
 import { workerRegistry } from "../tools/worker-registry.js";
 import { formatSubagentStats, readSubagentStats } from "../tools/subagent-stats.js";
@@ -1499,10 +1501,21 @@ const handleUpdate: Handler = (ctx, _rest, arg) => {
   return true;
 };
 
+const handleSetupImport: Handler = (ctx) => {
+  const text = setupImportReport(process.cwd(), { configuredMcp: Object.keys(ctx.cfg?.mcpServers ?? {}) });
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
+  return true;
+};
+
 const handleMcp: Handler = (ctx, _rest, arg) => {
   const { setEvents, mkKey, busy } = ctx;
   if (arg === "list") {
     const servers = ctx.mcpManagerRef.current.listServers();
+    const imported = importedMcpListLines();
+    if (imported.length > 0) {
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "From your other coding agents:\n" + imported.join("\n") }]);
+    }
+    if (servers.length === 0 && imported.length > 0) return true;
     if (servers.length === 0) {
       setEvents((e) => [
         ...e,
@@ -2121,6 +2134,7 @@ const handlers: Record<string, Handler> = {
   "/good": handleGood,
   "/bad": handleBad,
   "/init": handleInit,
+  "/setup-import": handleSetupImport,
   "/update": handleUpdate,
   "/mcp": handleMcp,
   "/lsp": handleLsp,

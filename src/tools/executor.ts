@@ -33,6 +33,7 @@ import { jobStartTool, jobStatusTool, jobLogsTool, jobCancelTool } from "./jobs.
 import { waitForTool } from "./wait-for.js";
 import { workerResultTool, workerStatusTool } from "./workers.js";
 import { readFile, realpath, stat } from "node:fs/promises";
+import { importedDenyFor, ruleSourceLabel } from "../import/permissions.js";
 import { resolvePath } from "../util/paths.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
@@ -555,6 +556,24 @@ export class ToolExecutor {
         hookForcesAsk = true;
         hookAskReason = preOutcome.permissionDecisionReason;
       }
+    }
+
+    // Claude Code deny rules apply here too, in every mode (#1126): importing
+    // another agent's setup never loosens what it forbids.
+    const importedDeny = importedDenyFor({ tool: tool.name, args, cwd: ctx.cwd });
+    if (importedDeny) {
+      tr?.permission("deny", 0, undefined, false);
+      const denied: ToolResult = {
+        tool_call_id: call.id,
+        name: call.name,
+        content: `Permission denied by the rule ${importedDeny.raw} in the user's Claude Code settings (${ruleSourceLabel(importedDeny)}). Do not retry this call; do the task another way or ask the user.`,
+        ok: false,
+        errorCode: "policy_rejection",
+        recoverable: false,
+        suggestion: "the user's Claude Code settings deny this call — try a different approach",
+      };
+      this.firePostToolUse(call, args, denied, ctx);
+      return denied;
     }
 
     const sensitiveReason = (await tool.permissionReason?.(args, ctx)) ?? null;

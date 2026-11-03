@@ -20,6 +20,8 @@ import { makeLspTools } from "../tools/lsp.js";
 import { buildSessionPrefix, buildSystemPrompt } from "../agent/system-prompt.js";
 import { DEFAULT_MODEL } from "../config.js";
 import type { Mode } from "../mode.js";
+import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createImportedMcpTool, discoverMcpServers, isImportedServerTool, startedLine } from "../import/mcp.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -46,11 +48,15 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
     mcpToolsRef, lspToolsRef, mcpManagerRef, mcpInitRef,
   } = deps;
 
-  if (!cfg.mcpServers || mcpInitRef.current) return;
+  if (mcpInitRef.current) return;
+  // MCP servers from other agents' setups (#1126): offered through one tool,
+  // never started until a task needs one and the user allows it.
+  const importedTool = importedMcpTool(deps);
+  if (!cfg.mcpServers && !importedTool) return;
   mcpInitRef.current = true;
   const manager = mcpManagerRef.current;
   let totalTools = 0;
-  for (const [name, server] of Object.entries(cfg.mcpServers)) {
+  for (const [name, server] of Object.entries(cfg.mcpServers ?? {})) {
     if (server.enabled === false) continue;
     try {
       if (server.type === "local" && server.command && server.command.length > 0) {
@@ -68,7 +74,7 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
         ]);
         continue;
       }
-      const tools = manager.getAllTools();
+      const tools = manager.getAllTools().filter((t) => !isImportedServerTool(t.name));
       const newTools = tools.filter((t) => !mcpToolsRef.current.some((mt) => mt.name === t.name));
       for (const tool of newTools) {
         executorRef.current.register(tool);
@@ -82,7 +88,11 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
       ]);
     }
   }
-  if (totalTools > 0) {
+  if (importedTool) {
+    executorRef.current.register(importedTool);
+    mcpToolsRef.current = [...mcpToolsRef.current.filter((t) => t.name !== importedTool.name), importedTool];
+  }
+  if (totalTools > 0 || importedTool) {
     const sessionTools = toolsForSession({
       memoryEnabled: cfg.memoryEnabled,
       extra: [...mcpToolsRef.current, ...lspToolsRef.current],
@@ -110,15 +120,41 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
         }),
       };
     }
-    setEvents((e) => [
-      ...e,
-      {
-        kind: "info",
-        key: mkKey(),
-        text: `MCP connected — ${totalTools} external tool${totalTools === 1 ? "" : "s"} available`,
-      },
-    ]);
+    if (totalTools > 0) {
+      setEvents((e) => [
+        ...e,
+        {
+          kind: "info",
+          key: mkKey(),
+          text: `MCP connected — ${totalTools} external tool${totalTools === 1 ? "" : "s"} available`,
+        },
+      ]);
+    }
   }
+}
+
+/** The `mcp_imported` tool for this project's servers from other agents, or null. */
+function importedMcpTool(deps: InitMcpDeps): ToolSpec | null {
+  const { cfg, setEvents, mkKey, mcpManagerRef } = deps;
+  const { servers } = discoverMcpServers(process.cwd(), { exclude: Object.keys(cfg.mcpServers ?? {}) });
+  return createImportedMcpTool(servers, {
+    connect: async (server, launch) => {
+      const manager = mcpManagerRef.current;
+      if (launch.kind === "local") {
+        const env = launch.env ? { ...getDefaultEnvironment(), ...launch.env } : undefined;
+        await manager.addLocalServer(server.name, launch.command, env);
+      } else {
+        await manager.addRemoteServer(server.name, launch.url, launch.headers);
+      }
+      const prefix = `mcp_${server.name.replace(/[^a-zA-Z0-9_]/g, "_")}_`;
+      return manager.getAllTools().filter((t) => t.name.startsWith(prefix));
+    },
+    // Its tools stay behind mcp_imported (not registered by name), so usage
+    // counts never carry an imported server's name.
+    onStarted: (server, tools) => {
+      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: startedLine(server, tools.length) }]);
+    },
+  });
 }
 
 export interface InitLspDeps extends CommonDeps {
