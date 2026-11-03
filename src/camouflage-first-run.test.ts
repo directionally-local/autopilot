@@ -112,7 +112,7 @@ describe("first run: one question", () => {
     view.dispose();
   });
 
-  for (const denial of ["account_too_new", "not_invited", "cohort_full", "paused"] as DlDenial[]) {
+  for (const denial of ["account_too_new", "not_invited", "cohort_full", "too_many_signups", "paused"] as DlDenial[]) {
     it(`a ${denial} denial says why and asks again with "own key" highlighted`, async () => {
       await fresh();
       const { view, prompts, said } = await fakeView(["free", null]);

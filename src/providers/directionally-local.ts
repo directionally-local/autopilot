@@ -141,7 +141,7 @@ export class DlError extends Error {
 
   /** The sign-in denial this is, if it is one (see DL_DENIALS). */
   get denial(): DlDenial | undefined {
-    return dlDenialOf(this.code, this.detail.reason);
+    return dlDenialOf(this.code, this.detail.reason, this.detail.pausedForEveryone);
   }
 }
 
@@ -151,8 +151,10 @@ export interface DlErrorDetail {
   resetsAt?: string;
   retryAfter?: number;
   reason?: string;
-  /** The minimum GitHub account age for the free tier without an invite. */
+  /** The minimum GitHub account age for the free tier without an invite (a field, or read from the message). */
   minAccountAgeDays?: number;
+  /** The service paused free tokens for everyone (its global budget), not just for this account. */
+  pausedForEveryone?: boolean;
 }
 
 interface DlErrorBody {
@@ -178,7 +180,10 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const resetsAt = str("resetsAt", "resets_at", "pausedUntil", "paused_until");
   const retryAfter = num("retryAfter", "retry_after");
   const reason = str("reason");
-  const minAccountAgeDays = num("minAccountAgeDays", "min_account_age_days", "minGithubAccountAgeDays");
+  // The service's own number wins: a field, else "… under 30 days …" in its sentence.
+  const fromMessage = message ? /\b(\d{1,4})\s*days?\b/i.exec(message)?.[1] : undefined;
+  const minAccountAgeDays = num("minAccountAgeDays", "min_account_age_days", "minGithubAccountAgeDays") ?? (fromMessage ? Number(fromMessage) : undefined);
+  const pausedForEveryone = e.pausedForEveryone === true || e.paused_for_everyone === true;
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -186,6 +191,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(retryAfter !== undefined ? { retryAfter } : {}),
     ...(reason ? { reason } : {}),
     ...(minAccountAgeDays !== undefined && minAccountAgeDays > 0 ? { minAccountAgeDays } : {}),
+    ...(pausedForEveryone ? { pausedForEveryone } : {}),
   };
 }
 
@@ -194,24 +200,35 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
  * service called it. Keys are service codes or `reason`s, old and new; add a
  * line here when the service grows a new one.
  */
-export type DlDenial = "account_too_new" | "not_invited" | "cohort_full" | "paused" | "ended";
+export type DlDenial = "account_too_new" | "not_invited" | "cohort_full" | "too_many_signups" | "paused" | "ended";
 export const DL_DENIALS: Readonly<Record<string, DlDenial>> = {
+  // Sign-in (POST /v1/device/token, 400, reason = code).
   account_too_new: "account_too_new",
+  invite_required: "not_invited",
+  cohort_full: "cohort_full",
+  too_many_signups: "too_many_signups",
+  // Older service responses.
   not_invited: "not_invited",
   needs_invite: "not_invited",
   invalid_invite: "not_invited",
-  cohort_full: "cohort_full",
-  paused: "paused",
+  // Paused for everyone: the kill switch, or the global budget (503, also during sign-in).
   service_paused: "paused",
+  paused: "paused",
+  global_weekly_budget_reached: "paused",
   weekly_budget: "paused",
-  total_budget: "ended",
+  global_total_budget_reached: "paused",
+  total_budget: "paused",
+  // An older service's "the free tier has ended".
   ended: "ended",
 };
 
-/** The denial for a code and reason: the reason is the more specific one, so it wins. */
-export function dlDenialOf(code: string, reason?: string): DlDenial | undefined {
+/**
+ * The denial for a code and reason: the reason is the more specific one, so
+ * it wins. A response marked `pausedForEveryone` is a pause whatever its code.
+ */
+export function dlDenialOf(code: string, reason?: string, pausedForEveryone?: boolean): DlDenial | undefined {
   // access_denied without a known reason is the person declining in the browser.
-  return (reason ? DL_DENIALS[reason] : undefined) ?? DL_DENIALS[code];
+  return (reason ? DL_DENIALS[reason] : undefined) ?? DL_DENIALS[code] ?? (pausedForEveryone ? "paused" : undefined);
 }
 
 /** The free tier's minimum account age, when the service didn't say. */
@@ -241,9 +258,12 @@ export function dlDenialLine(denial: DlDenial, extra: DlErrorExtra = {}): string
     case "cohort_full":
       if (where === "session") return `The free tier is full right now. ${ownKeyNow(where)}`;
       return `The free tier is full right now. Use your own API key meanwhile.${where === "cli" ? " `autopilot connect` sets one up." : ""}`;
+    case "too_many_signups":
+      if (where === "session") return `Too many new free-tier accounts from this network today. ${ownKeyNow(where)}`;
+      return `Too many new free-tier accounts from this network today. Try again tomorrow, or use your own API key.${where === "cli" ? " `autopilot connect` sets one up." : ""}`;
     case "paused": {
       const until = formatLocalTime(extra.resetsAt, extra);
-      return `Free tokens are paused for everyone ${until ? `until ${until}` : "right now"}. ${ownKeyNow(where)}`;
+      return `Free tokens are paused for everyone${until ? ` until ${until}` : ""}. ${ownKeyNow(where)}`;
     }
     case "ended":
       return `The free tier has ended. ${ownKeyNow(where)}`;
@@ -265,7 +285,7 @@ export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { wher
  */
 export function describeDlError(code: string, extra: DlErrorExtra = {}): string | undefined {
   const where = extra.where ?? "session";
-  const denial = dlDenialOf(code, extra.reason);
+  const denial = dlDenialOf(code, extra.reason, extra.pausedForEveryone);
   if (denial) return dlDenialLine(denial, { ...extra, where });
   switch (code) {
     case "authorization_pending":
@@ -636,8 +656,8 @@ export type DlRevokeResult = "revoked" | "unsupported" | "unreachable" | "nothin
 
 /**
  * Ask the service to revoke a sign-in: POST /v1/token/revoke with the refresh
- * token (and the access token as Bearer). A 404 means the service predates
- * revocation; that is not an error, the refresh token then simply expires.
+ * token (and the access token as Bearer). A 404 counts as already signed
+ * out on the service; local tokens are cleared either way.
  */
 export async function revokeDlTokens(
   tokens: { accessToken?: string; refreshToken?: string },
@@ -683,7 +703,7 @@ export function dlSignOutLine(r: { removedAccess: boolean; removedRefresh: boole
   if (removed.length === 0) parts.push(`No Directionally Local free-tier sign-in was saved in ${r.path}; nothing was removed.`);
   else parts.push(`Removed the Directionally Local free-tier ${removed.join(" and ")} from ${r.path}.`);
   if (r.revoke === "revoked") parts.push("The service revoked the sign-in.");
-  else if (r.revoke === "unsupported") parts.push("The service doesn't revoke sign-ins yet; the refresh token stops working on its own within 30 days.");
+  else if (r.revoke === "unsupported") parts.push("The service had nothing to revoke.");
   else if (r.revoke === "unreachable") parts.push("Couldn't reach the service to revoke it; the refresh token stops working on its own within 30 days.");
   if (r.envToken) parts.push(`${DL_TOKEN_ENV} is still set in your environment.`);
   return parts.join(" ");

@@ -1831,7 +1831,8 @@ export function logoutPatch(persisted: Partial<AutopilotConfig> | null): {
 export function logoutLine(o: { removed: string[]; path: string; revoke: DlRevokeResult; envKeys: string[] }): string {
   const parts = [o.removed.length ? `Removed from ${o.path}: ${o.removed.join(", ")}.` : `No saved credentials in ${o.path}; nothing was removed.`];
   if (o.revoke === "revoked") parts.push("The free-tier sign-in was revoked on the service.");
-  else if (o.revoke === "unsupported" || o.revoke === "unreachable") parts.push("The free-tier refresh token couldn't be revoked on the service; it stops working on its own within 30 days.");
+  else if (o.revoke === "unsupported") parts.push("The service had nothing to revoke.");
+  else if (o.revoke === "unreachable") parts.push("The free-tier refresh token couldn't be revoked on the service; it stops working on its own within 30 days.");
   if (o.envKeys.length) parts.push(`Keys in your environment for ${o.envKeys.join(", ")} will still be used next launch.`);
   return parts.join(" ");
 }

@@ -311,8 +311,14 @@ describe("Directionally Local free tier", () => {
       ["access_denied", "invalid_invite", /^The free tier is invite-only right now\. Have a code\?/],
       ["cohort_full", undefined, /^The free tier is full right now\. Use your own API key meanwhile\.$/],
       ["not_invited", "cohort_full", /^The free tier is full right now\. Use your own API key meanwhile\.$/],
-      ["paused", undefined, /^Free tokens are paused for everyone right now\. Your own key still works\.$/],
-      ["service_paused", "total_budget", /^The free tier has ended\. Your own key still works\.$/],
+      ["paused", undefined, /^Free tokens are paused for everyone\. Your own key still works\.$/],
+      ["service_paused", "total_budget", /^Free tokens are paused for everyone\. Your own key still works\.$/],
+      // The service's final sign-in codes (400, reason = code).
+      ["invite_required", "invite_required", /^The free tier is invite-only right now\. Have a code\? Choose Free again/],
+      ["cohort_full", "cohort_full", /^The free tier is full right now\. Use your own API key meanwhile\.$/],
+      ["too_many_signups", "too_many_signups", /^Too many new free-tier accounts from this network today\. Try again tomorrow, or use your own API key\.$/],
+      ["service_paused", "paused", /^Free tokens are paused for everyone\. Your own key still works\.$/],
+      ["account_too_new", "account_too_new", /^New GitHub accounts \(under 30 days\)/],
     ] as const) {
       it(`ends the sign-in on ${code}${reason ? ` (${reason})` : ""} with one plain sentence`, async () => {
         stub.tokenReplies = [{ status: 400, body: { error: { code, message: "service wording", ...(reason ? { reason } : {}) } } }];
@@ -465,9 +471,18 @@ describe("Directionally Local free tier", () => {
         describeDlError("paused", { resetsAt: "2026-11-05T03:30:00.000Z", now: NOW, timeZone: "America/New_York" }),
         "Free tokens are paused for everyone until Wed 22:30. Your own key works now: /provider",
       );
-      assert.strictEqual(describeDlError("service_paused", { reason: "paused" }), "Free tokens are paused for everyone right now. Your own key works now: /provider");
+      assert.strictEqual(describeDlError("service_paused", { reason: "paused" }), "Free tokens are paused for everyone. Your own key works now: /provider");
       assert.strictEqual(describeDlError("service_paused", { reason: "ended" }), "The free tier has ended. Your own key works now: /provider");
-      assert.strictEqual(describeDlError("total_budget"), "The free tier has ended. Your own key works now: /provider");
+      assert.strictEqual(
+        describeDlError("global_weekly_budget_reached", { reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z", pausedForEveryone: true, ...tokyo }),
+        "Free tokens are paused for everyone until Mon 09:00. Your own key works now: /provider",
+      );
+      assert.strictEqual(
+        describeDlError("global_total_budget_reached", { reason: "total_budget", pausedForEveryone: true }),
+        "Free tokens are paused for everyone. Your own key works now: /provider",
+      );
+      assert.strictEqual(describeDlError("some_future_pause", { pausedForEveryone: true }), "Free tokens are paused for everyone. Your own key works now: /provider");
+      assert.strictEqual(describeDlError("some_future_code"), undefined, "unknown codes show the service's own sentence");
       assert.match(describeDlError("not_invited")!, /invite-only right now, and this GitHub account isn't on it\. Your own key works now: \/provider$/);
       assert.match(describeDlError("suspended")!, /account is suspended.*Your own key works now: \/provider$/);
       assert.strictEqual(describeDlError("rate_limited", { retryAfter: 12 }), "Directionally Local is limiting how fast you send requests; try again in 12 seconds.");
@@ -501,12 +516,20 @@ describe("Directionally Local free tier", () => {
       assert.match(describeDlError("account_too_new", { where: "signin" })!, /^New GitHub accounts \(under 30 days\)/);
       assert.deepStrictEqual(parseDlError({ error: { code: "account_too_new", min_account_age_days: 45 } }), { code: "account_too_new", minAccountAgeDays: 45 });
       assert.deepStrictEqual(parseDlError({ error: { code: "paused", paused_until: "2026-11-09T00:00:00.000Z" } }), { code: "paused", resetsAt: "2026-11-09T00:00:00.000Z" });
+      // The number from the service's sentence when there's no field.
+      const fromMessage = parseDlError({ error: { code: "account_too_new", reason: "account_too_new", message: "GitHub accounts under 60 days old need an invite code." } })!;
+      assert.strictEqual(fromMessage.minAccountAgeDays, 60);
+      assert.match(describeDlError(fromMessage.code, { ...fromMessage, where: "signin" })!, /under 60 days/);
+      assert.deepStrictEqual(
+        parseDlError({ error: { code: "global_total_budget_reached", reason: "total_budget", resetsAt: null, pausedForEveryone: true, message: "x" } }),
+        { code: "global_total_budget_reached", message: "x", reason: "total_budget", pausedForEveryone: true },
+      );
     });
 
     it("maps old and new service codes through one table", () => {
       assert.deepStrictEqual(
-        ["account_too_new", "not_invited", "invalid_invite", "needs_invite", "cohort_full", "paused", "service_paused", "weekly_budget", "total_budget", "ended"].map((c) => DL_DENIALS[c]),
-        ["account_too_new", "not_invited", "not_invited", "not_invited", "cohort_full", "paused", "paused", "paused", "ended", "ended"],
+        ["account_too_new", "invite_required", "not_invited", "invalid_invite", "cohort_full", "too_many_signups", "service_paused", "global_weekly_budget_reached", "global_total_budget_reached", "ended"].map((c) => DL_DENIALS[c]),
+        ["account_too_new", "not_invited", "not_invited", "not_invited", "cohort_full", "too_many_signups", "paused", "paused", "paused", "ended"],
       );
       assert.strictEqual(dlDenialOf("access_denied"), undefined, "declining in the browser isn't a denial");
       assert.strictEqual(dlDenialOf("access_denied", "device_taken"), undefined);
@@ -536,9 +559,11 @@ describe("Directionally Local free tier", () => {
       [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "spend" } }, /You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\./, 1],
       [403, { error: { code: "not_invited" } }, /invite-only right now.*\/provider$/, 1],
       [403, { error: { code: "suspended" } }, /account is suspended/, 1],
-      [503, { error: { code: "service_paused" } }, /Free tokens are paused for everyone right now\. Your own key works now: \/provider$/, 1],
+      [503, { error: { code: "service_paused" } }, /Free tokens are paused for everyone\. Your own key works now: \/provider$/, 1],
       [503, { error: { code: "service_paused", reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z" } }, /Free tokens are paused for everyone until \w{3} \d\d:\d\d\. Your own key works now: \/provider$/, 1],
       [503, { error: { code: "paused", resets_at: "2026-11-09T00:00:00.000Z" } }, /Free tokens are paused for everyone until \w{3} \d\d:\d\d\./, 1],
+      [503, { error: { code: "global_weekly_budget_reached", reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z", pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone until \w{3} \d\d:\d\d\. Your own key works now: \/provider$/, 1],
+      [503, { error: { code: "global_total_budget_reached", reason: "total_budget", resetsAt: null, pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone\. Your own key works now: \/provider$/, 1],
       [400, { error: { code: "model_not_allowed" } }, /only serves deepseek\/deepseek-v4\.1-flash-1017/, 1],
     ];
     for (const [status, body, pattern, calls] of cases) {
@@ -594,7 +619,7 @@ describe("Directionally Local free tier", () => {
       await writeCfg({ providers: { "directionally-local": { apiKey: "at", refreshToken: "rt" } } });
       stub.revokeStatus = 404;
       const line = await dlSignOut();
-      assert.match(line, /^Removed the Directionally Local free-tier access token and refresh token from .*\. The service doesn't revoke sign-ins yet; the refresh token stops working on its own within 30 days\.$/);
+      assert.match(line, /^Removed the Directionally Local free-tier access token and refresh token from .*\. The service had nothing to revoke\.$/);
       assert.deepStrictEqual((await readCfg()).providers["directionally-local"], {});
     });
 
@@ -630,7 +655,7 @@ describe("Directionally Local free tier", () => {
         setCfg: () => {},
       } as unknown as SlashContext;
       await dispatchSlashCommand(ctx, "/logout");
-      assert.match(infos[0]!, /^Removed from .*: Directionally Local free-tier access token and refresh token\. The free-tier refresh token couldn't be revoked/);
+      assert.match(infos[0]!, /^Removed from .*: Directionally Local free-tier access token and refresh token\. The service had nothing to revoke\.$/);
       assert.deepStrictEqual((await readCfg()).providers["directionally-local"], {});
     });
   });
