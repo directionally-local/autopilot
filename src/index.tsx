@@ -1381,5 +1381,6 @@ async function signInFromCli(codeMode: boolean): Promise<string> {
   console.log(`\n  ${url}\n`);
   console.log("Waiting… (Ctrl+C to cancel; use --code to sign in from another device)");
   const code = await listener.code;
+  void import("./util/refocus-terminal.js").then((m) => m.refocusTerminal()).catch(() => {});
   return oauth.exchangeCode(code, pkce.verifier);
 }
