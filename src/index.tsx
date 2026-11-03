@@ -38,6 +38,7 @@ program
   .option("--mode <mode>", "run mode: interactive (default), print, rpc")
   .option("-c, --continue", "continue the most recent session in the current working directory")
   .option("-S, --session <id>", "resume a specific session by id")
+  .option("--from-claude-code", "continue this folder's most recent Claude Code conversation in a new session (read locally; asks first)")
   .option("-f, --file <path>", "attach file(s) to the prompt; repeatable, supports globs (print mode only)", (v, prev: string[] | undefined) => (prev ?? []).concat(v))
   .option("--format <mode>", "output format for print mode: text (default), json, stream-json")
   .option("--dir <path>", "run in the specified directory instead of the current one (print mode only)")
@@ -1012,6 +1013,7 @@ const opts = program.opts<{
   mode?: string;
   continue?: boolean;
   session?: string;
+  fromClaudeCode?: boolean;
   file?: string[];
   format?: string;
   dir?: string;
@@ -1076,6 +1078,11 @@ async function main() {
   installExitHandlers({ crashes: true });
   const { warnRuntimeAdvisoryOncePerDay } = await import("./util/runtime-advisory.js");
   await warnRuntimeAdvisoryOncePerDay();
+
+  if (opts.fromClaudeCode && (opts.print !== undefined || opts.continue || opts.session || resumeCommand || opts.on !== undefined || positionalTask.length > 0 || opts.mode === "rpc")) {
+    console.error("autopilot: --from-claude-code starts a new interactive session; it can't be combined with -p, -c, -S, resume, --on or --mode.");
+    process.exit(2);
+  }
 
   if (opts.on !== undefined || positionalTask.length > 0) {
     await runRemoteTask();
@@ -1213,7 +1220,7 @@ async function main() {
   // runs inside it before the session starts. A machine where the renderer
   // can't start gets an explanation and exit code 2.
   // `autopilot resume [id]`, `-c` or `-S <id>`: which saved session to open (#906).
-  const startup = await interactiveStartup(cfg);
+  const startup = opts.fromClaudeCode ? await claudeCodeStartup() : await interactiveStartup(cfg);
   // Null on first run until Camouflage's onboarding saves a provider and model.
   let sessionCfg: AutopilotConfig | null = cfg ? { ...cfg, model: requireModel(opts.model || cfg.model) } : null;
   const { runCamouflageView } = await import("./camouflage-view.js");
@@ -1289,6 +1296,34 @@ async function interactiveStartup(cfg: AutopilotConfig | null): Promise<import("
   }
   if (!cfg) return {};
   return target.kind === "picker" ? { openResumePicker: true } : { resumeSessionId: target.sessionId, resumeReason: "user" };
+}
+
+/**
+ * `--from-claude-code`: find this folder's latest Claude Code conversation, ask, and start a
+ * new session whose first message is the handoff. Read locally; exits when there is nothing
+ * to continue or the answer is no.
+ */
+async function claudeCodeStartup(): Promise<import("./app.js").RenderAppOpts> {
+  const handoff = await import("./claude-code-handoff.js");
+  const cwd = process.cwd();
+  let conversation: Awaited<ReturnType<typeof handoff.findLatestClaudeCodeConversation>>;
+  try {
+    conversation = await handoff.findLatestClaudeCodeConversation({ cwd });
+  } catch (err) {
+    console.error(`autopilot: couldn't read Claude Code's conversations: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  if (!conversation) {
+    console.error(handoff.noConversationMessage(cwd));
+    process.exit(1);
+  }
+  const answer = await handoff.askEnterOrNo(handoff.handoffQuestion(conversation), { input: process.stdin, output: process.stdout });
+  if (answer === "cancel") process.exit(130);
+  if (answer === "no") {
+    console.log("Not continued; nothing was sent.");
+    process.exit(0);
+  }
+  return { initialPrompt: { full: handoff.buildHandoffMessage(conversation), display: handoff.handoffDisplay(conversation) } };
 }
 
 /** Read a line from the terminal without echoing it (for secrets). */

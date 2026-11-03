@@ -146,6 +146,7 @@ function App({
   initialResumeSessionId,
   initialResumeReason = "crash",
   initialOpenResumePicker,
+  initialPrompt,
 }: {
   initialCfg: Cfg | null;
   initialUpdateResult?: UpdateCheckResult;
@@ -160,6 +161,8 @@ function App({
   initialResumeReason?: ResumeReason;
   /** Open the /resume picker on start (`autopilot resume` without an id). */
   initialOpenResumePicker?: boolean;
+  /** Send this as the first message once the session is ready (`--from-claude-code`). */
+  initialPrompt?: { full: string; display: string };
 }) {
   const { exit } = useApp();
   const [cfg, setCfg] = useState<Cfg | null>(initialCfg);
@@ -488,6 +491,14 @@ function App({
     openedResumePickerRef.current = true;
     void openResumePicker();
   }, [initialOpenResumePicker, cfg, openResumePicker]);
+  // `--from-claude-code`: the handoff is the first message, sent once a provider is set up
+  // (after first-run onboarding, when there was none). The screen shows `display`.
+  const sentInitialPromptRef = useRef(false);
+  useEffect(() => {
+    if (!initialPrompt || sentInitialPromptRef.current || !cfg) return;
+    sentInitialPromptRef.current = true;
+    submitRef.current(initialPrompt.full, initialPrompt.display);
+  }, [initialPrompt, cfg]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customCommandsRef = useRef<CustomCommand[]>([]);
 
@@ -2195,6 +2206,8 @@ export interface RenderAppOpts {
   resumeReason?: ResumeReason;
   /** Open the /resume picker on start. */
   openResumePicker?: boolean;
+  /** Send this as the first message once the session is ready. */
+  initialPrompt?: { full: string; display: string };
 }
 
 /**
@@ -2231,6 +2244,7 @@ export async function renderAppWithBridge(
       initialResumeSessionId={opts.resumeSessionId}
       initialResumeReason={opts.resumeReason}
       initialOpenResumePicker={opts.openResumePicker}
+      initialPrompt={opts.initialPrompt}
     />,
     {
       stdin: stdin as unknown as NodeJS.ReadStream,
