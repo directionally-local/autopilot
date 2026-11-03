@@ -91,6 +91,8 @@ If npm warns that it blocked `isolated-vm`'s install script, nothing is broken: 
 
 To pick up an earlier conversation, run `autopilot resume <id>` (the exact command is printed when you exit), `autopilot resume` to choose one from this directory, or `autopilot -c` for the most recent one. Inside autopilot, `/resume` does the same.
 
+To continue a Claude Code conversation (say it stopped on a usage limit), run `autopilot --from-claude-code` in the same folder. It finds that folder's most recent conversation in `~/.claude/projects`, asks first, and starts a new session whose first message is a short handoff: your last request, the files changed, commands run and last errors, and Claude's last message (at most 12,000 characters, likely keys redacted). The transcript is read on this machine and goes only to your model, as the session's first message.
+
 ### Providers
 
 | Provider | id | Key | Notes |
