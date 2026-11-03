@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions } from "./ui/app-bridge.js";
 import { configPath } from "./config.js";
-import { envKeyLine, envKeyProvider, FIRST_RUN_QUESTION, firstRunChoices, OWN_KEY_BILLING_LINE } from "./providers/connect.js";
+import { DL_WAITING_LINE, envKeyLine, envKeyProvider, FIRST_RUN_QUESTION, firstRunChoices, OWN_KEY_BILLING_LINE } from "./providers/connect.js";
 import { HIDDEN_WITHOUT_GATEWAY } from "./providers/connect-state.js";
-import { DL_FREE_MODEL, dlDenialLine, DlError, type DlDenial, type DlMe } from "./providers/directionally-local.js";
+import { DL_DISCLOSURE, DL_FREE_MODEL, dlDenialLine, DlError, type DlDenial, type DlMe } from "./providers/directionally-local.js";
 import type { ProviderId } from "./providers/presets.js";
 
 type Sent = { type: string; payload: Record<string, unknown> };
@@ -70,7 +70,7 @@ describe("first run: one question", () => {
     assert.strictEqual(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
     assert.strictEqual(FIRST_RUN_QUESTION, "How should it think?");
     assert.deepStrictEqual(options(0), ["free", "own-key"]);
-    assert.strictEqual(prompts[0]?.payload.default, "free");
+    assert.strictEqual(prompts[0]?.payload.default, undefined, "nothing is marked current before anything was chosen");
     assert.deepStrictEqual(
       firstRunChoices().map((c) => `${c.label} · ${c.description}`),
       ["Free — sign in with GitHub · 50M tokens a week, no card", "Use my own API key · OpenRouter, Anthropic, OpenAI and more"],
@@ -87,7 +87,7 @@ describe("first run: one question", () => {
     assert.ok(options(1).includes("openrouter") && options(1).includes("anthropic"));
     assert.match(String(prompts[1]?.payload.subtitle), new RegExp(`^${OWN_KEY_BILLING_LINE.replace(/\./g, "\\.")}`));
     assert.strictEqual(prompts[2]?.payload.prompt, FIRST_RUN_QUESTION);
-    assert.strictEqual(prompts[2]?.payload.default, "own-key");
+    assert.strictEqual(prompts[2]?.payload.default, undefined);
     view.dispose();
   });
 
@@ -112,8 +112,37 @@ describe("first run: one question", () => {
     view.dispose();
   });
 
+  it("shows the disclosure once, says where to approve without claiming a browser opened, and ignores typing while it waits", async () => {
+    await fresh();
+    const savedNoBrowser = process.env.AUTOPILOT_NO_BROWSER;
+    process.env.AUTOPILOT_NO_BROWSER = "1";
+    try {
+      const { view, said } = await fakeView(["free"]);
+      view.providerCalls = {
+        dlSignIn: async (onCode) => {
+          onCode({ deviceCode: "d", userCode: "WLZH-2682", verificationUri: "u", verificationUriComplete: "https://free.example/device?user_code=WLZH-2682", intervalSec: 5, expiresInSec: 600 });
+          assert.strictEqual(view.signInWaiting, DL_WAITING_LINE, "typed input is answered with the waiting line meanwhile");
+          return { key: "at-1" };
+        },
+        verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
+        dlMe: async () => me,
+      };
+      assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
+      const text = said().join("\n");
+      assert.strictEqual(text.split(DL_DISCLOSURE).length - 1, 1, "the disclosure is said once");
+      assert.match(text, /Your code is WLZH-2682\. Open https:\/\/free\.example\/device\?user_code=WLZH-2682 in a browser on any device, sign in with GitHub and approve it \(enter an invite code there if asked\)\./);
+      assert.doesNotMatch(text, /browser is open|Opened your browser/);
+      assert.ok(said().includes(DL_WAITING_LINE));
+      assert.strictEqual(view.signInWaiting, null);
+      view.dispose();
+    } finally {
+      if (savedNoBrowser === undefined) delete process.env.AUTOPILOT_NO_BROWSER;
+      else process.env.AUTOPILOT_NO_BROWSER = savedNoBrowser;
+    }
+  });
+
   for (const denial of ["account_too_new", "not_invited", "cohort_full", "too_many_signups", "paused"] as DlDenial[]) {
-    it(`a ${denial} denial says why and asks again with "own key" highlighted`, async () => {
+    it(`a ${denial} denial says why and asks the question again`, async () => {
       await fresh();
       const { view, prompts, said } = await fakeView(["free", null]);
       const message = dlDenialLine(denial, { where: "signin" });
@@ -127,12 +156,12 @@ describe("first run: one question", () => {
       assert.ok(said().includes(message));
       assert.ok(!said().some((l) => /choose it again/i.test(l)));
       assert.strictEqual(prompts[1]?.payload.prompt, FIRST_RUN_QUESTION);
-      assert.strictEqual(prompts[1]?.payload.default, "own-key");
+      assert.strictEqual(prompts[1]?.payload.default, undefined);
       view.dispose();
     });
   }
 
-  it("a cancelled sign-in asks again with Free still highlighted", async () => {
+  it("a cancelled sign-in asks again, with nothing marked current", async () => {
     await fresh();
     const { view, prompts } = await fakeView(["free", null]);
     view.providerCalls = {
@@ -143,7 +172,8 @@ describe("first run: one question", () => {
       },
     };
     assert.strictEqual(await view.firstRunSetup({ upgrading: false }), false);
-    assert.strictEqual(prompts[1]?.payload.default, "free");
+    assert.strictEqual(prompts[1]?.payload.prompt, FIRST_RUN_QUESTION);
+    assert.strictEqual(prompts[1]?.payload.default, undefined);
     view.dispose();
   });
 

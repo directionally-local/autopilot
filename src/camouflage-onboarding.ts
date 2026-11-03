@@ -13,6 +13,7 @@
 import type { AutopilotConfig } from "./config.js";
 import type { ProviderId } from "./providers/presets.js";
 import { envKeyLine } from "./providers/connect.js";
+import { launchedByDl } from "./util/env.js";
 
 /** Copy for an upgrading kimiflare user whose config still points at Cloudflare. */
 export const UPGRADE_NOTICE = [
@@ -21,8 +22,14 @@ export const UPGRADE_NOTICE = [
 ];
 
 /** What the user sees before the first-run question (or, with a key in the environment, instead of it). */
-export function firstRunIntro(o: { upgrading: boolean; configPath: string; envKey?: { id: ProviderId; envVar: string } }): string[] {
-  const welcome = o.upgrading ? [...UPGRADE_NOTICE, ""] : ["Welcome to autopilot."];
+export function firstRunIntro(o: {
+  upgrading: boolean;
+  configPath: string;
+  envKey?: { id: ProviderId; envVar: string };
+  env?: NodeJS.ProcessEnv;
+}): string[] {
+  // Started by `dl`, the product the person installed is Directionally Local.
+  const welcome = o.upgrading ? [...UPGRADE_NOTICE, ""] : [launchedByDl(o.env) ? "Welcome to Directionally Local." : "Welcome to Autopilot."];
   // The free tier is on the next screen, so nothing here says calls are billed to your own account.
   if (o.envKey) return [...welcome, envKeyLine(o.envKey)];
   return [

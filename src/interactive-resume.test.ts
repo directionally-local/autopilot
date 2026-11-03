@@ -50,7 +50,9 @@ describe("interactive resume", () => {
   });
 
   it("prints a hint that names a command that reopens the saved session", async () => {
-    assert.strictEqual(resumeHint("2026-10-02T10-00-00-000Z_new"), "Resume this conversation with: autopilot resume 2026-10-02T10-00-00-000Z_new\n");
+    assert.strictEqual(resumeHint("2026-10-02T10-00-00-000Z_new", {}), "Resume this conversation with: autopilot resume 2026-10-02T10-00-00-000Z_new\n");
+    assert.strictEqual(resumeHint("2026-10-02T10-00-00-000Z_new", { AUTOPILOT_LAUNCHED_BY: "dl" }), "Continue this conversation with: dl -c\n");
+    assert.strictEqual(resumeHint("never-saved", { AUTOPILOT_LAUNCHED_BY: "dl" }), null);
     assert.strictEqual(resumeHint("never-saved"), null);
     assert.strictEqual(resumeHint(null), null);
   });

@@ -36,7 +36,9 @@ import {
   dlPickerHint,
   dlSignIn,
   fetchDlMe,
+  formatCountdown,
   formatReset,
+  formatUsd,
   pollDlDeviceFlow,
   quotaNoticeFromHeaders,
   renderDlUsage,
@@ -244,9 +246,16 @@ describe("Directionally Local free tier", () => {
         "Free: 50M tokens a week on deepseek/deepseek-v4.1-flash-1017, no card. Sign in with GitHub to start.",
         DL_DISCLOSURE,
       ]);
-      const during = dlSignInLines({ deviceCode: "d", userCode: "ABCD-1234", verificationUri: "u", verificationUriComplete: "https://x/device?code=ABCD-1234", intervalSec: 5, expiresInSec: 600 }, true);
-      assert.match(during, /^Your code is ABCD-1234\. Your browser is open at https:\/\/x\/device\?code=ABCD-1234/);
-      assert.ok(during.endsWith(`\n${DL_DISCLOSURE}`), "the same disclosure on every sign-in screen");
+      const code = { deviceCode: "d", userCode: "ABCD-1234", verificationUri: "u", verificationUriComplete: "https://x/device?code=ABCD-1234", intervalSec: 5, expiresInSec: 600 };
+      assert.strictEqual(
+        dlSignInLines(code, true),
+        "Your code is ABCD-1234. Opened your browser at https://x/device?code=ABCD-1234 — sign in with GitHub and approve it (enter an invite code there if asked).",
+      );
+      assert.strictEqual(
+        dlSignInLines(code, false),
+        "Your code is ABCD-1234. Open https://x/device?code=ABCD-1234 in a browser on any device, sign in with GitHub and approve it (enter an invite code there if asked).",
+      );
+      assert.ok(!dlSignInLines(code, true).includes(DL_DISCLOSURE), "the disclosure is said once, before the code");
       assert.ok(!DL_SIGN_IN_NEEDED.includes("\n"));
       assert.doesNotMatch(DL_SIGN_IN_NEEDED, /choose it again/i, "no choose-it-again loop");
     });
@@ -410,14 +419,37 @@ describe("Directionally Local free tier", () => {
           "Directionally Local free tier · signed in as @octo",
           "  used this week  12.5M of 50M tokens (25%)",
           "  left            37.5M tokens",
-          "  resets          Mon 09:00 (in 5 days)",
+          "  spending limit  $5 a week",
+          "  resets          Mon 09:00 GMT+9 (in 5 days)",
         ].join("\n"),
       );
-      assert.match(renderDlUsage(me(), NOW, "America/Los_Angeles"), /resets {10}Sun 16:00 \(in 5 days\)$/, "local time, not UTC");
+      assert.match(renderDlUsage(me(), NOW, "America/Los_Angeles"), /resets {10}Sun 16:00 PST \(in 5 days\)$/, "local time, not UTC");
       assert.match(
         renderDlUsage(me({ usedThisWeek: 50_000_000, remaining: 0 }), NOW, "Asia/Tokyo"),
         /\n  You've used this week's free tokens\. They're back Mon 09:00\. To keep going now: \/provider to use your own key\.$/,
       );
+    });
+
+    it("shows the spending limit, names the time zone, and counts down in days and hours", () => {
+      const tuesday = Date.parse("2026-11-03T09:13:38.000Z");
+      assert.strictEqual(
+        renderDlUsage(me({ usedThisWeek: 32_200, remaining: 49_967_800, usdPerWeek: 5, spentUsdThisWeek: 0.0112 }), tuesday, "UTC"),
+        [
+          "Directionally Local free tier · signed in as @octo",
+          "  used this week  32.2k of 50M tokens (0%)",
+          "  left            50M tokens",
+          "  spending limit  spent $0.01 of $5",
+          "  resets          Mon 00:00 UTC (in 5 days 15 h)",
+        ].join("\n"),
+      );
+      assert.doesNotMatch(renderDlUsage(me({ usdPerWeek: null }), NOW, "UTC"), /spending limit/, "no line when the service has no spending limit");
+      assert.strictEqual(formatCountdown(26 * 3_600_000), "in 1 day 2 h");
+      assert.strictEqual(formatCountdown(48 * 3_600_000), "in 2 days");
+      assert.strictEqual(formatCountdown(3 * 3_600_000), "in 3 hours");
+      assert.strictEqual(formatCountdown(20 * 60_000), "in under an hour");
+      assert.strictEqual(formatUsd(0), "$0");
+      assert.strictEqual(formatUsd(0.004), "under $0.01");
+      assert.strictEqual(formatUsd(2.5), "$2.50");
     });
 
     it("reads GET /v1/me for /usage on the free tier, and points elsewhere on other providers", async () => {
@@ -437,7 +469,7 @@ describe("Directionally Local free tier", () => {
       const h = (remaining: number, resets = "2026-11-09T00:00:00.000Z") => new Headers({ "x-dl-tokens-remaining": String(remaining), "x-dl-quota-resets-at": resets });
       assert.strictEqual(quotaNoticeFromHeaders(h(20_000_000), { now: NOW }), undefined);
       const line = quotaNoticeFromHeaders(h(9_000_000), { now: NOW, timeZone: "Asia/Tokyo" });
-      assert.strictEqual(line, "You've used 82% of this week's free Directionally Local tokens (9M left, resets Mon 09:00 (in 5 days)); /usage has details.");
+      assert.strictEqual(line, "You've used 82% of this week's free Directionally Local tokens (9M left, resets Mon 09:00 GMT+9 (in 5 days)); /usage has details.");
       assert.ok(!line!.includes("\n"));
       assert.strictEqual(quotaNoticeFromHeaders(h(8_000_000), { now: NOW }), undefined, "only once per week");
       assert.ok(quotaNoticeFromHeaders(h(8_000_000, "2026-11-16T00:00:00.000Z"), { now: NOW }), "again the next week");
@@ -542,7 +574,7 @@ describe("Directionally Local free tier", () => {
       assert.strictEqual(formatLocalTime("2026-11-09T00:00:00.000Z", { now: NOW, timeZone: "America/Los_Angeles" }), "Sun 16:00");
       assert.strictEqual(formatLocalTime("2026-11-20T00:00:00.000Z", { now: NOW, timeZone: "Asia/Tokyo" }), "Fri, Nov 20, 09:00", "further than a week: with the date");
       assert.strictEqual(formatLocalTime(undefined), undefined);
-      assert.strictEqual(formatReset(undefined, NOW, "Asia/Tokyo"), "Mon 09:00 (in 5 days)", "the service's week end when it didn't say");
+      assert.strictEqual(formatReset(undefined, NOW, "Asia/Tokyo"), "Mon 09:00 GMT+9 (in 5 days)", "the service's week end when it didn't say");
       assert.strictEqual(nextWeekStart(NOW), Date.parse("2026-11-09T00:00:00.000Z"));
       assert.strictEqual(localResetWeekday("2026-11-09T00:00:00.000Z", { timeZone: "Asia/Tokyo" }), "Monday");
       assert.strictEqual(localResetWeekday("2026-11-09T00:00:00.000Z", { timeZone: "America/Los_Angeles" }), "Sunday");

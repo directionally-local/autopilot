@@ -275,13 +275,22 @@ export function leavingFreeTierLine(active: ProviderId | undefined, to: Provider
   return dlNotFreeLine(getPreset(to).name);
 }
 
-/** What the free tier's sign-in screen says, before and once the code is known. */
+/**
+ * What the free tier's sign-in screen says: the offer and the disclosure
+ * first, then (once the code is known) the code and where to approve it. The
+ * disclosure is said once, before the code. "Opened your browser" only when
+ * a browser really opened (`opened`); otherwise the link is for any device.
+ */
 export function dlSignInLines(code?: DlDeviceCode, opened = false): string {
-  const intro = code
-    ? `Your code is ${code.userCode}. ${opened ? "Your browser is open at" : "Open"} ${code.verificationUriComplete}, sign in with GitHub and approve it (enter an invite code there if asked). Esc to cancel.`
-    : `Free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}, no card. Sign in with GitHub to start.`;
-  return `${intro}\n${DL_DISCLOSURE}`;
+  if (!code) return `Free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}, no card. Sign in with GitHub to start.\n${DL_DISCLOSURE}`;
+  const where = opened
+    ? `Opened your browser at ${code.verificationUriComplete} — sign in with GitHub and approve it`
+    : `Open ${code.verificationUriComplete} in a browser on any device, sign in with GitHub and approve it`;
+  return `Your code is ${code.userCode}. ${where} (enter an invite code there if asked).`;
 }
+
+/** Shown while the free tier's sign-in waits for the browser, in place of the chat input. */
+export const DL_WAITING_LINE = "Waiting for you to approve in the browser… Esc to cancel";
 
 /** Said when someone backs out of the free tier's sign-in: nothing was saved, and the question is asked again. */
 export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved.";

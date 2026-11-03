@@ -40,6 +40,7 @@ import {
   directionallyLocalSignIn,
   dlSignInLines,
   DL_SIGN_IN_NEEDED,
+  DL_WAITING_LINE,
   envKeyProvider,
   FIRST_RUN_QUESTION,
   firstRunChoices,
@@ -64,6 +65,8 @@ import { formatContext, formatModelPrice } from "./ui/model-format.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
+import { waitWithoutInput } from "./ui/terminal-wait.js";
+import { terminalWrapWidth, wrapText } from "./util/wrap.js";
 import { PRESETS as LSP_PRESETS } from "./ui/lsp-presets.js";
 import { formatBashTitle, getShellCommand } from "./tools/bash.js";
 import { formatJobStartTitle } from "./tools/jobs.js";
@@ -269,6 +272,11 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
     resume: () => sdk.resumeTerminal?.(cam),
   });
   cam.on("userInput", (text: string) => {
+    if (view.signIn && view.signInWaiting) {
+      // A sign-in is waiting on the browser: nothing typed now goes anywhere.
+      cam.send("RuntimeError", { message: view.signInWaiting, severity: "info" });
+      return;
+    }
     if (!view.actions) {
       // First-run setup is still running: there is no session to send it to.
       cam.send("RuntimeError", { message: "Finish connecting a provider first — the session starts right after.", severity: "info" });
@@ -418,6 +426,8 @@ export class View implements AppBridge {
   private openPrompt: string | null = null;
   /** A provider sign-in waiting on the browser; Esc aborts it. */
   signIn: AbortController | null = null;
+  /** What typed input is answered with while the free tier's sign-in waits on the browser. */
+  signInWaiting: string | null = null;
   /** The provider calls the setup screens make; replaced in tests. */
   providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
   /** Esc presses (cancelRequested) so far: a permission prompt denied with
@@ -1326,8 +1336,9 @@ export class View implements AppBridge {
   /**
    * First run's one question: the free tier, or your own key. Free goes
    * straight into the GitHub sign-in; own key opens the provider picker
-   * without the free tier. A denied sign-in says why and asks again with
-   * "own key" highlighted. With a known provider's key in the environment the
+   * without the free tier. A denied sign-in says why and asks again. No
+   * answer is marked current unless a provider is already configured. With a
+   * known provider's key in the environment the
    * question is skipped and that key is used (backing out of it asks).
    */
   private async howToThink(o: {
@@ -1343,12 +1354,14 @@ export class View implements AppBridge {
       const saved = await this.connectAndPickModel({ ...common, initial: o.envKey.id, envKeyDirect: true, backReturns: true });
       if (saved) return saved;
     }
-    let highlight: FirstRunChoice = "free";
+    // The renderer marks the default "✓ current", so there is one only when a provider is configured.
+    const configured = o.firstRun ? undefined : o.cfg?.provider;
+    const current: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : "own-key") : undefined;
     for (;;) {
       const choice = await this.select(
         FIRST_RUN_QUESTION,
         firstRunChoices(),
-        highlight,
+        current,
         o.firstRun ? "Enter to choose · Esc to quit" : "Enter to choose · Esc to cancel",
       );
       if (choice === null) return null;
@@ -1360,15 +1373,11 @@ export class View implements AppBridge {
           subtitle: `${OWN_KEY_BILLING_LINE} · type to search · Enter to connect · Esc to go back`,
         });
         if (saved) return saved;
-        highlight = "own-key";
         continue;
       }
       const free = await this.freeTierSignIn(o.cfg, say);
-      if (free.kind !== "connected") {
-        // A denial's message names the way on; the question comes back with it highlighted.
-        highlight = free.kind === "denied" ? "own-key" : "free";
-        continue;
-      }
+      // A denial's message names the way on; the question comes back.
+      if (free.kind !== "connected") continue;
       const saved = await this.commitChoice(free.connection, DL_FREE_MODEL, { firstRun: o.firstRun, standalone: !!o.standalone }, say);
       if (saved) return saved;
     }
@@ -1424,10 +1433,24 @@ export class View implements AppBridge {
     say(dlSignInLines());
     const ctrl = new AbortController();
     this.signIn = ctrl;
+    // Once the code is shown, the chat input gives way to one waiting line until the sign-in ends.
+    let waiting: Promise<(() => void) | null> | null = null;
+    const stopWaiting = async () => {
+      const end = await waiting;
+      end?.();
+      this.signInWaiting = null;
+    };
     let key: string;
     try {
-      key = (await this.providerCalls.dlSignIn((code) => say(dlSignInLines(code, openBrowser(code.verificationUriComplete))), ctrl.signal)).key;
+      key = (
+        await this.providerCalls.dlSignIn((code) => {
+          say(dlSignInLines(code, openBrowser(code.verificationUriComplete)));
+          this.signInWaiting = DL_WAITING_LINE;
+          waiting = ctrl.signal.aborted ? null : this.waitWithoutInput(DL_WAITING_LINE, () => ctrl.abort());
+        }, ctrl.signal)
+      ).key;
     } catch (e) {
+      await stopWaiting();
       if (ctrl.signal.aborted) {
         say(DL_SIGN_IN_NEEDED);
         return { kind: "cancelled" };
@@ -1441,12 +1464,29 @@ export class View implements AppBridge {
     } finally {
       this.signIn = null;
     }
+    await stopWaiting();
     return verified(key, "signin");
+  }
+
+  /**
+   * Hide the chat input behind `line` while something outside the terminal
+   * runs (see ui/terminal-wait.ts); resolves with the function that brings
+   * it back. Where the terminal can't be lent, the line is said instead and
+   * typed input is answered with it (`signInWaiting`).
+   */
+  private async waitWithoutInput(line: string, cancel: () => void): Promise<(() => void) | null> {
+    const end = await waitWithoutInput(line, cancel, {
+      suspend: async () => (this.sdk.suspendTerminal ? (await this.sdk.suspendTerminal(this.cam)).supported : false),
+      resume: () => this.sdk.resumeTerminal?.(this.cam),
+    });
+    if (!end) void this.cam.send("RuntimeError", { message: line, severity: "info" });
+    return end;
   }
 
   /** Lines printed above the prompts (welcome copy, notices). */
   showLines(lines: string[]): void {
-    this.cam.send("Splash", { text: lines.join("\n") });
+    // The renderer cuts a Splash line off at the edge: wrap so every word is read.
+    this.cam.send("Splash", { text: wrapText(lines.join("\n"), terminalWrapWidth()).join("\n") });
   }
 
   /**

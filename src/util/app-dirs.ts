@@ -33,8 +33,9 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export const APP_DIR_NAME = "autopilot";
 const LEGACY_DIR_NAME = "kimiflare";
@@ -104,6 +105,51 @@ export function statePath(...segments: string[]): string {
 export function projectDir(root: string): string {
   return join(root, PROJECT_DIR_NAME);
 }
+/** What `.autopilot/.gitignore` holds: the folder ignores itself, so the user's own .gitignore is never edited. */
+export const PROJECT_DIR_GITIGNORE = "*\n";
+
+/**
+ * Make a project's `.autopilot/` ignore itself: write `.autopilot/.gitignore`
+ * containing `*` when the folder exists and has none. A folder whose files
+ * git already tracks (a team that commits its `.autopilot/commands`) is left
+ * alone. Never throws; true when the file was written.
+ */
+export function ignoreProjectDir(dir: string): boolean {
+  try {
+    if (!isRealDir(dir)) return false;
+    const file = join(dir, ".gitignore");
+    if (existsSync(file)) return false;
+    if (hasTrackedFiles(dir)) return false;
+    const fd = openSync(file, "wx", 0o644);
+    try {
+      writeSync(fd, PROJECT_DIR_GITIGNORE);
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The same for the `.autopilot/` folder that `path` is in (or is), if any: for code that just created a project file. */
+export function ignoreProjectDirOf(path: string): boolean {
+  for (let p = path; ; p = dirname(p)) {
+    if (basename(p) === PROJECT_DIR_NAME) return ignoreProjectDir(p);
+    if (dirname(p) === p) return false;
+  }
+}
+
+/** True when git tracks a file under `dir`; false outside a repository or without git. */
+function hasTrackedFiles(dir: string): boolean {
+  try {
+    const out = execFileSync("git", ["ls-files", "-z", "--", "."], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 });
+    return out.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** `<root>/.kimiflare`: still read, never created. */
 export function legacyProjectDir(root: string): string {
   return join(root, LEGACY_PROJECT_DIR_NAME);

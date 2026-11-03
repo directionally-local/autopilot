@@ -26,7 +26,7 @@ import { indexSkills, initSkillsSchema } from "../skills/index.js";
 
 import { RETENTION } from "../storage-limits.js";
 import type { HybridResult } from "../memory/schema.js";
-import { projectPath } from "../util/app-dirs.js";
+import { ignoreProjectDir, projectDir, projectPath } from "../util/app-dirs.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -48,6 +48,9 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
     memoryManagerRef, sessionStartRecallRef, setKimiMdStale,
     customCommandsRef, setCustomCommandsVersion,
   } = deps;
+
+  // An `.autopilot/` folder from an earlier version may lack its own .gitignore.
+  for (const root of new Set([resolveRepoRoot(process.cwd()), process.cwd()])) ignoreProjectDir(projectDir(root));
   const auth = llmAuthFromConfig(cfg);
 
   // Sessions and traces are never deleted automatically; once they get big,
