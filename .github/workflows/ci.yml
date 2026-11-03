@@ -30,27 +30,43 @@ jobs:
       matrix:
         node-version: ["22", "24", "26"]
     timeout-minutes: 10
+    # Ordinary PRs run the full check on Node 24 only; Node 22 and 26 report a
+    # passing placeholder so the required check names (all three) still
+    # appear. Pushes to main, merge queues, manual runs, release-please PRs
+    # and Dependabot PRs (which auto-merge without review) get all three.
+    env:
+      RUN_CHECK: ${{ github.event_name != 'pull_request' || matrix.node-version == '24' || startsWith(github.head_ref, 'release-please--') || startsWith(github.head_ref, 'dependabot/') }}
     steps:
+      - name: Skip (full matrix runs on main and release PRs)
+        if: env.RUN_CHECK != 'true'
+        run: echo "Node ${{ matrix.node-version }} is checked on main, in the merge queue and on release PRs; this PR is checked on Node 24."
+
       - uses: actions/checkout@v5
+        if: env.RUN_CHECK == 'true'
 
       - uses: actions/setup-node@v5
+        if: env.RUN_CHECK == 'true'
         with:
           node-version: ${{ matrix.node-version }}
           check-latest: true
           cache: npm
 
       - name: Install
+        if: env.RUN_CHECK == 'true'
         run: npm ci --no-audit --no-fund
 
       - name: Typecheck
+        if: env.RUN_CHECK == 'true'
         run: npm run typecheck
 
       # Live tests (e.g. src/agent/openrouter.live.test.ts) self-skip unless
       # KIMIFLARE_LIVE_TESTS=1 and a key are present, so CI never spends money.
       - name: Test
+        if: env.RUN_CHECK == 'true'
         run: npm test
 
       - name: Build
+        if: env.RUN_CHECK == 'true'
         run: npm run build
 
   # A `!` in the commit type or a `BREAKING CHANGE:` footer makes
