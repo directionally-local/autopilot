@@ -8,6 +8,7 @@ import {
 import { isBlockedInPlanMode, isReadOnlyBash, type Mode } from "../mode.js";
 import { hasSetupConsent, setupCommandOf, setupQuestion, type SetupKind } from "../permissions/setup-consent.js";
 import type { DestructivePrompt } from "../permissions/guardrails.js";
+import { importedMcpPromptFor } from "../import/mcp.js";
 
 /** Pre-built typed decisions for the two auto-resolve paths so we don't
  *  recreate them on every call. M2.2 — see `PermissionDecisionResult`. */
@@ -26,11 +27,15 @@ export interface PendingPermission {
 
 /** The once-per-project question (see permissions/setup-consent.ts). */
 export interface SetupPrompt {
-  kind: SetupKind;
+  kind: SetupKind | "mcp";
   prompt: string;
   subtitle: string;
   /** The project an "Always allow in this project" answer is stored for. */
   root: string;
+  /** Other answers than SETUP_CHOICES (the imported-MCP question, #1126). */
+  choices?: ReadonlyArray<{ value: "once" | "always" | "deny"; label: string }>;
+  /** When set, the answer is recorded here instead of as project consent. */
+  onAnswer?: (answer: "once" | "always" | "deny") => void;
 }
 
 /**
@@ -131,6 +136,12 @@ export async function resolvePermission(
     return host.promptDestructive ? host.promptDestructive(req.destructive) : AUTO_DENY;
   }
   const outcome = decidePermission(req, mode, opts);
+  // Starting an MCP server from another agent's setup: asked once per
+  // server, in every mode, before it ever starts (#1126).
+  if (outcome.kind !== "plan_blocked" && host.promptSetup) {
+    const mcp = importedMcpPromptFor(req);
+    if (mcp) return host.promptSetup(mcp);
+  }
   if (outcome.kind === "resolve") {
     const setup = outcome.decision.decision === "allow" && host.promptSetup ? setupPromptFor(req, host.setupGate) : null;
     if (!setup) return outcome.decision;

@@ -14,6 +14,8 @@ export type CustomCommand = {
   effort?: ReasoningEffort;
   shell?: boolean;
   files?: boolean;
+  /** Set for a command read in place from another agent's setup (#1126). */
+  importedFrom?: "claude";
 };
 
 export type RenderResult = {

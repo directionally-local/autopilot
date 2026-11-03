@@ -908,8 +908,9 @@ export class View implements AppBridge {
    * (remembered for the project), or Don't. Esc is Don't.
    */
   private async askSetup(setup: SetupPrompt): Promise<void> {
-    const r = await this.select(setup.prompt, SETUP_CHOICES.map((c) => ({ value: c.value, label: c.label })), undefined, setup.subtitle);
-    if (r === "always") grantSetupConsent(setup.root);
+    const r = await this.select(setup.prompt, (setup.choices ?? SETUP_CHOICES).map((c) => ({ value: c.value, label: c.label })), undefined, setup.subtitle);
+    if (setup.onAnswer) setup.onAnswer(r === "once" || r === "always" ? r : "deny");
+    else if (r === "always") grantSetupConsent(setup.root);
     this.actions?.decidePermission(r === "once" || r === "always" ? "allow" : "deny");
   }
 

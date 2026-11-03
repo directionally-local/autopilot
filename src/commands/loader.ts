@@ -7,6 +7,7 @@ import { isPathOutside } from "../util/paths.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import type { CommandSource, CustomCommand, LoadResult } from "./types.js";
 import { configPath, legacyProjectDir, projectDir } from "../util/app-dirs.js";
+import { loadClaudeCommands } from "../import/commands.js";
 
 const MAX_COMMAND_FILE_BYTES = 256 * 1024;
 
@@ -29,6 +30,8 @@ export async function loadCustomCommands(
 ): Promise<LoadResult> {
   const warnings: string[] = [];
   const byName = new Map<string, CustomCommand>();
+  // Claude Code's commands, read in place (#1126); Autopilot's own win a name clash.
+  for (const cmd of loadClaudeCommands(cwd).commands) byName.set(cmd.name, cmd);
 
   const sources: Array<{ dir: string; source: CommandSource }> = [
     { dir: globalCommandsDir(), source: "global" },
@@ -52,7 +55,8 @@ export async function loadCustomCommands(
   for (const loaded of perSource) {
     for (const cmd of loaded) {
       if (!cmd) continue;
-      if (byName.has(cmd.name) && byName.get(cmd.name)!.source === "global" && cmd.source === "project") {
+      const prev = byName.get(cmd.name);
+      if (prev && !prev.importedFrom && prev.source === "global" && cmd.source === "project") {
         warnings.push(`project command /${cmd.name} shadows global command — project version will be used`);
       }
       byName.set(cmd.name, cmd);

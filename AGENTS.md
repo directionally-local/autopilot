@@ -36,6 +36,7 @@ Tests never touch the real home. scripts/test-setup.mjs is loaded with `--import
 - src/tools/ — tool schemas, implementations, permissions, output reduction, and dispatch (executor.ts).
 - src/init/ — /init project discovery and AGENTS.md prompt generation.
 - src/skills/ — skill discovery/routing; supports .agents/skills/, AGENTS.md, .github/skills/, .autopilot/skills/ and the legacy .kimiflare/skills/.
+- src/import/ — setup from other coding agents (#1126): CLAUDE.md, CLAUDE.local.md, GEMINI.md, Cursor rules and copilot-instructions read in place into the system prompt; Claude Code commands as custom commands; MCP servers from Claude Code, Cursor and OpenCode behind `mcp_imported` (asked once per server before it starts); Claude Code deny rules enforced in the executor; hooks, plugins, subagents and skills only listed. `AUTOPILOT_IMPORT_SETUP=0` turns it off.
 - src/memory/ — local SQLite-backed cross-session memory and retrieval. The repository-scoped database defaults to .autopilot/memory.db (an existing .kimiflare/memory.db is still used; configurable); memory tools expose remember, recall, and forget.
 - src/lsp/, src/mcp/ — Language Server Protocol and Model Context Protocol integrations.
 - src/sdk/, src/server/ — programmatic session SDK and RPC/server integration.
@@ -68,4 +69,4 @@ Tests never touch the real home. scripts/test-setup.mjs is loaded with `--import
 
 ## Context file behavior
 
-/init creates AGENTS.md when no supported project context file exists. It refreshes an existing AGENTS.md first, or otherwise preserves and refreshes legacy KIMI.md, KIMIFLARE.md, or AGENT.md in place. The system prompt loads AGENTS.md before those legacy names. Keep this file focused on stable project facts and actionable conventions; verify claims against the source when they may have changed.
+/init creates AGENTS.md when no supported project context file exists. It refreshes an existing AGENTS.md first, or otherwise preserves and refreshes legacy KIMI.md, KIMIFLARE.md, or AGENT.md in place. The system prompt loads AGENTS.md before those legacy names, then other agents' instruction files in the precedence documented in src/import/instructions.ts. Keep this file focused on stable project facts and actionable conventions; verify claims against the source when they may have changed.

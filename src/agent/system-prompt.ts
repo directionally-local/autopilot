@@ -7,6 +7,7 @@ import { systemPromptForMode, type Mode } from "../mode.js";
 import type { ChatMessage } from "./messages.js";
 import { USER_SHELL_PROMPT_SECTION, userShellCommandsEnabled } from "./user-shell.js";
 import { modelProfileFor } from "../models/profile.js";
+import { buildInstructionsBlock } from "../import/instructions.js";
 
 export interface SystemPromptOpts {
   cwd: string;
@@ -147,10 +148,8 @@ If the user asks what model you are, answer with exactly: \`${opts.model}\`. Thi
   // Only the interactive TUI supports `!` commands; never advertise them elsewhere.
   const userShellBlock = userShellCommandsEnabled() ? `\n\n${USER_SHELL_PROMPT_SECTION}` : "";
 
-  const ctx = loadContextFile(opts.cwd);
-  const contextBlock = ctx
-    ? `\n\nProject context from ${ctx.name} (${ctx.lineCount} lines, treat as authoritative):\n${ctx.content.trim()}`
-    : "";
+  // AGENTS.md, plus other agents' instruction files read in place (#1126).
+  const contextBlock = buildInstructionsBlock(opts.cwd);
   const modeBlock = opts.mode ? systemPromptForMode(opts.mode) : "";
   // Per-model guidance (#999). Lives in the session prefix, not the static
   // one, so switching models mid-session swaps the addendum with the identity.

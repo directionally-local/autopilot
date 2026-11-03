@@ -138,6 +138,7 @@ export const CATEGORIES: Category[] = [
     commands: [
       { command: "/init", description: "scan this repo and write an AGENTS.md" },
       { command: "/tour", description: "summarize this project and suggest three tasks to start with" },
+      { command: "/setup-import", description: "show what's used from your other coding agents (CLAUDE.md, MCP servers, …)" },
       { command: "/settings", description: "show feature settings" },
       { command: "/provider", description: "list LLM providers and which has a key" },
       { command: "/provider <id> [key]", description: "switch provider (openrouter, openai, deepseek, ollama, …)", selectable: false },
