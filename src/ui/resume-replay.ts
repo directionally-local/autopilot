@@ -6,6 +6,7 @@
  */
 
 import type { ChatMessage } from "../agent/messages.js";
+import { cutAtWord, displaySessionTitle } from "../session-title.js";
 
 export interface ReplayExchange {
   user: string;
@@ -92,7 +93,7 @@ export function buildResumeReplay(
     user: trimStart(e.user, USER_MAX_CHARS, USER_MAX_LINES),
     answer: e.answer ? trimStart(e.answer, ANSWER_MAX_CHARS, ANSWER_MAX_LINES) : "",
   }));
-  const title = (file.title?.trim() || exchanges[0]?.user.split("\n")[0] || "this conversation").slice(0, 80);
+  const title = cutAtWord(displaySessionTitle(file.title ?? "") || exchanges[0]?.user.split("\n")[0] || "this conversation", 80);
   return {
     exchanges: shown,
     totalRequests: exchanges.length,
