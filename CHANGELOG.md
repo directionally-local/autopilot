@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.0](https://github.com/directionally-local/autopilot/compare/v3.3.0...v3.4.0) (2026-11-03)
+
+
+### Features
+
+* **openrouter:** attribute as Autopilot at directionallylocal.com, with categories ([#1134](https://github.com/directionally-local/autopilot/issues/1134)) ([aee6104](https://github.com/directionally-local/autopilot/commit/aee6104e7cd5baecd336498c1ab062a11da10731))
+
 ## [3.3.0](https://github.com/directionally-local/autopilot/compare/v3.2.0...v3.3.0) (2026-11-03)
 
 
