@@ -40,7 +40,7 @@ import {
   directionallyLocalSignIn,
   dlSignInLines,
   DL_SIGN_IN_NEEDED,
-  DL_WAITING_LINE,
+  dlWaitingText,
   envKeyProvider,
   FIRST_RUN_QUESTION,
   firstRunChoices,
@@ -65,7 +65,7 @@ import { formatContext, formatModelPrice } from "./ui/model-format.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
-import { waitWithoutInput } from "./ui/terminal-wait.js";
+import { waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
 import { terminalWrapWidth, wrapText } from "./util/wrap.js";
 import { grantSetupConsent, SETUP_CHOICES } from "./permissions/setup-consent.js";
 import type { SetupPrompt } from "./ui/use-permission-controller.js";
@@ -430,6 +430,8 @@ export class View implements AppBridge {
   signIn: AbortController | null = null;
   /** What typed input is answered with while the free tier's sign-in waits on the browser. */
   signInWaiting: string | null = null;
+  /** The terminal lent out while waiting on a browser (tests swap in a fake). */
+  terminalIo: WaitIo | undefined = undefined;
   /** The provider calls the setup screens make; replaced in tests. */
   providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
   /** Esc presses (cancelRequested) so far: a permission prompt denied with
@@ -1447,7 +1449,7 @@ export class View implements AppBridge {
     say(dlSignInLines());
     const ctrl = new AbortController();
     this.signIn = ctrl;
-    // Once the code is shown, the chat input gives way to one waiting line until the sign-in ends.
+    // Once the code is shown, the chat input gives way to the waiting text (code included) until the sign-in ends.
     let waiting: Promise<(() => void) | null> | null = null;
     const stopWaiting = async () => {
       const end = await waiting;
@@ -1459,8 +1461,11 @@ export class View implements AppBridge {
       key = (
         await this.providerCalls.dlSignIn((code) => {
           say(dlSignInLines(code, openBrowser(code.verificationUriComplete)));
-          this.signInWaiting = DL_WAITING_LINE;
-          waiting = ctrl.signal.aborted ? null : this.waitWithoutInput(DL_WAITING_LINE, () => ctrl.abort());
+          // The renderer may not have drawn that line yet when it lends the terminal
+          // (and it has no event to wait for), so the waiting text carries the code too.
+          const text = dlWaitingText(code);
+          this.signInWaiting = text;
+          waiting = ctrl.signal.aborted ? null : this.waitWithoutInput(text, () => ctrl.abort());
         }, ctrl.signal)
       ).key;
     } catch (e) {
@@ -1489,10 +1494,15 @@ export class View implements AppBridge {
    * typed input is answered with it (`signInWaiting`).
    */
   private async waitWithoutInput(line: string, cancel: () => void): Promise<(() => void) | null> {
-    const end = await waitWithoutInput(line, cancel, {
-      suspend: async () => (this.sdk.suspendTerminal ? (await this.sdk.suspendTerminal(this.cam)).supported : false),
-      resume: () => this.sdk.resumeTerminal?.(this.cam),
-    });
+    const end = await waitWithoutInput(
+      line,
+      cancel,
+      {
+        suspend: async () => (this.sdk.suspendTerminal ? (await this.sdk.suspendTerminal(this.cam)).supported : false),
+        resume: () => this.sdk.resumeTerminal?.(this.cam),
+      },
+      this.terminalIo,
+    );
     if (!end) void this.cam.send("RuntimeError", { message: line, severity: "info" });
     return end;
   }

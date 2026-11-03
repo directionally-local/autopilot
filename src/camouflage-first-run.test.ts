@@ -1,4 +1,5 @@
 import { after, before, describe, it } from "node:test";
+import { EventEmitter } from "node:events";
 import assert from "node:assert";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions } from "./ui/app-bridge.js";
 import { configPath } from "./config.js";
-import { DL_WAITING_LINE, envKeyLine, envKeyProvider, FIRST_RUN_QUESTION, firstRunChoices, OWN_KEY_BILLING_LINE } from "./providers/connect.js";
+import { DL_WAITING_LINE, dlWaitingText, envKeyLine, envKeyProvider, FIRST_RUN_QUESTION, firstRunChoices, OWN_KEY_BILLING_LINE } from "./providers/connect.js";
 import { HIDDEN_WITHOUT_GATEWAY } from "./providers/connect-state.js";
 import { DL_DISCLOSURE, DL_FREE_MODEL, dlDenialLine, DlError, type DlDenial, type DlMe } from "./providers/directionally-local.js";
 import type { ProviderId } from "./providers/presets.js";
@@ -112,6 +113,56 @@ describe("first run: one question", () => {
     view.dispose();
   });
 
+  const code = { deviceCode: "d", userCode: "WLZH-2682", verificationUri: "u", verificationUriComplete: "https://free.example/device?user_code=WLZH-2682", intervalSec: 5, expiresInSec: 600 };
+
+  it("keeps the code and link on screen while it waits, even when the renderer draws late", async () => {
+    const savedNoBrowser = process.env.AUTOPILOT_NO_BROWSER;
+    process.env.AUTOPILOT_NO_BROWSER = "1";
+    try {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await fresh();
+        const { view, sent } = await fakeView(["free"]);
+        // A renderer that draws what it is sent only after 200 ms, and clears its
+        // live area (anything not drawn yet) when it lends the terminal.
+        const drawn: string[] = [];
+        let suspended = false;
+        const flush = (upTo: number) => setTimeout(() => {
+          if (!suspended) for (const s of sent.slice(0, upTo)) if (s.type === "RuntimeError") drawn.push(String(s.payload.message));
+        }, 200);
+        const sdk = (view as unknown as { sdk: Record<string, unknown> }).sdk;
+        sdk.suspendTerminal = async () => ((suspended = true), { supported: true });
+        sdk.resumeTerminal = () => void (suspended = false);
+        const stdin = Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(v: boolean) { this.isRaw = v; return this; }, resume() { return this; }, pause() { return this; } });
+        const written: string[] = [];
+        view.terminalIo = { stdin: stdin as never, stdout: { isTTY: true, columns: 60, write: (s: string) => (written.push(s), true) } as never };
+        let onScreen = "";
+        view.providerCalls = {
+          dlSignIn: async (onCode) => {
+            onCode(code);
+            flush(sent.length);
+            // However long the browser takes: look once the waiting text is up.
+            for (let i = 0; i < 50 && written.length === 0; i++) await new Promise((r) => setImmediate(r));
+            assert.ok(suspended, "the terminal is lent while waiting");
+            onScreen = [...drawn, written.join("")].join("\n");
+            return { key: "at-1" };
+          },
+          verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
+          dlMe: async () => me,
+        };
+        assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
+        assert.match(onScreen, /Your code is WLZH-2682/, `attempt ${attempt}: the code is on screen`);
+        assert.ok(onScreen.includes("https://free.example/device?user_code=WLZH-2682"), "and where to enter it");
+        assert.ok(onScreen.includes(DL_WAITING_LINE));
+        // The waiting text took three rows at 60 columns; all of them are erased.
+        assert.ok(written.at(-1)!.includes("\x1b[2A\x1b[J"), JSON.stringify(written.at(-1)));
+        view.dispose();
+      }
+    } finally {
+      if (savedNoBrowser === undefined) delete process.env.AUTOPILOT_NO_BROWSER;
+      else process.env.AUTOPILOT_NO_BROWSER = savedNoBrowser;
+    }
+  });
+
   it("shows the disclosure once, says where to approve without claiming a browser opened, and ignores typing while it waits", async () => {
     await fresh();
     const savedNoBrowser = process.env.AUTOPILOT_NO_BROWSER;
@@ -120,8 +171,8 @@ describe("first run: one question", () => {
       const { view, said } = await fakeView(["free"]);
       view.providerCalls = {
         dlSignIn: async (onCode) => {
-          onCode({ deviceCode: "d", userCode: "WLZH-2682", verificationUri: "u", verificationUriComplete: "https://free.example/device?user_code=WLZH-2682", intervalSec: 5, expiresInSec: 600 });
-          assert.strictEqual(view.signInWaiting, DL_WAITING_LINE, "typed input is answered with the waiting line meanwhile");
+          onCode(code);
+          assert.strictEqual(view.signInWaiting, dlWaitingText(code), "typed input is answered with the waiting text meanwhile");
           return { key: "at-1" };
         },
         verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
@@ -132,7 +183,7 @@ describe("first run: one question", () => {
       assert.strictEqual(text.split(DL_DISCLOSURE).length - 1, 1, "the disclosure is said once");
       assert.match(text, /Your code is WLZH-2682\. Open https:\/\/free\.example\/device\?user_code=WLZH-2682 in a browser on any device, sign in with GitHub and approve it \(enter an invite code there if asked\)\./);
       assert.doesNotMatch(text, /browser is open|Opened your browser/);
-      assert.ok(said().includes(DL_WAITING_LINE));
+      assert.ok(said().includes(dlWaitingText(code)), "without a terminal to lend, the waiting text is said");
       assert.strictEqual(view.signInWaiting, null);
       view.dispose();
     } finally {
