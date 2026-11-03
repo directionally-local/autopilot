@@ -35,8 +35,10 @@ export const DL_FREE_WEEKLY_TOKENS = 50_000_000;
 /** Env var holding an access token (no refresh): sandboxes and short headless runs. */
 export const DL_TOKEN_ENV = "AUTOPILOT_DL_FREE_TOKEN";
 export const DL_SIGN_IN_COMMAND = "autopilot auth directionally-local";
-const SWITCH_HINT = "switch provider with /model or `autopilot connect`";
-
+/** How to leave the free tier from inside a session: the provider picker. */
+export const DL_SWITCH_HINT = "/provider";
+/** The weekly allowance's reset when the service didn't say: Monday 00:00 UTC, like its weeks. */
+const WEEK_MS = 7 * 86_400_000;
 /** "15M", "1.2M", "800k", "950". */
 export function formatTokens(n: number): string {
   const abs = Math.abs(n);
@@ -60,7 +62,7 @@ export function dlFreeModelEntry(): ModelEntry {
 
 /** Shown on the sign-in screen: what is collected in exchange for free tokens. */
 export const DL_DISCLOSURE =
-  "Free tokens come with usage collection: token counts and session events (turns, tool counts, errors) are sent to Directionally Local. No prompts, code or file contents are ever sent.";
+  "Free tokens come with usage counts: tokens, cost, sessions, turns, tool counts, errors, model, Autopilot version and OS. Never your prompts, code or file contents.";
 
 /** Said before leaving the free tier for a model or provider that needs the person's own key. */
 export function dlNotFreeLine(what: string): string {
@@ -72,20 +74,56 @@ export function dlPickerHint(): string {
   return `free — ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens/week, sign in with GitHub`;
 }
 
-/** "Mon, Nov 9, 00:00 UTC (in 3 days)". */
-export function formatReset(iso: string | undefined, now = Date.now()): string {
-  const t = iso ? Date.parse(iso) : NaN;
-  if (!Number.isFinite(t)) return "at the start of next week (Monday 00:00 UTC)";
+/** The next Monday 00:00 UTC after `now`: when the service's weeks end. */
+export function nextWeekStart(now = Date.now()): number {
+  const d = new Date(now);
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - sinceMonday) + WEEK_MS;
+}
+
+/** Where and when a time is shown: the person's own time zone unless a test pins one. */
+export interface DlTimeOpts {
+  now?: number;
+  /** An IANA zone; undefined is the machine's local time zone. */
+  timeZone?: string;
+}
+
+/**
+ * A reset or pause end in the person's local time: "Mon 09:00" within the
+ * coming week, "Mon, Nov 16, 09:00" further out. Undefined for a missing or
+ * unparseable time.
+ */
+export function formatLocalTime(at: string | number | undefined, o: DlTimeOpts = {}): string | undefined {
+  const t = typeof at === "number" ? at : at ? Date.parse(at) : NaN;
+  if (!Number.isFinite(t)) return undefined;
   const d = new Date(t);
-  const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
-  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC", hour12: false });
+  const tz = o.timeZone ? { timeZone: o.timeZone } : {};
+  const weekday = d.toLocaleDateString("en-US", { weekday: "short", ...tz });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", ...tz });
+  const now = o.now ?? Date.now();
+  if (t - now < WEEK_MS) return `${weekday} ${time}`;
+  return `${weekday}, ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...tz })}, ${time}`;
+}
+
+/** The weekday a weekly allowance comes back on, in local time ("Monday"; "Sunday" west of UTC). */
+export function localResetWeekday(at: string | undefined, o: DlTimeOpts = {}): string {
+  const t = at ? Date.parse(at) : NaN;
+  const when = Number.isFinite(t) ? t : nextWeekStart(o.now);
+  return new Date(when).toLocaleDateString("en-US", { weekday: "long", ...(o.timeZone ? { timeZone: o.timeZone } : {}) });
+}
+
+/** "Mon 09:00 (in 5 days)" in local time; the service's week end when `iso` is missing. */
+export function formatReset(iso: string | undefined, now = Date.now(), timeZone?: string): string {
+  const parsed = iso ? Date.parse(iso) : NaN;
+  const t = Number.isFinite(parsed) ? parsed : nextWeekStart(now);
+  const at = formatLocalTime(t, { now, ...(timeZone ? { timeZone } : {}) })!;
   const ms = t - now;
   let rel = "";
   if (ms > 0) {
     const hours = Math.round(ms / 3_600_000);
     rel = hours >= 48 ? ` (in ${Math.round(hours / 24)} days)` : hours >= 1 ? ` (in ${hours} hour${hours === 1 ? "" : "s"})` : " (in under an hour)";
   }
-  return `${day}, ${time} UTC${rel}`;
+  return `${at}${rel}`;
 }
 
 /** A free-tier error with the service's code and a sentence for the person. */
@@ -94,86 +132,167 @@ export class DlError extends Error {
     readonly code: string,
     message: string,
     readonly status?: number,
+    /** What the service sent with it (reason, resetsAt, minimum account age), for re-wording elsewhere. */
+    readonly detail: DlErrorDetail = {},
   ) {
     super(message);
     this.name = "DlError";
   }
+
+  /** The sign-in denial this is, if it is one (see DL_DENIALS). */
+  get denial(): DlDenial | undefined {
+    return dlDenialOf(this.code, this.detail.reason);
+  }
+}
+
+/** The fields of the service's `{error:{…}}` this client reads. */
+export interface DlErrorDetail {
+  message?: string;
+  resetsAt?: string;
+  retryAfter?: number;
+  reason?: string;
+  /** The minimum GitHub account age for the free tier without an invite. */
+  minAccountAgeDays?: number;
 }
 
 interface DlErrorBody {
-  error?: { code?: string; message?: string; resetsAt?: string; retryAfter?: number; reason?: string };
+  error?: Record<string, unknown>;
 }
 
-/** What the service adds as `reason`, for errors where it changes what to say. */
-export interface DlErrorExtra {
-  resetsAt?: string;
-  retryAfter?: number;
-  /**
-   * access_denied: "account_too_new" | "device_taken"; quota_exceeded:
-   * "tokens" | "spend"; service_paused: "paused" | "ended" | "weekly_budget".
-   */
-  reason?: string;
-  now?: number;
+/** Where a message is shown: the sign-in (first run, /provider), `autopilot auth`, or a running session. */
+export type DlWhere = "signin" | "cli" | "session";
+
+/** What the service adds, for errors where it changes what to say. */
+export interface DlErrorExtra extends DlErrorDetail, DlTimeOpts {
+  /** Default "session". */
+  where?: DlWhere;
 }
 
-/** The service's `{error:{code,…}}`, if the body is one. */
-export function parseDlError(body: unknown): { code: string; message?: string; resetsAt?: string; retryAfter?: number; reason?: string } | null {
+/** The service's `{error:{code,…}}`, if the body is one. Reads both camelCase and snake_case extras. */
+export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) | null {
   const e = (body as DlErrorBody | null)?.error;
   if (!e || typeof e !== "object" || typeof e.code !== "string") return null;
+  const str = (...keys: string[]) => keys.map((k) => e[k]).find((v): v is string => typeof v === "string" && v !== "");
+  const num = (...keys: string[]) => keys.map((k) => e[k]).find((v): v is number => typeof v === "number" && Number.isFinite(v));
+  const message = str("message");
+  const resetsAt = str("resetsAt", "resets_at", "pausedUntil", "paused_until");
+  const retryAfter = num("retryAfter", "retry_after");
+  const reason = str("reason");
+  const minAccountAgeDays = num("minAccountAgeDays", "min_account_age_days", "minGithubAccountAgeDays");
   return {
     code: e.code,
-    ...(typeof e.message === "string" ? { message: e.message } : {}),
-    ...(typeof e.resetsAt === "string" ? { resetsAt: e.resetsAt } : {}),
-    ...(typeof e.retryAfter === "number" ? { retryAfter: e.retryAfter } : {}),
-    ...(typeof e.reason === "string" ? { reason: e.reason } : {}),
+    ...(message ? { message } : {}),
+    ...(resetsAt ? { resetsAt } : {}),
+    ...(retryAfter !== undefined ? { retryAfter } : {}),
+    ...(reason ? { reason } : {}),
+    ...(minAccountAgeDays !== undefined && minAccountAgeDays > 0 ? { minAccountAgeDays } : {}),
   };
 }
 
 /**
+ * Why the free tier said no to a sign-in (or to a request), whatever the
+ * service called it. Keys are service codes or `reason`s, old and new; add a
+ * line here when the service grows a new one.
+ */
+export type DlDenial = "account_too_new" | "not_invited" | "cohort_full" | "paused" | "ended";
+export const DL_DENIALS: Readonly<Record<string, DlDenial>> = {
+  account_too_new: "account_too_new",
+  not_invited: "not_invited",
+  needs_invite: "not_invited",
+  invalid_invite: "not_invited",
+  cohort_full: "cohort_full",
+  paused: "paused",
+  service_paused: "paused",
+  weekly_budget: "paused",
+  total_budget: "ended",
+  ended: "ended",
+};
+
+/** The denial for a code and reason: the reason is the more specific one, so it wins. */
+export function dlDenialOf(code: string, reason?: string): DlDenial | undefined {
+  // access_denied without a known reason is the person declining in the browser.
+  return (reason ? DL_DENIALS[reason] : undefined) ?? DL_DENIALS[code];
+}
+
+/** The free tier's minimum account age, when the service didn't say. */
+export const DL_MIN_ACCOUNT_AGE_DAYS = 30;
+
+/** The one next step after leaving the free tier, worded for where it's read. */
+function ownKeyNow(where: DlWhere): string {
+  if (where === "session") return `Your own key works now: ${DL_SWITCH_HINT}`;
+  if (where === "cli") return "Your own key still works: `autopilot connect`.";
+  return "Your own key still works.";
+}
+
+/** The sentence for a sign-in denial (or the same refusal mid-session), with one next step. */
+export function dlDenialLine(denial: DlDenial, extra: DlErrorExtra = {}): string {
+  const where = extra.where ?? "signin";
+  const again = where === "cli" ? `Run \`${DL_SIGN_IN_COMMAND}\` again and enter it in the browser.` : "Choose Free again and enter it in the browser.";
+  const ownKey = where === "cli" ? "Or use your own API key: `autopilot connect`." : "Or use your own API key.";
+  switch (denial) {
+    case "account_too_new": {
+      const days = extra.minAccountAgeDays && extra.minAccountAgeDays > 0 ? Math.round(extra.minAccountAgeDays) : DL_MIN_ACCOUNT_AGE_DAYS;
+      if (where === "session") return `New GitHub accounts (under ${days} days) need an invite code for the free tier. ${ownKeyNow(where)}`;
+      return `New GitHub accounts (under ${days} days) need an invite code for the free tier. Have one? ${again} ${ownKey}`;
+    }
+    case "not_invited":
+      if (where === "session") return `The free tier is invite-only right now, and this GitHub account isn't on it. ${ownKeyNow(where)}`;
+      return `The free tier is invite-only right now. Have a code? ${again} ${ownKey}`;
+    case "cohort_full":
+      if (where === "session") return `The free tier is full right now. ${ownKeyNow(where)}`;
+      return `The free tier is full right now. Use your own API key meanwhile.${where === "cli" ? " `autopilot connect` sets one up." : ""}`;
+    case "paused": {
+      const until = formatLocalTime(extra.resetsAt, extra);
+      return `Free tokens are paused for everyone ${until ? `until ${until}` : "right now"}. ${ownKeyNow(where)}`;
+    }
+    case "ended":
+      return `The free tier has ended. ${ownKeyNow(where)}`;
+  }
+}
+
+/** "You've used this week's free tokens. They're back Mon 09:00. To keep going now: /provider to use your own key." */
+export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere } = {}): string {
+  const back = formatLocalTime(resetsAt ?? nextWeekStart(o.now), o);
+  const next = o.where === "cli" ? "To keep going now, use your own key: `autopilot connect`." : `To keep going now: ${DL_SWITCH_HINT} to use your own key.`;
+  return `You've used this week's free tokens. They're back ${back}. ${next}`;
+}
+
+/**
  * The plain sentence for a service error code. `extra` carries resetsAt /
- * retryAfter from the error body or headers. Undefined for codes this
- * client doesn't know (the caller shows the service's own message).
+ * retryAfter / reason from the error body or headers, and where it's shown.
+ * Undefined for codes this client doesn't know (the caller shows the
+ * service's own message).
  */
 export function describeDlError(code: string, extra: DlErrorExtra = {}): string | undefined {
+  const where = extra.where ?? "session";
+  const denial = dlDenialOf(code, extra.reason);
+  if (denial) return dlDenialLine(denial, { ...extra, where });
   switch (code) {
     case "authorization_pending":
       return "Still waiting for you to approve the sign-in in your browser.";
     case "expired_token":
-      return "The sign-in code expired before it was approved. Run the sign-in again to get a new code.";
+      return `The sign-in code expired before it was approved. ${where === "cli" ? `Run \`${DL_SIGN_IN_COMMAND}\` again` : "Choose Free again"} for a new code.`;
     case "access_denied":
-      if (extra.reason === "account_too_new") return "Your GitHub account needs to be at least 30 days old for the free tier.";
       if (extra.reason === "device_taken") return "This device already has a free allowance under another GitHub account; sign in with that account instead.";
       return "The sign-in was declined in the browser, so nothing was saved.";
-    case "not_invited":
-      return `This GitHub account isn't on the Directionally Local free tier yet. Enter an invite code on the sign-in page, or ${SWITCH_HINT}.`;
     case "invalid_grant":
       return `Your Directionally Local sign-in has expired; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
     case "invalid_token":
       return `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
     case "quota_exceeded":
-      return `${quotaLimitLine(extra.reason)} It resets ${formatReset(extra.resetsAt, extra.now)}. To keep going now, ${SWITCH_HINT}.`;
+      // The token and the spending allowance read the same: both are "this week's free tokens".
+      return dlQuotaLine(extra.resetsAt, { ...extra, where });
     case "suspended":
-      return `This Directionally Local account is suspended, so its requests are refused. To keep going, ${SWITCH_HINT}.`;
+      return `This Directionally Local account is suspended, so its requests are refused. ${ownKeyNow(where)}`;
     case "rate_limited": {
       const s = extra.retryAfter && extra.retryAfter > 0 ? Math.ceil(extra.retryAfter) : undefined;
       return `Directionally Local is limiting how fast you send requests; try again${s ? ` in ${s} second${s === 1 ? "" : "s"}` : " shortly"}.`;
     }
-    case "service_paused":
-      if (extra.reason === "ended") return `The Directionally Local free tier has ended. To keep going, ${SWITCH_HINT}.`;
-      if (extra.reason === "weekly_budget") {
-        return `The Directionally Local free tier's budget for this week is used up; it resumes ${formatReset(extra.resetsAt, extra.now)}. To keep going now, ${SWITCH_HINT}.`;
-      }
-      return `The Directionally Local free tier is paused right now. Try again later, or ${SWITCH_HINT}.`;
     case "model_not_allowed":
       return `The free tier only serves ${DL_FREE_MODEL}; pick it with /model.`;
     default:
       return undefined;
   }
-}
-
-/** The weekly limit someone hit: tokens (the default) or the spending allowance. */
-export function quotaLimitLine(reason?: string): string {
-  return reason === "spend" ? "You've reached this week's free usage limit." : "You've used this week's free tokens.";
 }
 
 // ── Device sign-in ───────────────────────────────────────────────────────
@@ -211,14 +330,20 @@ function jsonPost(url: string, body: unknown, fetchImpl: typeof fetch, signal?: 
   });
 }
 
+/** A DlError for a parsed service error, worded for `where`, keeping what the service sent. */
+function dlErrorFrom(err: { code: string } & DlErrorDetail, status: number, where: DlWhere, fallback: string): DlError {
+  const { code, ...detail } = err;
+  return new DlError(code, describeDlError(code, { ...detail, where }) ?? err.message ?? fallback, status, detail);
+}
+
 /** An error for a non-2xx response: the code's sentence, else the service's message, else the status. */
-async function errorFrom(res: Response, what: string): Promise<DlError> {
+async function errorFrom(res: Response, what: string, where: DlWhere = "session"): Promise<DlError> {
   const err = parseDlError(await readJson(res));
-  if (err) return new DlError(err.code, describeDlError(err.code, err) ?? err.message ?? `${what} failed (HTTP ${res.status}).`, res.status);
+  if (err) return dlErrorFrom(err, res.status, where, `${what} failed (HTTP ${res.status}).`);
   return new DlError("http_error", `${what} failed (HTTP ${res.status}).`, res.status);
 }
 
-export async function startDlDeviceFlow(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}): Promise<DlDeviceCode> {
+export async function startDlDeviceFlow(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; signal?: AbortSignal; where?: DlWhere } = {}): Promise<DlDeviceCode> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   let res: Response;
   try {
@@ -227,7 +352,7 @@ export async function startDlDeviceFlow(opts: { fetchImpl?: typeof fetch; env?: 
     if ((e as Error).name === "AbortError") throw e;
     throw new DlError("network", `Couldn't reach Directionally Local at ${dlOrigin(opts.env)}: ${(e as Error).message}`);
   }
-  if (!res.ok) throw await errorFrom(res, "Starting the Directionally Local sign-in");
+  if (!res.ok) throw await errorFrom(res, "Starting the Directionally Local sign-in", opts.where ?? "signin");
   const d = (await readJson(res)) as Partial<{
     device_code: string;
     user_code: string;
@@ -270,8 +395,9 @@ const sleep = (ms: number, signal?: AbortSignal) =>
  */
 export async function pollDlDeviceFlow(
   code: DlDeviceCode,
-  opts: { fetchImpl?: typeof fetch; signal?: AbortSignal; now?: () => number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; env?: NodeJS.ProcessEnv } = {},
+  opts: { fetchImpl?: typeof fetch; signal?: AbortSignal; now?: () => number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; env?: NodeJS.ProcessEnv; where?: DlWhere } = {},
 ): Promise<DlTokens> {
+  const where = opts.where ?? "signin";
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
   const wait = opts.sleep ?? sleep;
@@ -299,11 +425,11 @@ export async function pollDlDeviceFlow(
       intervalMs += 5000;
       continue;
     }
-    if (err) throw new DlError(err.code, describeDlError(err.code, err) ?? err.message ?? `Sign-in failed (HTTP ${res.status}).`, res.status);
+    if (err) throw dlErrorFrom(err, res.status, where, `Sign-in failed (HTTP ${res.status}).`);
     if (res.status >= 500) continue;
     throw new DlError("http_error", `Directionally Local sign-in failed (HTTP ${res.status}).`, res.status);
   }
-  throw new DlError("expired_token", describeDlError("expired_token")!);
+  throw new DlError("expired_token", describeDlError("expired_token", { where })!);
 }
 
 // ── Token storage and refresh ────────────────────────────────────────────
@@ -437,24 +563,31 @@ export function noteDlQuotaExceeded(info: { reason?: string; resetsAt?: string }
   lastQuota = { ...(info.reason ? { reason: info.reason } : {}), ...(info.resetsAt ? { resetsAt: info.resetsAt } : {}) };
 }
 
-/** `/usage`: used and left this week, and when it resets. */
-export function renderDlUsage(me: DlMe, now = Date.now()): string {
+/** `/usage`: used and left this week, and when it resets (in local time). */
+export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): string {
   const a = me.allowance;
   const pct = a.tokensPerWeek > 0 ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100)) : 0;
   const lines = [
     `Directionally Local free tier${me.login ? ` · signed in as @${me.login}` : ""}`,
     `  used this week  ${formatTokens(a.usedThisWeek)} of ${formatTokens(a.tokensPerWeek)} tokens (${pct}%)`,
     `  left            ${formatTokens(Math.max(0, a.remaining))} tokens`,
-    `  resets          ${formatReset(a.resetsAt, now)}`,
+    `  resets          ${formatReset(a.resetsAt, now, timeZone)}`,
   ];
   // A 402 from this week (same reset) still counts when /v1/me rounds it differently.
   const seen = lastQuota && (!lastQuota.resetsAt || lastQuota.resetsAt === a.resetsAt) ? lastQuota : null;
   const spendHit =
     (typeof a.usdPerWeek === "number" && a.usdPerWeek > 0 && typeof a.spentUsdThisWeek === "number" && a.spentUsdThisWeek >= a.usdPerWeek) ||
     seen?.reason === "spend";
-  if (a.remaining <= 0 || spendHit) lines.push(`  ${quotaLimitLine(a.remaining <= 0 ? "tokens" : "spend")} To keep going now, ${SWITCH_HINT}.`);
+  // The token and the spending allowance read the same: either way this week's free tokens are used.
+  if (a.remaining <= 0 || spendHit) lines.push(`  ${dlQuotaLine(a.resetsAt, { now, ...(timeZone ? { timeZone } : {}) })}`);
   else if (pct >= 80) lines.push(`  You've used ${pct}% of this week's tokens.`);
   return lines.join("\n");
+}
+
+/** "✓ Signed in as @octo · 50M free tokens this week · back every Monday", from /v1/me. */
+export function dlSignedInLine(me: DlMe | null, o: DlTimeOpts = {}): string {
+  const tokens = me && me.allowance.tokensPerWeek > 0 ? me.allowance.tokensPerWeek : DL_FREE_WEEKLY_TOKENS;
+  return `✓ Signed in${me?.login ? ` as @${me.login}` : ""} · ${formatTokens(tokens)} free tokens this week · back every ${localResetWeekday(me?.allowance.resetsAt, o)}`;
 }
 
 let noticeShownFor: string | null = null;
@@ -463,7 +596,7 @@ let noticeShownFor: string | null = null;
  * The one-line notice once 80% of the week is used, from an inference
  * response's headers; shown once per week per process. Undefined otherwise.
  */
-export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: number; now?: number } = {}): string | undefined {
+export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: number; now?: number; timeZone?: string } = {}): string | undefined {
   const raw = headers.get("x-dl-tokens-remaining");
   if (raw === null) return undefined;
   const remaining = Number(raw);
@@ -474,7 +607,7 @@ export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: 
   if (noticeShownFor === resetsAt) return undefined;
   noticeShownFor = resetsAt;
   const used = Math.min(100, Math.max(80, Math.floor(((total - remaining) / total) * 100)));
-  return `You've used ${used}% of this week's free Directionally Local tokens (${formatTokens(Math.max(0, remaining))} left, resets ${formatReset(resetsAt || undefined, opts.now)}); /usage has details.`;
+  return `You've used ${used}% of this week's free Directionally Local tokens (${formatTokens(Math.max(0, remaining))} left, resets ${formatReset(resetsAt || undefined, opts.now, opts.timeZone)}); /usage has details.`;
 }
 
 /** Test hook: forget the shown notice and the cached weekly grant. */
@@ -487,11 +620,92 @@ export function resetDlNoticeState(): void {
 /** Device sign-in end to end: show the code, poll, save the tokens. Returns the access token. */
 export async function dlSignIn(
   onCode: (code: DlDeviceCode) => void,
-  opts: { signal?: AbortSignal; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; sleep?: (ms: number, signal?: AbortSignal) => Promise<void> } = {},
+  opts: { signal?: AbortSignal; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; where?: DlWhere } = {},
 ): Promise<string> {
   const code = await startDlDeviceFlow(opts);
   onCode(code);
   const tokens = await pollDlDeviceFlow(code, opts);
   await saveDlSettings(dlSettings(tokens));
   return tokens.access_token;
+}
+
+// ── Sign-out ─────────────────────────────────────────────────────────────
+
+/** What signing out did on the service: revoked, not offered there yet (404), unreachable, or nothing to revoke. */
+export type DlRevokeResult = "revoked" | "unsupported" | "unreachable" | "nothing";
+
+/**
+ * Ask the service to revoke a sign-in: POST /v1/token/revoke with the refresh
+ * token (and the access token as Bearer). A 404 means the service predates
+ * revocation; that is not an error, the refresh token then simply expires.
+ */
+export async function revokeDlTokens(
+  tokens: { accessToken?: string; refreshToken?: string },
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {},
+): Promise<DlRevokeResult> {
+  if (!tokens.accessToken && !tokens.refreshToken) return "nothing";
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  try {
+    const res = await fetchImpl(`${dlOrigin(opts.env)}/v1/token/revoke`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
+        ...(tokens.accessToken ? { Authorization: `Bearer ${tokens.accessToken}` } : {}),
+      },
+      body: JSON.stringify(tokens.refreshToken ? { refresh_token: tokens.refreshToken } : {}),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.status === 404 || res.status === 405) return "unsupported";
+    // An already-invalid token is as good as revoked.
+    if (res.ok || res.status === 400 || res.status === 401) return "revoked";
+    return "unreachable";
+  } catch {
+    return "unreachable";
+  }
+}
+
+/** The free-tier fields kept under providers.directionally-local that are credentials. */
+export const DL_CREDENTIAL_FIELDS = ["apiKey", "refreshToken", "expiresAt"] as const;
+
+/** Drop the free tier's credentials from its saved settings, keeping anything else (base URL, model). */
+export function withoutDlCredentials(settings: ProviderSettings | undefined): ProviderSettings {
+  const next: ProviderSettings = { ...settings };
+  for (const k of DL_CREDENTIAL_FIELDS) delete next[k];
+  return next;
+}
+
+/** One line saying exactly what signing out removed, and what the service did. */
+export function dlSignOutLine(r: { removedAccess: boolean; removedRefresh: boolean; revoke: DlRevokeResult; path: string; envToken?: boolean }): string {
+  const removed = [r.removedAccess ? "access token" : "", r.removedRefresh ? "refresh token" : ""].filter(Boolean);
+  const parts: string[] = [];
+  if (removed.length === 0) parts.push(`No Directionally Local free-tier sign-in was saved in ${r.path}; nothing was removed.`);
+  else parts.push(`Removed the Directionally Local free-tier ${removed.join(" and ")} from ${r.path}.`);
+  if (r.revoke === "revoked") parts.push("The service revoked the sign-in.");
+  else if (r.revoke === "unsupported") parts.push("The service doesn't revoke sign-ins yet; the refresh token stops working on its own within 30 days.");
+  else if (r.revoke === "unreachable") parts.push("Couldn't reach the service to revoke it; the refresh token stops working on its own within 30 days.");
+  if (r.envToken) parts.push(`${DL_TOKEN_ENV} is still set in your environment.`);
+  return parts.join(" ");
+}
+
+/**
+ * `autopilot auth logout directionally-local`: revoke on the service (best
+ * effort), then remove the access and refresh tokens from config.json.
+ */
+export async function dlSignOut(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+  const cfg = await readPersisted();
+  const s = cfg?.providers?.[DL_PROVIDER_ID];
+  const tokens = { ...(s?.apiKey ? { accessToken: s.apiKey } : {}), ...(s?.refreshToken ? { refreshToken: s.refreshToken } : {}) };
+  const revoke = await revokeDlTokens(tokens, opts);
+  if (s && (s.apiKey || s.refreshToken || s.expiresAt)) {
+    await patchPersistedConfig({ providers: { ...cfg?.providers, [DL_PROVIDER_ID]: withoutDlCredentials(s) } });
+  }
+  return dlSignOutLine({
+    removedAccess: !!s?.apiKey,
+    removedRefresh: !!s?.refreshToken,
+    revoke,
+    path: configPath(),
+    envToken: !!(opts.env ?? process.env)[DL_TOKEN_ENV]?.trim(),
+  });
 }

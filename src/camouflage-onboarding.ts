@@ -1,7 +1,9 @@
 /**
  * First-run onboarding for the Camouflage UI: nothing is configured yet, so
- * before the App mounts the user picks a provider, connects it and picks a
- * model (the same steps as `/provider`). Only then does the session start.
+ * before the App mounts the user answers one question — the free tier, or
+ * their own API key (then the `/provider` steps without the free tier) — and
+ * only then does the session start. A known provider's key already in the
+ * environment skips the question.
  *
  * The flow is kept free of renderer details so it can be tested: the
  * Camouflage view supplies `show` (print lines) and `setup` (run the provider
@@ -9,6 +11,8 @@
  */
 
 import type { AutopilotConfig } from "./config.js";
+import type { ProviderId } from "./providers/presets.js";
+import { envKeyLine } from "./providers/connect.js";
 
 /** Copy for an upgrading kimiflare user whose config still points at Cloudflare. */
 export const UPGRADE_NOTICE = [
@@ -16,13 +20,15 @@ export const UPGRADE_NOTICE = [
   "Cloudflare Workers AI and AI Gateway are no longer used. Connect a provider once and your other settings carry over — Kimi models, memory and sessions all keep working.",
 ];
 
-/** What the user sees before the provider picker opens. */
-export function firstRunIntro(o: { upgrading: boolean; configPath: string }): string[] {
+/** What the user sees before the first-run question (or, with a key in the environment, instead of it). */
+export function firstRunIntro(o: { upgrading: boolean; configPath: string; envKey?: { id: ProviderId; envVar: string } }): string[] {
+  const welcome = o.upgrading ? [...UPGRADE_NOTICE, ""] : ["Welcome to autopilot."];
+  // The free tier is on the next screen, so nothing here says calls are billed to your own account.
+  if (o.envKey) return [...welcome, envKeyLine(o.envKey)];
   return [
-    ...(o.upgrading ? [...UPGRADE_NOTICE, ""] : ["Welcome to autopilot. Let's connect a model provider — it takes a minute."]),
-    "Model calls are billed to your own account with that provider.",
-    `Keys you enter are checked with the provider, then saved only in ${o.configPath} (keys from your environment are never written to disk).`,
-    "Tip: set a provider's API key (e.g. OPENROUTER_API_KEY) to skip this setup.",
+    ...welcome,
+    `API keys you enter are checked with the provider, then saved only in ${o.configPath} (keys from your environment are never written to disk).`,
+    "Tip: with a provider's API key in your environment (e.g. OPENROUTER_API_KEY), this question is skipped.",
   ];
 }
 
@@ -46,8 +52,10 @@ export interface FirstRunDeps {
   configPath(): string;
   /** Show lines above the picker. */
   show(lines: string[]): void;
-  /** Run provider → credentials → model; true once a provider and model were saved, false if the user backed out. */
-  setup(o: { upgrading: boolean }): Promise<boolean>;
+  /** A known provider's key in the environment, used without asking (undefined: ask). */
+  envKey?(): { id: ProviderId; envVar: string } | undefined;
+  /** Ask the question (or use the env key), connect, pick a model; true once saved, false if the user backed out. */
+  setup(o: { upgrading: boolean; envKey?: { id: ProviderId; envVar: string } }): Promise<boolean>;
   loadConfig(): Promise<AutopilotConfig | null>;
 }
 
@@ -58,8 +66,9 @@ export interface FirstRunDeps {
  */
 export async function runFirstRun(deps: FirstRunDeps): Promise<FirstRunOutcome> {
   const upgrading = await deps.upgrading().catch(() => false);
-  deps.show(firstRunIntro({ upgrading, configPath: deps.configPath() }));
-  if (!(await deps.setup({ upgrading }))) return { kind: "cancelled" };
+  const envKey = deps.envKey?.();
+  deps.show(firstRunIntro({ upgrading, configPath: deps.configPath(), ...(envKey ? { envKey } : {}) }));
+  if (!(await deps.setup({ upgrading, ...(envKey ? { envKey } : {}) }))) return { kind: "cancelled" };
   let cfg: AutopilotConfig | null;
   try {
     cfg = await deps.loadConfig();

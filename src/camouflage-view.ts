@@ -29,7 +29,7 @@ import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from ".
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
-import { DL_FREE_MODEL } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DlError, dlSignedInLine, fetchDlMe } from "./providers/directionally-local.js";
 import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
   chatgptSignIn,
@@ -40,7 +40,13 @@ import {
   directionallyLocalSignIn,
   dlSignInLines,
   DL_SIGN_IN_NEEDED,
+  envKeyProvider,
+  FIRST_RUN_QUESTION,
+  firstRunChoices,
   leavingFreeTierLine,
+  OWN_KEY_BILLING_LINE,
+  OWN_KEY_EXCLUDE,
+  type FirstRunChoice,
   isVertexProjectId,
   maskKey,
   normalizeEndpoint,
@@ -359,6 +365,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
         upgrading: hasLegacyCloudflareConfig,
         configPath,
         show: (lines) => view.showLines(lines),
+        envKey: () => envKeyProvider(),
         setup: (o) => view.firstRunSetup(o),
         loadConfig,
       });
@@ -411,6 +418,8 @@ export class View implements AppBridge {
   private openPrompt: string | null = null;
   /** A provider sign-in waiting on the browser; Esc aborts it. */
   signIn: AbortController | null = null;
+  /** The provider calls the setup screens make; replaced in tests. */
+  providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
   /** Esc presses (cancelRequested) so far: a permission prompt denied with
    *  Esc interrupts the turn instead of asking for feedback. */
   cancels = 0;
@@ -1304,14 +1313,135 @@ export class View implements AppBridge {
   }
 
   /**
-   * First-run setup, before the App mounts: the same steps as `/provider`,
+   * First-run setup, before the App mounts: one question, then the `/provider` steps,
    * seeded from the raw config file (a Cloudflare-era config keeps the
    * account id/token Workers AI can reuse). True once a provider and model
-   * are saved; false when the user backs out of the provider list.
+   * are saved; false when the user backs out of the first-run question.
    */
-  async firstRunSetup(o: { upgrading: boolean }): Promise<boolean> {
+  async firstRunSetup(o: { upgrading: boolean; envKey?: { id: ProviderId; envVar: string } }): Promise<boolean> {
     const persisted = await readPersistedConfig().catch(() => null);
-    return (await this.connectAndPickModel({ cfg: persisted, firstRun: true, upgrading: o.upgrading })) !== null;
+    return (await this.howToThink({ cfg: persisted, firstRun: true, upgrading: o.upgrading, ...(o.envKey ? { envKey: o.envKey } : {}) })) !== null;
+  }
+
+  /**
+   * First run's one question: the free tier, or your own key. Free goes
+   * straight into the GitHub sign-in; own key opens the provider picker
+   * without the free tier. A denied sign-in says why and asks again with
+   * "own key" highlighted. With a known provider's key in the environment the
+   * question is skipped and that key is used (backing out of it asks).
+   */
+  private async howToThink(o: {
+    cfg: Partial<Cfg> | null;
+    firstRun: boolean;
+    upgrading?: boolean;
+    standalone?: boolean;
+    envKey?: { id: ProviderId; envVar: string };
+  }): Promise<ConnectOutcome | null> {
+    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    const common = { cfg: o.cfg, firstRun: o.firstRun, ...(o.upgrading ? { upgrading: true } : {}), ...(o.standalone ? { standalone: true } : {}) };
+    if (o.envKey) {
+      const saved = await this.connectAndPickModel({ ...common, initial: o.envKey.id, envKeyDirect: true, backReturns: true });
+      if (saved) return saved;
+    }
+    let highlight: FirstRunChoice = "free";
+    for (;;) {
+      const choice = await this.select(
+        FIRST_RUN_QUESTION,
+        firstRunChoices(),
+        highlight,
+        o.firstRun ? "Enter to choose · Esc to quit" : "Enter to choose · Esc to cancel",
+      );
+      if (choice === null) return null;
+      if (choice === "own-key") {
+        const saved = await this.connectAndPickModel({
+          ...common,
+          exclude: OWN_KEY_EXCLUDE,
+          title: "Choose your provider",
+          subtitle: `${OWN_KEY_BILLING_LINE} · type to search · Enter to connect · Esc to go back`,
+        });
+        if (saved) return saved;
+        highlight = "own-key";
+        continue;
+      }
+      const free = await this.freeTierSignIn(o.cfg, say);
+      if (free.kind !== "connected") {
+        // A denial's message names the way on; the question comes back with it highlighted.
+        highlight = free.kind === "denied" ? "own-key" : "free";
+        continue;
+      }
+      const saved = await this.commitChoice(free.connection, DL_FREE_MODEL, { firstRun: o.firstRun, standalone: !!o.standalone }, say);
+      if (saved) return saved;
+    }
+  }
+
+  /** Save the provider and model, and confirm it. Null when the save failed (said). */
+  private async commitChoice(
+    connection: Connection,
+    modelId: string,
+    o: { firstRun: boolean; standalone: boolean },
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<ConnectOutcome | null> {
+    let saved: Cfg;
+    try {
+      saved = await commitProvider(connection, modelId);
+    } catch (e) {
+      say(`Couldn't save the config: ${(e as Error).message}`, "error");
+      return null;
+    }
+    if (o.firstRun) say(`✓ Saved to ${configPath()}. Switch provider any time with /provider, model with /model.`);
+    else if (o.standalone) say(`✓ Saved to ${configPath()}.`);
+    return { id: connection.id, connection, model: modelId, cfg: saved };
+  }
+
+  /**
+   * The free tier's GitHub device sign-in (or the saved one), verified, with
+   * the "Signed in as" line. `denied` when the service said no (its message is
+   * shown), `cancelled` on Esc, `failed` for anything else.
+   */
+  private async freeTierSignIn(
+    cfg: Partial<Cfg> | null,
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<{ kind: "connected"; connection: Connection } | { kind: "denied" | "cancelled" | "failed" }> {
+    const id: ProviderId = "directionally-local";
+    const verified = async (key: string, source: KeySource): Promise<{ kind: "connected"; connection: Connection } | { kind: "failed" }> => {
+      const res = await this.providerCalls.verify(id, key, source);
+      if (!res.ok) {
+        say(res.message, "error");
+        return { kind: "failed" };
+      }
+      say(dlSignedInLine(await this.providerCalls.dlMe().catch(() => null)));
+      return { kind: "connected", connection: res.connection };
+    };
+    const signedIn = resolveProviderKey(id, cfg);
+    if (signedIn) {
+      const r = await this.select(`Connect ${getPreset(id).name}`, [
+        { value: "use", label: "Use your existing GitHub sign-in" },
+        { value: "again", label: "Sign in again" },
+      ]);
+      if (r === null) return { kind: "cancelled" };
+      if (r === "use") return verified(signedIn, "config");
+    }
+    say(dlSignInLines());
+    const ctrl = new AbortController();
+    this.signIn = ctrl;
+    let key: string;
+    try {
+      key = (await this.providerCalls.dlSignIn((code) => say(dlSignInLines(code, openBrowser(code.verificationUriComplete))), ctrl.signal)).key;
+    } catch (e) {
+      if (ctrl.signal.aborted) {
+        say(DL_SIGN_IN_NEEDED);
+        return { kind: "cancelled" };
+      }
+      if (e instanceof DlError) {
+        say(e.message, "error");
+        return { kind: e.denial || e.code === "access_denied" ? "denied" : "failed" };
+      }
+      say(`Sign-in failed: ${(e as Error).message}`, "error");
+      return { kind: "failed" };
+    } finally {
+      this.signIn = null;
+    }
+    return verified(key, "signin");
   }
 
   /** Lines printed above the prompts (welcome copy, notices). */
@@ -1326,6 +1456,8 @@ export class View implements AppBridge {
    */
   async connectSetup(o: { exclude?: ReadonlySet<ProviderId>; initial?: ProviderId } = {}): Promise<ConnectOutcome | null> {
     const cfg = (await loadConfig().catch(() => null)) ?? (await readPersistedConfig().catch(() => null));
+    // With the free tier on offer, the same one question as first run; without it (--state-file), the provider list.
+    if (!o.initial && !o.exclude?.has("directionally-local")) return this.howToThink({ cfg, firstRun: false, standalone: true });
     return this.connectAndPickModel({ cfg, firstRun: false, standalone: true, title: "Connect a model provider", ...o });
   }
 
@@ -1382,6 +1514,12 @@ export class View implements AppBridge {
     exclude?: ReadonlySet<ProviderId>;
     /** The list's title, instead of the first-run / switch one. */
     title?: string;
+    /** The list's subtitle, instead of the first-run / switch one. */
+    subtitle?: string;
+    /** First run with a key in the environment: use it without asking "use it or enter another". */
+    envKeyDirect?: boolean;
+    /** Backing out of `initial` returns null instead of opening the list. */
+    backReturns?: boolean;
   }): Promise<ConnectOutcome | null> {
     const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
     const { cfg, firstRun } = o;
@@ -1400,9 +1538,10 @@ export class View implements AppBridge {
             keywords: `${row.id} ${row.hint}`,
           })),
           current,
-          firstRun
-            ? "Directionally Local, free needs only a GitHub sign-in; the others bill your own account · type to search · Enter to connect · Esc to quit"
-            : "Conversation history is kept · type to search · Enter to connect",
+          o.subtitle ??
+            (firstRun
+              ? `${OWN_KEY_BILLING_LINE} · type to search · Enter to connect · Esc to quit`
+              : "Conversation history is kept · type to search · Enter to connect"),
         );
         if (r === null) return null;
         id = r as ProviderId;
@@ -1410,14 +1549,16 @@ export class View implements AppBridge {
       // Leaving the free tier for a provider that bills your own key: say so first.
       const leaving = !firstRun && cfg ? leavingFreeTierLine(resolveActiveProvider(cfg as Cfg).id, id) : undefined;
       if (leaving) say(leaving);
-      const connection = await this.connectProvider(id, cfg, say);
+      const connection = await this.connectProvider(id, cfg, say, { envKeyDirect: !!o.envKeyDirect && id === o.initial });
       if (connection === "back") {
+        if (o.backReturns) return null;
         id = undefined;
         continue;
       }
       if (!connection) return null;
       const preset = getPreset(id);
-      say(`✓ ${describeConnection(connection)}`);
+      // The free tier's sign-in says "Signed in as" itself.
+      if (id !== "directionally-local") say(`✓ ${describeConnection(connection)}`);
       if (connection.openRouter?.isFreeTier) {
         say("This key has no credits yet: only free models work (search \"free\"). Add credits at https://openrouter.ai/settings/credits.");
       }
@@ -1442,7 +1583,7 @@ export class View implements AppBridge {
       } catch (e) {
         say(`Couldn't save the config: ${(e as Error).message}`, "error");
         // On first run there is no session to fall back to: try again.
-        if (firstRun) continue;
+        if (firstRun && !o.backReturns) continue;
         return null;
       }
       if (firstRun) say(`✓ Saved to ${configPath()}. Switch provider any time with /provider, model with /model.`);
@@ -1456,6 +1597,7 @@ export class View implements AppBridge {
     id: ProviderId,
     cfg: Partial<Cfg> | null,
     say: (message: string, severity?: "info" | "error") => void,
+    opts: { envKeyDirect?: boolean } = {},
   ): Promise<Connection | null | "back"> {
     const preset = getPreset(id);
     const plan = planConnect(id, cfg);
@@ -1463,7 +1605,7 @@ export class View implements AppBridge {
 
     const verify = async (key: string | undefined, source: KeySource, url?: string): Promise<Connection | null> => {
       say(preset.keyRequired || id === "openrouter" ? `Checking the key with ${preset.name}…` : `Connecting to ${preset.name}…`);
-      const res = await verifyProvider(id, key, source, url);
+      const res = await this.providerCalls.verify(id, key, source, url);
       if (res.ok) return res.connection;
       say(res.message, "error");
       return null;
@@ -1541,26 +1683,8 @@ export class View implements AppBridge {
       }
       case "directionally-local": {
         // Straight into the device sign-in: there is no key to paste.
-        const signedIn = resolveProviderKey(id, cfg);
-        if (signedIn) {
-          const r = await this.select(`Connect ${preset.name}`, [
-            { value: "use", label: "Use your existing GitHub sign-in" },
-            { value: "again", label: "Sign in again" },
-          ]);
-          if (r === null) return "back";
-          if (r === "use") return (await verify(signedIn, "config")) ?? "back";
-        }
-        say(dlSignInLines());
-        const res = await withSignIn((signal) =>
-          directionallyLocalSignIn((code) => {
-            say(dlSignInLines(code, openBrowser(code.verificationUriComplete)));
-          }, signal),
-        );
-        if (!res) {
-          say(DL_SIGN_IN_NEEDED);
-          return "back";
-        }
-        return (await verify(res.key, "signin")) ?? "back";
+        const r = await this.freeTierSignIn(cfg, say);
+        return r.kind === "connected" ? r.connection : "back";
       }
       case "copilot":
       case "chatgpt": {
@@ -1637,6 +1761,7 @@ export class View implements AppBridge {
         return askKey();
       case "ready": {
         if (plan.source === "none") return (await verify(undefined, "none", cfg?.providers?.[id]?.baseUrl)) ?? "back";
+        if (plan.source === "env" && opts.envKeyDirect) return (await verify(plan.key, "env", cfg?.providers?.[id]?.baseUrl)) ?? "back";
         const r = await this.select(`Connect ${preset.name}`, [
           {
             value: "use",

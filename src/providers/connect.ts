@@ -279,12 +279,48 @@ export function leavingFreeTierLine(active: ProviderId | undefined, to: Provider
 export function dlSignInLines(code?: DlDeviceCode, opened = false): string {
   const intro = code
     ? `Your code is ${code.userCode}. ${opened ? "Your browser is open at" : "Open"} ${code.verificationUriComplete}, sign in with GitHub and approve it (enter an invite code there if asked). Esc to cancel.`
-    : `Directionally Local, free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}. Sign in with GitHub to start.`;
+    : `Free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}, no card. Sign in with GitHub to start.`;
   return `${intro}\n${DL_DISCLOSURE}`;
 }
 
-/** Said when someone picks the free tier but backs out of the sign-in. */
-export const DL_SIGN_IN_NEEDED = "Directionally Local, free needs a GitHub sign-in to work; choose it again when you're ready, or pick another provider.";
+/** Said when someone backs out of the free tier's sign-in: nothing was saved, and the question is asked again. */
+export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved.";
+
+/** The first-run question's answers. */
+export type FirstRunChoice = "free" | "own-key";
+
+/** The one question first run asks when no provider is usable. */
+export const FIRST_RUN_QUESTION = "How should it think?";
+
+/** Its two answers: the free tier, or the provider picker (without the free tier). */
+export function firstRunChoices(): Array<{ value: FirstRunChoice; label: string; description: string }> {
+  return [
+    { value: "free", label: "Free — sign in with GitHub", description: `${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no card` },
+    { value: "own-key", label: "Use my own API key", description: "OpenRouter, Anthropic, OpenAI and more" },
+  ];
+}
+
+/** Said on the own-key picker, and only there: the free tier is never on that screen. */
+export const OWN_KEY_BILLING_LINE = "Model calls are billed to your own account with that provider.";
+
+/** Providers left out of the own-key picker: the free tier has its own answer. */
+export const OWN_KEY_EXCLUDE: ReadonlySet<ProviderId> = new Set<ProviderId>(["directionally-local"]);
+
+/**
+ * A provider whose key is already in the environment, for first run to use
+ * without asking: the first one detected (OpenRouter before the others).
+ */
+export function envKeyProvider(env: NodeJS.ProcessEnv = process.env): { id: ProviderId; envVar: string } | undefined {
+  const id = detectEnvProviders(env)[0];
+  if (!id) return undefined;
+  const envVar = getPreset(id).apiKeyEnv.find((n) => env[n]?.trim());
+  return envVar ? { id, envVar } : undefined;
+}
+
+/** The one line first run shows instead of the question when a key is in the environment. */
+export function envKeyLine(p: { id: ProviderId; envVar: string }): string {
+  return `Using ${getPreset(p.id).name} with ${p.envVar} from your environment.`;
+}
 
 /** The free tier's device sign-in: `onCode` shows the code; tokens are saved once approved. */
 export async function directionallyLocalSignIn(onCode: (code: DlDeviceCode) => void, signal?: AbortSignal): Promise<{ key: string }> {

@@ -52,6 +52,8 @@ export interface DlStub {
   modelCatalog: Array<Record<string, unknown>>;
   /** Answer GET /models 503 (the server's catalog is unavailable). */
   modelsDown: boolean;
+  /** GET /models' `provider` (absent, like an older server, when null). */
+  modelsProvider: { id: string; name: string } | null;
   approvals: Map<string, { approvalId: string; status: string; tool: string; explanation: string; arguments: Record<string, unknown>; decision?: string }>;
   append: (conversationId: string, event: StubEvent) => number;
   seed: (conversation: Partial<StubConversation> & { conversationId: string }, events?: StubEvent[]) => void;
@@ -92,6 +94,7 @@ export async function startDlStub(): Promise<DlStub> {
     resendOnConnect: false,
     modelCatalog: [],
     modelsDown: false,
+    modelsProvider: null,
     approvals: new Map(),
     append: (conversationId, event) => {
       const list = stub.events.get(conversationId) ?? [];
@@ -159,7 +162,7 @@ export async function startDlStub(): Promise<DlStub> {
     }
     if (path === "/api/v1/models" && method === "GET") {
       if (stub.modelsDown) return fail(503, "model_catalog_unavailable");
-      return json(200, { models: ["vendor/model-a", "vendor/model-b"], catalog: stub.modelCatalog });
+      return json(200, { models: ["vendor/model-a", "vendor/model-b"], catalog: stub.modelCatalog, ...(stub.modelsProvider ? { provider: stub.modelsProvider } : {}) });
     }
     if (path === "/api/v1/conversations" && method === "GET") {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));

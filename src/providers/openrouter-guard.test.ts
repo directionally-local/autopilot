@@ -51,6 +51,7 @@ const KEY_READ_ALLOW: Record<string, string> = {
   "providers/resolve.ts": "provider resolution",
   "agent/llm-auth.ts": "turns config into credentials",
   "sdk/config.ts": "names the field in an error message",
+  "ui/slash-commands.ts": "`/logout` checks whether a key is saved, to name what it removes",
 };
 
 describe("OpenRouter is only reached through the provider layer", () => {

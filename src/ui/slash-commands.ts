@@ -15,7 +15,7 @@ import { unlink, writeFile } from "node:fs/promises";
 import { renderTerminalQr } from "./terminal-qr.js";
 
 import type { Cfg } from "../app.js";
-import { configPath, loadConfig, saveConfig, patchPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf } from "../config.js";
+import { configPath, loadConfig, saveConfig, patchPersistedConfig, readPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf, type AutopilotConfig } from "../config.js";
 import type { ChatEvent } from "./view-types.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
@@ -27,7 +27,7 @@ import { getPreset, isProviderId, type ProviderId } from "../providers/presets.j
 import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { switchedMessage } from "../providers/connect.js";
-import { DL_FREE_MODEL, dlNotFreeLine, fetchDlMe, renderDlUsage } from "../providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, dlNotFreeLine, fetchDlMe, renderDlUsage, revokeDlTokens, withoutDlCredentials, type DlRevokeResult } from "../providers/directionally-local.js";
 import { endSession } from "../hooks/session-lifecycle.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { checkRequestyKey } from "../models/requesty.js";
@@ -1788,34 +1788,61 @@ const handleInbox: Handler = (ctx) => {
   return true;
 };
 
-const handleLogout: Handler = async (ctx) => {
-  // Remove every stored provider credential but keep every other setting
-  // (theme, MCP servers, per-provider base URLs and models, …). Keys in the
-  // environment are outside our control.
-  const providers = { ...(ctx.cfg?.providers ?? {}) };
-  for (const id of Object.keys(providers) as Array<keyof typeof providers>) {
-    const { apiKey: _drop, ...rest } = providers[id] ?? {};
+/**
+ * What `/logout` removes from the saved config: every provider key (and the
+ * free tier's refresh token and expiry), keeping every other setting (theme,
+ * MCP servers, per-provider base URLs and models, …). `removed` names each
+ * credential, for saying exactly what went.
+ */
+export function logoutPatch(persisted: Partial<AutopilotConfig> | null): {
+  patch: Partial<AutopilotConfig>;
+  removed: string[];
+  dlTokens: { accessToken?: string; refreshToken?: string };
+} {
+  const removed: string[] = [];
+  if (persisted?.openrouterApiKey) removed.push("OpenRouter key");
+  if (persisted?.requestyApiKey) removed.push("Requesty key");
+  if (persisted?.apiKey) removed.push("custom endpoint key");
+  if (persisted?.apiToken) removed.push("Cloudflare API token");
+  const providers = { ...(persisted?.providers ?? {}) };
+  const dl = providers[DL_PROVIDER_ID];
+  const dlTokens = { ...(dl?.apiKey ? { accessToken: dl.apiKey } : {}), ...(dl?.refreshToken ? { refreshToken: dl.refreshToken } : {}) };
+  for (const id of Object.keys(providers) as ProviderId[]) {
+    const settings = providers[id];
+    if (!settings) continue;
+    if (id === DL_PROVIDER_ID) {
+      const what = [settings.apiKey ? "access token" : "", settings.refreshToken ? "refresh token" : ""].filter(Boolean);
+      if (what.length) removed.push(`Directionally Local free-tier ${what.join(" and ")}`);
+      providers[id] = withoutDlCredentials(settings);
+      continue;
+    }
+    const { apiKey, refreshToken, expiresAt: _expiresAt, ...rest } = settings;
+    if (apiKey || refreshToken) removed.push(`${getPreset(id).name} ${refreshToken ? "sign-in" : "key"}`);
     providers[id] = rest;
   }
-  await patchPersistedConfig({
-    openrouterApiKey: undefined,
-    requestyApiKey: undefined,
-    apiKey: undefined,
-    accountId: undefined,
-    apiToken: undefined,
-    providers,
-  }).catch(() => undefined);
+  return {
+    patch: { openrouterApiKey: undefined, requestyApiKey: undefined, apiKey: undefined, accountId: undefined, apiToken: undefined, providers },
+    removed,
+    dlTokens,
+  };
+}
+
+/** `/logout`'s line: what was removed, whether the free-tier sign-in was revoked, and keys the environment still holds. */
+export function logoutLine(o: { removed: string[]; path: string; revoke: DlRevokeResult; envKeys: string[] }): string {
+  const parts = [o.removed.length ? `Removed from ${o.path}: ${o.removed.join(", ")}.` : `No saved credentials in ${o.path}; nothing was removed.`];
+  if (o.revoke === "revoked") parts.push("The free-tier sign-in was revoked on the service.");
+  else if (o.revoke === "unsupported" || o.revoke === "unreachable") parts.push("The free-tier refresh token couldn't be revoked on the service; it stops working on its own within 30 days.");
+  if (o.envKeys.length) parts.push(`Keys in your environment for ${o.envKeys.join(", ")} will still be used next launch.`);
+  return parts.join(" ");
+}
+
+const handleLogout: Handler = async (ctx) => {
+  const persisted = await readPersistedConfig().catch(() => null);
+  const { patch, removed, dlTokens } = logoutPatch(persisted);
+  const revoke = await revokeDlTokens(dlTokens);
+  await patchPersistedConfig(patch).catch(() => undefined);
   const envKeys = providerStatus(ctx.cfg).filter((r) => r.key === "env").map((r) => r.name);
-  ctx.setEvents((e) => [
-    ...e,
-    {
-      kind: "info",
-      key: ctx.mkKey(),
-      text:
-        `credentials cleared from ${configPath()}` +
-        (envKeys.length > 0 ? ` (keys in your environment for ${envKeys.join(", ")} will still be used next launch)` : ""),
-    },
-  ]);
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text: logoutLine({ removed, path: configPath(), revoke, envKeys }) }]);
   ctx.setCfg(null);
   return true;
 };

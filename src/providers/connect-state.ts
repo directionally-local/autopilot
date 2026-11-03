@@ -28,10 +28,10 @@ export const CONNECT_EXIT = {
  * cannot proxy: OAuth or device sign-ins, cloud SDK credentials, and
  * per-account URLs. Hidden when `--state-file` is given.
  *
- * The Directionally Local free tier is offered: its state file carries the
- * signed-in access token as `apiKey` (a Bearer token, valid for an hour), so
- * dl can hand it to a Hotcell route. Refreshing it on the dl/Hotcell side for
- * long-lived sandboxes is not done here.
+ * The Directionally Local free tier is hidden too, for now: its sign-in is a
+ * one-hour access token plus a refresh token that only this machine's
+ * Autopilot rotates, so a server handed the access token would stop working
+ * within the hour. Free-tier keys for servers come later.
  */
 export const HIDDEN_WITHOUT_GATEWAY: ReadonlySet<ProviderId> = new Set<ProviderId>([
   "copilot",
@@ -40,6 +40,7 @@ export const HIDDEN_WITHOUT_GATEWAY: ReadonlySet<ProviderId> = new Set<ProviderI
   "bedrock",
   "azure",
   "cloudflare",
+  "directionally-local",
 ]);
 
 /** The JSON `--state-file` holds. Field names and shapes are the contract; don't rename. */
@@ -86,6 +87,7 @@ export function authHeaderFor(id: ProviderId): Pick<ConnectState, "authHeader" |
 export function buildConnectState(result: ConnectResult, cfg: Partial<AutopilotConfig> | null, env: NodeJS.ProcessEnv = process.env): ConnectState {
   const { id, model } = result;
   const preset = getPreset(id);
+  if (HIDDEN_WITHOUT_GATEWAY.has(id)) throw new Error(`${preset.name} can't be handed to a key gateway (its sign-in isn't a long-lived key)`);
   let baseUrl: string | undefined;
   if (id === "openrouter") baseUrl = openRouterBaseUrl();
   else if (id === "requesty") baseUrl = requestyBaseUrl();
