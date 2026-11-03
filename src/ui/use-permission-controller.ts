@@ -7,6 +7,7 @@ import {
 } from "../tools/executor.js";
 import { isBlockedInPlanMode, isReadOnlyBash, type Mode } from "../mode.js";
 import { hasSetupConsent, setupCommandOf, setupQuestion, type SetupKind } from "../permissions/setup-consent.js";
+import type { DestructivePrompt } from "../permissions/guardrails.js";
 
 /** Pre-built typed decisions for the two auto-resolve paths so we don't
  *  recreate them on every call. M2.2 — see `PermissionDecisionResult`. */
@@ -19,6 +20,8 @@ export interface PendingPermission {
   resolve: (decision: PermissionDecision) => void;
   /** Set when this is the once-per-project install/write question rather than the usual prompt. */
   setup?: SetupPrompt;
+  /** Set when the call is irreversible: the guardrail question (permissions/guardrails.ts). */
+  destructive?: DestructivePrompt;
 }
 
 /** The once-per-project question (see permissions/setup-consent.ts). */
@@ -113,8 +116,20 @@ export async function resolvePermission(
     /** When set, an auto-allowed install or write asks once per project first. */
     setupGate?: SetupGate | null;
     promptSetup?: (setup: SetupPrompt) => Promise<PermissionDecision>;
+    /** Asks about an irreversible action; without it such a call is denied. */
+    promptDestructive?: (destructive: DestructivePrompt) => Promise<PermissionDecision>;
   },
 ): Promise<PermissionDecision> {
+  // Irreversible (#1125): asked in every mode, auto included; a hook may deny but not allow.
+  if (req.destructive) {
+    if (mode === "plan" && isBlockedInPlanMode(req.tool.name)) {
+      host.onPlanModeBlocked(req.tool.name);
+      return AUTO_DENY;
+    }
+    const fromHook = await permissionFromHook(req, mode);
+    if (fromHook?.decision === "deny") return fromHook;
+    return host.promptDestructive ? host.promptDestructive(req.destructive) : AUTO_DENY;
+  }
   const outcome = decidePermission(req, mode, opts);
   if (outcome.kind === "resolve") {
     const setup = outcome.decision.decision === "allow" && host.promptSetup ? setupPromptFor(req, host.setupGate) : null;
@@ -191,6 +206,11 @@ export function usePermissionController(
           new Promise<PermissionDecision>((resolve) => {
             resolveRef.current = resolve;
             setPending({ tool: req.tool, args: req.args, resolve, setup });
+          }),
+        promptDestructive: (destructive) =>
+          new Promise<PermissionDecision>((resolve) => {
+            resolveRef.current = resolve;
+            setPending({ tool: req.tool, args: req.args, resolve, destructive });
           }),
       }),
     [],

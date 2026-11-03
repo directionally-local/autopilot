@@ -40,7 +40,7 @@ const env = {
 // Autopilot's other path overrides default to folders under the XDG
 // directories above. Clear any inherited value (either spelling) so it cannot
 // point back at real files and tests see the default layout.
-for (const suffix of ["TRACE_DIR", "DUMP_LLM_DIR", "REMOTES_FILE", "ASTER_CONFIG"]) {
+for (const suffix of ["TRACE_DIR", "DUMP_LLM_DIR", "REMOTES_FILE", "ASTER_CONFIG", "RECOVERY_DIR"]) {
   delete process.env[`AUTOPILOT_${suffix}`];
   delete process.env[`KIMIFLARE_${suffix}`];
 }

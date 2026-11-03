@@ -28,6 +28,7 @@ import { buildAttachmentMessage } from "./util/attachments.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
 import { evaluatePermissionRules } from "./permissions-evaluator.js";
+import { unattendedDestructiveDecision } from "./permissions/guardrails.js";
 import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import type { AutopilotConfig, PermissionRules, ReasoningEffort } from "./config.js";
 import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
@@ -430,6 +431,13 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       const { tool, args } = req;
       if (opts.workerProfile === "research") {
         return RESEARCH_WORKER_TOOL_NAMES.has(tool.name) && tool.isReadOnly === true ? "allow" : "deny";
+      }
+      // Irreversible (#1125): only a rule naming this exact action allows it here.
+      if (req.destructive) {
+        const { decision, message } = unattendedDestructiveDecision(req, opts.permissions, cwd);
+        if (format === "text") process.stderr.write(`\x1b[${decision.decision === "allow" ? "33" : "31"}m${message}\x1b[0m\n`);
+        else if (format === "stream-json") emitStreamJson(decision.decision === "allow" ? "warning" : "permission_denied", { tool: tool.name, args, reason: "irreversible", message });
+        return decision;
       }
       if (opts.allowAll) return "allow";
 

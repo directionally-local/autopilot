@@ -34,6 +34,8 @@ import { checkRequestyKey } from "../models/requesty.js";
 import type { Mode } from "../mode.js";
 import type { SubagentPolicy } from "../intent/subagent-policy.js";
 import type { DailyUsage } from "../usage-tracker.js";
+import { projectOf } from "../permissions/guardrails.js";
+import { undoLatest } from "../permissions/recovery.js";
 import {
   carryOverSessionBaseline,
   formatCostReport,
@@ -2062,6 +2064,16 @@ const handleUsage: Handler = async (ctx) => {
   return true;
 };
 
+/**
+ * `/undo`: restore the latest recovery point Autopilot saved before a
+ * destructive file or git action in this project (permissions/recovery.ts).
+ */
+const handleUndo: Handler = (ctx) => {
+  const text = undoLatest(projectOf(process.cwd()));
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
+  return true;
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const handlers: Record<string, Handler> = {
@@ -2086,6 +2098,7 @@ const handlers: Record<string, Handler> = {
   "/memory": handleMemory,
   "/resume": handleResume,
   "/checkpoint": handleCheckpoint,
+  "/undo": handleUndo,
   "/compact": handleCompact,
   "/good": handleGood,
   "/bad": handleBad,

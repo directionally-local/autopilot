@@ -68,6 +68,7 @@ import { registerTerminalHandoff } from "./ui/bang-command.js";
 import { waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
 import { terminalWrapWidth, wrapText } from "./util/wrap.js";
 import { grantSetupConsent, SETUP_CHOICES } from "./permissions/setup-consent.js";
+import { CONFIRMED_IRREVERSIBLE, type DestructivePrompt } from "./permissions/guardrails.js";
 import type { SetupPrompt } from "./ui/use-permission-controller.js";
 import { PRESETS as LSP_PRESETS } from "./ui/lsp-presets.js";
 import { formatBashTitle, getShellCommand } from "./tools/bash.js";
@@ -871,6 +872,7 @@ export class View implements AppBridge {
     this.permission = s.permission.args;
     const { tool, args } = s.permission;
     if (s.permission.setup) return void this.askSetup(s.permission.setup);
+    if (s.permission.destructive) return void this.askDestructive(s.permission.destructive);
     let render: { title: string; diff?: { path: string; before: string; after: string } } | undefined;
     try {
       render = tool.render?.(args);
@@ -909,6 +911,26 @@ export class View implements AppBridge {
     const r = await this.select(setup.prompt, SETUP_CHOICES.map((c) => ({ value: c.value, label: c.label })), undefined, setup.subtitle);
     if (r === "always") grantSetupConsent(setup.root);
     this.actions?.decidePermission(r === "once" || r === "always" ? "allow" : "deny");
+  }
+
+  /**
+   * An irreversible action (permissions/guardrails.ts): says what will be
+   * lost and whether recovery exists. A production-looking target needs its
+   * name typed; anything else typed, or Esc, is Don't.
+   */
+  private async askDestructive(d: DestructivePrompt): Promise<void> {
+    if (d.confirmName) {
+      this.cam.send("RuntimeError", { message: d.subtitle, severity: "warn" });
+      const r = await this.sdk.form(this.cam, {
+        id: `destructive-${Date.now()}`,
+        title: d.title,
+        fields: [{ name: "confirm", label: `Type ${d.confirmName} to run it`, placeholder: "Anything else doesn't run it" }],
+      });
+      const ok = !r.cancelled && r.values?.confirm?.trim() === d.confirmName;
+      return void this.actions?.decidePermission(ok ? CONFIRMED_IRREVERSIBLE : "deny");
+    }
+    const r = await this.select(d.title, [{ value: "run", label: "Run it" }, { value: "deny", label: "Don't run it" }], "deny", d.subtitle);
+    this.actions?.decidePermission(r === "run" ? CONFIRMED_IRREVERSIBLE : "deny");
   }
 
   /**

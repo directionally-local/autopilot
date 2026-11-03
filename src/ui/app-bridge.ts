@@ -21,6 +21,7 @@ import type { SessionSummary, Checkpoint } from "../sessions.js";
 import type { PlanOption } from "../tools/registry.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
 import type { SetupPrompt } from "./use-permission-controller.js";
+import type { DestructivePrompt } from "../permissions/guardrails.js";
 import type { PlanCompleteChoice } from "./view-types.js";
 import type { CustomCommand } from "../commands/types.js";
 import type { SaveCustomCommandOptions } from "../commands/save.js";
@@ -78,7 +79,7 @@ export interface AppSnapshot {
   intentTier: IntentTier | null;
   tasks: Task[];
   /** A tool waiting for the user's permission. */
-  permission: { tool: PermissionRequest["tool"]; args: Record<string, unknown>; setup?: SetupPrompt } | null;
+  permission: { tool: PermissionRequest["tool"]; args: Record<string, unknown>; setup?: SetupPrompt; destructive?: DestructivePrompt } | null;
   /** Open dialogs, in App's own terms. */
   modals: AppModal[];
   /** The models the "model" picker offers, when they aren't the local catalog's
