@@ -395,7 +395,10 @@ export async function openRouterSignIn(io: {
     try {
       const url = buildAuthUrl({ challenge: pkce.challenge, callbackUrl: listener.callbackUrl });
       io.show(url, io.open(url));
-      return await exchangeCode(await untilAborted(listener.code, io.signal), pkce.verifier);
+      const code = await untilAborted(listener.code, io.signal);
+      // The browser handed the code back: bring the terminal forward again (macOS; silent otherwise).
+      void import("../util/refocus-terminal.js").then((m) => m.refocusTerminal()).catch(() => {});
+      return await exchangeCode(code, pkce.verifier);
     } finally {
       listener.close();
     }

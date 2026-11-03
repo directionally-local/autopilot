@@ -31,6 +31,7 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "clear", description: "Clear current conversation", source: "builtin" },
   { name: "fresh", description: "Start a fresh session with a summarized plan or continuation context", source: "builtin" },
   { name: "init", description: "Scan repo and write AGENTS.md", source: "builtin" },
+  { name: "tour", description: "Summarize this project and suggest three tasks to start with", source: "builtin" },
   { name: "update", description: "Check for updates", source: "builtin" },
   { name: "hello", description: "Send a voice note to the creator", source: "builtin" },
   { name: "shell", argHint: "[auto|bash|cmd|powershell|<path>]", description: "Show or set shell for bash tool", source: "builtin" },

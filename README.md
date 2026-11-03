@@ -406,7 +406,8 @@ autopilot
 
 | Command | Effect |
 |---------|--------|
-| `/settings` | List feature settings; `/settings modes on\|off` turns plan/edit/auto modes on or off (off by default), `/settings diagnostics on\|off` toggles post-edit diagnostics |
+| `/settings` | List feature settings; `/settings modes on\|off` turns plan/edit/auto modes on or off (off by default), `/settings diagnostics on\|off` toggles post-edit diagnostics, `/settings tour on\|off` the project tour, `/settings refocus on\|off` bringing the terminal back after a browser sign-in (macOS) |
+| `/tour` | Summarize this project (name, kind, file count, test command, open GitHub issues when `gh` is signed in) and suggest three tasks; type 1–3 to start one. Shown automatically on the first session in each git repository (remembered in `~/.local/state/autopilot/project-tour.json`, never in the repo); one small model call words the tasks (capped at 200 output tokens, local suggestions after 4 s) |
 | `/mode edit\|plan\|auto` | Switch permission mode (needs modes on) |
 | `/shell auto\|bash\|cmd\|powershell` | Show or set the shell for the bash tool |
 | `/resume` | Pick a past conversation to restore |

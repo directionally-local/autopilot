@@ -137,6 +137,7 @@ export const CATEGORIES: Category[] = [
     label: "Config",
     commands: [
       { command: "/init", description: "scan this repo and write an AGENTS.md" },
+      { command: "/tour", description: "summarize this project and suggest three tasks to start with" },
       { command: "/settings", description: "show feature settings" },
       { command: "/provider", description: "list LLM providers and which has a key" },
       { command: "/provider <id> [key]", description: "switch provider (openrouter, openai, deepseek, ollama, …)", selectable: false },

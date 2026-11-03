@@ -678,6 +678,8 @@ export async function dlSignIn(
   onCode(code);
   const tokens = await pollDlDeviceFlow(code, opts);
   await saveDlSettings(dlSettings(tokens));
+  // Approved in the browser: bring the terminal back (macOS; silent otherwise).
+  void import("../util/refocus-terminal.js").then((m) => m.refocusTerminal(opts.env ? { env: opts.env } : {})).catch(() => {});
   return tokens.access_token;
 }
 
