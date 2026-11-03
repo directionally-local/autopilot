@@ -27,6 +27,7 @@ export const REMOTE_COMMANDS: { name: string; description: string; args_hint?: s
   { name: "model", description: "Pick one of the server's models for the next turn (list prints them)", args_hint: "[<id>|list]" },
   { name: "status", description: "Conversation, branch, pull request and model" },
   { name: "pr", description: "Show the conversation's pull request" },
+  { name: "usage", description: "The server's provider and this conversation's tokens and cost" },
   { name: "resume", description: "List this credential's conversations and switch to one", args_hint: "[<n>|<id>]" },
   { name: "clear", description: "Start a fresh conversation here (the old one keeps its history)" },
   { name: "exit", description: "Detach (the conversation keeps running on the server)" },
@@ -47,6 +48,28 @@ export interface StateFileContents {
   conversationId: string;
   branch: string | null;
   repository: string | null;
+}
+
+/** `/usage` in a remote session. */
+export function remoteUsageText(o: {
+  provider: { id: string; name: string } | undefined;
+  usage: { prompt_tokens: number; completion_tokens: number } | null;
+  costUsd: number;
+  model: string;
+}): string {
+  const tokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}k` : String(n));
+  const lines = [
+    `Provider      ${o.provider ? `${o.provider.name} (on the server)` : "not reported by this server"}`,
+    `Model         ${o.model}`,
+    ...(o.usage ? [`This run      ${tokens(o.usage.prompt_tokens)} in · ${tokens(o.usage.completion_tokens)} out tokens`] : []),
+    `Cost so far   $${o.costUsd.toFixed(o.costUsd > 0 && o.costUsd < 0.01 ? 4 : 2)}`,
+  ];
+  if (o.provider?.id === "directionally-local") {
+    lines.push("The free tier's weekly allowance belongs to the server's sign-in, which this laptop can't read.");
+  } else if (o.provider) {
+    lines.push(`Model calls go to ${o.provider.name} with the server's own key.`);
+  }
+  return lines.join("\n");
 }
 
 /** Write the reconnect state dl reads next time: JSON, mode 0600, replaced atomically. */
@@ -341,6 +364,8 @@ export class RemoteAttachSession {
           ].join("\n"),
         );
       }
+      case "usage":
+        return void this.usage();
       case "pr":
         return this.info(this.shownPullRequest ? `Pull request: ${this.shownPullRequest}` : "No pull request yet: the server opens one after a turn that changes the repository.");
       case "resume":
@@ -352,6 +377,22 @@ export class RemoteAttachSession {
         // exit, quit, detach
         return this.end({ kind: "detached" });
     }
+  }
+
+  /**
+   * `/usage` here: the provider comes from the server (GET /models), the
+   * numbers from this conversation's events. A free-tier allowance belongs to
+   * the server's sign-in, which this laptop can't read.
+   */
+  private async usage(): Promise<void> {
+    let provider: { id: string; name: string } | undefined;
+    try {
+      provider = (await this.client.modelCatalog()).provider;
+    } catch (error) {
+      if (this.fatalIfUnauthorized(error)) return;
+    }
+    if (this.outcome) return;
+    this.info(remoteUsageText({ provider, usage: this.state.usage, costUsd: totalCostUsd(this.state), model: this.nextModel ?? this.model }));
   }
 
   /** `/model` with no ID: the same picker as a local session, offering only the server's models. */

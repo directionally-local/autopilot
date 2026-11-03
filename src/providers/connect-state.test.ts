@@ -90,7 +90,18 @@ describe("buildConnectState", () => {
 
 describe("HIDDEN_WITHOUT_GATEWAY", () => {
   it("hides exactly the providers a plain key gateway can't proxy", () => {
-    assert.deepStrictEqual([...HIDDEN_WITHOUT_GATEWAY].sort(), ["azure", "bedrock", "chatgpt", "cloudflare", "copilot", "vertex"]);
+    assert.deepStrictEqual([...HIDDEN_WITHOUT_GATEWAY].sort(), ["azure", "bedrock", "chatgpt", "cloudflare", "copilot", "directionally-local", "vertex"]);
+  });
+
+  it("never offers the free tier with --state-file: a server would get a one-hour token", () => {
+    assert.ok(HIDDEN_WITHOUT_GATEWAY.has("directionally-local"));
+    const rows = providerRows(null, { env }).filter((r) => !HIDDEN_WITHOUT_GATEWAY.has(r.id));
+    assert.ok(!rows.some((r) => r.id === "directionally-local"));
+    // Even if it got through, no state file is built for it.
+    assert.throws(
+      () => buildConnectState({ id: "directionally-local", key: "access-1", model: "deepseek/deepseek-v4.1-flash-1017" }, { provider: "directionally-local" }, env),
+      /can't be handed to a key gateway/,
+    );
   });
 
   it("filtering the picker rows keeps every other provider, custom included", () => {

@@ -87,6 +87,27 @@ describe("runFirstRun", () => {
     assert.match(r.kind === "failed" ? r.message : "", /No model selected/);
   });
 
+  it("never says calls are billed to your own account before the question that offers the free tier", () => {
+    for (const upgrading of [false, true]) {
+      assert.doesNotMatch(firstRunIntro({ upgrading, configPath: "/x/config.json" }).join("\n"), /billed/);
+    }
+  });
+
+  it("with a provider's key in the environment: one line saying so, and the key is passed on instead of asking", async () => {
+    let seen: unknown;
+    const envKey = { id: "anthropic" as const, envVar: "ANTHROPIC_API_KEY" };
+    const d = deps({ envKey: () => envKey, setup: async (o) => ((seen = o.envKey), true) });
+    assert.strictEqual((await runFirstRun(d)).kind, "ready");
+    assert.deepStrictEqual(seen, envKey);
+    assert.deepStrictEqual(d.shown[0], ["Welcome to autopilot.", "Using Anthropic with ANTHROPIC_API_KEY from your environment."]);
+  });
+
+  it("without one, setup gets no env key (the question is asked)", async () => {
+    let seen: unknown = "unset";
+    await runFirstRun(deps({ envKey: () => undefined, setup: async (o) => ((seen = o.envKey), true) }));
+    assert.strictEqual(seen, undefined);
+  });
+
   it("reports a config that won't load", async () => {
     const r = await runFirstRun(deps({ loadConfig: async () => Promise.reject(new Error("bad json")) }));
     assert.strictEqual(r.kind, "failed");

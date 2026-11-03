@@ -873,23 +873,39 @@ authCommand.addCommand(
       const { switchProvider } = await import("./providers/keys.js");
       const { openBrowser } = await import("./ui/app-helpers.js");
       try {
-        console.log(`Directionally Local, free: ${dl.formatTokens(dl.DL_FREE_WEEKLY_TOKENS)} tokens a week on ${dl.DL_FREE_MODEL}.`);
+        console.log(`Free: ${dl.formatTokens(dl.DL_FREE_WEEKLY_TOKENS)} tokens a week on ${dl.DL_FREE_MODEL}, no card.`);
         console.log(dl.DL_DISCLOSURE);
-        await dl.dlSignIn((code) => {
-          const opened = openBrowser(code.verificationUriComplete);
-          console.log(`\nYour code: ${code.userCode}`);
-          console.log(`${opened ? "Opened" : "Open"} ${code.verificationUriComplete} — sign in with GitHub and approve it (enter an invite code there if asked).`);
-          console.log("Waiting for you to approve…");
-        });
+        await dl.dlSignIn(
+          (code) => {
+            const opened = openBrowser(code.verificationUriComplete);
+            console.log(`\nYour code: ${code.userCode}`);
+            console.log(`${opened ? "Opened" : "Open"} ${code.verificationUriComplete} — sign in with GitHub and approve it (enter an invite code there if asked).`);
+            console.log("Waiting for you to approve…");
+          },
+          { where: "cli" },
+        );
         await switchProvider(await loadConfig().catch(() => null), "directionally-local");
         const me = await dl.fetchDlMe().catch(() => null);
-        console.log(`✓ Signed in${me ? ` as @${me.login}` : ""} — Directionally Local, free is now the active provider.`);
-        if (me) console.log(dl.renderDlUsage(me));
-        console.log("Run `autopilot` to start; /usage shows what's left this week.");
+        console.log(dl.dlSignedInLine(me));
+        console.log("Directionally Local, free is now the active provider. Run `autopilot` to start; /usage shows what's left this week.");
       } catch (e) {
         console.error(e instanceof Error ? e.message : String(e));
         process.exit(1);
       }
+    }),
+);
+
+authCommand.addCommand(
+  new Command("logout")
+    .description("Sign out of a provider: for directionally-local, revoke the sign-in and remove its access and refresh tokens from config.json")
+    .argument("<provider>", "provider id (directionally-local)")
+    .action(async (id: string) => {
+      if (id !== "directionally-local") {
+        console.error(`\`autopilot auth logout\` signs out of directionally-local for now. To clear every saved key, use /logout in a session.`);
+        process.exit(2);
+      }
+      const dl = await import("./providers/directionally-local.js");
+      console.log(await dl.dlSignOut());
     }),
 );
 

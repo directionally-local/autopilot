@@ -506,7 +506,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       const msg = err?.message ?? `HTTP ${res.status}: ${text.slice(0, 300)}`;
       const status = err?.status ?? res.status;
       const dlRetryAfter = dlErr?.retryAfter ?? (Number(res.headers.get("retry-after")) || undefined);
-      const dlMessage = dlErr ? describeDlError(dlErr.code, { ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}), ...(dlRetryAfter ? { retryAfter: dlRetryAfter } : {}), ...(dlErr.reason ? { reason: dlErr.reason } : {}) }) : undefined;
+      const dlMessage = dlErr ? describeDlError(dlErr.code, { ...dlErr, ...(dlRetryAfter ? { retryAfter: dlRetryAfter } : {}), where: "session" }) : undefined;
       const apiErr = new ApiError(
         `autopilot: ${dlMessage ?? describeHttpError(opts.model, status, msg, customEndpoint, requesty)}`,
         err?.code,

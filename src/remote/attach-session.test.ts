@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppActions, AppBridge, AppSnapshot } from "../ui/app-bridge.js";
 import { attachRemote, checkFlags, remoteHeader, type AttachRemoteFlags, type MountRemoteView } from "./attach-cli.js";
-import { connectionNote, laptopImagePaths, REMOTE_COMMANDS, REVOKED_MESSAGE, serverModelEntries } from "./attach-session.js";
+import { connectionNote, laptopImagePaths, REMOTE_COMMANDS, remoteUsageText, REVOKED_MESSAGE, serverModelEntries } from "./attach-session.js";
 import { startDlStub, type DlStub } from "./dl-stub.test-support.js";
 import { attachLifecycle } from "../camouflage-lifecycle.test-support.js";
 
@@ -365,6 +365,28 @@ describe("attach-remote: session against a stub dl server", () => {
     assert.equal(await done, 0);
   });
 
+  it("/usage works in a remote session: the provider comes from the server", async () => {
+    stub = await startDlStub();
+    stub.modelsProvider = { id: "openrouter", name: "OpenRouter" };
+    const { bridge, done } = await attach({ workspace: "default", repo: "acme/project", model: "vendor/model-a" });
+    await waitFor(() => bridge.last?.turnRunning === false, "ready");
+    bridge.actions.submit("/usage");
+    await waitFor(() => bridge.texts().some((t) => t.includes("Provider      OpenRouter (on the server)")), "usage");
+    const texts = bridge.texts().join("\n");
+    assert.doesNotMatch(texts, /\/usage works on this laptop's session/);
+    assert.match(texts, /Model calls go to OpenRouter with the server's own key/);
+    bridge.actions.exit();
+    assert.equal(await done, 0);
+  });
+
+  it("/usage text: an older server without provider info, and a server on the free tier", () => {
+    const older = remoteUsageText({ provider: undefined, usage: null, costUsd: 0, model: "vendor/model-a" });
+    assert.match(older, /^Provider {6}not reported by this server\nModel {9}vendor\/model-a\nCost so far {3}\$0\.00$/);
+    const free = remoteUsageText({ provider: { id: "directionally-local", name: "Directionally Local, free" }, usage: { prompt_tokens: 12_500, completion_tokens: 800 }, costUsd: 0, model: "m" });
+    assert.match(free, /This run {6}12\.5k in · 800 out tokens/);
+    assert.match(free, /weekly allowance belongs to the server's sign-in/);
+  });
+
   it("/model with no ID opens the picker on the server's models; a pick switches the next turn, Esc changes nothing", async () => {
     stub = await startDlStub();
     stub.modelCatalog = [{ id: "vendor/model-b", name: "Vendor: Model B", contextWindow: 200_000, inputPerMtok: 1, outputPerMtok: 2 }];
@@ -565,7 +587,7 @@ describe("attach-remote: /resume and /clear", () => {
     const help = bridge.texts().find((t) => t.includes("Remote session:"))!;
     assert.match(help, /\/resume \[<n>\|<id>\] — List this credential's conversations and switch to one/);
     assert.match(help, /\/clear — Start a fresh conversation here \(the old one keeps its history\)/);
-    assert.deepEqual(REMOTE_COMMANDS.map((c) => c.name), ["help", "model", "status", "pr", "resume", "clear", "exit"]);
+    assert.deepEqual(REMOTE_COMMANDS.map((c) => c.name), ["help", "model", "status", "pr", "usage", "resume", "clear", "exit"]);
     bridge.actions.exit();
     assert.equal(await done, 0);
   });
@@ -590,7 +612,7 @@ describe("attach-remote through the Camouflage view (headless)", () => {
       assert.ok(types.includes(t), `sends ${t}`);
     }
     const commands = sent.find((s) => s.type === "SlashCommandsRegistered")!.payload.commands as { name: string }[];
-    assert.deepEqual(commands.map((c) => c.name), ["help", "model", "status", "pr", "resume", "clear", "exit"]);
+    assert.deepEqual(commands.map((c) => c.name), ["help", "model", "status", "pr", "usage", "resume", "clear", "exit"]);
     const started = sent.find((s) => s.type === "ToolExecutionStarted")!.payload;
     assert.equal(started.tool, "Bash");
     assert.equal(started.command, "npm test");
