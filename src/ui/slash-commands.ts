@@ -783,7 +783,7 @@ const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "
   },
   tour: {
     key: "projectTour",
-    describe: "project summary and three starter tasks on the first session in a repository (/tour shows it any time)",
+    describe: "project summary and three starter tasks on a repository's first session (/tour any time)",
   },
   refocus: {
     key: "refocusTerminal",
