@@ -6,6 +6,7 @@ import {
   type PermissionRequest,
 } from "../tools/executor.js";
 import { isBlockedInPlanMode, isReadOnlyBash, type Mode } from "../mode.js";
+import { hasSetupConsent, setupCommandOf, setupQuestion, type SetupKind } from "../permissions/setup-consent.js";
 
 /** Pre-built typed decisions for the two auto-resolve paths so we don't
  *  recreate them on every call. M2.2 — see `PermissionDecisionResult`. */
@@ -16,10 +17,50 @@ export interface PendingPermission {
   tool: PermissionRequest["tool"];
   args: Record<string, unknown>;
   resolve: (decision: PermissionDecision) => void;
+  /** Set when this is the once-per-project install/write question rather than the usual prompt. */
+  setup?: SetupPrompt;
+}
+
+/** The once-per-project question (see permissions/setup-consent.ts). */
+export interface SetupPrompt {
+  kind: SetupKind;
+  prompt: string;
+  subtitle: string;
+  /** The project an "Always allow in this project" answer is stored for. */
+  root: string;
+}
+
+/**
+ * When the once-per-project question applies: interactive sessions whose
+ * auto mode is the default (modes off), not one the user chose. Null: never ask.
+ */
+export interface SetupGate {
+  /** The project root the answer is stored for. */
+  root: string;
+  /** True when a configured permission rule already allows this call. */
+  ruleAllows?: (req: PermissionRequest) => boolean;
+}
+
+/**
+ * The once-per-project question for a call the mode would auto-allow, or
+ * null: a bash or job_start command that installs, fetches and runs a
+ * package, or writes outside the agent's own edits, in a project without
+ * "always allow" and not already allowed by a configured rule.
+ */
+export function setupPromptFor(req: PermissionRequest, gate: SetupGate | null | undefined): SetupPrompt | null {
+  if (!gate) return null;
+  if (req.tool.name !== "bash" && req.tool.name !== "job_start") return null;
+  const command = req.args.command;
+  if (typeof command !== "string") return null;
+  const sc = setupCommandOf(command);
+  if (!sc) return null;
+  if (gate.ruleAllows?.(req)) return null;
+  if (hasSetupConsent(gate.root)) return null;
+  return { kind: sc.kind, ...setupQuestion(sc, command), root: gate.root };
 }
 
 export type PermissionOutcome =
-  | { kind: "resolve"; decision: PermissionDecision }
+  | { kind: "resolve"; decision: PermissionDecisionResult }
   | { kind: "prompt" }
   | { kind: "plan_blocked"; toolName: string };
 
@@ -66,10 +107,22 @@ export async function resolvePermission(
   req: PermissionRequest,
   mode: Mode,
   opts: DecidePermissionOptions | undefined,
-  host: { onPlanModeBlocked: (toolName: string) => void; prompt: () => Promise<PermissionDecision> },
+  host: {
+    onPlanModeBlocked: (toolName: string) => void;
+    prompt: () => Promise<PermissionDecision>;
+    /** When set, an auto-allowed install or write asks once per project first. */
+    setupGate?: SetupGate | null;
+    promptSetup?: (setup: SetupPrompt) => Promise<PermissionDecision>;
+  },
 ): Promise<PermissionDecision> {
   const outcome = decidePermission(req, mode, opts);
-  if (outcome.kind === "resolve") return outcome.decision;
+  if (outcome.kind === "resolve") {
+    const setup = outcome.decision.decision === "allow" && host.promptSetup ? setupPromptFor(req, host.setupGate) : null;
+    if (!setup) return outcome.decision;
+    const fromHook = await permissionFromHook(req, mode);
+    if (fromHook) return fromHook;
+    return host.promptSetup!(setup);
+  }
   if (outcome.kind === "plan_blocked") {
     host.onPlanModeBlocked(outcome.toolName);
     return AUTO_DENY;
@@ -111,6 +164,7 @@ export interface PermissionController {
 export function usePermissionController(
   getMode: () => Mode,
   onPlanModeBlocked: (toolName: string) => void,
+  getSetupGate: () => SetupGate | null = () => null,
 ): PermissionController {
   const [pending, setPending] = useState<PendingPermission | null>(null);
   const resolveRef = useRef<((d: PermissionDecision) => void) | null>(null);
@@ -120,6 +174,8 @@ export function usePermissionController(
   getModeRef.current = getMode;
   const onPlanModeBlockedRef = useRef(onPlanModeBlocked);
   onPlanModeBlockedRef.current = onPlanModeBlocked;
+  const getSetupGateRef = useRef(getSetupGate);
+  getSetupGateRef.current = getSetupGate;
 
   const askPermission = useCallback<PermissionController["askPermission"]>(
     (req, askOpts) =>
@@ -129,6 +185,12 @@ export function usePermissionController(
           new Promise<PermissionDecision>((resolve) => {
             resolveRef.current = resolve;
             setPending({ tool: req.tool, args: req.args, resolve });
+          }),
+        setupGate: getSetupGateRef.current(),
+        promptSetup: (setup) =>
+          new Promise<PermissionDecision>((resolve) => {
+            resolveRef.current = resolve;
+            setPending({ tool: req.tool, args: req.args, resolve, setup });
           }),
       }),
     [],

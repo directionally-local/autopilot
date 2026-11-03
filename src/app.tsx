@@ -88,6 +88,9 @@ import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt } from "./hooks/prompt-submit.js";
 import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
+import type { SetupGate } from "./ui/use-permission-controller.js";
+import { resolveRepoRoot } from "./memory/repo-root.js";
+import { evaluatePermissionRules } from "./permissions-evaluator.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
 import { compactAfterTurn, compactMidTurn, type AutoCompactionDeps } from "./agent/auto-compaction.js";
@@ -223,6 +226,19 @@ function App({
   } = turn;
   const [planOptions, setPlanOptions] = useState<PlanOption[] | null>(null);
   const planOptionsRef = useRef<PlanOption[] | null>(null);
+  // Ask once per project before installs and writes while auto is only the
+  // default (modes off); a mode the user chose, and allow rules, decide as before.
+  const setupGateCfgRef = useRef(cfg);
+  setupGateCfgRef.current = cfg;
+  const setupGate = useCallback((): SetupGate | null => {
+    const c = setupGateCfgRef.current;
+    if (c?.modesEnabled === true) return null;
+    const cwd = process.cwd();
+    return {
+      root: resolveRepoRoot(cwd),
+      ruleAllows: (req) => !!c?.permissions && evaluatePermissionRules({ tool: req.tool.name, args: req.args, cwd }, c.permissions) === "allow",
+    };
+  }, []);
   const {
     pending: perm,
     askPermission: askForPermission,
@@ -242,6 +258,7 @@ function App({
         },
       ]);
     },
+    setupGate,
   );
   const modals = useModalHost();
   const {
@@ -2122,7 +2139,7 @@ function App({
       codeMode,
       intentTier,
       tasks,
-      permission: perm ? { tool: perm.tool, args: perm.args } : null,
+      permission: perm ? { tool: perm.tool, args: perm.args, ...(perm.setup ? { setup: perm.setup } : {}) } : null,
       modals: open,
       resumeSessions,
       checkpoints: checkpointSession ? { session: checkpointSession, list: checkpointList } : null,

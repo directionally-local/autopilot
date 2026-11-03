@@ -67,6 +67,8 @@ import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
 import { waitWithoutInput } from "./ui/terminal-wait.js";
 import { terminalWrapWidth, wrapText } from "./util/wrap.js";
+import { grantSetupConsent, SETUP_CHOICES } from "./permissions/setup-consent.js";
+import type { SetupPrompt } from "./ui/use-permission-controller.js";
 import { PRESETS as LSP_PRESETS } from "./ui/lsp-presets.js";
 import { formatBashTitle, getShellCommand } from "./tools/bash.js";
 import { formatJobStartTitle } from "./tools/jobs.js";
@@ -866,6 +868,7 @@ export class View implements AppBridge {
     if (this.permission === s.permission.args) return;
     this.permission = s.permission.args;
     const { tool, args } = s.permission;
+    if (s.permission.setup) return void this.askSetup(s.permission.setup);
     let render: { title: string; diff?: { path: string; before: string; after: string } } | undefined;
     try {
       render = tool.render?.(args);
@@ -893,6 +896,17 @@ export class View implements AppBridge {
         if (feedback) this.actions?.denyWithFeedback(feedback);
         else this.actions?.decidePermission("deny");
       });
+  }
+
+  /**
+   * The once-per-project question before an install or a write (see
+   * permissions/setup-consent.ts): Allow once, Always allow in this project
+   * (remembered for the project), or Don't. Esc is Don't.
+   */
+  private async askSetup(setup: SetupPrompt): Promise<void> {
+    const r = await this.select(setup.prompt, SETUP_CHOICES.map((c) => ({ value: c.value, label: c.label })), undefined, setup.subtitle);
+    if (r === "always") grantSetupConsent(setup.root);
+    this.actions?.decidePermission(r === "once" || r === "always" ? "allow" : "deny");
   }
 
   /**

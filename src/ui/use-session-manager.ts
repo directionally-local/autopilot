@@ -31,6 +31,7 @@ import type { SessionEndReason, TraceSessionMode } from "../trace/types.js";
 import type { Mode } from "../mode.js";
 import { DEFAULT_AUTO_FRESH_SUGGESTION_TURNS } from "./app-helpers.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
+import { buildResumeReplay } from "./resume-replay.js";
 import { plumbingModelOf, tuiMemoryEnabled } from "../config.js";
 
 /**
@@ -63,6 +64,26 @@ export function extractFirstUserText(messages: ChatMessage[]): string {
  * Build a brief, zero-latency summary from session state for display on
  * `/resume`. Returns `null` when there's nothing useful to show.
  */
+/** The transcript a resumed conversation opens with (see ui/resume-replay.ts). */
+export function resumeReplayEvents(
+  file: { messages: ChatMessage[]; title?: string; updatedAt: string },
+  mkKey: () => string,
+  from?: "checkpoint",
+  o: { now?: number; timeZone?: string } = {},
+): ChatEvent[] {
+  const replay = buildResumeReplay(file, o);
+  const events: ChatEvent[] = [];
+  if (replay.totalRequests > replay.exchanges.length) {
+    events.push({ kind: "info", key: mkKey(), text: `Last ${replay.exchanges.length} of ${replay.totalRequests} requests in this conversation:` });
+  }
+  replay.exchanges.forEach((e, i) => {
+    events.push({ kind: "user", key: mkKey(), text: e.user });
+    if (e.answer) events.push({ kind: "assistant", key: mkKey(), id: -(i + 1), text: e.answer, reasoning: "", streaming: false });
+  });
+  events.push({ kind: "info", key: mkKey(), text: from === "checkpoint" ? `${replay.line} (from a checkpoint)` : replay.line });
+  return events;
+}
+
 export function buildLocalResumeSummary(state: SessionState): string | null {
   const parts: string[] = [];
   if (state.task) parts.push(`Task: ${state.task}`);
@@ -335,19 +356,12 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         }
 
         const nonSystemCount = file.messages.filter((m) => m.role !== "system").length;
-        const msg = checkpointId
-          ? `resumed session ${file.id} from checkpoint`
-          : `resumed session ${file.id} (${nonSystemCount} msgs)`;
-        d.setEvents([{ kind: "info", key: d.mkKey(), text: msg }]);
+        // Show the conversation as it was — the last few requests and the
+        // start of each answer — then where it continues. No model call.
+        d.setEvents(resumeReplayEvents(file, d.mkKey, checkpointId ? "checkpoint" : undefined));
 
-        const localSummary = buildLocalResumeSummary(d.sessionStateRef.current);
-        if (localSummary) {
-          d.setEvents((es) => [
-            ...es,
-            { kind: "info", key: d.mkKey(), text: localSummary },
-          ]);
-        }
-
+        // The model's own context restoration is unchanged: the handoff
+        // summary is still added to its messages, but no longer shown.
         if (d.cfg && hasLlmAuth(llmAuthFromConfig(d.cfg))) {
           try {
             const summary = await generateContinuationSummary({
@@ -359,17 +373,13 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
               memoryEnabled: tuiMemoryEnabled(d.cfg),
             });
             if (summary) {
-              d.setEvents((es) => [
-                ...es,
-                { kind: "info", key: d.mkKey(), text: summary },
-              ]);
               d.messagesRef.current.push({
                 role: "system",
                 content: `[session resume summary]\n${summary}`,
               });
             }
           } catch {
-            // Non-fatal — local summary already shown
+            // Non-fatal — the full conversation is restored either way
           }
         }
 
