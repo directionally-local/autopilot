@@ -351,28 +351,33 @@ export async function suggestTasks(
 ): Promise<Suggestions> {
   const local = localSuggestions(f);
   if (!ask || f.fileCount === 0) return { tasks: local, source: "local" };
+  // `stop` ends the wait early: on the timeout, or when the caller aborts
+  // (the person started typing). The timer is deliberately not unref'd: it
+  // keeps the event loop alive only while the call is in flight (at most
+  // `timeoutMs`), and is cleared as soon as the race settles.
   const ctrl = new AbortController();
-  const onAbort = () => ctrl.abort();
-  o.signal?.addEventListener("abort", onAbort, { once: true });
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stop: () => void = () => {};
+  const stopped = new Promise<null>((resolve) => {
+    stop = () => {
+      ctrl.abort();
+      resolve(null);
+    };
+  });
+  const onAbort = () => stop();
+  if (o.signal?.aborted) stop();
+  else o.signal?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(stop, o.timeoutMs ?? TOUR_MODEL_TIMEOUT_MS);
   try {
-    const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => {
-        ctrl.abort();
-        resolve(null);
-      }, o.timeoutMs ?? TOUR_MODEL_TIMEOUT_MS);
-      timer.unref?.();
-    });
     const reply = await Promise.race([
       ask({ system: TOUR_SYSTEM_PROMPT, user: factsPrompt(f), maxTokens: TOUR_MAX_COMPLETION_TOKENS, signal: ctrl.signal }).catch(() => null),
-      timeout,
+      stopped,
     ]);
     const tasks = reply ? parseSuggestions(reply) : [];
     if (tasks.length === 0) return { tasks: local, source: "local" };
     for (const t of local) if (tasks.length < 3 && !tasks.includes(t)) tasks.push(t);
     return { tasks, source: "model" };
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
     o.signal?.removeEventListener("abort", onAbort);
   }
 }
