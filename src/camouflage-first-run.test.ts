@@ -92,6 +92,23 @@ describe("first run: one question", () => {
     view.dispose();
   });
 
+  it("puts the invite line right under the sign-in line on the free tier", async () => {
+    await fresh();
+    const { view, said } = await fakeView(["free"]);
+    const referral = { link: "https://dl.new/r/octo42", joined: 0, activeThisWeek: 0, bonusTokensPerWeek: 0, bonusCapPerWeek: 50_000_000 };
+    view.providerCalls = {
+      dlSignIn: async () => ({ key: "at-1" }),
+      verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
+      dlMe: async () => ({ ...me, referral }),
+    };
+    assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
+    const lines = said();
+    const at = lines.findIndex((l) => l.startsWith("✓ Signed in as @octo"));
+    assert.ok(at >= 0);
+    assert.strictEqual(lines[at + 1], "Invite friends and you both get +10M tokens a week: https://dl.new/r/octo42 (/invite)");
+    view.dispose();
+  });
+
   it("Free goes straight into the sign-in, then saves the free model and says who signed in", async () => {
     await fresh();
     const { view, prompts, said } = await fakeView(["free"]);
@@ -108,6 +125,7 @@ describe("first run: one question", () => {
     assert.ok(lines.some((l) => l.includes("Free tokens come with usage counts")), "the disclosure is on the sign-in screen");
     assert.ok(lines.some((l) => /^✓ Signed in as @octo · 50M free tokens this week · back every \w+day$/.test(l)));
     assert.ok(!lines.some((l) => /billed/.test(l)));
+    assert.ok(!lines.some((l) => /^Invite friends/.test(l)), "no invite line without an invite link");
     const cfg = JSON.parse(await readFile(configPath(), "utf8"));
     assert.deepStrictEqual([cfg.provider, cfg.model, cfg.providers["directionally-local"].apiKey], ["directionally-local", DL_FREE_MODEL, "at-1"]);
     view.dispose();

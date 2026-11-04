@@ -9,6 +9,10 @@ import {
   cleanReferralCode,
   describeDlError,
   dlBillingPortal,
+  dlHeaderLine,
+  dlSignedInInviteLine,
+  fetchDlMe,
+  quotaNoticeFromHeaders,
   dlCheckout,
   dlSignIn,
   normalizeDlMe,
@@ -363,6 +367,58 @@ describe("free tier growth", () => {
       const printed3: string[] = [];
       assert.strictEqual(await runUpgradeCommand("gold", cliDeps(printed3)), 1);
       assert.deepStrictEqual(printed3, ["Choose one of: pro, topup."]);
+    });
+  });
+
+  describe("visible invites on the free tier", () => {
+    const free = (over: Partial<DlMe> = {}) => me({ plan: "free", allowance: { tokensPerWeek: 50e6, usedThisWeek: 100_000, remaining: 49_900_000, resetsAt: RESETS }, ...over });
+    const maxed = { link: LINK, joined: 6, activeThisWeek: 5, bonusTokensPerWeek: 50_000_000, bonusCapPerWeek: 50_000_000 };
+
+    it("says under the sign-in line that inviting gets you both more", () => {
+      assert.strictEqual(dlSignedInInviteLine(free()), `Invite friends and you both get +10M tokens a week: ${LINK} (/invite)`);
+      assert.strictEqual(dlSignedInInviteLine(free(), "cli"), `Invite friends and you both get +10M tokens a week: ${LINK} (\`autopilot invite\`)`);
+      assert.strictEqual(dlSignedInInviteLine(free({ plan: "pro" })), undefined, "not on Pro");
+      assert.strictEqual(dlSignedInInviteLine(free({ referral: undefined })), undefined, "not without a link");
+      assert.strictEqual(dlSignedInInviteLine(free({ referral: maxed })), undefined, "not once the bonus is maxed");
+      const { bonusCapPerWeek: _cap, ...noCap } = maxed;
+      assert.strictEqual(dlSignedInInviteLine(free({ referral: noCap })), undefined, "the cap is +50M when the service doesn't say");
+      assert.strictEqual(dlSignedInInviteLine(null), undefined);
+    });
+
+    it("shows what's left in the header, with the hint while invites add more", () => {
+      assert.strictEqual(dlHeaderLine(free()), "free · 49.9M left · /invite for more");
+      assert.strictEqual(dlHeaderLine(free({ referral: maxed })), "free · 49.9M left");
+      assert.strictEqual(dlHeaderLine(free({ plan: "pro" })), undefined);
+      assert.strictEqual(dlHeaderLine(free({ queue: { position: 3 } })), undefined);
+      assert.strictEqual(dlHeaderLine(null), undefined);
+    });
+
+    it("ends /usage with how to get more, until the bonus is maxed", () => {
+      assert.strictEqual(renderDlUsage(free(), NOW, TZ).split("\n").at(-1), "  Get more: /invite (you both get +10M a week)");
+      assert.doesNotMatch(renderDlUsage(free({ referral: maxed }), NOW, TZ), /Get more/);
+      assert.doesNotMatch(renderDlUsage(free({ plan: "pro" }), NOW, TZ), /Get more/);
+      assert.doesNotMatch(renderDlUsage(free({ referral: undefined }), NOW, TZ), /Get more/);
+    });
+
+    it("adds the invite to the 80% notice once the account is known to be on the free tier", async () => {
+      resetDlNoticeState();
+      const h = (resets: string) => new Headers({ "x-dl-tokens-remaining": "9000000", "x-dl-quota-resets-at": resets });
+      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-09T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite/, "unknown account: no invite");
+      const read = (body: DlMe) => fetchDlMe({ token: "t", fetchImpl: (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch });
+      await read(free());
+      assert.match(
+        quotaNoticeFromHeaders(h("2026-11-16T00:00:00.000Z"), { now: NOW, timeZone: TZ })!,
+        /^You've used 82% of this week's free Directionally Local tokens \(9M left, resets .+\); \/usage has details\. Invite a friend for \+10M a week: \/invite$/,
+      );
+      await read(free({ plan: "pro" }));
+      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-23T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite/, "not on Pro");
+      await read(free({ referral: maxed }));
+      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-30T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite/, "not once maxed");
+      resetDlNoticeState();
+    });
+
+    it("keeps the invite first on the limit screen", () => {
+      assert.strictEqual(dlScreenChoices("quota", { offers: OFFERS, referralLink: LINK })[0]?.value, "invite");
     });
   });
 

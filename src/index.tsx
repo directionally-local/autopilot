@@ -940,6 +940,8 @@ authCommand.addCommand(
         await switchProvider(await loadConfig().catch(() => null), "directionally-local");
         const me = await dl.fetchDlMe().catch(() => null);
         console.log(dl.dlSignedInLine(me));
+        const invite = dl.dlSignedInInviteLine(me, "cli");
+        if (invite) console.log(invite);
         console.log("Directionally Local, free is now the active provider. Run `autopilot` to start; /usage shows what's left this week.");
       } catch (e) {
         console.error(e instanceof Error ? e.message : String(e));

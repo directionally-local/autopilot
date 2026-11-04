@@ -29,7 +29,7 @@ import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from ".
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
-import { DL_FREE_MODEL, DlError, dlCheckout, dlSignedInLine, fetchDlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlCheckout, dlHeaderLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { copyWithOsc52 } from "./util/osc52.js";
 import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
@@ -207,14 +207,21 @@ export interface CamouflageSessionViewOpts {
 /** How the session ended: normally, or before it began because first-run setup was cancelled or failed. */
 export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed";
 
-/** The header's two detail lines; first run has no model yet. */
-export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null): string[] {
+/**
+ * The header's detail lines; first run has no model yet. `free` is the free
+ * tier's line ("free · 49.9M left · /invite for more"), shown third.
+ */
+export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null, free?: string): string[] {
   if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run: connect a model provider to start"];
   return [
     [shortModel(cfg.model), shortPath(cwd), branch].filter(Boolean).join(" · "),
     `/ for commands · @ to mention files${cfg.modesEnabled ? " · shift+tab to switch modes" : ""}`,
+    ...(free ? [free] : []),
   ];
 }
+
+/** How long the header waits for /v1/me after the renderer mounts, for the free tier's line. */
+const FREE_HEADER_WAIT_MS = 300;
 
 export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSessionViewOpts): Promise<CamouflageViewResult> {
   const custom = "run" in input ? input : null;
@@ -232,6 +239,9 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   }
   // A pty that reports 0×0 draws nothing useful; the renderer assumes 80×24, and this says why.
   warnIfNoTerminalSize();
+  // On the free tier, read the account while the renderer mounts: the header shows what's left.
+  const onFreeTier = (cfg: Cfg | null) => !custom && !!cfg && resolveActiveProvider(cfg).id === DL_PROVIDER_ID;
+  const meSoon: Promise<DlMe | null> = onFreeTier(opts.cfg) ? fetchDlMe().catch(() => null) : Promise.resolve(null);
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
   try {
@@ -257,14 +267,18 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
 
   const cwd = process.cwd();
   const branch = gitBranch(cwd);
-  const startSession = (cfg: Cfg | null) =>
+  const startSession = (cfg: Cfg | null, me: DlMe | null) =>
     cam.send("SessionStarted", {
       title: custom ? custom.header.title : `autopilot ${opts.version}`,
-      detail: custom ? custom.header.detail : sessionHeaderDetail(cfg, cwd, branch),
+      detail: custom ? custom.header.detail : sessionHeaderDetail(cfg, cwd, branch, onFreeTier(cfg) ? dlHeaderLine(me) : undefined),
       accent: "orange",
       assistant_label: "autopilot",
     });
-  startSession(opts.cfg);
+  // A slow account read doesn't hold the session up: the header goes without the line.
+  startSession(
+    opts.cfg,
+    onFreeTier(opts.cfg) ? await Promise.race([meSoon, new Promise<null>((r) => setTimeout(r, FREE_HEADER_WAIT_MS, null).unref())]) : null,
+  );
   const files = listFiles(cwd);
   if (files.length > 0) {
     cam.send("MentionCandidatesRegistered", { candidates: files.map((token) => ({ token, kind: "file" })) });
@@ -385,7 +399,8 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
       const outcome = await Promise.race([onboarding, beforeApp.then(() => null)]);
       if (outcome?.kind === "ready") {
         cfg = outcome.cfg;
-        startSession(cfg);
+        // A free-tier sign-in just read the account.
+        startSession(cfg, lastKnownDlMe());
       } else {
         setup = outcome ?? (quitBeforeApp ? { kind: "cancelled" } : null);
       }
@@ -1505,7 +1520,10 @@ export class View implements AppBridge {
         say(res.message, "error");
         return { kind: "failed" };
       }
-      say(dlSignedInLine(await this.providerCalls.dlMe().catch(() => null)));
+      const me = await this.providerCalls.dlMe().catch(() => null);
+      say(dlSignedInLine(me));
+      const invite = dlSignedInInviteLine(me);
+      if (invite) say(invite);
       return { kind: "connected", connection: res.connection };
     };
     const signedIn = resolveProviderKey(id, cfg);

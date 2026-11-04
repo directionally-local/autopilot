@@ -16,6 +16,7 @@ import type { AgentCallbacks } from "../agent/loop.js";
 import { statePath } from "../util/app-dirs.js";
 import { createsGhPr } from "../util/pr-footer.js";
 import {
+  DL_INVITE_BONUS_TOKENS,
   DL_SWITCH_HINT,
   dlCheckout,
   dlQueuePlace,
@@ -36,7 +37,7 @@ import {
 } from "./directionally-local.js";
 
 /** What each friend who starts using dl adds a week, for both of you. */
-export const DL_REFERRAL_BONUS_TOKENS = 10_000_000;
+export const DL_REFERRAL_BONUS_TOKENS = DL_INVITE_BONUS_TOKENS;
 export const DL_UPGRADE_COMMAND = "autopilot upgrade";
 export const DL_INVITE_COMMAND = "autopilot invite";
 /** How often and how long the checkout watches /v1/me for the payment. */

@@ -139,4 +139,12 @@ describe("sessionHeaderDetail", () => {
     assert.match(d[0]!, /kimi-k2/);
     assert.match(d[1]!, /shift\+tab/);
   });
+
+  it("adds the free tier's line third, when there is one", () => {
+    const cfg = { model: "deepseek/deepseek-v4.1-flash-1017", modesEnabled: false };
+    const d = sessionHeaderDetail(cfg, process.cwd(), null, "free · 49.9M left · /invite for more");
+    assert.strictEqual(d.length, 3);
+    assert.strictEqual(d[2], "free · 49.9M left · /invite for more");
+    assert.strictEqual(sessionHeaderDetail(cfg, process.cwd(), null, undefined).length, 2);
+  });
 });
