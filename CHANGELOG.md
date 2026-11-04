@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.9.0](https://github.com/directionally-local/autopilot/compare/v3.8.0...v3.9.0) (2026-11-04)
+
+
+### Features
+
+* the first-run question names the free tier's model and who serves it ([#1155](https://github.com/directionally-local/autopilot/issues/1155)) ([06544c8](https://github.com/directionally-local/autopilot/commit/06544c856756c37e002aeb70a4f1e7895ad0d617))
+
 ## [3.8.0](https://github.com/directionally-local/autopilot/compare/v3.7.0...v3.8.0) (2026-11-04)
 
 
