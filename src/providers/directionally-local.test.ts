@@ -313,17 +313,17 @@ describe("Directionally Local free tier", () => {
       ["access_denied", "account_too_new", /^New GitHub accounts \(under 30 days\) need an invite code for the free tier\. Have one\? Choose Free again and enter it in the browser\. Or use your own API key\.$/],
       ["access_denied", "device_taken", /^This device already has a free allowance under another GitHub account; sign in with that account instead\.$/],
       ["access_denied", "something_new", /^The sign-in was declined in the browser/],
-      ["not_invited", undefined, /^The free tier is invite-only right now\. Have a code\? Choose Free again and enter it in the browser\. Or use your own API key\.$/],
+      ["not_invited", undefined, /^This GitHub account needs an invite code for the free tier\. Have one\? Choose Free again and enter it in the browser\. Or use your own API key\.$/],
       // The codes the service is adding; the same sentences.
       ["account_too_new", undefined, /^New GitHub accounts \(under 30 days\) need an invite code/],
-      ["invalid_invite", undefined, /^The free tier is invite-only right now\. Have a code\?/],
-      ["access_denied", "invalid_invite", /^The free tier is invite-only right now\. Have a code\?/],
+      ["invalid_invite", undefined, /^This GitHub account needs an invite code for the free tier\. Have one\?/],
+      ["access_denied", "invalid_invite", /^This GitHub account needs an invite code for the free tier\. Have one\?/],
       ["cohort_full", undefined, /^The free tier is full right now\. Use your own API key meanwhile\.$/],
       ["not_invited", "cohort_full", /^The free tier is full right now\. Use your own API key meanwhile\.$/],
       ["paused", undefined, /^Free tokens are paused for everyone\. Your own key still works\.$/],
       ["service_paused", "total_budget", /^Free tokens are paused for everyone\. Your own key still works\.$/],
       // The service's final sign-in codes (400, reason = code).
-      ["invite_required", "invite_required", /^The free tier is invite-only right now\. Have a code\? Choose Free again/],
+      ["invite_required", "invite_required", /^This GitHub account needs an invite code for the free tier\. Have one\? Choose Free again/],
       ["cohort_full", "cohort_full", /^The free tier is full right now\. Use your own API key meanwhile\.$/],
       ["too_many_signups", "too_many_signups", /^Too many new free-tier accounts from this network today\. Try again tomorrow, or use your own API key\.$/],
       ["service_paused", "paused", /^Free tokens are paused for everyone\. Your own key still works\.$/],
@@ -517,7 +517,7 @@ describe("Directionally Local free tier", () => {
       );
       assert.strictEqual(describeDlError("some_future_pause", { pausedForEveryone: true }), "Free tokens are paused for everyone. Your own key works now: /provider");
       assert.strictEqual(describeDlError("some_future_code"), undefined, "unknown codes show the service's own sentence");
-      assert.match(describeDlError("not_invited")!, /invite-only right now, and this GitHub account isn't on it\. Your own key works now: \/provider$/);
+      assert.match(describeDlError("not_invited")!, /^This GitHub account isn't on the free tier\. Your own key works now: \/provider$/);
       assert.match(describeDlError("suspended")!, /account is suspended.*Your own key works now: \/provider$/);
       assert.strictEqual(describeDlError("rate_limited", { retryAfter: 12 }), "Directionally Local is limiting how fast you send requests; try again in 12 seconds.");
       assert.match(describeDlError("model_not_allowed")!, /only serves deepseek\/deepseek-v4\.1-flash-1017/);
@@ -534,7 +534,7 @@ describe("Directionally Local free tier", () => {
       );
       assert.strictEqual(
         dlDenialLine("not_invited", { where: "signin" }),
-        "The free tier is invite-only right now. Have a code? Choose Free again and enter it in the browser. Or use your own API key.",
+        "This GitHub account needs an invite code for the free tier. Have one? Choose Free again and enter it in the browser. Or use your own API key.",
       );
       assert.strictEqual(dlDenialLine("cohort_full", { where: "signin" }), "The free tier is full right now. Use your own API key meanwhile.");
       assert.doesNotMatch(dlDenialLine("cohort_full", { where: "signin" }), /invite/);
@@ -591,7 +591,7 @@ describe("Directionally Local free tier", () => {
     const cases: Array<[number, unknown, RegExp, number]> = [
       [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "tokens" } }, /You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\. To keep going now: \/provider to use your own key\.$/, 1],
       [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "spend" } }, /You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\./, 1],
-      [403, { error: { code: "not_invited" } }, /invite-only right now.*\/provider$/, 1],
+      [403, { error: { code: "not_invited" } }, /isn't on the free tier.*\/provider$/, 1],
       [403, { error: { code: "suspended" } }, /account is suspended/, 1],
       [503, { error: { code: "service_paused" } }, /Free tokens are paused for everyone\. Your own key works now: \/provider$/, 1],
       [503, { error: { code: "service_paused", reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z" } }, /Free tokens are paused for everyone until \w{3} \d\d:\d\d\. Your own key works now: \/provider$/, 1],

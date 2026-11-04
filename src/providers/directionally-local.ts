@@ -32,6 +32,10 @@ export const DL_PROVIDER_ID = "directionally-local" as const;
 export const DL_FREE_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 /** The weekly grant per person, for picker copy and as a fallback before /v1/me has been read. */
 export const DL_FREE_WEEKLY_TOKENS = 50_000_000;
+/** What each invited friend who becomes weekly active adds a week, for both people. */
+export const DL_INVITE_BONUS_TOKENS = 10_000_000;
+/** The most invites add a week, when the service didn't say. */
+export const DL_INVITE_BONUS_CAP_TOKENS = 50_000_000;
 /** Env var holding an access token (no refresh): sandboxes and short headless runs. */
 export const DL_TOKEN_ENV = "AUTOPILOT_DL_FREE_TOKEN";
 export const DL_SIGN_IN_COMMAND = "autopilot auth directionally-local";
@@ -404,8 +408,8 @@ export function dlDenialLine(denial: DlDenial, extra: DlErrorExtra = {}): string
       return `New GitHub accounts (under ${days} days) need an invite code for the free tier. Have one? ${again} ${ownKey}`;
     }
     case "not_invited":
-      if (where === "session") return `The free tier is invite-only right now, and this GitHub account isn't on it. ${ownKeyNow(where)}`;
-      return `The free tier is invite-only right now. Have a code? ${again} ${ownKey}`;
+      if (where === "session") return `This GitHub account isn't on the free tier. ${ownKeyNow(where)}`;
+      return `This GitHub account needs an invite code for the free tier. Have one? ${again} ${ownKey}`;
     case "cohort_full":
       if (where === "session") return `The free tier is full right now. ${ownKeyNow(where)}`;
       return `The free tier is full right now. Use your own API key meanwhile.${where === "cli" ? " `autopilot connect` sets one up." : ""}`;
@@ -888,6 +892,15 @@ export function referralBonusText(r: Pick<DlReferral, "bonusTokensPerWeek" | "bo
   return `+${formatTokens(r.bonusTokensPerWeek)} a week${r.bonusCapPerWeek ? ` of +${formatTokens(r.bonusCapPerWeek)}` : ""}`;
 }
 
+/**
+ * True when inviting still adds tokens: the free tier (not Pro), an invite
+ * link, and the invite bonus below its cap.
+ */
+export function dlInviteCanAdd(me: DlMe | null | undefined): me is DlMe & { referral: DlReferral } {
+  if (!me || me.plan === "pro" || !me.referral?.link) return false;
+  return me.referral.bonusTokensPerWeek < (me.referral.bonusCapPerWeek ?? DL_INVITE_BONUS_CAP_TOKENS);
+}
+
 /** `/usage`: plan, used and left this week, top-up, invite bonus, queue, and when it resets (in local time). */
 export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): string {
   const a = me.allowance;
@@ -928,6 +941,7 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
   // The token and the spending allowance read the same: either way this week's free tokens are used.
   if ((a.remaining <= 0 || spendHit) && !topupLeft) lines.push(`  ${dlQuotaLine(a.resetsAt || undefined, { now, ...tz })}`);
   else if (pct >= 80 && !topupLeft) lines.push(`  You've used ${pct}% of this week's tokens.`);
+  if (dlInviteCanAdd(me)) lines.push(`  Get more: /invite (you both get +${formatTokens(DL_INVITE_BONUS_TOKENS)} a week)`);
   return lines.join("\n");
 }
 
@@ -935,6 +949,27 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
 export function dlSignedInLine(me: DlMe | null, o: DlTimeOpts = {}): string {
   const tokens = me && me.allowance.tokensPerWeek > 0 ? me.allowance.tokensPerWeek : DL_FREE_WEEKLY_TOKENS;
   return `✓ Signed in${me?.login ? ` as @${me.login}` : ""} · ${formatTokens(tokens)} free tokens this week · back every ${localResetWeekday(me?.allowance.resetsAt, o)}`;
+}
+
+/**
+ * Under the sign-in line on the free tier: "Invite friends and you both get
+ * +10M tokens a week: <link> (/invite)". Undefined on Pro, without a link, or
+ * once invites can't add more.
+ */
+export function dlSignedInInviteLine(me: DlMe | null, where: DlWhere = "signin"): string | undefined {
+  if (!dlInviteCanAdd(me)) return undefined;
+  return `Invite friends and you both get +${formatTokens(DL_INVITE_BONUS_TOKENS)} tokens a week: ${me.referral.link} (${where === "cli" ? "`autopilot invite`" : "/invite"})`;
+}
+
+/**
+ * The session header's free-tier line: "free · 49.9M left · /invite for
+ * more" (the hint only while invites can add more). Undefined without an
+ * account read, on Pro, or in the queue.
+ */
+export function dlHeaderLine(me: DlMe | null): string | undefined {
+  if (!me || me.plan === "pro" || me.queue) return undefined;
+  const left = `free · ${formatTokens(Math.max(0, me.allowance.remaining))} left`;
+  return dlInviteCanAdd(me) ? `${left} · /invite for more` : left;
 }
 
 let noticeShownFor: string | null = null;
@@ -954,7 +989,9 @@ export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: 
   if (noticeShownFor === resetsAt) return undefined;
   noticeShownFor = resetsAt;
   const used = Math.min(100, Math.max(80, Math.floor(((total - remaining) / total) * 100)));
-  return `You've used ${used}% of this week's free Directionally Local tokens (${formatTokens(Math.max(0, remaining))} left, resets ${formatReset(resetsAt || undefined, opts.now, opts.timeZone)}); /usage has details.`;
+  // The invite hint only when the account is known to be on the free tier with room for more.
+  const invite = dlInviteCanAdd(lastMe) ? ` Invite a friend for +${formatTokens(DL_INVITE_BONUS_TOKENS)} a week: /invite` : "";
+  return `You've used ${used}% of this week's free Directionally Local tokens (${formatTokens(Math.max(0, remaining))} left, resets ${formatReset(resetsAt || undefined, opts.now, opts.timeZone)}); /usage has details.${invite}`;
 }
 
 /** Test hook: forget the shown notice and the cached weekly grant. */
