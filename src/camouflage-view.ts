@@ -423,6 +423,8 @@ export class View implements AppBridge {
   /** Events before this index are fully sent and won't change. */
   private settled = 0;
   private firstKey: string | undefined;
+  /** True once a prompt, answer or tool reached the renderer (not just notices). */
+  private conversationShown = false;
   private segments: Record<string, string> = {};
   private todos = "";
   private permission: unknown = null;
@@ -728,12 +730,20 @@ export class View implements AppBridge {
   private syncEvents(events: ChatEvent[]): void {
     // /clear, /resume and compaction replace the list: start over.
     if (events.length < this.settled || (this.firstKey !== undefined && events[0]?.key !== this.firstKey)) {
-      this.cam.send("TranscriptCleared", {});
-      this.sent.clear();
-      // New transcript, new handles: the old ones are settled and their
-      // renderer-side entries are gone with the clear.
-      this.streams.clear();
-      this.tools.clear();
+      if (this.conversationShown) {
+        this.cam.send("TranscriptCleared", {});
+        this.sent.clear();
+        // New transcript, new handles: the old ones are settled and their
+        // renderer-side entries are gone with the clear.
+        this.streams.clear();
+        this.tools.clear();
+        this.conversationShown = false;
+      }
+      // Otherwise only the startup notices are on screen (`dl -c`,
+      // `autopilot -c` replaying history at launch): clearing the screen
+      // would push them and the input box into the scrollback, leaving an
+      // empty box above the history. The history prints below them instead,
+      // above the input box, and notices already shown aren't repeated.
       this.settled = 0;
     }
     this.firstKey = events[0]?.key;
@@ -749,6 +759,7 @@ export class View implements AppBridge {
   private syncEvent(e: ChatEvent): boolean {
     const prev = this.sent.get(e.key);
     if (prev?.done) return true;
+    if ((e.kind === "user" && !e.queued) || e.kind === "assistant" || e.kind === "tool") this.conversationShown = true;
     switch (e.kind) {
       case "user": {
         if (e.queued) return false;
