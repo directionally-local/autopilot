@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.0](https://github.com/directionally-local/autopilot/compare/v3.6.0...v3.7.0) (2026-11-04)
+
+
+### Features
+
+* free tier limit screen, /invite, /upgrade, and "Opened with dl" in PRs ([#1149](https://github.com/directionally-local/autopilot/issues/1149)) ([2900d0f](https://github.com/directionally-local/autopilot/commit/2900d0f60fda2d8991e3750307d557e5400c7b2b))
+
 ## [3.6.0](https://github.com/directionally-local/autopilot/compare/v3.5.0...v3.6.0) (2026-11-04)
 
 
