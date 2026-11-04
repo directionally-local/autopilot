@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createsGhPr, prFooterEnabled, wrapGhPrCreate } from "../util/pr-footer.js";
 import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
@@ -501,8 +502,12 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
   if (commitGuard) return commitGuard;
 
   const { shell, args: shellArgs, isPosix } = getShellCommand(ctx.shell);
+  // `gh pr create`: the PR it opens ends with "Opened with dl" (unless turned off).
+  const footer = isPosix && createsGhPr(args.command) && prFooterEnabled()
+    ? wrapGhPrCreate(args.command, join(tmpdir(), `kf-pr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`))
+    : { command: args.command, env: {} };
   const { command, env: coauthorEnv } = isPosix
-    ? injectCoauthor(args.command, ctx.coauthor)
+    ? injectCoauthor(footer.command, ctx.coauthor)
     : { command: args.command, env: {} };
 
   return new Promise<ToolOutput>((resolve, reject) => {
@@ -512,6 +517,7 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
       env: {
         ...process.env,
         ...coauthorEnv,
+        ...footer.env,
         GIT_EDITOR: "true",
       },
     });

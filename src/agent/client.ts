@@ -506,7 +506,11 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
         err?.code,
         dlErr ? res.status : status,
       );
-      if (dlErr) apiErr.providerCode = dlErr.code;
+      if (dlErr) {
+        apiErr.providerCode = dlErr.code;
+        const { code: _code, ...detail } = dlErr;
+        apiErr.providerDetail = detail;
+      }
       // Free tier: only rate limits are worth retrying; quota, invites, suspensions and pauses aren't.
       apiErr.transient = dlErr ? dlErr.code === "rate_limited" : isTransientHttpError(apiErr, msg, !customEndpoint && !requesty);
       const retryAfterMs = parseRetryAfter(dlErr?.retryAfter ?? res.headers.get("retry-after"));

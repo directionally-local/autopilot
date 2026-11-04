@@ -29,7 +29,9 @@ import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from ".
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
-import { DL_FREE_MODEL, DlError, dlSignedInLine, fetchDlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DlError, dlCheckout, dlSignedInLine, fetchDlMe } from "./providers/directionally-local.js";
+import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
+import { copyWithOsc52 } from "./util/osc52.js";
 import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
   chatgptSignIn,
@@ -437,6 +439,23 @@ export class View implements AppBridge {
   terminalIo: WaitIo | undefined = undefined;
   /** The provider calls the setup screens make; replaced in tests. */
   providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
+  /** What the free tier's limit, queue and /upgrade screens call; replaced in tests. */
+  dlScreenCalls: Pick<DlScreenDeps, "checkout" | "fetchMe" | "openBrowser" | "copy" | "sleep" | "now"> = {
+    checkout: (product) => dlCheckout(product),
+    fetchMe: () => fetchDlMe(),
+    openBrowser: (url) => openBrowser(url),
+    copy: (text) => copyWithOsc52(text),
+    sleep: (ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(new DOMException("aborted", "AbortError"));
+        const t = setTimeout(resolve, ms);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(t);
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      }),
+    now: () => Date.now(),
+  };
   /** Esc presses (cancelRequested) so far: a permission prompt denied with
    *  Esc interrupts the turn instead of asking for feedback. */
   cancels = 0;
@@ -1019,6 +1038,13 @@ export class View implements AppBridge {
         a.pickPlanOption(r === null ? null : options[Number(r)] ?? null);
       });
     }
+    if (s.dlScreen) {
+      const screen = s.dlScreen;
+      return want("dlScreen", async () => {
+        const outcome = await this.dlScreen(screen).catch(() => "dismissed" as const);
+        a.dlScreenDone?.(outcome);
+      });
+    }
     if (s.queuePlan) {
       const prompts = s.queuePlan.prompts;
       return want("queuePlan", async () => {
@@ -1541,6 +1567,33 @@ export class View implements AppBridge {
     }
     await stopWaiting();
     return verified(key, "signin");
+  }
+
+  /**
+   * The free tier's limit, queue or /upgrade screen: the choice, then the
+   * invite link, the checkout (Esc stops waiting for it) or the provider
+   * picker (App opens that on "own-key").
+   */
+  dlScreen(screen: DlScreen): ReturnType<typeof runDlScreen> {
+    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    return runDlScreen(screen, {
+      ...this.dlScreenCalls,
+      say,
+      select: (title, options, subtitle) => this.select(title, options, undefined, subtitle),
+      wait: async (text, cancel) => {
+        // Esc (cancelRequested) and typed input go to the wait, as during a sign-in.
+        const ctrl = new AbortController();
+        ctrl.signal.addEventListener("abort", cancel, { once: true });
+        this.signIn = ctrl;
+        this.signInWaiting = text;
+        const end = await this.waitWithoutInput(text, () => ctrl.abort());
+        return () => {
+          end?.();
+          this.signIn = null;
+          this.signInWaiting = null;
+        };
+      },
+    });
   }
 
   /**

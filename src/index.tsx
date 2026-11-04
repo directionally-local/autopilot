@@ -636,6 +636,57 @@ program
     await gracefulExit(code);
   });
 
+/** The free tier's commands' real I/O: the active provider, the terminal, the browser, the service. */
+async function dlCommandDeps(): Promise<import("./dl-commands.js").DlCommandDeps> {
+  const dl = await import("./providers/directionally-local.js");
+  const { llmAuthFromConfig, providerPresetOf } = await import("./agent/llm-auth.js");
+  const { openBrowser } = await import("./ui/app-helpers.js");
+  const { copyWithOsc52 } = await import("./util/osc52.js");
+  const cfg = await loadConfig().catch(() => null);
+  const provider = providerPresetOf(llmAuthFromConfig(cfg));
+  const tty = !!process.stdin.isTTY && !!process.stdout.isTTY;
+  return {
+    providerId: provider.id,
+    providerName: provider.name,
+    print: (line) => console.log(line),
+    fetchMe: () => dl.fetchDlMe(),
+    copy: (text) => copyWithOsc52(text),
+    checkout: (product) => dl.dlCheckout(product),
+    portal: () => dl.dlBillingPortal(),
+    openBrowser: (url) => openBrowser(url),
+    ask: tty
+      ? async (question) => {
+          const { createInterface } = await import("node:readline/promises");
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          try {
+            return await rl.question(question);
+          } finally {
+            rl.close();
+          }
+        }
+      : null,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+  };
+}
+
+program
+  .command("invite")
+  .description("Directionally Local free tier: show your invite link (copied to the clipboard where the terminal allows), who joined, and your bonus. Each friend who starts using dl gives you both +10M tokens a week.")
+  .action(async () => {
+    const { runInviteCommand } = await import("./dl-commands.js");
+    process.exitCode = await runInviteCommand(await dlCommandDeps());
+  });
+
+program
+  .command("upgrade")
+  .description("Directionally Local: buy Pro or a one-time top-up (opens the payment page, then waits up to 10 minutes for it to show); on Pro, open the page to manage or cancel your plan")
+  .argument("[product]", "pro or topup (asked when omitted)")
+  .action(async (product: string | undefined) => {
+    const { runUpgradeCommand } = await import("./dl-commands.js");
+    process.exitCode = await runUpgradeCommand(product, await dlCommandDeps());
+  });
+
 const authCommand = program
   .command("auth")
   .description("Connect an LLM provider (or GitHub); `autopilot auth status` lists providers")
@@ -869,7 +920,8 @@ authCommand.addCommand(
 authCommand.addCommand(
   new Command("directionally-local")
     .description("Sign in to the Directionally Local free tier with GitHub (device code) and make it the active provider")
-    .action(async () => {
+    .option("--referral <code>", "an invite code (or dl.new/r/<code> link) to send with the sign-in; DL_REFERRAL works too")
+    .action(async (cmdOpts: { referral?: string }) => {
       const dl = await import("./providers/directionally-local.js");
       const { switchProvider } = await import("./providers/keys.js");
       const { openBrowser } = await import("./ui/app-helpers.js");
@@ -883,7 +935,7 @@ authCommand.addCommand(
             console.log(`${opened ? "Opened" : "Open"} ${code.verificationUriComplete} — sign in with GitHub and approve it (enter an invite code there if asked).`);
             console.log("Waiting for you to approve…");
           },
-          { where: "cli" },
+          { where: "cli", ...(cmdOpts.referral ? { referralCode: cmdOpts.referral } : {}) },
         );
         await switchProvider(await loadConfig().catch(() => null), "directionally-local");
         const me = await dl.fetchDlMe().catch(() => null);

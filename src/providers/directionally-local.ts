@@ -181,6 +181,106 @@ export interface DlErrorDetail {
   minAccountAgeDays?: number;
   /** The service paused free tokens for everyone (its global budget), not just for this account. */
   pausedForEveryone?: boolean;
+  /** What can be bought instead of waiting (quota_exceeded, free_tier_queued); older servers send none. */
+  offers?: DlOffers;
+  /** The person's invite link, when the service sent it with the error. */
+  referralLink?: string;
+  /** free_tier_queued: the place in line (1 is next). */
+  position?: number;
+  /** free_tier_queued: when free tokens are expected to start. */
+  etaAt?: string;
+}
+
+// ── Plans, offers, invites and the queue (all optional: older servers send none) ──
+
+/** Pro: a monthly plan with a bigger weekly allowance. */
+export interface DlProOffer {
+  priceUsdMonthly: number;
+  tokensPerWeek: number;
+}
+
+/** A one-time top-up of tokens. */
+export interface DlTopupOffer {
+  priceUsd: number;
+  tokens: number;
+  /** How long bought tokens last, when the service says. */
+  validDays?: number;
+}
+
+export interface DlOffers {
+  pro?: DlProOffer;
+  topup?: DlTopupOffer;
+}
+
+/** The person's invite link and what it has earned. */
+export interface DlReferral {
+  code?: string;
+  link: string;
+  joined: number;
+  activeThisWeek: number;
+  /** Bonus tokens a week earned so far. */
+  bonusTokensPerWeek: number;
+  /** The most bonus tokens a week invites can earn. */
+  bonusCapPerWeek?: number;
+}
+
+/** A place in line for free tokens. */
+export interface DlQueue {
+  position: number;
+  etaAt?: string;
+}
+
+export type DlPlan = "free" | "pro";
+
+type Rec = Record<string, unknown>;
+const isRec = (v: unknown): v is Rec => !!v && typeof v === "object" && !Array.isArray(v);
+const numOf = (o: Rec, ...keys: string[]) => keys.map((k) => o[k]).find((v): v is number => typeof v === "number" && Number.isFinite(v));
+const strOf = (o: Rec, ...keys: string[]) => keys.map((k) => o[k]).find((v): v is string => typeof v === "string" && v.trim() !== "");
+
+/** Offers as the service sent them, keeping only complete ones. Undefined when there are none. */
+export function parseDlOffers(raw: unknown): DlOffers | undefined {
+  if (!isRec(raw)) return undefined;
+  const out: DlOffers = {};
+  if (isRec(raw.pro)) {
+    const price = numOf(raw.pro, "priceUsdMonthly", "price_usd_monthly");
+    const tokens = numOf(raw.pro, "tokensPerWeek", "tokens_per_week");
+    if (price !== undefined && price > 0 && tokens !== undefined && tokens > 0) out.pro = { priceUsdMonthly: price, tokensPerWeek: tokens };
+  }
+  if (isRec(raw.topup)) {
+    const price = numOf(raw.topup, "priceUsd", "price_usd");
+    const tokens = numOf(raw.topup, "tokens");
+    const days = numOf(raw.topup, "validDays", "valid_days");
+    if (price !== undefined && price > 0 && tokens !== undefined && tokens > 0) {
+      out.topup = { priceUsd: price, tokens, ...(days !== undefined && days > 0 ? { validDays: days } : {}) };
+    }
+  }
+  return out.pro || out.topup ? out : undefined;
+}
+
+/** The referral block of /v1/me, when it has a link. */
+export function parseDlReferral(raw: unknown): DlReferral | undefined {
+  if (!isRec(raw)) return undefined;
+  const link = strOf(raw, "link", "url");
+  if (!link) return undefined;
+  const code = strOf(raw, "code");
+  const cap = numOf(raw, "bonusCapPerWeek", "bonus_cap_per_week");
+  return {
+    ...(code ? { code } : {}),
+    link,
+    joined: Math.max(0, numOf(raw, "joined") ?? 0),
+    activeThisWeek: Math.max(0, numOf(raw, "activeThisWeek", "active_this_week") ?? 0),
+    bonusTokensPerWeek: Math.max(0, numOf(raw, "bonusTokensPerWeek", "bonus_tokens_per_week") ?? 0),
+    ...(cap !== undefined && cap > 0 ? { bonusCapPerWeek: cap } : {}),
+  };
+}
+
+/** The queue block of /v1/me: null or missing means not queued. */
+export function parseDlQueue(raw: unknown): DlQueue | undefined {
+  if (!isRec(raw)) return undefined;
+  const position = numOf(raw, "position");
+  if (position === undefined || position < 1) return undefined;
+  const etaAt = strOf(raw, "etaAt", "eta_at");
+  return { position: Math.round(position), ...(etaAt ? { etaAt } : {}) };
 }
 
 interface DlErrorBody {
@@ -210,6 +310,10 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const fromMessage = message ? /\b(\d{1,4})\s*days?\b/i.exec(message)?.[1] : undefined;
   const minAccountAgeDays = num("minAccountAgeDays", "min_account_age_days", "minGithubAccountAgeDays") ?? (fromMessage ? Number(fromMessage) : undefined);
   const pausedForEveryone = e.pausedForEveryone === true || e.paused_for_everyone === true;
+  const offers = parseDlOffers(e.offers);
+  const referralLink = str("referralLink", "referral_link");
+  const position = num("position");
+  const etaAt = str("etaAt", "eta_at");
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -218,6 +322,10 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(reason ? { reason } : {}),
     ...(minAccountAgeDays !== undefined && minAccountAgeDays > 0 ? { minAccountAgeDays } : {}),
     ...(pausedForEveryone ? { pausedForEveryone } : {}),
+    ...(offers ? { offers } : {}),
+    ...(referralLink ? { referralLink } : {}),
+    ...(position !== undefined && position >= 1 ? { position: Math.round(position) } : {}),
+    ...(etaAt ? { etaAt } : {}),
   };
 }
 
@@ -304,6 +412,43 @@ export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { wher
 }
 
 /**
+ * "about 3 days, by Fri": how long until free tokens start, in local time.
+ * Undefined for a missing or unparseable time.
+ */
+export function formatEta(etaAt: string | undefined, o: DlTimeOpts = {}): string | undefined {
+  const t = etaAt ? Date.parse(etaAt) : NaN;
+  if (!Number.isFinite(t)) return undefined;
+  const now = o.now ?? Date.now();
+  const tz = o.timeZone ? { timeZone: o.timeZone } : {};
+  const ms = t - now;
+  if (ms <= 0) return "any time now";
+  const hours = Math.max(1, Math.round(ms / 3_600_000));
+  if (hours < 24) {
+    const at = new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", ...tz });
+    return `about ${hours} hour${hours === 1 ? "" : "s"}, by ${at}`;
+  }
+  const days = Math.round(hours / 24);
+  const by =
+    ms < WEEK_MS
+      ? new Date(t).toLocaleDateString("en-US", { weekday: "short", ...tz })
+      : new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", ...tz });
+  return `about ${days} day${days === 1 ? "" : "s"}, by ${by}`;
+}
+
+/** "You're #214 in line for free tokens (about 3 days, by Fri)." */
+export function dlQueuePlace(position: number | undefined, etaAt: string | undefined, o: DlTimeOpts = {}): string {
+  const eta = formatEta(etaAt, o);
+  const place = position && position > 0 ? `You're #${position} in line for free tokens` : "You're in line for free tokens";
+  return `${place}${eta ? ` (${eta})` : ""}.`;
+}
+
+/** The queue said in a session or the CLI: the place in line, and the ways to start sooner. */
+export function dlQueueLine(position: number | undefined, etaAt: string | undefined, o: DlTimeOpts & { where?: DlWhere } = {}): string {
+  const next = o.where === "cli" ? "`autopilot invite` moves you up; `autopilot connect` uses your own key now." : `/invite moves you up; ${DL_SWITCH_HINT} uses your own key now.`;
+  return `${dlQueuePlace(position, etaAt, o)} ${next}`;
+}
+
+/**
  * The plain sentence for a service error code. `extra` carries resetsAt /
  * retryAfter / reason from the error body or headers, and where it's shown.
  * Undefined for codes this client doesn't know (the caller shows the
@@ -328,6 +473,8 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
     case "quota_exceeded":
       // The token and the spending allowance read the same: both are "this week's free tokens".
       return dlQuotaLine(extra.resetsAt, { ...extra, where });
+    case "free_tier_queued":
+      return dlQueueLine(extra.position, extra.etaAt, { ...extra, where });
     case "suspended":
       return `This Directionally Local account is suspended, so its requests are refused. ${ownKeyNow(where)}`;
     case "rate_limited": {
@@ -389,14 +536,66 @@ async function errorFrom(res: Response, what: string, where: DlWhere = "session"
   return new DlError("http_error", `${what} failed (HTTP ${res.status}).`, res.status);
 }
 
-export async function startDlDeviceFlow(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; signal?: AbortSignal; where?: DlWhere } = {}): Promise<DlDeviceCode> {
+/** Env var with an invite (referral) code to send with the sign-in; dl sets it after installing from dl.new/r/<code>. */
+export const DL_REFERRAL_ENV = "DL_REFERRAL";
+
+/** A referral code as it may be sent: letters, digits, "-" and "_", or a dl.new/r/<code> link. Undefined otherwise. */
+export function cleanReferralCode(raw: string | undefined | null): string | undefined {
+  const v = raw?.trim();
+  if (!v) return undefined;
+  const fromLink = /\/r\/([A-Za-z0-9_-]{1,64})\/?$/.exec(v)?.[1];
+  const code = fromLink ?? v;
+  return /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : undefined;
+}
+
+/**
+ * The referral code to send with the next sign-in: an explicit one, else
+ * DL_REFERRAL, else the config's `pendingReferral` (written by dl), with
+ * where it came from so the config one can be cleared once signed in.
+ */
+export async function pendingDlReferral(o: { explicit?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ code: string; from: "explicit" | "env" | "config" } | undefined> {
+  const explicit = cleanReferralCode(o.explicit);
+  if (explicit) return { code: explicit, from: "explicit" };
+  const fromEnv = cleanReferralCode((o.env ?? process.env)[DL_REFERRAL_ENV]);
+  if (fromEnv) return { code: fromEnv, from: "env" };
+  const cfg = await readPersisted();
+  const saved = cleanReferralCode(cfg?.pendingReferral ?? cfg?.providers?.[DL_PROVIDER_ID]?.pendingReferral);
+  return saved ? { code: saved, from: "config" } : undefined;
+}
+
+/** Forget the config's pending referral (sent with a sign-in that went through). */
+export async function clearPendingDlReferral(): Promise<void> {
+  const cfg = await readPersisted();
+  if (!cfg) return;
+  const provider = cfg.providers?.[DL_PROVIDER_ID];
+  if (cfg.pendingReferral === undefined && provider?.pendingReferral === undefined) return;
+  const patch: Partial<AutopilotConfig> = { pendingReferral: undefined };
+  if (provider?.pendingReferral !== undefined) {
+    const { pendingReferral: _drop, ...rest } = provider;
+    patch.providers = { ...cfg.providers, [DL_PROVIDER_ID]: rest };
+  }
+  await patchPersistedConfig(patch);
+}
+
+export async function startDlDeviceFlow(
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; signal?: AbortSignal; where?: DlWhere; referralCode?: string } = {},
+): Promise<DlDeviceCode> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  let res: Response;
-  try {
-    res = await jsonPost(`${dlOrigin(opts.env)}/v1/device/code`, {}, fetchImpl, opts.signal);
-  } catch (e) {
-    if ((e as Error).name === "AbortError") throw e;
-    throw new DlError("network", `Couldn't reach Directionally Local at ${dlOrigin(opts.env)}: ${(e as Error).message}`);
+  const url = `${dlOrigin(opts.env)}/v1/device/code`;
+  const post = async (body: Record<string, string>): Promise<Response> => {
+    try {
+      return await jsonPost(url, body, fetchImpl, opts.signal);
+    } catch (e) {
+      if ((e as Error).name === "AbortError") throw e;
+      throw new DlError("network", `Couldn't reach Directionally Local at ${dlOrigin(opts.env)}: ${(e as Error).message}`);
+    }
+  };
+  const referral = cleanReferralCode(opts.referralCode);
+  let res = await post(referral ? { referral_code: referral } : {});
+  // A server that doesn't take this referral code (unknown, used up): sign in without it rather than not at all.
+  if (!res.ok && referral && (res.status === 400 || res.status === 422)) {
+    const err = parseDlError(await readJson(res.clone()));
+    if (!err || !dlDenialOf(err.code, err.reason, err.pausedForEveryone)) res = await post({});
   }
   if (!res.ok) throw await errorFrom(res, "Starting the Directionally Local sign-in", opts.where ?? "signin");
   const d = (await readJson(res)) as Partial<{
@@ -573,6 +772,47 @@ export interface DlMe {
   githubId?: number | string;
   allowance: DlAllowance;
   models?: string[];
+  /** "pro" once paid; free when the service doesn't say (older servers). */
+  plan?: DlPlan;
+  /** Bought top-up tokens not used yet. */
+  topupTokensLeft?: number;
+  /** A place in line for free tokens; undefined when not queued. */
+  queue?: DlQueue;
+  referral?: DlReferral;
+  offers?: DlOffers;
+}
+
+/**
+ * /v1/me read defensively: the newer fields are kept only when well formed.
+ * A queued account may have no allowance yet: it reads as an empty one.
+ * Null when the body is neither.
+ */
+export function normalizeDlMe(raw: unknown): DlMe | null {
+  if (!isRec(raw)) return null;
+  const queue = parseDlQueue(raw.queue);
+  const a = isRec(raw.allowance) && typeof raw.allowance.remaining === "number" ? (raw.allowance as unknown as DlAllowance) : undefined;
+  if (!a && !queue) return null;
+  const allowance: DlAllowance = a ?? { tokensPerWeek: 0, usedThisWeek: 0, remaining: 0, resetsAt: "" };
+  const plan = raw.plan === "pro" || raw.plan === "free" ? raw.plan : undefined;
+  const topup = numOf(raw, "topupTokensLeft", "topup_tokens_left");
+  const referral = parseDlReferral(raw.referral);
+  const offers = parseDlOffers(raw.offers);
+  return {
+    ...(raw as unknown as DlMe),
+    login: typeof raw.login === "string" ? raw.login : "",
+    allowance,
+    plan,
+    topupTokensLeft: topup !== undefined ? Math.max(0, topup) : undefined,
+    queue,
+    referral,
+    offers,
+  };
+}
+
+/** The account last read from /v1/me in this process (for the invite and limit screens). */
+let lastMe: DlMe | null = null;
+export function lastKnownDlMe(): DlMe | null {
+  return lastMe;
 }
 
 /** The weekly grant last read from /v1/me in this process (for the 80% notice). */
@@ -597,9 +837,10 @@ export async function fetchDlMe(opts: { fetchImpl?: typeof fetch; env?: NodeJS.P
     }
   }
   if (!res.ok) throw await errorFrom(res, "Reading your Directionally Local allowance");
-  const me = (await readJson(res)) as DlMe | null;
-  if (!me?.allowance || typeof me.allowance.remaining !== "number") throw new DlError("bad_response", "Directionally Local returned an unexpected account response.");
+  const me = normalizeDlMe(await readJson(res));
+  if (!me) throw new DlError("bad_response", "Directionally Local returned an unexpected account response.");
   if (me.allowance.tokensPerWeek > 0) knownWeeklyTokens = me.allowance.tokensPerWeek;
+  lastMe = me;
   return me;
 }
 
@@ -609,30 +850,56 @@ export function noteDlQuotaExceeded(info: { reason?: string; resetsAt?: string }
   lastQuota = { ...(info.reason ? { reason: info.reason } : {}), ...(info.resetsAt ? { resetsAt: info.resetsAt } : {}) };
 }
 
-/** `/usage`: used and left this week, and when it resets (in local time). */
+/** "Pro" or "Free": a missing plan (an older server) is the free tier. */
+export function dlPlanName(me: Pick<DlMe, "plan">): "Pro" | "Free" {
+  return me.plan === "pro" ? "Pro" : "Free";
+}
+
+/** "+30M a week of +50M" (or "+30M a week" with no cap). */
+export function referralBonusText(r: Pick<DlReferral, "bonusTokensPerWeek" | "bonusCapPerWeek">): string {
+  return `+${formatTokens(r.bonusTokensPerWeek)} a week${r.bonusCapPerWeek ? ` of +${formatTokens(r.bonusCapPerWeek)}` : ""}`;
+}
+
+/** `/usage`: plan, used and left this week, top-up, invite bonus, queue, and when it resets (in local time). */
 export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): string {
   const a = me.allowance;
-  const pct = a.tokensPerWeek > 0 ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100)) : 0;
+  const tz = timeZone ? { timeZone } : {};
+  const pro = me.plan === "pro";
   const lines = [
-    `Directionally Local free tier${me.login ? ` · signed in as @${me.login}` : ""}`,
+    `Directionally Local ${pro ? "Pro" : "free tier"}${me.login ? ` · signed in as @${me.login}` : ""}`,
+    `  plan            ${dlPlanName(me)}`,
+  ];
+  if (me.queue) {
+    lines.push(`  queue           ${dlQueuePlace(me.queue.position, me.queue.etaAt, { now, ...tz }).replace(/^You're /, "").replace(/\.$/, "")}`);
+    if (me.topupTokensLeft && me.topupTokensLeft > 0) lines.push(`  top-up left     ${formatTokens(me.topupTokensLeft)} tokens`);
+    if (me.referral) lines.push(`  invites         ${me.referral.joined} joined · /invite moves you up`);
+    return lines.join("\n");
+  }
+  const pct = a.tokensPerWeek > 0 ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100)) : 0;
+  lines.push(
     `  used this week  ${formatTokens(a.usedThisWeek)} of ${formatTokens(a.tokensPerWeek)} tokens (${pct}%)`,
     `  left            ${formatTokens(Math.max(0, a.remaining))} tokens`,
-  ];
-  // The weekly spending limit counts too ($5 unless the service says otherwise; null from the service means none).
-  const limit = a.usdPerWeek === undefined ? DL_FREE_WEEKLY_USD : a.usdPerWeek;
+  );
+  if (me.topupTokensLeft !== undefined && me.topupTokensLeft > 0) lines.push(`  top-up left     ${formatTokens(me.topupTokensLeft)} tokens`);
+  if (me.referral && (me.referral.bonusTokensPerWeek > 0 || me.referral.joined > 0)) {
+    lines.push(`  invite bonus    ${referralBonusText(me.referral)} (${me.referral.joined} joined, ${me.referral.activeThisWeek} active this week)`);
+  }
+  // The weekly spending limit counts too ($5 unless the service says otherwise; null from the service means none). Not on Pro.
+  const limit = a.usdPerWeek === undefined ? (pro ? null : DL_FREE_WEEKLY_USD) : a.usdPerWeek;
   if (typeof limit === "number" && limit > 0) {
     const spent = typeof a.spentUsdThisWeek === "number" ? a.spentUsdThisWeek : undefined;
     lines.push(`  spending limit  ${spent === undefined ? `${formatUsd(limit)} a week` : `spent ${formatUsd(spent)} of ${formatUsd(limit)}`}`);
   }
-  lines.push(`  resets          ${formatReset(a.resetsAt, now, timeZone)}`);
+  lines.push(`  resets          ${formatReset(a.resetsAt || undefined, now, timeZone)}`);
   // A 402 from this week (same reset) still counts when /v1/me rounds it differently.
   const seen = lastQuota && (!lastQuota.resetsAt || lastQuota.resetsAt === a.resetsAt) ? lastQuota : null;
   const spendHit =
     (typeof a.usdPerWeek === "number" && a.usdPerWeek > 0 && typeof a.spentUsdThisWeek === "number" && a.spentUsdThisWeek >= a.usdPerWeek) ||
     seen?.reason === "spend";
+  const topupLeft = (me.topupTokensLeft ?? 0) > 0;
   // The token and the spending allowance read the same: either way this week's free tokens are used.
-  if (a.remaining <= 0 || spendHit) lines.push(`  ${dlQuotaLine(a.resetsAt, { now, ...(timeZone ? { timeZone } : {}) })}`);
-  else if (pct >= 80) lines.push(`  You've used ${pct}% of this week's tokens.`);
+  if ((a.remaining <= 0 || spendHit) && !topupLeft) lines.push(`  ${dlQuotaLine(a.resetsAt || undefined, { now, ...tz })}`);
+  else if (pct >= 80 && !topupLeft) lines.push(`  You've used ${pct}% of this week's tokens.`);
   return lines.join("\n");
 }
 
@@ -665,6 +932,7 @@ export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: 
 /** Test hook: forget the shown notice and the cached weekly grant. */
 export function resetDlNoticeState(): void {
   noticeShownFor = null;
+  lastMe = null;
   lastQuota = null;
   knownWeeklyTokens = undefined;
 }
@@ -672,15 +940,78 @@ export function resetDlNoticeState(): void {
 /** Device sign-in end to end: show the code, poll, save the tokens. Returns the access token. */
 export async function dlSignIn(
   onCode: (code: DlDeviceCode) => void,
-  opts: { signal?: AbortSignal; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; where?: DlWhere } = {},
+  opts: {
+    signal?: AbortSignal;
+    fetchImpl?: typeof fetch;
+    env?: NodeJS.ProcessEnv;
+    sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+    where?: DlWhere;
+    /** `--referral <code>`: wins over DL_REFERRAL and the config's pending referral. */
+    referralCode?: string;
+  } = {},
 ): Promise<string> {
-  const code = await startDlDeviceFlow(opts);
+  const referral = await pendingDlReferral({ ...(opts.referralCode ? { explicit: opts.referralCode } : {}), ...(opts.env ? { env: opts.env } : {}) }).catch(() => undefined);
+  const code = await startDlDeviceFlow({ ...opts, ...(referral ? { referralCode: referral.code } : {}) });
   onCode(code);
   const tokens = await pollDlDeviceFlow(code, opts);
   await saveDlSettings(dlSettings(tokens));
+  // Signed in: the referral has been used (or the account already had one); don't send it again.
+  if (referral) await clearPendingDlReferral().catch(() => undefined);
   // Approved in the browser: bring the terminal back (macOS; silent otherwise).
   void import("../util/refocus-terminal.js").then((m) => m.refocusTerminal(opts.env ? { env: opts.env } : {})).catch(() => {});
   return tokens.access_token;
+}
+
+// ── Billing ──────────────────────────────────────────────────────────────
+
+export type DlProduct = "pro" | "topup";
+
+/** An authorized call to the service, refreshing the access token once after a 401 `invalid_token`. */
+async function dlAuthedPost(path: string, body: unknown, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv }, what: string): Promise<unknown> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const env = opts.env ? { env: opts.env } : {};
+  const call = (token: string) =>
+    fetchImpl(`${dlOrigin(opts.env)}${path}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    });
+  let token = await dlAccessToken({ fetchImpl, ...env });
+  if (!token) throw new DlError("signed_out", `You're not signed in to Directionally Local; sign in with \`${DL_SIGN_IN_COMMAND}\`.`);
+  let res: Response;
+  try {
+    res = await call(token);
+    if (res.status === 401) {
+      const err = parseDlError(await readJson(res.clone()));
+      if (err?.code === "invalid_token") {
+        token = await dlAccessToken({ fetchImpl, force: true, ...env });
+        if (token) res = await call(token);
+      }
+    }
+  } catch (e) {
+    if (e instanceof DlError) throw e;
+    throw new DlError("network", `Couldn't reach Directionally Local: ${(e as Error).message}`);
+  }
+  if (res.status === 404 || res.status === 405) throw new DlError("unsupported", "Paid plans aren't available from this Directionally Local server yet.", res.status);
+  if (!res.ok) throw await errorFrom(res, what);
+  return readJson(res);
+}
+
+function urlFrom(body: unknown, what: string): string {
+  const url = isRec(body) ? strOf(body, "url") : undefined;
+  if (!url || !/^https:\/\//i.test(url)) throw new DlError("bad_response", `Directionally Local returned no link for ${what}; try again.`);
+  return url;
+}
+
+/** POST /v1/billing/checkout: the payment page for Pro or a top-up. */
+export async function dlCheckout(product: DlProduct, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+  return urlFrom(await dlAuthedPost("/v1/billing/checkout", { product }, opts, "Starting the checkout"), "the checkout");
+}
+
+/** POST /v1/billing/portal: where a Pro plan is managed or cancelled. */
+export async function dlBillingPortal(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+  return urlFrom(await dlAuthedPost("/v1/billing/portal", {}, opts, "Opening the billing page"), "the billing page");
 }
 
 // ── Sign-out ─────────────────────────────────────────────────────────────

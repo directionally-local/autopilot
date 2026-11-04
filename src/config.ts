@@ -207,6 +207,12 @@ export interface AutopilotConfig {
   projectTour?: boolean;
   /** On macOS, bring the terminal running Autopilot back to the front when a browser sign-in completes. Default: true. Env: AUTOPILOT_REFOCUS_TERMINAL. */
   refocusTerminal?: boolean;
+  /** End pull requests the agent opens with "Opened with dl, a free coding agent." Default: true. Env: AUTOPILOT_PR_FOOTER. */
+  prFooter?: boolean;
+  /** Free tier: after the first opened PR or passing tests, one line with your invite link (shown once). Default: true. */
+  inviteTip?: boolean;
+  /** Directionally Local: an invite code to send with the next free-tier sign-in (dl writes it; cleared once signed in). */
+  pendingReferral?: string;
   /** URL of the remote orchestrator Worker. */
   remoteWorkerUrl?: string;
   /** Shared secret for authenticating with the remote Worker. */
@@ -498,6 +504,8 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     filePicker: readBooleanEnv("FILE_PICKER") ?? persisted.filePicker ?? true,
     projectTour: readBooleanEnv("PROJECT_TOUR") ?? persisted.projectTour ?? true,
     refocusTerminal: readBooleanEnv("REFOCUS_TERMINAL") ?? persisted.refocusTerminal ?? true,
+    prFooter: readBooleanEnv("PR_FOOTER") ?? persisted.prFooter ?? true,
+    inviteTip: persisted.inviteTip ?? true,
     shell: readEnv("SHELL") ?? persisted.shell,
     remoteWorkerUrl: persisted.remoteWorkerUrl,
     remoteAuthSecret: persisted.remoteAuthSecret,

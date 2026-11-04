@@ -5,6 +5,8 @@ export class ApiError extends Error {
   transient?: boolean;
   /** The host's Retry-After, in milliseconds, when it sent one. */
   retryAfterMs?: number;
+  /** What the provider sent with that code (Directionally Local: reset time, offers, invite link, place in line). */
+  providerDetail?: Record<string, unknown>;
   constructor(
     message: string,
     public readonly code?: number,

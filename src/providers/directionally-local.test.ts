@@ -417,6 +417,7 @@ describe("Directionally Local free tier", () => {
         renderDlUsage(me(), NOW, "Asia/Tokyo"),
         [
           "Directionally Local free tier · signed in as @octo",
+          "  plan            Free",
           "  used this week  12.5M of 50M tokens (25%)",
           "  left            37.5M tokens",
           "  spending limit  $5 a week",
@@ -436,6 +437,7 @@ describe("Directionally Local free tier", () => {
         renderDlUsage(me({ usedThisWeek: 32_200, remaining: 49_967_800, usdPerWeek: 5, spentUsdThisWeek: 0.0112 }), tuesday, "UTC"),
         [
           "Directionally Local free tier · signed in as @octo",
+          "  plan            Free",
           "  used this week  32.2k of 50M tokens (0%)",
           "  left            50M tokens",
           "  spending limit  spent $0.01 of $5",
@@ -620,6 +622,26 @@ describe("Directionally Local free tier", () => {
       await assert.rejects(drain(llmAuthFromConfig(await readCfg())), /this week's free tokens/);
       assert.match(renderDlUsage(me(), NOW, "Asia/Tokyo"), used);
       assert.ok(!/They're back/.test(renderDlUsage(me({ resetsAt: "2026-11-16T00:00:00.000Z" }), NOW)), "not after the week resets");
+    });
+
+    it("keeps the limit screen's details (offers, invite link, reset, place in line) on the error", async () => {
+      await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+      const offers = { pro: { priceUsdMonthly: 10, tokensPerWeek: 100_000_000 }, topup: { priceUsd: 3, tokens: 50_000_000, validDays: 30 } };
+      stub.chatReplies = [{ status: 402, body: { error: { code: "quota_exceeded", resetsAt: "2026-11-09T00:00:00.000Z", offers, referralLink: "https://dl.new/r/x" } } }];
+      await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { providerCode?: string; providerDetail?: Record<string, unknown> }) => {
+        assert.strictEqual(e.providerCode, "quota_exceeded");
+        assert.deepStrictEqual(e.providerDetail, { resetsAt: "2026-11-09T00:00:00.000Z", offers, referralLink: "https://dl.new/r/x" });
+        return true;
+      });
+      const etaAt = new Date(Date.now() + 3 * 86_400_000).toISOString();
+      stub.chatReplies = [{ status: 402, body: { error: { code: "free_tier_queued", position: 214, etaAt } } }];
+      await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { providerCode?: string; providerDetail?: Record<string, unknown> }) => {
+        assert.strictEqual(e.providerCode, "free_tier_queued");
+        assert.deepStrictEqual(e.providerDetail, { position: 214, etaAt });
+        assert.match(e.message, /^autopilot: You're #214 in line for free tokens \(about \d+ days?, by \w+\)\. \/invite moves you up; \/provider uses your own key now\.$/);
+        return true;
+      });
+      assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 2, "neither is retried");
     });
 
     it("retries a 429 rate_limited after retryAfter, then says when to try again", async () => {

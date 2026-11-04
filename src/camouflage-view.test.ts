@@ -476,3 +476,53 @@ describe("Camouflage lifecycle auto-settle", () => {
     view.dispose();
   });
 });
+
+describe("Camouflage free-tier limit screen", () => {
+  const offers = { pro: { priceUsdMonthly: 10, tokensPerWeek: 100_000_000 }, topup: { priceUsd: 3, tokens: 50_000_000 } };
+  const me = (plan?: "pro") => ({
+    login: "octo",
+    allowance: { tokensPerWeek: 50_000_000, usedThisWeek: 50_000_000, remaining: 0, resetsAt: "2026-11-09T00:00:00Z" },
+    ...(plan ? { plan } : {}),
+  });
+
+  it("shows the choice on quota_exceeded, buys Pro, and tells App to retry", async () => {
+    const { view, sent, prompts, calls } = await fakeView({ select: ["pro"] });
+    let polls = 0;
+    const checkouts: string[] = [];
+    view.dlScreenCalls = {
+      checkout: async (p) => (checkouts.push(p), "https://pay.example/pro"),
+      fetchMe: async () => (++polls > 2 ? me("pro") : me()),
+      openBrowser: () => false,
+      copy: () => false,
+      sleep: async () => {},
+      now: () => Date.now(),
+    };
+    view.sync(baseSnapshot({ dlScreen: { kind: "quota", resetsAt: "2026-11-09T00:00:00Z", offers, referralLink: "https://dl.new/r/x" } }));
+    await settle();
+    const pick = prompts.find((p) => p.type === "select")!.payload;
+    assert.match(String(pick.prompt), /^You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\.$/);
+    assert.deepStrictEqual((pick.options as { label: string }[]).map((o) => o.label), [
+      "Invite a friend — you both get +10M a week",
+      "Keep going with Pro — $10/month, 100M a week",
+      "Top up 50M tokens — $3, one time",
+      "Use my own API key",
+    ]);
+    assert.deepStrictEqual(checkouts, ["pro"]);
+    const said = sent.filter((s) => s.type === "RuntimeError").map((s) => String(s.payload.message));
+    assert.ok(said.some((m) => m.startsWith("Open https://pay.example/pro in a browser on any device to start Pro.")), said.join("\n"));
+    assert.ok(said.includes("✓ Pro active. Continuing."));
+    assert.deepStrictEqual(calls, [["dlScreenDone", "retry"]]);
+    assert.strictEqual(view.signIn, null, "Esc goes back to the session once the wait is over");
+    view.dispose();
+  });
+
+  it("Esc closes it and App shows the usual line; own key opens the provider picker", async () => {
+    for (const [answer, outcome] of [[null, "dismissed"], ["own-key", "own-key"]] as const) {
+      const { view, calls } = await fakeView({ select: [answer] });
+      view.sync(baseSnapshot({ dlScreen: { kind: "queued", position: 214, referralLink: "https://dl.new/r/x" } }));
+      await settle();
+      assert.deepStrictEqual(calls, [["dlScreenDone", outcome]]);
+      view.dispose();
+    }
+  });
+});

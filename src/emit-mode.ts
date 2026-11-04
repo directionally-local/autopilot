@@ -31,6 +31,7 @@ import { buildSystemPrompt } from "./agent/system-prompt.js";
 import { ToolExecutor, ALL_TOOLS, toolsForSession, permissionFromHook } from "./tools/executor.js";
 import type { ChatMessage } from "./agent/messages.js";
 import { ApiError, humanizeApiError } from "./util/errors.js";
+import { dlHeadlessMessage } from "./providers/dl-growth.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt, PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submit.js";
 import { makeSessionId } from "./sessions.js";
@@ -424,7 +425,7 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
         aborted = true;
       } else if (err instanceof ApiError) {
         emit("RuntimeError", {
-          message: humanizeApiError(err),
+          message: dlHeadlessMessage(err) ?? humanizeApiError(err),
           // The provider the request went to ("openrouter", "openai", "ollama", …).
           source: providerIdOf(llmAuthFromConfig(opts)),
           kind: "api_error",
