@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.8.0](https://github.com/directionally-local/autopilot/compare/v3.7.0...v3.8.0) (2026-11-04)
+
+
+### Features
+
+* make free tier invites visible ([#1151](https://github.com/directionally-local/autopilot/issues/1151)) ([c0bca12](https://github.com/directionally-local/autopilot/commit/c0bca1255d7f4fb6ce0316a928805d124664b3e3))
+
 ## [3.7.0](https://github.com/directionally-local/autopilot/compare/v3.6.0...v3.7.0) (2026-11-04)
 
 
