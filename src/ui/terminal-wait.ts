@@ -43,15 +43,44 @@ export async function waitWithoutInput(
   lender: TerminalLender,
   io: WaitIo = { stdin: process.stdin, stdout: process.stdout },
 ): Promise<(() => void) | null> {
+  return lendTerminal(line, (chunk) => {
+    if (isCancelKey(chunk)) cancel();
+  }, lender, io);
+}
+
+/**
+ * Lend the terminal, draw `line`, and resolve with the first key pressed
+ * (the raw chunk), erasing the line and giving the terminal back. Null when
+ * the terminal couldn't be lent.
+ */
+export async function readKeyWithoutInput(
+  line: string,
+  lender: TerminalLender,
+  io: WaitIo = { stdin: process.stdin, stdout: process.stdout },
+): Promise<string | null> {
+  let resolveKey!: (key: string) => void;
+  const key = new Promise<string>((resolve) => (resolveKey = resolve));
+  const end = await lendTerminal(line, (chunk) => resolveKey(chunk), lender, io);
+  if (!end) return null;
+  const pressed = await key;
+  end();
+  return pressed;
+}
+
+/** Lend the terminal, draw `line`, and pass each key chunk to `onKey` until the returned function ends it. */
+async function lendTerminal(
+  line: string,
+  onKey: (chunk: string) => void,
+  lender: TerminalLender,
+  io: WaitIo,
+): Promise<(() => void) | null> {
   const { stdin, stdout } = io;
   if (!stdin.isTTY || !stdout.isTTY || typeof stdin.setRawMode !== "function") return null;
   if (!(await lender.suspend().catch(() => false))) return null;
   // Wrapped at word boundaries, like the renderer's own lines, not mid-word by the terminal.
   const text = wrapText(line, terminalWrapWidth(stdout)).join("\n");
   const wasRaw = stdin.isRaw;
-  const onData = (chunk: Buffer | string) => {
-    if (isCancelKey(typeof chunk === "string" ? chunk : chunk.toString("latin1"))) cancel();
-  };
+  const onData = (chunk: Buffer | string) => onKey(typeof chunk === "string" ? chunk : chunk.toString("latin1"));
   try {
     stdin.setRawMode(true);
     stdin.on("data", onData);

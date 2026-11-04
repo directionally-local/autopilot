@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import type { AutopilotConfig } from "./config.js";
-import { firstRunIntro, onboardingCancelledMessage, runFirstRun, UPGRADE_NOTICE, type FirstRunDeps } from "./camouflage-onboarding.js";
+import { firstRunIntro, onboardingCancelledMessage, ownKeyIntro, runFirstRun, UPGRADE_NOTICE, type FirstRunDeps } from "./camouflage-onboarding.js";
 import { sessionHeaderDetail } from "./camouflage-view.js";
 
 function deps(over: Partial<FirstRunDeps> & { calls?: string[] } = {}): FirstRunDeps & { shown: string[][]; calls: string[] } {
@@ -29,14 +29,21 @@ function deps(over: Partial<FirstRunDeps> & { calls?: string[] } = {}): FirstRun
 }
 
 describe("firstRunIntro", () => {
-  it("welcomes a new user and says where keys are stored", () => {
+  it("welcomes a new user with one line, nothing about API keys before the question", () => {
+    assert.deepStrictEqual(firstRunIntro({ upgrading: false, configPath: "/x/config.json", env: {} }), ["Welcome to Autopilot."]);
+    assert.deepStrictEqual(firstRunIntro({ upgrading: false, configPath: "/x/config.json", env: { AUTOPILOT_LAUNCHED_BY: "dl" } }), ["Welcome to Directionally Local."]);
     const text = firstRunIntro({ upgrading: false, configPath: "/x/config.json" }).join("\n");
-    assert.match(text, /Welcome to Autopilot\./);
-    const dl = firstRunIntro({ upgrading: false, configPath: "/x/config.json", env: { AUTOPILOT_LAUNCHED_BY: "dl" } });
-    assert.strictEqual(dl[0], "Welcome to Directionally Local.");
-    assert.match(text, /saved only in \/x\/config\.json/);
-    assert.match(text, /OPENROUTER_API_KEY/);
+    assert.doesNotMatch(text, /API keys you enter/);
+    assert.doesNotMatch(text, /this question is skipped/);
     assert.doesNotMatch(text, /Cloudflare/);
+  });
+
+  it("says where keys are stored, and how to skip the question, only for your own key", () => {
+    const lines = ownKeyIntro("/x/config.json");
+    assert.deepStrictEqual(lines, [
+      "API keys you enter are checked with the provider, then saved only in /x/config.json (keys from your environment are never written to disk).",
+      "Tip: with a provider's API key in your environment (e.g. OPENROUTER_API_KEY), this question is skipped.",
+    ]);
   });
 
   it("tells an upgrading kimiflare user Cloudflare is gone (the Ink onboarding copy)", () => {
@@ -127,11 +134,11 @@ describe("onboardingCancelledMessage", () => {
 });
 
 describe("sessionHeaderDetail", () => {
-  it("has no model line on first run", () => {
+  it("has no model line on first run: just \"First run\"", () => {
     const d = sessionHeaderDetail(null, process.cwd(), "main");
     assert.strictEqual(d.length, 2);
     assert.match(d[0]!, /main$/);
-    assert.match(d[1]!, /connect a model provider/);
+    assert.strictEqual(d[1], "First run");
   });
 
   it("names the model once configured", () => {

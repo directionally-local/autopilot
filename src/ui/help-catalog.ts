@@ -144,6 +144,7 @@ export const CATEGORIES: Category[] = [
       { command: "/settings", description: "show feature settings" },
       { command: "/settings pr-footer off", description: "stop ending the agent's pull requests with \"Opened with dl\"" },
       { command: "/settings invite-tip off", description: "free tier: never show the invite tip after a first win" },
+      { command: "/settings star-tip off", description: "never show the one-time GitHub star ask" },
       { command: "/provider", description: "list LLM providers and which has a key" },
       { command: "/provider <id> [key]", description: "switch provider (openrouter, openai, deepseek, ollama, …)", selectable: false },
       { command: "/key", description: "show the active provider's key status (and credit, on OpenRouter)" },

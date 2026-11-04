@@ -780,7 +780,7 @@ const handleModel: Handler = (ctx, rest, arg) => {
  * /settings — feature toggles. `/settings` lists them; `/settings <name> on|off`
  * flips one and persists it to the config file.
  */
-const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "projectTour" | "refocusTerminal" | "prFooter" | "inviteTip"; describe: string }> = {
+const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "projectTour" | "refocusTerminal" | "prFooter" | "inviteTip" | "starTip"; describe: string }> = {
   modes: {
     key: "modesEnabled",
     describe: "plan / edit / auto permission modes (off: every turn runs in auto)",
@@ -805,6 +805,10 @@ const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "
     key: "inviteTip",
     describe: "free tier: one line with your invite link after your first opened PR or passing tests",
   },
+  "star-tip": {
+    key: "starTip",
+    describe: "one line asking for a GitHub star after a win, once you've used it on 3+ days (shown once)",
+  },
 };
 
 const handleSettings: Handler = (ctx, rest) => {
@@ -816,8 +820,8 @@ const handleSettings: Handler = (ctx, rest) => {
   if (!name) {
     const lines = ["settings (change with /settings <name> on|off):"];
     for (const [n, s] of Object.entries(SETTINGS)) {
-      // prFooter and inviteTip are on unless set to false.
-      const on = s.key === "prFooter" || s.key === "inviteTip" ? cfg[s.key] !== false : !!cfg[s.key];
+      // prFooter, inviteTip and starTip are on unless set to false.
+      const on = s.key === "prFooter" || s.key === "inviteTip" || s.key === "starTip" ? cfg[s.key] !== false : !!cfg[s.key];
       lines.push(`  ${n.padEnd(10)} ${on ? "on " : "off"}  ${s.describe}`);
     }
     info(lines.join("\n"));

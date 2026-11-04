@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { EventEmitter } from "node:events";
-import { isCancelKey, waitWithoutInput } from "./terminal-wait.js";
+import { isCancelKey, readKeyWithoutInput, waitWithoutInput } from "./terminal-wait.js";
 
 function fakeIo(tty = true) {
   const stdin = Object.assign(new EventEmitter(), {
@@ -55,6 +55,30 @@ describe("waitWithoutInput", () => {
     const lender = { suspend: async () => true, resume: () => undefined };
     assert.strictEqual(await waitWithoutInput("w", () => undefined, lender, fakeIo(false).io), null);
     assert.strictEqual(await waitWithoutInput("w", () => undefined, { suspend: async () => false, resume: () => undefined }, fakeIo().io), null);
+  });
+});
+
+describe("readKeyWithoutInput", () => {
+  it("draws the line, resolves with the first key, then erases it and gives the terminal back", async () => {
+    const { io, stdin, written } = fakeIo();
+    const calls: string[] = [];
+    const pending = readKeyWithoutInput("Star it? (press s to star · any other key to dismiss)", {
+      suspend: async () => (calls.push("suspend"), true),
+      resume: () => calls.push("resume"),
+    }, io);
+    await new Promise((r) => setImmediate(r));
+    assert.ok(written.join("").includes("press s to star"));
+    assert.ok(stdin.isRaw);
+    stdin.emit("data", Buffer.from("s"));
+    assert.strictEqual(await pending, "s");
+    assert.deepStrictEqual(calls, ["suspend", "resume"]);
+    assert.strictEqual(stdin.isRaw, false);
+    assert.strictEqual(stdin.listenerCount("data"), 0);
+  });
+
+  it("returns null without a terminal or when the renderer can't lend it", async () => {
+    assert.strictEqual(await readKeyWithoutInput("l", { suspend: async () => true, resume: () => undefined }, fakeIo(false).io), null);
+    assert.strictEqual(await readKeyWithoutInput("l", { suspend: async () => false, resume: () => undefined }, fakeIo().io), null);
   });
 });
 

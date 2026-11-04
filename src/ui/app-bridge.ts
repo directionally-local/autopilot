@@ -32,6 +32,7 @@ import type { TurnPhase } from "./view-types.js";
 import type { IntentTier } from "./narrator.js";
 import type { QueuePlanChoice } from "./queue-plan.js";
 import type { DlScreen, DlScreenOutcome } from "../providers/dl-growth.js";
+import type { GithubAccessOutcome, GithubAccessRequest } from "../github-access.js";
 
 /** Which dialog App currently wants open (the Camouflage view draws it). */
 export type AppModal =
@@ -114,6 +115,10 @@ export interface AppSnapshot {
   lsp: { servers: Record<string, LspServerConfig>; scope: "project" | "global"; hasProjectDir: boolean };
   /** The free tier's limit, queue or /upgrade screen App wants shown (see providers/dl-growth.ts). */
   dlScreen?: DlScreen | null;
+  /** The GitHub star ask's line, to show once no turn is running (see star-ask.ts). */
+  starAsk?: string | null;
+  /** A push or pull request is waiting on GitHub access (see github-access.ts). */
+  githubAccess?: GithubAccessRequest | null;
 }
 
 export interface AppActions {
@@ -156,6 +161,10 @@ export interface AppActions {
   runCommand: (command: string) => void;
   /** The free-tier screen ended: retry the blocked request, open the provider picker, or nothing. */
   dlScreenDone?: (outcome: DlScreenOutcome) => void;
+  /** The star ask was answered (starred or dismissed). */
+  starAskDone?: () => void;
+  /** The GitHub access question was answered: the waiting push or pull request goes on. */
+  githubAccessDone?: (outcome: GithubAccessOutcome) => void;
   exit: () => void;
 }
 

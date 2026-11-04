@@ -25,7 +25,7 @@ import type { Cfg } from "./app.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { CustomCommand, CommandSource } from "./commands/types.js";
 import { configPath, hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type ReasoningEffort } from "./config.js";
-import { onboardingCancelledMessage, runFirstRun, type FirstRunOutcome } from "./camouflage-onboarding.js";
+import { onboardingCancelledMessage, ownKeyIntro, runFirstRun, type FirstRunOutcome } from "./camouflage-onboarding.js";
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
@@ -67,7 +67,10 @@ import { formatContext, formatModelPrice } from "./ui/model-format.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
-import { waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
+import { readKeyWithoutInput, waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
+import { runStarAsk } from "./star-ask.js";
+import { runGithubAccess, type GithubAccessOutcome } from "./github-access.js";
+import { ghAuthLogin, runGh, type GhLogin, type GhRun } from "./util/gh-cli.js";
 import { terminalWrapWidth, wrapText } from "./util/wrap.js";
 import { grantSetupConsent, SETUP_CHOICES } from "./permissions/setup-consent.js";
 import { CONFIRMED_IRREVERSIBLE, type DestructivePrompt } from "./permissions/guardrails.js";
@@ -212,7 +215,7 @@ export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed";
  * tier's line ("free · 49.9M left · /invite for more"), shown third.
  */
 export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null, free?: string): string[] {
-  if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run: connect a model provider to start"];
+  if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run"];
   return [
     [shortModel(cfg.model), shortPath(cwd), branch].filter(Boolean).join(" · "),
     `/ for commands · @ to mention files${cfg.modesEnabled ? " · shift+tab to switch modes" : ""}`,
@@ -470,6 +473,12 @@ export class View implements AppBridge {
         }, { once: true });
       }),
     now: () => Date.now(),
+  };
+  /** What the star ask and the GitHub sign-in call (gh, the browser); replaced in tests. */
+  githubCalls: { gh: GhRun; login: GhLogin; openBrowser: (url: string) => boolean } = {
+    gh: runGh,
+    login: ghAuthLogin,
+    openBrowser: (url) => openBrowser(url),
   };
   /** Esc presses (cancelRequested) so far: a permission prompt denied with
    *  Esc interrupts the turn instead of asking for feedback. */
@@ -1053,6 +1062,19 @@ export class View implements AppBridge {
         a.pickPlanOption(r === null ? null : options[Number(r)] ?? null);
       });
     }
+    if (s.githubAccess) {
+      return want("githubAccess", async () => {
+        const outcome = await this.githubAccess().catch(() => "not-now" as const);
+        a.githubAccessDone?.(outcome);
+      });
+    }
+    if (s.starAsk && !s.turnRunning) {
+      const line = s.starAsk;
+      return want("starAsk", async () => {
+        await this.starAsk(line).catch(() => undefined);
+        a.starAskDone?.();
+      });
+    }
     if (s.dlScreen) {
       const screen = s.dlScreen;
       return want("dlScreen", async () => {
@@ -1459,6 +1481,7 @@ export class View implements AppBridge {
     // The renderer marks the default "✓ current", so there is one only when a provider is configured.
     const configured = o.firstRun ? undefined : o.cfg?.provider;
     const current: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : "own-key") : undefined;
+    let ownKeyIntroShown = false;
     for (;;) {
       const choice = await this.select(
         FIRST_RUN_QUESTION,
@@ -1468,6 +1491,8 @@ export class View implements AppBridge {
       );
       if (choice === null) return null;
       if (choice === "own-key") {
+        if (o.firstRun && !ownKeyIntroShown) this.showLines(ownKeyIntro(configPath()));
+        ownKeyIntroShown = true;
         const saved = await this.connectAndPickModel({
           ...common,
           exclude: OWN_KEY_EXCLUDE,
@@ -1600,6 +1625,56 @@ export class View implements AppBridge {
       select: (title, options, subtitle) => this.select(title, options, undefined, subtitle),
       wait: async (text, cancel) => {
         // Esc (cancelRequested) and typed input go to the wait, as during a sign-in.
+        const ctrl = new AbortController();
+        ctrl.signal.addEventListener("abort", cancel, { once: true });
+        this.signIn = ctrl;
+        this.signInWaiting = text;
+        const end = await this.waitWithoutInput(text, () => ctrl.abort());
+        return () => {
+          end?.();
+          this.signIn = null;
+          this.signInWaiting = null;
+        };
+      },
+    });
+  }
+
+  /**
+   * The GitHub star ask: the line with the chat input out of the way, then
+   * one key (s stars it). Where the terminal can't be lent, a two-choice list.
+   */
+  starAsk(line: string): ReturnType<typeof runStarAsk> {
+    const say = (message: string) => void this.cam.send("RuntimeError", { message, severity: "info" });
+    return runStarAsk(line, {
+      readKey: (l) =>
+        readKeyWithoutInput(
+          l,
+          {
+            suspend: async () => (this.sdk.suspendTerminal ? (await this.sdk.suspendTerminal(this.cam)).supported : false),
+            resume: () => this.sdk.resumeTerminal?.(this.cam),
+          },
+          this.terminalIo,
+        ),
+      select: (title, options, subtitle) => this.select(title, options, undefined, subtitle),
+      say,
+      openBrowser: this.githubCalls.openBrowser,
+      gh: this.githubCalls.gh,
+    });
+  }
+
+  /**
+   * A push or pull request without GitHub access: sign in with gh in the
+   * browser (Esc stops waiting), set GITHUB_TOKEN later, or not now.
+   */
+  githubAccess(): Promise<GithubAccessOutcome> {
+    const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    return runGithubAccess({
+      select: (title, options, subtitle) => this.select(title, options, undefined, subtitle),
+      say,
+      openBrowser: this.githubCalls.openBrowser,
+      gh: this.githubCalls.gh,
+      login: this.githubCalls.login,
+      wait: async (text, cancel) => {
         const ctrl = new AbortController();
         ctrl.signal.addEventListener("abort", cancel, { once: true });
         this.signIn = ctrl;

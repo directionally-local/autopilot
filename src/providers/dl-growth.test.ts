@@ -627,7 +627,7 @@ describe("free tier slash commands", () => {
     }
   });
 
-  it("/settings pr-footer and invite-tip turn off and show as on by default", async () => {
+  it("/settings pr-footer, invite-tip and star-tip turn off and show as on by default", async () => {
     const s = await session(me());
     try {
       await mkdir(dirname(configPath()), { recursive: true });
@@ -635,17 +635,22 @@ describe("free tier slash commands", () => {
       await dispatchSlashCommand(s.ctx, "/settings");
       assert.match(s.infos[0]!, /\n {2}pr-footer {2}on {3}end pull requests the agent opens with "Opened with dl, a free coding agent\."/);
       assert.match(s.infos[0]!, /\n {2}invite-tip on {3}free tier: one line with your invite link/);
+      assert.match(s.infos[0]!, /\n {2}star-tip {3}on {3}one line asking for a GitHub star/);
       // Each change is saved in the background: let one land before the next.
       await dispatchSlashCommand(s.ctx, "/settings pr-footer off");
       await new Promise((r) => setTimeout(r, 50));
       await dispatchSlashCommand(s.ctx, "/settings invite-tip off");
+      await new Promise((r) => setTimeout(r, 50));
+      await dispatchSlashCommand(s.ctx, "/settings star-tip off");
       assert.strictEqual(s.cfg().prFooter, false);
       assert.strictEqual(s.cfg().inviteTip, false);
+      assert.strictEqual(s.cfg().starTip, false);
       // Persisted for the PR tools (read from disk) and the next session.
       await new Promise((r) => setTimeout(r, 50));
       const saved = JSON.parse(await readFile(configPath(), "utf8")) as Record<string, unknown>;
       assert.strictEqual(saved.prFooter, false);
       assert.strictEqual(saved.inviteTip, false);
+      assert.strictEqual(saved.starTip, false);
       await writeFile(configPath(), "{}");
     } finally {
       s.restore();
@@ -656,7 +661,7 @@ describe("free tier slash commands", () => {
     assert.ok(BUILTIN_COMMAND_NAMES.has("invite"));
     assert.ok(BUILTIN_COMMAND_NAMES.has("upgrade"));
     const help = CATEGORIES.flatMap((c) => c.commands.map((x) => x.command));
-    for (const c of ["/invite", "/upgrade", "/settings pr-footer off", "/settings invite-tip off"]) assert.ok(help.includes(c), c);
+    for (const c of ["/invite", "/upgrade", "/settings pr-footer off", "/settings invite-tip off", "/settings star-tip off"]) assert.ok(help.includes(c), c);
   });
 });
 

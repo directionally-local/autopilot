@@ -43,6 +43,7 @@ import { sessionTranscript } from "../transcript/claude-jsonl.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnEndReason } from "../trace/types.js";
 import { readEnv } from "../util/env.js";
+import type { GithubAccessAsker } from "../github-access.js";
 import { isTransientModelError, ModelHostError, modelRetryCount, modelRetryDelay, modelRetryLine, retryAfterOf, shouldRetryModelCall, type ModelRetryInfo } from "./model-retry.js";
 
 export interface AgentCallbacks {
@@ -75,6 +76,9 @@ export interface AgentCallbacks {
    *  `artifactId`, when present, points at the full raw bytes in the artifact store. */
   onTruncation?: (info: { tool: string; toolCallId: string; rawBytes: number; reducedBytes: number; artifactId?: string }) => void;
   askPermission: PermissionAsker;
+  /** Interactive sessions: ask for GitHub access when a push or pull request
+   *  fails for want of it (see github-access.ts). */
+  askGithubAccess?: GithubAccessAsker;
   /** Notification (never awaited) when a loop or iteration-cap guardrail
    *  acts on its own — the loop never blocks waiting for a user decision. */
   onGuardrail?: (event: GuardrailEvent) => void;
@@ -1455,6 +1459,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           memoryManager: opts.memoryManager,
           sessionId: opts.sessionId,
           githubToken: opts.githubToken,
+          ...(opts.callbacks.askGithubAccess ? { askGithubAccess: opts.callbacks.askGithubAccess } : {}),
           shell: opts.shell,
           intentTier: opts.intentClassification?.tier,
           llmAuth: llmAuthOf(opts),
