@@ -29,7 +29,9 @@ import { getPreset, isProviderId, type ProviderId } from "../providers/presets.j
 import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { switchedMessage } from "../providers/connect.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, dlNotFreeLine, fetchDlMe, renderDlUsage, revokeDlTokens, withoutDlCredentials, type DlRevokeResult } from "../providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, dlBillingPortal, dlNotFreeLine, fetchDlMe, renderDlUsage, revokeDlTokens, withoutDlCredentials, type DlMe, type DlRevokeResult } from "../providers/directionally-local.js";
+import { dlInviteReport, dlUpgradeStep, type DlScreen } from "../providers/dl-growth.js";
+import { copyWithOsc52 } from "../util/osc52.js";
 import { endSession } from "../hooks/session-lifecycle.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { checkRequestyKey } from "../models/requesty.js";
@@ -196,6 +198,8 @@ export interface SlashContext {
   traceRef: React.MutableRefObject<TraceRecorder>;
   /** Turns of this session that have ended, oldest first (for /good, /bad, and revert signals). */
   turnHistoryRef: React.MutableRefObject<TurnRecord[]>;
+  /** Show a free-tier screen (/upgrade's Pro and top-up choice). */
+  openDlScreen?: (screen: DlScreen) => void;
 }
 
 type Handler = (ctx: SlashContext, rest: string[], arg: string) => boolean | Promise<boolean>;
@@ -776,7 +780,7 @@ const handleModel: Handler = (ctx, rest, arg) => {
  * /settings — feature toggles. `/settings` lists them; `/settings <name> on|off`
  * flips one and persists it to the config file.
  */
-const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "projectTour" | "refocusTerminal"; describe: string }> = {
+const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "projectTour" | "refocusTerminal" | "prFooter" | "inviteTip"; describe: string }> = {
   modes: {
     key: "modesEnabled",
     describe: "plan / edit / auto permission modes (off: every turn runs in auto)",
@@ -793,6 +797,14 @@ const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "
     key: "refocusTerminal",
     describe: "macOS: bring this terminal back to the front after a browser sign-in",
   },
+  "pr-footer": {
+    key: "prFooter",
+    describe: "end pull requests the agent opens with \"Opened with dl, a free coding agent.\"",
+  },
+  "invite-tip": {
+    key: "inviteTip",
+    describe: "free tier: one line with your invite link after your first opened PR or passing tests",
+  },
 };
 
 const handleSettings: Handler = (ctx, rest) => {
@@ -804,7 +816,9 @@ const handleSettings: Handler = (ctx, rest) => {
   if (!name) {
     const lines = ["settings (change with /settings <name> on|off):"];
     for (const [n, s] of Object.entries(SETTINGS)) {
-      lines.push(`  ${n.padEnd(8)} ${cfg[s.key] ? "on " : "off"}  ${s.describe}`);
+      // prFooter and inviteTip are on unless set to false.
+      const on = s.key === "prFooter" || s.key === "inviteTip" ? cfg[s.key] !== false : !!cfg[s.key];
+      lines.push(`  ${n.padEnd(10)} ${on ? "on " : "off"}  ${s.describe}`);
     }
     info(lines.join("\n"));
     return true;
@@ -2088,6 +2102,38 @@ export async function usageText(cfg: Cfg | null, opts: { fetchImpl?: typeof fetc
   }
 }
 
+/** `/invite`: the free tier's invite link (copied), who joined, and the bonus earned. */
+export async function inviteText(
+  cfg: Cfg | null,
+  opts: { fetchMe?: () => Promise<DlMe>; copy?: (text: string) => boolean } = {},
+): Promise<string> {
+  const provider = providerPresetOf(llmAuthFromConfig(cfg));
+  return dlInviteReport({
+    providerId: provider.id,
+    providerName: provider.name,
+    ...(opts.fetchMe ? { fetchMe: opts.fetchMe } : {}),
+    copy: opts.copy ?? ((text) => copyWithOsc52(text)),
+  });
+}
+
+const handleInvite: Handler = async (ctx) => {
+  const text = await inviteText(ctx.cfg);
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
+  return true;
+};
+
+/** `/upgrade`: the Pro and top-up choice; on Pro, the billing portal. */
+const handleUpgrade: Handler = async (ctx) => {
+  const provider = providerPresetOf(llmAuthFromConfig(ctx.cfg));
+  const step = await dlUpgradeStep({ providerId: provider.id, providerName: provider.name, portal: () => dlBillingPortal(), openBrowser });
+  if (step.kind === "screen" && ctx.openDlScreen) ctx.openDlScreen(step.screen);
+  else {
+    const text = step.kind === "text" ? step.text : `Upgrade from the terminal with \`autopilot upgrade\`.`;
+    ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
+  }
+  return true;
+};
+
 const handleUsage: Handler = async (ctx) => {
   const text = await usageText(ctx.cfg);
   ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
@@ -2113,6 +2159,8 @@ const handlers: Record<string, Handler> = {
   "/reasoning": handleReasoning,
   "/cost": handleCost,
   "/usage": handleUsage,
+  "/invite": handleInvite,
+  "/upgrade": handleUpgrade,
   "/shell": handleShell,
   "/model": handleModel,
   "/jev": handleJev,

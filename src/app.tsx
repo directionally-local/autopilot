@@ -129,6 +129,9 @@ import {
   initialPromptToSend,
 } from "./ui/app-helpers.js";
 import { projectDirsToRead } from "./util/app-dirs.js";
+import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
+import { lastKnownDlMe } from "./providers/directionally-local.js";
+import { ApiError as DlApiError } from "./util/errors.js";
 
 /** The TUI's config is exactly the loaded config. */
 export type Cfg = AutopilotConfig;
@@ -298,6 +301,11 @@ function App({
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const latestPromptRef = useRef<PromptEditTarget | null>(null);
+  // The free tier's limit / queue / upgrade screen, and what it needs: the
+  // prompt to retry once Pro or a top-up is bought, and the error line Esc shows.
+  const [dlScreen, setDlScreen] = useState<DlScreen | null>(null);
+  const lastTurnPromptRef = useRef<{ text: string; display: string } | null>(null);
+  const dlScreenErrorRef = useRef<string | null>(null);
   const pendingPromptEditRef = useRef<PendingPromptEdit | null>(null);
 
   // Plan/edit/auto modes are behind a feature flag (cfg.modesEnabled, off by
@@ -1109,6 +1117,7 @@ function App({
     sessionPlanRef,
     traceRef,
     turnHistoryRef,
+    openDlScreen: setDlScreen,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage,
@@ -1263,14 +1272,26 @@ function App({
   );
 
   const processMessage = useCallback(
-    async (text: string, displayText?: string, opts?: { queuedKeys?: string[]; userPromptForHooks?: string; eventKey?: string; historyText?: string }) => {
+    async (
+      text: string,
+      displayText?: string,
+      opts?: {
+        queuedKeys?: string[];
+        userPromptForHooks?: string;
+        eventKey?: string;
+        historyText?: string;
+        /** Run the last turn again on the same history (the free tier's request, after buying Pro or a top-up): no new user message. */
+        retry?: boolean;
+      },
+    ) => {
       if (!cfg) return;
       let trimmed = text.trim();
       if (!trimmed) return;
+      const retry = opts?.retry === true;
 
       let display = displayText?.trim() || trimmed;
       const promptKey = opts?.eventKey ?? opts?.queuedKeys?.[0];
-      if (promptKey && !trimmed.startsWith("/") && parseBangCommand(trimmed) === null) {
+      if (!retry && promptKey && !trimmed.startsWith("/") && parseBangCommand(trimmed) === null) {
         const previousTarget = latestPromptRef.current;
         if (opts?.eventKey || previousTarget?.key === promptKey) {
           latestPromptRef.current = {
@@ -1292,7 +1313,7 @@ function App({
       // turn so the model can act on the output (e.g. `! npm login`, then
       // publish). A bare `!` only prints usage.
       let bangContext: string | null = null;
-      const bangCommand = parseBangCommand(trimmed);
+      const bangCommand = retry ? null : parseBangCommand(trimmed);
       if (bangCommand !== null) {
         bangContext = await runUserShellCommand(bangCommand, display, opts?.queuedKeys?.[0]);
         if (bangContext === null) {
@@ -1301,7 +1322,7 @@ function App({
         }
       }
 
-      if (trimmed.startsWith("/")) {
+      if (!retry && trimmed.startsWith("/")) {
         const head = trimmed.split(/\s+/)[0]!.toLowerCase();
         const selfManaged = ["/compact", "/init"].includes(head);
         if (await handleSlash(trimmed)) {
@@ -1329,16 +1350,16 @@ function App({
       // A `!` command's output is already the user message: don't re-scan it
       // for @mentions or image paths.
       const { content, images, errors: imageErrors, notices: imageNotices } =
-        bangContext !== null
-          ? { content: bangContext, images: [] as string[], errors: [] as string[], notices: [] as string[] }
+        bangContext !== null || retry
+          ? { content: bangContext ?? trimmed, images: [] as string[], errors: [] as string[], notices: [] as string[] }
           : await buildPromptContent(trimmed, (path) =>
               encodeImageFile(path, { maxEdge: cfg.imageMaxEdge, quality: cfg.imageQuality }),
             );
       for (const text of imageErrors) setEvents((es) => [...es, { kind: "error", key: mkKey(), text }]);
       for (const text of imageNotices) setEvents((es) => [...es, { kind: "info", key: mkKey(), text }]);
 
-      // A `!` command already added its own user event.
-      if (bangContext === null) {
+      // A `!` command already added its own user event; a retry has its user event already.
+      if (bangContext === null && !retry) {
         if (opts?.queuedKeys && opts.queuedKeys.length > 0) {
           const queuedKeys = new Set(opts.queuedKeys);
           setEvents((evts) =>
@@ -1354,7 +1375,7 @@ function App({
       }
 
       // LSP nudge: if user references code files and LSP is not configured
-      const nudge = maybeLspNudge(display, cfg?.lspEnabled ?? false, cfg?.lspServers ?? {});
+      const nudge = retry ? null : maybeLspNudge(display, cfg?.lspEnabled ?? false, cfg?.lspServers ?? {});
       if (nudge) {
         setEvents((e) => [...e, { kind: "info", key: mkKey(), text: nudge }]);
       }
@@ -1372,7 +1393,7 @@ function App({
       // vetoing hook cancels the turn before any LLM call.
       // A `!` command isn't a user prompt: no UserPromptSubmit hook for it.
       const promptGate =
-        bangContext !== null
+        bangContext !== null || retry
           ? { blocked: false as const }
           : await submitUserPrompt({
               hooks: hooksManagerRef.current,
@@ -1390,7 +1411,9 @@ function App({
         return;
       }
 
-      messagesRef.current.push({ role: "user", content });
+      // A retry runs again on the history as it is: the user message is already there.
+      if (!retry) messagesRef.current.push({ role: "user", content });
+      lastTurnPromptRef.current = { text: trimmed, display };
       const traceUserSource: "typed" | "deny_feedback" = denyFeedbackRef.current ? "deny_feedback" : "typed";
       denyFeedbackRef.current = false;
 
@@ -1411,7 +1434,7 @@ function App({
       }
 
       // Occasional /init tip; for long auto/edit sessions, suggest /fresh or start fresh.
-      turnCounterRef.current += 1;
+      if (!retry) turnCounterRef.current += 1;
       const nudges = turnNudges({
         turn: turnCounterRef.current,
         hasContextFile: ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))),
@@ -1421,7 +1444,7 @@ function App({
         freshSuggested: freshSuggestedRef.current,
         autoFreshEnabled: cfg?.autoFreshEnabled === true,
       });
-      if (nudges.initTip) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: INIT_TIP }]);
+      if (nudges.initTip && !retry) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: INIT_TIP }]);
       if (nudges.fresh) {
         freshSuggestedRef.current = true;
         if (nudges.fresh === "auto") void runAutoFresh("Auto-fresh triggered: starting new session with continuation context…");
@@ -1511,6 +1534,9 @@ function App({
       // Clear the one-shot session-start recall so it is not reused.
       sessionStartRecallRef.current = null;
 
+      // An opened PR or passing tests this turn: the free tier's one-time invite tip.
+      const win: WinTracker = { prOpened: false };
+
       // Last-resort guard against race conditions (e.g. queued messages draining
       // while a slash-command-initiated turn like /compact is still winding down).
       // If the supervisor is already running, undo beginTurn() and bail out.
@@ -1560,7 +1586,7 @@ function App({
         mode: "tui",
         config: cfg,
       });
-      if (trace.enabled) {
+      if (trace.enabled && !retry) {
         // How the user followed up is a signal about the previous turn.
         const previousTurn = turnHistoryRef.current.at(-1);
         if (previousTurn) {
@@ -1639,11 +1665,18 @@ function App({
               );
             }
           },
-          callbacks: sharedCallbacks,
+          callbacks: withWinTracking(sharedCallbacks, win),
         } }),
         {
           onDone: () => {
             noteTurnEnded(turnId);
+            if (won(win)) {
+              void inviteTipAfterWin({ providerId: providerPresetOf(llmAuthFromConfig(cfg)).id, enabled: cfg.inviteTip !== false })
+                .then((line) => {
+                  if (line) setEvents((es) => [...es, { kind: "info", key: mkKey(), text: line }]);
+                })
+                .catch(() => undefined);
+            }
             // Fire-and-forget all post-turn housekeeping so the UI returns to
             // idle immediately and the user can type the next message without
             // waiting for compaction, memory recall, or session persistence.
@@ -1710,6 +1743,17 @@ function App({
           onError: async (e) => {
             noteTurnEnded(turnId);
             const failure = classifyTurnFailure(e);
+            // The free tier ran out or queued this account: offer the ways on (Esc shows the usual line).
+            const screen =
+              e instanceof DlApiError && failure.kind !== "aborted"
+                ? dlScreenFor(e.providerCode, (e.providerDetail ?? {}) as Parameters<typeof dlScreenFor>[1], lastKnownDlMe()?.referral?.link)
+                : undefined;
+            if (screen) {
+              dlScreenErrorRef.current = failure.kind === "error" ? failure.text : failure.kind === "api_error" ? failure.message : null;
+              setDlScreen(screen);
+              cleanupTurn();
+              return;
+            }
             if (failure.kind === "aborted") {
               // Inject synthetic tool results for any pending tool calls so message
               // history remains valid (assistant msg with tool_calls needs 1:1 results).
@@ -1737,7 +1781,8 @@ function App({
   useEffect(() => {
     if (canDrainQueue({
       busy,
-      queuePlanOpen: queuePlanDraft !== null,
+      // The free tier's limit screen holds queued prompts too: they'd only hit the same limit.
+      queuePlanOpen: queuePlanDraft !== null || dlScreen !== null,
       supervisorIdle: supervisorRef.current.phase === "idle",
       hasPendingWork: pendingPromptEditRef.current !== null || pendingSteersRef.current.length > 0 || queue.length > 0,
     })) {
@@ -1770,7 +1815,7 @@ function App({
         });
       }
     }
-  }, [busy, queue, queuePlanDraft, processMessage, queueDrainRevision]);
+  }, [busy, queue, queuePlanDraft, dlScreen, processMessage, queueDrainRevision]);
 
   const handleQueuePlanPick = useCallback(
     (choice: "group" | "separate" | null) => {
@@ -2160,6 +2205,15 @@ function App({
       runCommand: (cmd) => {
         void handleSlash(cmd);
       },
+      dlScreenDone: (outcome: DlScreenOutcome) => {
+        setDlScreen(null);
+        const next = dlScreenFollowUp(outcome, dlScreenErrorRef.current, lastTurnPromptRef.current);
+        dlScreenErrorRef.current = null;
+        if (next.kind === "show-error") setEvents((es) => [...es, { kind: "error", key: mkKey(), text: next.text }]);
+        else if (next.kind === "provider-picker") modals.setProviderSetup({});
+        // Bought Pro or a top-up: send the blocked request again.
+        else if (next.kind === "retry") void processMessage(next.text, next.display, { retry: true });
+      },
       pickShell: (shell) => {
         if (shell && cfg) {
           const next = { ...cfg, shell: shell === "auto" ? undefined : shell };
@@ -2227,6 +2281,7 @@ function App({
       changelogImageRepo,
       modesEnabled,
       hooks: configuredHooks(),
+      dlScreen,
       lsp: {
         servers: cfg?.lspServers ?? {},
         scope: lspScope,
@@ -2238,7 +2293,7 @@ function App({
       turnRunning: busy || supervisorRef.current.isRunning,
       sessionId: sessionIdRef.current,
       permissionTool: perm ? perm.tool.name : null,
-      awaitingChoice: planOptions !== null || open.includes("planComplete"),
+      awaitingChoice: planOptions !== null || open.includes("planComplete") || dlScreen !== null,
       currentTask: () => lastUserText(events),
     });
   });

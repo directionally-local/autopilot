@@ -12,6 +12,8 @@ import type { ChatMessage } from "./messages.js";
 import type { ToolSpec } from "../tools/registry.js";
 import { ModelHostError, type ModelRetryInfo } from "./model-retry.js";
 import { ApiError } from "../util/errors.js";
+import { llmAuthFromConfig } from "./llm-auth.js";
+import type { AutopilotConfig } from "../config.js";
 
 type Reply = { status: number; body: string; headers?: Record<string, string> } | { sse: unknown[]; done?: boolean };
 
@@ -44,7 +46,7 @@ describe("runAgentTurn model-call retries", () => {
     globalThis.fetch = originalFetch;
   });
 
-  function setup(replies: Reply[], tools: ToolSpec[] = []) {
+  function setup(replies: Reply[], tools: ToolSpec[] = [], auth: Record<string, unknown> = { openrouterApiKey: "sk-or-test" }) {
     let calls = 0;
     globalThis.fetch = async () => {
       const reply = replies[Math.min(calls, replies.length - 1)]!;
@@ -69,8 +71,8 @@ describe("runAgentTurn model-call retries", () => {
     const streamed: string[] = [];
     const run = (callbacks: Partial<AgentCallbacks> = {}, extra: { signal?: AbortSignal } = {}) =>
       runAgentTurn({
-        openrouterApiKey: "sk-or-test",
-        model: "test/model",
+        ...auth,
+        model: (auth.model as string | undefined) ?? "test/model",
         messages,
         tools,
         executor,
@@ -199,5 +201,49 @@ describe("runAgentTurn model-call retries", () => {
       (e: unknown) => (e as { name?: string }).name === "AbortError",
     );
     assert.strictEqual(t.calls(), 1);
+  });
+
+  describe("the free tier's upstream errors", () => {
+    const env = { url: process.env.AUTOPILOT_DL_FREE_URL, token: process.env.AUTOPILOT_DL_FREE_TOKEN };
+    before(() => {
+      process.env.AUTOPILOT_DL_FREE_URL = "https://free.test";
+      process.env.AUTOPILOT_DL_FREE_TOKEN = "tok";
+    });
+    after(() => {
+      for (const [k, v] of [["AUTOPILOT_DL_FREE_URL", env.url], ["AUTOPILOT_DL_FREE_TOKEN", env.token]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    });
+    const dlAuth = () => ({
+      ...llmAuthFromConfig({ provider: "directionally-local", model: "deepseek/deepseek-v4.1-flash-1017" } as AutopilotConfig),
+      model: "deepseek/deepseek-v4.1-flash-1017",
+    });
+    const busy = { status: 429, body: JSON.stringify({ error: { code: "upstream_busy", retryable: true, message: "The free tier is busy right now; retrying…" } }) };
+
+    it("retries upstream_busy in the turn with the server's words, 5 s apart without Retry-After", async () => {
+      const t = setup([busy, { sse: [text("ok"), stop] }], [], dlAuth());
+      await t.run();
+      assert.strictEqual(t.calls(), 2);
+      assert.deepStrictEqual(t.sleeps, [5_000]);
+      assert.strictEqual(t.retries[0]!.line, "↻ The free tier is busy right now; retrying (1/2)…");
+    });
+
+    it("keeps the after-3-failures message, and caps Retry-After at 20 s", async () => {
+      const t = setup([{ status: 503, body: JSON.stringify({ error: { code: "upstream_unavailable", retryable: true } }), headers: { "retry-after": "15" } }], [], dlAuth());
+      await assert.rejects(t.run(), (e: unknown) => {
+        assert.ok(e instanceof ModelHostError);
+        assert.strictEqual(e.message, 'autopilot: The model\'s host failed 3 times. Type "continue" to try again.');
+        return true;
+      });
+      assert.deepStrictEqual(t.sleeps, [15_000, 15_000]);
+    });
+
+    it("does not retry upstream_credit_exhausted", async () => {
+      const t = setup([{ status: 503, body: JSON.stringify({ error: { code: "upstream_credit_exhausted", retryable: true } }) }], [], dlAuth());
+      await assert.rejects(t.run(), /Free tokens are paused while we top up\. Your own key still works: \/provider/);
+      assert.strictEqual(t.calls(), 1);
+      assert.strictEqual(t.retries.length, 0);
+    });
   });
 });

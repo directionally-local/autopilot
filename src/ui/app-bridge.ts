@@ -31,6 +31,7 @@ import type { RunningWorker } from "../tools/worker-registry.js";
 import type { TurnPhase } from "./view-types.js";
 import type { IntentTier } from "./narrator.js";
 import type { QueuePlanChoice } from "./queue-plan.js";
+import type { DlScreen, DlScreenOutcome } from "../providers/dl-growth.js";
 
 /** Which dialog App currently wants open (the Camouflage view draws it). */
 export type AppModal =
@@ -111,6 +112,8 @@ export interface AppSnapshot {
   /** Every configured hook, by event. */
   hooks: { event: HookEvent; hook: HookConfig }[];
   lsp: { servers: Record<string, LspServerConfig>; scope: "project" | "global"; hasProjectDir: boolean };
+  /** The free tier's limit, queue or /upgrade screen App wants shown (see providers/dl-growth.ts). */
+  dlScreen?: DlScreen | null;
 }
 
 export interface AppActions {
@@ -151,6 +154,8 @@ export interface AppActions {
   closeModal: (modal: AppModal) => void;
   /** Run a slash command (e.g. from a dialog). */
   runCommand: (command: string) => void;
+  /** The free-tier screen ended: retry the blocked request, open the provider picker, or nothing. */
+  dlScreenDone?: (outcome: DlScreenOutcome) => void;
   exit: () => void;
 }
 

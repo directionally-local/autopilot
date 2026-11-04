@@ -36,6 +36,8 @@ export interface ProviderSettings {
   location?: string;
   /** Amazon Bedrock region (also from AWS_REGION / AWS_DEFAULT_REGION). */
   region?: string;
+  /** Directionally Local: an invite code to send with the next sign-in (cleared once signed in). */
+  pendingReferral?: string;
 }
 
 /** The config fields provider resolution reads. */

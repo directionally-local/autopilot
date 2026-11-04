@@ -417,6 +417,7 @@ describe("Directionally Local free tier", () => {
         renderDlUsage(me(), NOW, "Asia/Tokyo"),
         [
           "Directionally Local free tier · signed in as @octo",
+          "  plan            Free",
           "  used this week  12.5M of 50M tokens (25%)",
           "  left            37.5M tokens",
           "  spending limit  $5 a week",
@@ -436,6 +437,7 @@ describe("Directionally Local free tier", () => {
         renderDlUsage(me({ usedThisWeek: 32_200, remaining: 49_967_800, usdPerWeek: 5, spentUsdThisWeek: 0.0112 }), tuesday, "UTC"),
         [
           "Directionally Local free tier · signed in as @octo",
+          "  plan            Free",
           "  used this week  32.2k of 50M tokens (0%)",
           "  left            50M tokens",
           "  spending limit  spent $0.01 of $5",
@@ -620,6 +622,82 @@ describe("Directionally Local free tier", () => {
       await assert.rejects(drain(llmAuthFromConfig(await readCfg())), /this week's free tokens/);
       assert.match(renderDlUsage(me(), NOW, "Asia/Tokyo"), used);
       assert.ok(!/They're back/.test(renderDlUsage(me({ resetsAt: "2026-11-16T00:00:00.000Z" }), NOW)), "not after the week resets");
+    });
+
+    it("keeps the limit screen's details (offers, invite link, reset, place in line) on the error", async () => {
+      await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+      const offers = { pro: { priceUsdMonthly: 10, tokensPerWeek: 100_000_000 }, topup: { priceUsd: 3, tokens: 50_000_000, validDays: 30 } };
+      stub.chatReplies = [{ status: 402, body: { error: { code: "quota_exceeded", resetsAt: "2026-11-09T00:00:00.000Z", offers, referralLink: "https://dl.new/r/x" } } }];
+      await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { providerCode?: string; providerDetail?: Record<string, unknown> }) => {
+        assert.strictEqual(e.providerCode, "quota_exceeded");
+        assert.deepStrictEqual(e.providerDetail, { resetsAt: "2026-11-09T00:00:00.000Z", offers, referralLink: "https://dl.new/r/x" });
+        return true;
+      });
+      const etaAt = new Date(Date.now() + 3 * 86_400_000).toISOString();
+      stub.chatReplies = [{ status: 402, body: { error: { code: "free_tier_queued", position: 214, etaAt } } }];
+      await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { providerCode?: string; providerDetail?: Record<string, unknown> }) => {
+        assert.strictEqual(e.providerCode, "free_tier_queued");
+        assert.deepStrictEqual(e.providerDetail, { position: 214, etaAt });
+        assert.match(e.message, /^autopilot: You're #214 in line for free tokens \(about \d+ days?, by \w+\)\. \/invite moves you up; \/provider uses your own key now\.$/);
+        return true;
+      });
+      assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 2, "neither is retried");
+    });
+
+    describe("the new upstream's transient errors", () => {
+      const cases: Array<[number, string, string | undefined]> = [
+        [429, "upstream_busy", "The free tier is busy right now; retrying…"],
+        [503, "upstream_unavailable", "The model host is unavailable"],
+        [503, "upstream_timeout", undefined],
+        [502, "some_new_code", "Something new went wrong upstream"],
+      ];
+      for (const [status, code, message] of cases) {
+        it(`retries a ${status} ${code} with the server's words in the retry line`, async () => {
+          await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+          const body = { error: { code, retryable: true, retryAfter: 0.01, ...(message ? { message } : {}) } };
+          stub.chatReplies = [{ status, body }, { status, body }, { status: 200 }];
+          const lines: string[] = [];
+          await drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2, onRetry: (l: string) => lines.push(l) });
+          assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 3);
+          const said = message ? message.replace(/; retrying…$/, "") : "The model's host had a hiccup";
+          assert.deepStrictEqual(lines, [`↻ ${said}; retrying (1/2)…`, `↻ ${said}; retrying (2/2)…`]);
+        });
+      }
+
+      it("waits 5 s for upstream_busy without Retry-After, honours one up to 20 s, and gives up past that", async () => {
+        await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+        stub.chatReplies = [{ status: 429, body: { error: { code: "upstream_busy", retryable: true, message: "The free tier is busy right now; retrying…" } } }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { retryAfterMs?: number; transient?: boolean }) => e.retryAfterMs === 5_000 && e.transient === true);
+        stub.chatReplies = [{ status: 503, body: { error: { code: "upstream_unavailable", retryable: true } }, headers: { "retry-after": "12" } }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { retryAfterMs?: number }) => e.retryAfterMs === 12_000);
+        // Longer than 20 s: not retried at all, and the user is told.
+        stub.calls = [];
+        stub.chatReplies = [{ status: 503, body: { error: { code: "upstream_unavailable", retryable: true } }, headers: { "retry-after": "60" } }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2 }), /model host is unavailable right now; try again shortly/);
+        assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 1);
+      });
+
+      it("says the plain sentence after the last retry fails", async () => {
+        await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+        const body = { error: { code: "upstream_timeout", retryable: true, retryAfter: 0.01 } };
+        stub.calls = [];
+        stub.chatReplies = [{ status: 503, body }, { status: 503, body }, { status: 503, body }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2 }), /^Error: autopilot: The free tier's model host took too long to answer; try again shortly\.$|took too long to answer/);
+        assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 3);
+      });
+
+      it("never retries upstream_credit_exhausted, even marked retryable, and words it like the pause", async () => {
+        await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+        stub.calls = [];
+        stub.chatReplies = [{ status: 503, body: { error: { code: "upstream_credit_exhausted", retryable: true, message: "m" } } }, { status: 200 }];
+        await assert.rejects(
+          drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2 }),
+          (e: Error & { transient?: boolean }) => e.message === "autopilot: Free tokens are paused while we top up. Your own key still works: /provider" && e.transient === false,
+        );
+        assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 1);
+        assert.strictEqual(describeDlError("upstream_credit_exhausted", { where: "cli" }), "Free tokens are paused while we top up. Your own key still works: `autopilot connect`.");
+        assert.strictEqual(describeDlError("upstream_credit_exhausted", { where: "signin" }), "Free tokens are paused while we top up. Your own key still works.");
+      });
     });
 
     it("retries a 429 rate_limited after retryAfter, then says when to try again", async () => {

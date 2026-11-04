@@ -409,7 +409,7 @@ describe("dl server control-plane API", () => {
       assert.deepEqual(harness.pullRequestCreates[0], {
         repository: "me/app",
         title: "Implement the feature",
-        body: "reply-1",
+        body: "reply-1\n\nOpened with [dl](https://dl.new), a free coding agent.",
         head: conversation.branch,
         base: "main",
       });
@@ -473,13 +473,13 @@ describe("dl server control-plane API", () => {
       ],
     }, "Resolve GitHub issue https://github.com/me/app/issues/49 and make dl sessions list every conversation");
     assert.equal(pull.title, "feat: dl sessions lists every conversation with its state");
-    assert.equal(pull.body, "reply-1\n\nResolves #49");
+    assert.equal(pull.body, "reply-1\n\nResolves #49\n\nOpened with [dl](https://dl.new), a free coding agent.");
   });
 
   it("falls back to the prompt title and commit-less body when the commit lookup fails", async () => {
     const pull = await openCodePullRequest({ commits: "fail" }, "Implement   the\nfeature");
     assert.equal(pull.title, "Implement the feature");
-    assert.equal(pull.body, "reply-1");
+    assert.equal(pull.body, "reply-1\n\nOpened with [dl](https://dl.new), a free coding agent.");
   });
 
   it("makes turn submissions idempotent across concurrent retries and busy responses", async () => {

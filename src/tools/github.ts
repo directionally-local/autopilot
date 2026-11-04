@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { hasPrFooter, prFooterEnabled, withPrFooter } from "../util/pr-footer.js";
 import { promisify } from "node:util";
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
 import { getUserAgent } from "../util/version.js";
@@ -536,7 +537,8 @@ export const githubCreatePrTool: ToolSpec<CreatePrArgs> = {
         `/repos/${args.owner}/${args.repo}/pulls`,
         {
           title: args.title,
-          body: args.body ?? "",
+          // Ends with "Opened with dl" unless turned off (prFooter: false).
+          body: prFooterEnabled() ? withPrFooter(args.body) : args.body ?? "",
           head: args.head,
           base,
           draft: args.draft ?? true,
@@ -913,7 +915,14 @@ export const githubUpdatePrTool: ToolSpec<UpdatePrArgs> = {
     if (args.title !== undefined || args.body !== undefined) {
       const patch: Record<string, unknown> = {};
       if (args.title !== undefined) patch.title = args.title;
-      if (args.body !== undefined) patch.body = args.body;
+      if (args.body !== undefined) {
+        patch.body = args.body;
+        // A rewritten body keeps the "Opened with dl" line the PR was opened with.
+        if (!hasPrFooter(args.body) && prFooterEnabled()) {
+          const current = await githubFetch(`/repos/${args.owner}/${args.repo}/pulls/${args.number}`, token).catch(() => null) as { body?: string | null } | null;
+          if (hasPrFooter(current?.body)) patch.body = withPrFooter(args.body);
+        }
+      }
       await githubPost(`/repos/${args.owner}/${args.repo}/pulls/${args.number}`, patch, token, "PATCH");
       changes.push(args.title !== undefined ? "title updated" : "body updated");
     }

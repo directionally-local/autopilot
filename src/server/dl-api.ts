@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { prFooterEnabled, withPrFooter } from "../util/pr-footer.js";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -955,7 +956,8 @@ export class DlApi {
           });
           const pullRequest = await this.github.createPullRequest(codeProject.repository!, {
             title,
-            body: summary,
+            // Ends with "Opened with dl" unless turned off (prFooter: false).
+            body: prFooterEnabled() ? withPrFooter(summary) : summary,
             head: codeProject.branch!,
             base: repository.defaultBranch,
           });

@@ -18,6 +18,7 @@ import type { HookFailureNotice } from "./hooks/manager.js";
 import type { ChatMessage, ContentPart } from "./agent/messages.js";
 import { ApiError, humanizeApiError } from "./util/errors.js";
 import { ModelHostError } from "./agent/model-retry.js";
+import { dlHeadlessMessage } from "./providers/dl-growth.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "./sessions.js";
 import { sessionFileCompactionTarget } from "./agent/context-budget.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
@@ -537,8 +538,10 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       return;
     }
     if (err instanceof ApiError) {
+      // Free tier out of tokens or queued: one plain line with the invite link and `autopilot upgrade`.
+      const dlLine = dlHeadlessMessage(err);
       // After every retry failed, the host's own error goes on the same line.
-      const msg = err instanceof ModelHostError ? `Error: ${humanizeApiError(err)} (${err.detail})` : `Error: ${humanizeApiError(err)}`;
+      const msg = dlLine ? `Error: ${dlLine}` : err instanceof ModelHostError ? `Error: ${humanizeApiError(err)} (${err.detail})` : `Error: ${humanizeApiError(err)}`;
       if (format === "text") process.stderr.write(`\n\x1b[31m${msg}\x1b[0m\n`);
       else if (format === "stream-json") emitStreamJson("error", { message: msg, code: 1 });
       process.exitCode = 1;
