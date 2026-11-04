@@ -1,6 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveInteractiveResume, resumeHint } from "./interactive-resume.js";
@@ -51,7 +52,19 @@ describe("interactive resume", () => {
 
   it("prints a hint that names a command that reopens the saved session", async () => {
     assert.strictEqual(resumeHint("2026-10-02T10-00-00-000Z_new", {}), "Resume this conversation with: autopilot resume 2026-10-02T10-00-00-000Z_new\n");
-    assert.strictEqual(resumeHint("2026-10-02T10-00-00-000Z_new", { AUTOPILOT_LAUNCHED_BY: "dl" }), "Continue this conversation with: dl -c\n");
+    assert.strictEqual(resumeHint("2026-10-02T10-00-00-000Z_new", { AUTOPILOT_LAUNCHED_BY: "dl" }, () => true), "Continue this conversation with: dl -c\n");
+    // Right after the install script, dl isn't on this shell's PATH yet; the script's next line says how to fix it.
+    assert.strictEqual(
+      resumeHint("2026-10-02T10-00-00-000Z_new", { AUTOPILOT_LAUNCHED_BY: "dl" }, () => false),
+      "Continue this conversation with: dl -c (in a new terminal, or after the line below)\n",
+    );
+    // By default it looks for dl on the PATH Autopilot was started with.
+    const bin = mkdtempSync(join(tmpdir(), "dl-bin-"));
+    writeFileSync(join(bin, "dl"), "#!/bin/sh\n", { mode: 0o755 });
+    if (process.platform !== "win32") {
+      assert.strictEqual(resumeHint("2026-10-02T10-00-00-000Z_new", { AUTOPILOT_LAUNCHED_BY: "dl", PATH: bin }), "Continue this conversation with: dl -c\n");
+      assert.match(resumeHint("2026-10-02T10-00-00-000Z_new", { AUTOPILOT_LAUNCHED_BY: "dl", PATH: "/nonexistent" }) ?? "", /after the line below/);
+    }
     assert.strictEqual(resumeHint("never-saved", { AUTOPILOT_LAUNCHED_BY: "dl" }), null);
     assert.strictEqual(resumeHint("never-saved"), null);
     assert.strictEqual(resumeHint(null), null);
