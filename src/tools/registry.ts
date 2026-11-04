@@ -14,6 +14,10 @@ export interface ToolContext {
   memoryManager?: import("../memory/manager.js").MemoryManager | null;
   sessionId?: string;
   githubToken?: string;
+  /** Interactive sessions: ask the person for GitHub access when a push or
+   *  pull request fails for want of it (see github-access.ts). Absent in
+   *  headless runs, which get one clear line instead. */
+  askGithubAccess?: import("../github-access.js").GithubAccessAsker;
   /** Shell override for the bash tool. If omitted, the tool auto-detects based on platform. */
   shell?: string;
   /**

@@ -526,3 +526,76 @@ describe("Camouflage free-tier limit screen", () => {
     }
   });
 });
+
+describe("Camouflage GitHub star ask", () => {
+  const line = "⭐ Enjoying dl? Star it on GitHub: https://github.com/directionally-local/autopilot  (press s to star · any other key to dismiss)";
+
+  it("waits for the turn to end, then asks; starring with gh thanks and tells App it's done", async () => {
+    // No TTY here: the two-choice list stands in for the key press.
+    const { view, sent, prompts, calls } = await fakeView({ select: ["star"] });
+    const ghCalls: string[] = [];
+    view.githubCalls = {
+      gh: async (args) => (ghCalls.push(args.join(" ")), { code: 0, stdout: args[0] === "auth" ? "gho_x" : "", stderr: "" }),
+      login: async () => ({ ok: false }),
+      openBrowser: () => false,
+    };
+    view.sync(baseSnapshot({ starAsk: line, turnRunning: true }));
+    await settle();
+    assert.strictEqual(prompts.length, 0, "not while a turn runs");
+    view.sync(baseSnapshot({ starAsk: line }));
+    await settle();
+    assert.strictEqual(String(prompts[0]?.payload.prompt), "⭐ Enjoying dl? Star it on GitHub: https://github.com/directionally-local/autopilot");
+    assert.ok(ghCalls.includes("api -X PUT /user/starred/directionally-local/autopilot"));
+    const said = sent.filter((s) => s.type === "RuntimeError").map((s) => String(s.payload.message));
+    assert.ok(said.includes("✓ Starred. Thank you!"));
+    assert.deepStrictEqual(calls, [["starAskDone", undefined]]);
+    view.dispose();
+  });
+
+  it("dismissed: nothing is called", async () => {
+    const { view, calls } = await fakeView({ select: [null] });
+    let ghRuns = 0;
+    view.githubCalls = { gh: async () => (ghRuns++, { code: 0, stdout: "", stderr: "" }), login: async () => ({ ok: false }), openBrowser: () => false };
+    view.sync(baseSnapshot({ starAsk: line }));
+    await settle();
+    assert.strictEqual(ghRuns, 0);
+    assert.deepStrictEqual(calls, [["starAskDone", undefined]]);
+    view.dispose();
+  });
+});
+
+describe("Camouflage GitHub access at the first pull request", () => {
+  it("asks, and Not now tells App so the tool call goes on", async () => {
+    const { view, prompts, calls } = await fakeView({ select: ["not-now"] });
+    view.githubCalls = { gh: async () => ({ code: 1, stdout: "", stderr: "" }), login: async () => ({ ok: false }), openBrowser: () => false };
+    view.sync(baseSnapshot({ githubAccess: { op: "pr" }, turnRunning: true, busy: true }));
+    await settle();
+    assert.match(String(prompts[0]?.payload.prompt), /^To push a branch and open a pull request, (dl|Autopilot) needs GitHub access\.$/);
+    assert.deepStrictEqual((prompts[0]?.payload.options as { label: string }[]).map((o) => o.label), [
+      "Sign in with GitHub in the browser",
+      "I'll set GITHUB_TOKEN myself",
+      "Not now (keep the changes on a local branch)",
+    ]);
+    assert.deepStrictEqual(calls, [["githubAccessDone", "not-now"]]);
+    view.dispose();
+  });
+
+  it("signs in with gh, showing the one-time code, then tells App to try again", async () => {
+    const { view, sent, calls } = await fakeView({ select: ["signin"] });
+    const ghCalls: string[] = [];
+    view.githubCalls = {
+      gh: async (args) => (ghCalls.push(args.join(" ")), { code: args.join(" ") === "auth setup-git" ? 0 : 1, stdout: "", stderr: "" }),
+      login: async ({ onCode }) => (onCode({ code: "WXYZ-1234", url: "https://github.com/login/device" }), { ok: true }),
+      openBrowser: () => false,
+    };
+    view.sync(baseSnapshot({ githubAccess: { op: "push" }, turnRunning: true, busy: true }));
+    await settle();
+    const said = sent.filter((s) => s.type === "RuntimeError").map((s) => String(s.payload.message));
+    assert.ok(said.some((m) => m.includes("one-time code: WXYZ-1234") && m.includes("https://github.com/login/device")), said.join("\n"));
+    assert.ok(said.includes("✓ Signed in to GitHub. Trying again…"));
+    assert.ok(ghCalls.includes("auth setup-git"));
+    assert.deepStrictEqual(calls, [["githubAccessDone", "signed-in"]]);
+    assert.strictEqual(view.signIn, null);
+    view.dispose();
+  });
+});

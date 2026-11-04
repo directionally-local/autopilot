@@ -211,6 +211,8 @@ export interface AutopilotConfig {
   prFooter?: boolean;
   /** Free tier: after the first opened PR or passing tests, one line with your invite link (shown once). Default: true. */
   inviteTip?: boolean;
+  /** After a win, once Autopilot was used on 3+ days: one line asking for a GitHub star (shown once). Default: true. */
+  starTip?: boolean;
   /** Directionally Local: an invite code to send with the next free-tier sign-in (dl writes it; cleared once signed in). */
   pendingReferral?: string;
   /** URL of the remote orchestrator Worker. */
@@ -506,6 +508,7 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     refocusTerminal: readBooleanEnv("REFOCUS_TERMINAL") ?? persisted.refocusTerminal ?? true,
     prFooter: readBooleanEnv("PR_FOOTER") ?? persisted.prFooter ?? true,
     inviteTip: persisted.inviteTip ?? true,
+    starTip: persisted.starTip ?? true,
     shell: readEnv("SHELL") ?? persisted.shell,
     remoteWorkerUrl: persisted.remoteWorkerUrl,
     remoteAuthSecret: persisted.remoteAuthSecret,

@@ -16,7 +16,7 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "invite", description: "Free tier: your invite link (you both get +10M tokens a week), who joined, and your bonus", source: "builtin" },
   { name: "upgrade", description: "Directionally Local: Pro or a one-time top-up; on Pro, manage or cancel your plan", source: "builtin" },
   { name: "cost", argHint: "[verify|on|off]", description: "Show cost report or toggle attribution", source: "builtin" },
-  { name: "settings", argHint: "[modes|pr-footer|invite-tip on|off]", description: "Show or change feature settings (e.g. plan/edit/auto modes, the PR footer)", source: "builtin" },
+  { name: "settings", argHint: "[modes|pr-footer|invite-tip|star-tip on|off]", description: "Show or change feature settings (e.g. plan/edit/auto modes, the PR footer)", source: "builtin" },
   { name: "key", argHint: "[set <key>|clear]", description: "Show or replace the active provider's API key", source: "builtin" },
   { name: "provider", argHint: "[<id>]", description: "Connect or switch LLM provider — sign in or add a key (OpenRouter, Anthropic, OpenAI, Gemini, Ollama, …)", source: "builtin" },
   { name: "mcp", argHint: "[list|reload]", description: "Manage MCP servers", source: "builtin" },

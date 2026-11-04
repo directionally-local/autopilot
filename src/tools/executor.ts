@@ -37,6 +37,7 @@ import { importedDenyFor, ruleSourceLabel } from "../import/permissions.js";
 import { resolvePath } from "../util/paths.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
+import { runWithGithubAccess } from "../github-access.js";
 import { modelProfileFor } from "../models/profile.js";
 
 export const ALL_TOOLS: ToolSpec[] = [
@@ -687,7 +688,8 @@ export class ToolExecutor {
       // Approved destructive file or git action: save what it loses first, for /undo.
       const recoveryPoint = guard ? createRecoveryPoint(guard.findings, { project: projectOf(ctx.cwd), tool: tool.name }) : null;
       const recoveryNote = recoveryPoint ? `\n\n[autopilot] ${describeRecoveryPoint(recoveryPoint)}` : "";
-      const result = await tool.run(args as never, runCtx);
+      // A push or pull request without GitHub access: ask (or say how) instead of the raw error.
+      const result = await runWithGithubAccess(call.name, args, runCtx, () => tool.run(args as never, runCtx));
       toolCompleted = true;
       const fileChange = before ? await fileChangeAfter(call.name, args, ctx.cwd, before) : undefined;
       const normalized = normalizeToolOutput(result);

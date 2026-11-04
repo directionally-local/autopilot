@@ -131,6 +131,8 @@ import {
 import { projectDirsToRead } from "./util/app-dirs.js";
 import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
 import { lastKnownDlMe } from "./providers/directionally-local.js";
+import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
+import type { GithubAccessOutcome, GithubAccessRequest } from "./github-access.js";
 import { ApiError as DlApiError } from "./util/errors.js";
 
 /** The TUI's config is exactly the loaded config. */
@@ -306,6 +308,22 @@ function App({
   const [dlScreen, setDlScreen] = useState<DlScreen | null>(null);
   const lastTurnPromptRef = useRef<{ text: string; display: string } | null>(null);
   const dlScreenErrorRef = useRef<string | null>(null);
+  // After a win, one tip a session at most: the free tier's invite tip or the
+  // GitHub star ask, never both in the same session.
+  const winTipRef = useRef<WinTipState>(null);
+  const [starAsk, setStarAsk] = useState<string | null>(null);
+  // A push or pull request without GitHub access: the question, and the tool call waiting on it.
+  const [githubAccess, setGithubAccess] = useState<GithubAccessRequest | null>(null);
+  const githubAccessResolveRef = useRef<((outcome: GithubAccessOutcome) => void) | null>(null);
+  const askGithubAccess = useCallback(
+    (req: GithubAccessRequest) =>
+      new Promise<GithubAccessOutcome>((resolve) => {
+        githubAccessResolveRef.current?.("not-now");
+        githubAccessResolveRef.current = resolve;
+        setGithubAccess(req);
+      }),
+    [],
+  );
   const pendingPromptEditRef = useRef<PendingPromptEdit | null>(null);
 
   // Plan/edit/auto modes are behind a feature flag (cfg.modesEnabled, off by
@@ -1665,15 +1683,29 @@ function App({
               );
             }
           },
-          callbacks: withWinTracking(sharedCallbacks, win),
+          callbacks: withWinTracking({ ...sharedCallbacks, askGithubAccess }, win),
         } }),
         {
           onDone: () => {
             noteTurnEnded(turnId);
+            // Days of use, for the star ask (3+ distinct days).
+            try {
+              noteDayOfUse();
+            } catch {
+              /* best effort */
+            }
             if (won(win)) {
-              void inviteTipAfterWin({ providerId: providerPresetOf(llmAuthFromConfig(cfg)).id, enabled: cfg.inviteTip !== false })
-                .then((line) => {
-                  if (line) setEvents((es) => [...es, { kind: "info", key: mkKey(), text: line }]);
+              void winTipAfterWin({
+                get: () => winTipRef.current,
+                set: (s) => {
+                  winTipRef.current = s;
+                },
+                inviteTip: () => inviteTipAfterWin({ providerId: providerPresetOf(llmAuthFromConfig(cfg)).id, enabled: cfg.inviteTip !== false }),
+                starAsk: () => starAskAfterWin({ enabled: cfg.starTip !== false }),
+              })
+                .then((tip) => {
+                  if (tip?.kind === "invite") setEvents((es) => [...es, { kind: "info", key: mkKey(), text: tip.line }]);
+                  else if (tip?.kind === "star") setStarAsk(tip.line);
                 })
                 .catch(() => undefined);
             }
@@ -1782,7 +1814,8 @@ function App({
     if (canDrainQueue({
       busy,
       // The free tier's limit screen holds queued prompts too: they'd only hit the same limit.
-      queuePlanOpen: queuePlanDraft !== null || dlScreen !== null,
+      // So does the star ask: it reads one key.
+      queuePlanOpen: queuePlanDraft !== null || dlScreen !== null || starAsk !== null,
       supervisorIdle: supervisorRef.current.phase === "idle",
       hasPendingWork: pendingPromptEditRef.current !== null || pendingSteersRef.current.length > 0 || queue.length > 0,
     })) {
@@ -1815,7 +1848,7 @@ function App({
         });
       }
     }
-  }, [busy, queue, queuePlanDraft, dlScreen, processMessage, queueDrainRevision]);
+  }, [busy, queue, queuePlanDraft, dlScreen, starAsk, processMessage, queueDrainRevision]);
 
   const handleQueuePlanPick = useCallback(
     (choice: "group" | "separate" | null) => {
@@ -2214,6 +2247,13 @@ function App({
         // Bought Pro or a top-up: send the blocked request again.
         else if (next.kind === "retry") void processMessage(next.text, next.display, { retry: true });
       },
+      starAskDone: () => setStarAsk(null),
+      githubAccessDone: (outcome: GithubAccessOutcome) => {
+        setGithubAccess(null);
+        const resolve = githubAccessResolveRef.current;
+        githubAccessResolveRef.current = null;
+        resolve?.(outcome);
+      },
       pickShell: (shell) => {
         if (shell && cfg) {
           const next = { ...cfg, shell: shell === "auto" ? undefined : shell };
@@ -2282,6 +2322,8 @@ function App({
       modesEnabled,
       hooks: configuredHooks(),
       dlScreen,
+      starAsk,
+      githubAccess,
       lsp: {
         servers: cfg?.lspServers ?? {},
         scope: lspScope,
@@ -2293,7 +2335,7 @@ function App({
       turnRunning: busy || supervisorRef.current.isRunning,
       sessionId: sessionIdRef.current,
       permissionTool: perm ? perm.tool.name : null,
-      awaitingChoice: planOptions !== null || open.includes("planComplete") || dlScreen !== null,
+      awaitingChoice: planOptions !== null || open.includes("planComplete") || dlScreen !== null || githubAccess !== null,
       currentTask: () => lastUserText(events),
     });
   });

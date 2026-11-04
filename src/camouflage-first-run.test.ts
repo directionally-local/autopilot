@@ -80,6 +80,26 @@ describe("first run: one question", () => {
     view.dispose();
   });
 
+  it("says where API keys go only after \"Use my own API key\" is picked, once", async () => {
+    await fresh();
+    const { view, sent } = await fakeView(["own-key", null, "own-key", null, null]);
+    const splash = () => sent.filter((s) => s.type === "Splash").map((s) => String(s.payload.text)).join("\n").replace(/\s+/g, " ");
+    let before = "";
+    const select = (view as unknown as { select: (...a: unknown[]) => Promise<string | null> }).select.bind(view);
+    let n = 0;
+    (view as unknown as { select: (...a: unknown[]) => Promise<string | null> }).select = (...a: unknown[]) => {
+      if (n++ === 0) before = splash();
+      return select(...a);
+    };
+    assert.strictEqual(await view.firstRunSetup({ upgrading: false }), false);
+    assert.doesNotMatch(before, /API keys you enter|this question is skipped/, "nothing about keys above the question");
+    const after = splash();
+    assert.match(after, /API keys you enter are checked with the provider, then saved only in/);
+    assert.match(after, /Tip: with a provider's API key in your environment \(e\.g\. OPENROUTER_API_KEY\), this question is skipped\./);
+    assert.strictEqual(after.match(/API keys you enter/g)?.length, 1, "shown once, not on every return to the question");
+    view.dispose();
+  });
+
   it("own key opens the provider picker without the free tier, with the billing line; Esc goes back to the question", async () => {
     await fresh();
     const { view, prompts, options } = await fakeView(["own-key", null, null]);

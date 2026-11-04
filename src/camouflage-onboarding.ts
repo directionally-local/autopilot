@@ -31,10 +31,15 @@ export function firstRunIntro(o: {
   // Started by `dl`, the product the person installed is Directionally Local.
   const welcome = o.upgrading ? [...UPGRADE_NOTICE, ""] : [launchedByDl(o.env) ? "Welcome to Directionally Local." : "Welcome to Autopilot."];
   // The free tier is on the next screen, so nothing here says calls are billed to your own account.
+  // What happens to API keys is said only once the person picks their own key (ownKeyIntro).
   if (o.envKey) return [...welcome, envKeyLine(o.envKey)];
+  return welcome;
+}
+
+/** Shown on first run once the person picks "Use my own API key": where keys go, and how to skip the question. */
+export function ownKeyIntro(configPath: string): string[] {
   return [
-    ...welcome,
-    `API keys you enter are checked with the provider, then saved only in ${o.configPath} (keys from your environment are never written to disk).`,
+    `API keys you enter are checked with the provider, then saved only in ${configPath} (keys from your environment are never written to disk).`,
     "Tip: with a provider's API key in your environment (e.g. OPENROUTER_API_KEY), this question is skipped.",
   ];
 }
