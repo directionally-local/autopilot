@@ -16,6 +16,7 @@ import {
   runCommand,
   suggestTasks,
   TOUR_MAX_COMPLETION_TOKENS,
+  tourAtSessionStart,
   type AskModel,
   type ProjectFacts,
   type RunCommand,
@@ -204,6 +205,20 @@ describe("selection", () => {
     assert.strictEqual(resolveTourInput("4", tasks), "4");
     assert.strictEqual(resolveTourInput("1 more thing", tasks), "1 more thing");
     assert.strictEqual(resolveTourInput("2", null), "2");
+  });
+});
+
+describe("when a session gets the tour", () => {
+  const start = { resuming: false, firstMessageQueued: false, hasUserMessage: false };
+  it("shows it in a new session that opens on an empty prompt", () => {
+    assert.strictEqual(tourAtSessionStart(start), true);
+  });
+  it("not when the session starts with a queued first message (Claude Code handoff, a prompt passed in)", () => {
+    assert.strictEqual(tourAtSessionStart({ ...start, firstMessageQueued: true }), false);
+  });
+  it("not in a resumed conversation or one that already has a message", () => {
+    assert.strictEqual(tourAtSessionStart({ ...start, resuming: true }), false);
+    assert.strictEqual(tourAtSessionStart({ ...start, hasUserMessage: true }), false);
   });
 });
 

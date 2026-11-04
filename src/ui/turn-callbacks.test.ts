@@ -3,6 +3,7 @@ import assert from "node:assert";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents, toolResultPatch, type TurnCallbackDeps } from "./turn-callbacks.js";
 import type { ChatEvent } from "./view-types.js";
 import { ApiError } from "../util/errors.js";
+import { ModelHostError } from "../agent/model-retry.js";
 
 function harness() {
   let events: ChatEvent[] = [];
@@ -114,7 +115,57 @@ describe("settleTurnEvents", () => {
   });
 });
 
+describe("model-call retries in the TUI", () => {
+  const retry = (discardedText: string) => ({ retry: 1, maxRetries: 2, delayMs: 1000, line: "↻ The model's host had a hiccup; retrying (1/2)…", discardedText, error: new Error("x") });
+
+  it("empties the cut-off answer, shows one dim line, and streams the retry into a new message", () => {
+    const h = harness();
+    const cb = createTurnCallbacks(h.deps);
+    cb.onAssistantStart!();
+    cb.onTextDelta!("Half an ans");
+    cb.onModelRetry!(retry("Half an ans"));
+    cb.onTextDelta!("The whole answer.");
+    cb.onAssistantFinal!({ role: "assistant", content: "The whole answer." });
+    const [cut, line, next] = h.events();
+    assert.deepStrictEqual(
+      cut && cut.kind === "assistant" && { text: cut.text, streaming: cut.streaming },
+      { text: "", streaming: false },
+    );
+    assert.deepStrictEqual(line, { kind: "info", key: "k0", text: "↻ The model's host had a hiccup; retrying (1/2)… The cut-off reply is discarded.", tone: "dim" });
+    assert.ok(next?.kind === "assistant" && next.text === "The whole answer." && !next.streaming);
+  });
+
+  it("cancels tool calls the failed attempt announced", () => {
+    const h = harness();
+    const cb = createTurnCallbacks(h.deps);
+    cb.onAssistantStart!();
+    cb.onToolCallFinalized!(call("c1"));
+    cb.onModelRetry!(retry(""));
+    const tool = h.events().find((e) => e.kind === "tool");
+    assert.strictEqual(tool?.kind === "tool" && tool.status, "cancelled");
+    assert.strictEqual(h.deps.pendingToolCallsRef.current.size, 0);
+  });
+
+  it("shows only the retry line when nothing had streamed", () => {
+    const h = harness();
+    const cb = createTurnCallbacks(h.deps);
+    cb.onAssistantStart!();
+    cb.onModelRetry!(retry(""));
+    const line = h.events()[1];
+    assert.ok(line?.kind === "info" && line.text === "↻ The model's host had a hiccup; retrying (1/2)…");
+  });
+});
+
 describe("classifyTurnFailure", () => {
+  it("shows a plain message after the host failed every retry, with its error as dim detail", () => {
+    const err = new ModelHostError(3, new ApiError("autopilot: Upstream error from Morph: error decoding response body", undefined, 502));
+    assert.deepStrictEqual(classifyTurnFailure(err), {
+      kind: "error",
+      text: 'The model\'s host failed 3 times. Type "continue" to try again.',
+      detail: "Upstream error from Morph: error decoding response body",
+    });
+  });
+
   it("separates aborts, transient provider errors and everything else", () => {
     assert.deepStrictEqual(classifyTurnFailure(new DOMException("x", "AbortError")), { kind: "aborted" });
     const busy = classifyTurnFailure(new ApiError("Too many requests", 7, 429));

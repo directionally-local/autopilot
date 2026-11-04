@@ -24,8 +24,15 @@ export type ChatEvent =
       streaming: boolean;
     }
   | ({ kind: "tool"; key: string } & ToolEventState)
-  | { kind: "info"; key: string; text: string; pending?: boolean; /** "warn": shown in the warning colour (e.g. a failed hook). */ tone?: "warn" }
-  | { kind: "error"; key: string; text: string }
+  | {
+      kind: "info";
+      key: string;
+      text: string;
+      pending?: boolean;
+      /** "warn": shown in the warning colour (e.g. a failed hook). "dim": a plain dim line, no bullet (e.g. a retry). */
+      tone?: "warn" | "dim";
+    }
+  | { kind: "error"; key: string; text: string; /** Shown dim under the message, for debugging (e.g. the host's raw error). */ detail?: string }
   | { kind: "jev"; key: string; result: string; probability?: string; tone: "yes" | "no" | "neutral"; receipt: string }
   | { kind: "memory"; key: string; text: string }
   | {

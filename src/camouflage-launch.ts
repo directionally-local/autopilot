@@ -79,7 +79,7 @@ function defaultPackageDir(): string | null {
   }
 }
 
-function defaultIsExecutable(path: string): boolean {
+export function defaultIsExecutable(path: string): boolean {
   try {
     accessSync(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
     return true;
@@ -89,7 +89,7 @@ function defaultIsExecutable(path: string): boolean {
 }
 
 /** Resolve a CAMOUFLAGE_BIN value the way spawn() would: a path as-is, a bare name on PATH. */
-function findOnPath(bin: string, env: NodeJS.ProcessEnv, platform: string, isExecutable: (p: string) => boolean): boolean {
+export function findOnPath(bin: string, env: NodeJS.ProcessEnv, platform: string, isExecutable: (p: string) => boolean = defaultIsExecutable): boolean {
   if (isAbsolute(bin) || bin.includes("/") || bin.includes(sep)) return isExecutable(resolve(bin));
   const exts = platform === "win32" ? ["", ...(env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";")] : [""];
   for (const dir of (env.PATH ?? "").split(delimiter)) {

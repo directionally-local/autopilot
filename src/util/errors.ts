@@ -1,6 +1,10 @@
 export class ApiError extends Error {
   /** A provider's own error code when it sends a string one (e.g. Directionally Local's "quota_exceeded"). */
   providerCode?: string;
+  /** Set by the client when it has judged the failure: true when trying again may work (see agent/model-retry.ts). */
+  transient?: boolean;
+  /** The host's Retry-After, in milliseconds, when it sent one. */
+  retryAfterMs?: number;
   constructor(
     message: string,
     public readonly code?: number,

@@ -45,6 +45,8 @@ export interface SetupPrompt {
 export interface SetupGate {
   /** The project root the answer is stored for. */
   root: string;
+  /** Where commands run (default: root): finds local binaries and resolves relative paths. */
+  cwd?: string;
   /** True when a configured permission rule already allows this call. */
   ruleAllows?: (req: PermissionRequest) => boolean;
 }
@@ -60,7 +62,7 @@ export function setupPromptFor(req: PermissionRequest, gate: SetupGate | null | 
   if (req.tool.name !== "bash" && req.tool.name !== "job_start") return null;
   const command = req.args.command;
   if (typeof command !== "string") return null;
-  const sc = setupCommandOf(command);
+  const sc = setupCommandOf(command, { cwd: gate.cwd ?? gate.root });
   if (!sc) return null;
   if (gate.ruleAllows?.(req)) return null;
   if (hasSetupConsent(gate.root)) return null;

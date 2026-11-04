@@ -1071,6 +1071,15 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
         client.send("warning", { message: msg });
       }
     },
+    // A model-call retry: say so the way warnings are said. Text that streamed
+    // in the failed attempt was already sent as deltas, so the line marks it.
+    onModelRetry: (r) => {
+      const msg = r.discardedText.trim() ? `${r.line} The cut-off reply above is discarded.` : r.line;
+      if (active.publishDlEvent) active.publishDlEvent("status", { detail: msg });
+      for (const client of active.sseClients) {
+        client.send("warning", { message: msg });
+      }
+    },
     onRunYield: (request) => {
       if (!runStore || !active.runId || request.runId !== active.runId) return;
       runStore.transition(active.runId, "waiting", `timer:${request.timerId}`);

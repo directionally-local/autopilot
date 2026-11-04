@@ -43,12 +43,18 @@ import { sessionTranscript } from "../transcript/claude-jsonl.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnEndReason } from "../trace/types.js";
 import { readEnv } from "../util/env.js";
+import { isTransientModelError, ModelHostError, modelRetryCount, modelRetryDelay, modelRetryLine, retryAfterOf, shouldRetryModelCall, type ModelRetryInfo } from "./model-retry.js";
 
 export interface AgentCallbacks {
   onAssistantStart?: () => void;
   onReasoningDelta?: (text: string) => void;
   onTextDelta?: (text: string) => void;
   onInfo?: (text: string) => void;
+  /** The model call failed on the host and is about to be retried. Whatever
+   *  streamed in the failed attempt (text, reasoning, unfinished tool calls)
+   *  is dropped from history; the host should drop or mark it on screen too.
+   *  Hosts without this get `onInfo(info.line)`. */
+  onModelRetry?: (info: ModelRetryInfo) => void;
   onToolCallStart?: (index: number, id: string, name: string) => void;
   onToolCallArgs?: (index: number, delta: string) => void;
   onToolCallFinalized?: (call: ToolCall) => void;
@@ -190,6 +196,10 @@ export interface AgentTurnOpts extends LlmAuth {
   mode?: Mode;
   /** Whether to use cache-stable prompt assembly (dual system messages). */
   cacheStable?: boolean;
+  /** Retries of a transient host failure of a model call (default 2, or AUTOPILOT_NETWORK_RETRIES). */
+  modelRetries?: number;
+  /** Waits before a model-call retry; tests pass a fast one. */
+  retrySleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Abort the API stream if no data arrives for this many milliseconds. Default 60000.
    *  A cold upstream provider after tool use can exceed the default — bump this for
    *  long-running embeddings / image-heavy turns. */
@@ -1016,74 +1026,122 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     }
 
     logger.debug("turn:api_request", { sessionId: opts.sessionId, messageCount: apiMessages.length });
-    const events = runKimi({
-      onLargeBody: (warning) => opts.callbacks.onWarning?.(warning),
-      onRetry: (message) => opts.callbacks.onInfo?.(message),
-      onNotice: (message) => opts.callbacks.onInfo?.(message),
-      ...llmAuthOf(opts),
-      model: opts.model,
-      messages: apiMessages,
-      tools: toolDefs,
-      signal: opts.signal,
-      temperature: opts.temperature,
-      maxCompletionTokens: opts.maxCompletionTokens,
-      reasoningEffort: opts.reasoningEffort,
-      sessionId: opts.sessionId,
-      idleTimeoutMs: opts.idleTimeoutMs ?? 60_000,
-      postFirstByteIdleTimeoutMs: opts.postFirstByteIdleTimeoutMs,
-      trace,
-      turnId,
-    });
+    // Transient host failures (5xx, 429, resets, a stream that dies mid-answer)
+    // retry this one model call: tools from earlier steps of the turn already
+    // ran and are in history, so they never run again. Nothing from a failed
+    // attempt reaches history: the assistant message is built only after a
+    // stream completes, and tool calls only run once it has.
+    const maxModelRetries = modelRetryCount(opts.modelRetries);
+    const usageBeforeCall: Usage | null = lastUsage;
+    const toolsUsedBeforeCall = tr.toolsUsed.length;
+    for (let retries = 0; ; retries++) {
+      try {
+        const events = runKimi({
+          onLargeBody: (warning) => opts.callbacks.onWarning?.(warning),
+          onNotice: (message) => opts.callbacks.onInfo?.(message),
+          ...llmAuthOf(opts),
+          model: opts.model,
+          messages: apiMessages,
+          tools: toolDefs,
+          signal: opts.signal,
+          temperature: opts.temperature,
+          maxCompletionTokens: opts.maxCompletionTokens,
+          reasoningEffort: opts.reasoningEffort,
+          sessionId: opts.sessionId,
+          idleTimeoutMs: opts.idleTimeoutMs ?? 60_000,
+          postFirstByteIdleTimeoutMs: opts.postFirstByteIdleTimeoutMs,
+          // Retried here, where a failure after the stream started is retried too.
+          networkRetries: 0,
+          trace,
+          turnId,
+        });
 
-    let gotFirstChunk = false;
-    for await (const ev of events) {
-      if (!gotFirstChunk) {
-        gotFirstChunk = true;
-        logger.debug("turn:api_first_chunk", { sessionId: opts.sessionId });
-      }
-      switch (ev.type) {
-        case "response_meta":
-          responseMeta = ev.meta;
-          opts.callbacks.onResponseMeta?.(ev.meta);
-          break;
-        case "reasoning_details":
-          reasoningDetails = mergeReasoningDetails(reasoningDetails, ev.details);
-          break;
-        case "reasoning":
-          reasoning += ev.delta;
-          opts.callbacks.onReasoningDelta?.(ev.delta);
-          break;
-        case "text":
-          content += ev.delta;
-          tr.partialText = content;
-          opts.callbacks.onTextDelta?.(ev.delta);
-          break;
-        case "tool_call_start":
-          opts.callbacks.onToolCallStart?.(ev.index, ev.id, ev.name);
-          break;
-        case "tool_call_args":
-          opts.callbacks.onToolCallArgs?.(ev.index, ev.argsDelta);
-          break;
-        case "tool_call_complete": {
-          const callArgs = validateToolArguments(ev.arguments, ev.name, ev.id, ev.finishReason, opts.sessionId);
-          const call: ToolCall = {
-            id: ev.id,
-            type: "function",
-            function: { name: normalizeToolName(ev.name, opts.tools), arguments: callArgs },
-            ...(ev.extra ? { extra_content: ev.extra } : {}),
-          };
-          toolCalls.push(call);
-          tr.toolsUsed.push(call.function.name);
-          opts.callbacks.onToolCallFinalized?.(call);
-          break;
+        let gotFirstChunk = false;
+        for await (const ev of events) {
+          if (!gotFirstChunk) {
+            gotFirstChunk = true;
+            logger.debug("turn:api_first_chunk", { sessionId: opts.sessionId });
+          }
+          switch (ev.type) {
+            case "response_meta":
+              responseMeta = ev.meta;
+              opts.callbacks.onResponseMeta?.(ev.meta);
+              break;
+            case "reasoning_details":
+              reasoningDetails = mergeReasoningDetails(reasoningDetails, ev.details);
+              break;
+            case "reasoning":
+              reasoning += ev.delta;
+              opts.callbacks.onReasoningDelta?.(ev.delta);
+              break;
+            case "text":
+              content += ev.delta;
+              tr.partialText = content;
+              opts.callbacks.onTextDelta?.(ev.delta);
+              break;
+            case "tool_call_start":
+              opts.callbacks.onToolCallStart?.(ev.index, ev.id, ev.name);
+              break;
+            case "tool_call_args":
+              opts.callbacks.onToolCallArgs?.(ev.index, ev.argsDelta);
+              break;
+            case "tool_call_complete": {
+              const callArgs = validateToolArguments(ev.arguments, ev.name, ev.id, ev.finishReason, opts.sessionId);
+              const call: ToolCall = {
+                id: ev.id,
+                type: "function",
+                function: { name: normalizeToolName(ev.name, opts.tools), arguments: callArgs },
+                ...(ev.extra ? { extra_content: ev.extra } : {}),
+              };
+              toolCalls.push(call);
+              tr.toolsUsed.push(call.function.name);
+              opts.callbacks.onToolCallFinalized?.(call);
+              break;
+            }
+            case "usage":
+              lastUsage = ev.usage;
+              responseUsage = ev.usage;
+              opts.callbacks.onUsage?.(ev.usage);
+              break;
+            case "done":
+              break;
+          }
         }
-        case "usage":
-          lastUsage = ev.usage;
-          responseUsage = ev.usage;
-          opts.callbacks.onUsage?.(ev.usage);
-          break;
-        case "done":
-          break;
+        break;
+      } catch (err) {
+        if (opts.signal.aborted) throw err;
+        if (!shouldRetryModelCall(err, retries, maxModelRetries)) {
+          if (retries > 0 && isTransientModelError(err)) {
+            throw new ModelHostError(retries + 1, err);
+          }
+          throw err;
+        }
+        const discardedText = content;
+        content = "";
+        reasoning = "";
+        reasoningDetails = [];
+        toolCalls.length = 0;
+        tr.toolsUsed.length = toolsUsedBeforeCall;
+        tr.partialText = "";
+        responseMeta = undefined;
+        responseUsage = null;
+        lastUsage = usageBeforeCall;
+        const delayMs = modelRetryDelay(retries, retryAfterOf(err));
+        const line = modelRetryLine(retries + 1, maxModelRetries);
+        logger.warn("turn:model_retry", {
+          sessionId: opts.sessionId,
+          retry: retries + 1,
+          delayMs,
+          discardedChars: discardedText.length,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (opts.callbacks.onModelRetry) {
+          opts.callbacks.onModelRetry({ retry: retries + 1, maxRetries: maxModelRetries, delayMs, line, discardedText, error: err });
+        } else {
+          opts.callbacks.onInfo?.(line);
+        }
+        await (opts.retrySleep ?? sleepUnlessAborted)(delayMs, opts.signal);
+        if (opts.signal.aborted) throw new DOMException("aborted", "AbortError");
       }
     }
 
@@ -1926,3 +1984,16 @@ function validateToolArguments(raw: string, name: string, id: string, finishReas
 
 /** The credential subset of turn opts, for side-calls made on the turn's behalf. */
 const llmAuthOf = pickLlmAuth;
+
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}

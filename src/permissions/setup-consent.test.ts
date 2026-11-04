@@ -1,9 +1,9 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { grantSetupConsent, hasSetupConsent, SETUP_CHOICES, setupCommandOf, setupQuestion } from "./setup-consent.js";
+import { grantSetupConsent, hasSetupConsent, isTempPath, resolvesToLocalBin, SETUP_CHOICES, setupCommandOf, setupQuestion } from "./setup-consent.js";
 import { resolvePermission } from "../ui/use-permission-controller.js";
 import type { PermissionDecision, PermissionRequest } from "../tools/executor.js";
 
@@ -88,6 +88,71 @@ describe("setupCommandOf", () => {
     ]) {
       assert.strictEqual(kind(c), null, c);
     }
+  });
+
+  describe("binaries that are already installed", () => {
+    let project: string;
+    before(() => {
+      // A workspace: the root's node_modules/.bin has xo (as npm/pnpm link it, workspace bins too),
+      // packages/app has its own eslint, and the root package has its own bin.
+      project = mkdtempSync(join(tmpdir(), "consent-bins-"));
+      mkdirSync(join(project, "node_modules", ".bin"), { recursive: true });
+      writeFileSync(join(project, "node_modules", ".bin", "xo"), "");
+      mkdirSync(join(project, "node_modules", "@biomejs", "biome"), { recursive: true });
+      writeFileSync(join(project, "node_modules", "@biomejs", "biome", "package.json"), "{}");
+      writeFileSync(join(project, "package.json"), JSON.stringify({ name: "tool", bin: { "my-cli": "cli.js" } }));
+      mkdirSync(join(project, "packages", "app", "node_modules", ".bin"), { recursive: true });
+      writeFileSync(join(project, "packages", "app", "node_modules", ".bin", "eslint"), "");
+    });
+    after(() => rmSync(project, { recursive: true, force: true }));
+    const at = (cwd: string) => (c: string) => setupCommandOf(c, { cwd })?.kind ?? null;
+
+    it("runs them without asking: npx, npm exec, bunx, bun x, pnpm exec and yarn", () => {
+      const here = at(project);
+      for (const c of ["npx xo", "npx --yes xo --fix", "npm exec xo", "npm exec -- xo", "npx @biomejs/biome check", "bunx xo", "bun x xo", "pnpm exec xo", "yarn xo", "npx my-cli"]) {
+        assert.strictEqual(here(c), null, c);
+      }
+      // The command the fresh-machine test asked about.
+      assert.strictEqual(here("cd /elsewhere && npx xo 2>&1 | tail -20"), "fetch-run", "a cd elsewhere leaves the project");
+      assert.strictEqual(at("/")(`cd ${project} && npx xo 2>&1 | tail -20`), null, "a cd into the project finds it");
+      // From a workspace package, its own bins and the root's.
+      assert.strictEqual(at(join(project, "packages", "app"))("npx eslint ."), null);
+      assert.strictEqual(at(join(project, "packages", "app"))("npx xo"), null);
+      assert.strictEqual(at(project)("npx eslint ."), "fetch-run", "not installed at the root");
+    });
+
+    it("still asks when the package would be downloaded", () => {
+      const here = at(project);
+      for (const c of ["npx prettier --check .", "npx xo@0.60.0", "npx -p xo xo", "npx --package=xo xo", "pnpm dlx xo", "yarn dlx xo", "npm exec prettier"]) {
+        assert.strictEqual(here(c), "fetch-run", c);
+      }
+      assert.strictEqual(resolvesToLocalBin("../xo", project), false);
+    });
+  });
+
+  describe("temp files", () => {
+    it("writing to /tmp or the OS temp dir is not a change", () => {
+      for (const c of [
+        'npm test > /tmp/test.log 2>&1; echo "EXIT: $?"; grep -E "fail|error" /tmp/test.log | head -20',
+        "node --test 2>&1 | tee /tmp/out.txt",
+        "echo x >> /var/tmp/notes",
+        'echo x > "$TMPDIR/x.log"',
+        `echo x > ${join(tmpdir(), "autopilot-scratch.log")}`,
+        "rm -f /tmp/a.log /tmp/b.log",
+        "mkdir -p /tmp/work",
+        "cd /tmp && echo x > out.log",
+      ]) {
+        assert.strictEqual(kind(c), null, c);
+      }
+    });
+
+    it("anything outside a temp dir still is", () => {
+      for (const c of ["echo x > /tmp/../home/me/x", "mkdir -p /tmp/work build", "cp /tmp/a.ts src/a.ts", "echo x > /tmpfoo/x", "echo x > out.log"]) {
+        assert.strictEqual(kind(c), "write", c);
+      }
+      assert.strictEqual(isTempPath("/srv/scratch/x", undefined, ["/srv/scratch"]), true);
+      assert.strictEqual(isTempPath("out.log", undefined), false);
+    });
   });
 
   it("asks in plain words, with three answers", () => {

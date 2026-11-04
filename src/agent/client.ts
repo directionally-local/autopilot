@@ -21,6 +21,7 @@ import { getPreset, keyHeaders, type ProviderCompat, type ProviderPreset } from 
 import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicRequest } from "./protocols/anthropic.js";
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
+import { modelRetryCount, modelRetryDelay, modelRetryLine, parseRetryAfter, retryAfterOf, shouldRetryModelCall } from "./model-retry.js";
 import { describeDlError, dlAccessToken, DlError, noteDlQuotaExceeded, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
 import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
 import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
@@ -67,9 +68,11 @@ export interface RunKimiOpts extends LlmAuth {
   turnId?: string | null;
   /** Called once per session when a request body is large (> 1 MB), naming its biggest parts. */
   onLargeBody?: (warning: string) => void;
-  /** Number of network retries. Defaults to 10; AUTOPILOT_NETWORK_RETRIES overrides the default. */
+  /** Retries of a transient host failure before the stream starts. Defaults to 2
+   *  (agent/model-retry.ts); AUTOPILOT_NETWORK_RETRIES overrides the default. The
+   *  agent loop passes 0 and retries the whole call itself. */
   networkRetries?: number;
-  /** Called before a network retry, for visible progress in interactive hosts. */
+  /** Called before a retry, for visible progress in interactive hosts. */
   onRetry?: (message: string) => void;
   /** One-line notices from the provider (e.g. the free tier's 80%-of-allowance notice). */
   onNotice?: (message: string) => void;
@@ -105,29 +108,18 @@ export interface ResponseMeta {
   provider?: string;
 }
 
-const DEFAULT_NETWORK_RETRIES = 10;
-const RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 10_000, 15_000, 20_000, 30_000, 30_000, 30_000] as const;
-
-export function networkRetryCount(override?: number): number {
-  const raw = override ?? Number(process.env.AUTOPILOT_NETWORK_RETRIES ?? DEFAULT_NETWORK_RETRIES);
-  return Number.isFinite(raw) ? Math.max(0, Math.min(20, Math.floor(raw))) : DEFAULT_NETWORK_RETRIES;
-}
-
-export function networkRetryDelay(retryIndex: number, retryAfterMs?: number, random = Math.random()): number {
-  if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-    return Math.min(retryAfterMs, 30_000);
-  }
-  const base = RETRY_DELAYS_MS[Math.min(retryIndex, RETRY_DELAYS_MS.length - 1)]!;
-  return Math.round(base * (0.8 + Math.max(0, Math.min(1, random)) * 0.4));
-}
-
-function isRetryable(err: ApiError, attempt: number, maxRetries: number, openrouter = true): boolean {
-  if (attempt >= maxRetries) return false;
+/**
+ * Whether an HTTP error response is the host's transient trouble. The client
+ * judges these itself because it knows the provider: OpenRouter's 402
+ * "in-flight budget" is transient (a concurrent request is holding the key's
+ * remaining credit) while a plain out-of-credits 402 is not.
+ */
+function isTransientHttpError(err: ApiError, rawMessage: string, openrouter = true): boolean {
   // ChatGPT token sharing: usage limits and eligibility don't change on retry (even as a 429).
   if (NON_RETRYABLE_SHARING_CODES.some((c) => err.message.includes(c))) return false;
-  if (err.httpStatus === 408 || err.httpStatus === 429) return true;
-  // OpenRouter's 402 "in-flight budget" is transient (a concurrent request is
-  // holding the key's remaining credit); a plain out-of-credits 402 is not.
+  // OpenAI's out-of-quota is a 429 too.
+  if (err.httpStatus === 429) return !/\b(?:insufficient_quota|quota|billing)\b/i.test(rawMessage);
+  if (err.httpStatus === 408 || err.httpStatus === 425) return true;
   if (openrouter && err.httpStatus === 402 && /in.?flight/i.test(err.message)) return true;
   if (err.httpStatus !== undefined && err.httpStatus >= 500 && err.httpStatus < 600) return true;
   if (err.message.includes("Internal server error")) return true;
@@ -426,7 +418,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
   if (opts.onLargeBody && shouldWarnLargeBody(opts.sessionId ?? getLogSessionId() ?? "default", bodyBytes)) {
     opts.onLargeBody(largeBodyWarning(bodyBytes, largestBodyParts(body.messages as ChatMessage[])));
   }
-  const maxRetries = networkRetryCount(opts.networkRetries);
+  const maxRetries = modelRetryCount(opts.networkRetries);
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let res: Response;
     const attemptStartedAt = performance.now();
@@ -453,20 +445,22 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       traceResponse(attemptStartedAt, msg);
       if (isAbortError(fetchErr)) throw fetchErr;
       logger.warn("runKimi:fetch_error", { requestId, attempt, error: msg });
-      if (attempt < maxRetries) {
-        const delay = networkRetryDelay(attempt);
-        opts.onRetry?.(`Network error, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})`);
-        logger.warn("runKimi:retrying", { requestId, attempt, delay });
-        await sleep(delay, opts.signal);
-        continue;
-      }
       const local = customEndpoint?.providerId && !preset.keyRequired;
-      throw new ApiError(
+      const netErr = new ApiError(
         `autopilot: network error: ${msg}` +
           (local ? `\n\nIs ${preset.name} running at ${customEndpoint!.baseUrl}? Start it, or set providers.${preset.id}.baseUrl in config.` : ""),
         undefined,
         undefined,
       );
+      netErr.transient = true;
+      if (shouldRetryModelCall(netErr, attempt, maxRetries)) {
+        const delay = modelRetryDelay(attempt);
+        opts.onRetry?.(modelRetryLine(attempt + 1, maxRetries));
+        logger.warn("runKimi:retrying", { requestId, attempt, delay });
+        await sleep(delay, opts.signal);
+        continue;
+      }
+      throw netErr;
     }
 
     timing.headersMs = Math.round(performance.now() - attemptStartedAt);
@@ -513,18 +507,15 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
         dlErr ? res.status : status,
       );
       if (dlErr) apiErr.providerCode = dlErr.code;
+      // Free tier: only rate limits are worth retrying; quota, invites, suspensions and pauses aren't.
+      apiErr.transient = dlErr ? dlErr.code === "rate_limited" : isTransientHttpError(apiErr, msg, !customEndpoint && !requesty);
+      const retryAfterMs = parseRetryAfter(dlErr?.retryAfter ?? res.headers.get("retry-after"));
+      if (retryAfterMs !== undefined) apiErr.retryAfterMs = retryAfterMs;
       if (dlErr?.code === "quota_exceeded") noteDlQuotaExceeded({ ...(dlErr.reason ? { reason: dlErr.reason } : {}), ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}) });
       traceResponse(attemptStartedAt, apiErr.message);
-      // Free tier: only rate limits are worth retrying; quota, invites, suspensions and pauses aren't.
-      const retryable = dlErr ? dlErr.code === "rate_limited" && attempt < maxRetries : isRetryable(apiErr, attempt, maxRetries, !customEndpoint && !requesty);
-      if (retryable) {
-        // Retry-After may be a number of seconds or an HTTP date.
-        const retryAfter = dlErr?.retryAfter !== undefined ? String(dlErr.retryAfter) : res.headers.get("retry-after");
-        const retryAfterMs = retryAfter ? (/^\d+(?:\.\d+)?$/.test(retryAfter)
-          ? Number(retryAfter) * 1000
-          : Date.parse(retryAfter) - Date.now()) : undefined;
-        const delay = networkRetryDelay(attempt, retryAfterMs);
-        opts.onRetry?.(`Network error, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})`);
+      if (shouldRetryModelCall(apiErr, attempt, maxRetries)) {
+        const delay = modelRetryDelay(attempt, retryAfterMs);
+        opts.onRetry?.(modelRetryLine(attempt + 1, maxRetries));
         logger.warn("runKimi:retrying", { requestId, attempt, code: apiErr.code, httpStatus: apiErr.httpStatus, delay });
         await sleep(delay, opts.signal);
         continue;
@@ -566,9 +557,12 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       }
     } catch (streamErr) {
       streamError = streamErr instanceof Error ? streamErr.message : String(streamErr);
-      if (!emittedAny && attempt < maxRetries && !isAbortError(streamErr)) {
-        const delay = networkRetryDelay(attempt);
-        opts.onRetry?.(`Connection dropped, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})`);
+      // Only before anything reached the caller: once events have gone out, a
+      // retry would repeat them. The agent loop retries those itself (it can
+      // discard what streamed); other callers get the error.
+      if (!emittedAny && shouldRetryModelCall(streamErr, attempt, maxRetries)) {
+        const delay = modelRetryDelay(attempt, retryAfterOf(streamErr));
+        opts.onRetry?.(modelRetryLine(attempt + 1, maxRetries));
         logger.warn("runKimi:stream_retry", { requestId, attempt, error: streamError, delay });
         await sleep(delay, opts.signal);
         continue;
