@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.8.0](https://github.com/directionally-local/autopilot/compare/v3.7.0...v3.8.0) (2026-11-04)
+
+
+### Features
+
+* GitHub star ask, GitHub sign-in at the first pull request, shorter first-run copy ([#1152](https://github.com/directionally-local/autopilot/issues/1152)) ([95d071d](https://github.com/directionally-local/autopilot/commit/95d071df6ac10ba23a3d988421e3ac5b7efb57f2))
+* make free tier invites visible ([#1151](https://github.com/directionally-local/autopilot/issues/1151)) ([c0bca12](https://github.com/directionally-local/autopilot/commit/c0bca1255d7f4fb6ce0316a928805d124664b3e3))
+
 ## [3.7.0](https://github.com/directionally-local/autopilot/compare/v3.6.0...v3.7.0) (2026-11-04)
 
 
