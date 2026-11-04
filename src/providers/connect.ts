@@ -294,12 +294,14 @@ export const DL_WAITING_LINE = "Waiting for you to approve in the browser… Esc
 
 /**
  * Shown while the free tier's sign-in waits for the browser, in place of the
- * chat input: the code and where to enter it, then the waiting line. The
- * code is part of this text (not only of the line said before it) so it is
- * on screen for the whole wait, however late the renderer draws that line.
+ * chat input: the whole sign-in paragraph (`dlSignInLines` with the code),
+ * then the waiting line. The paragraph is part of this text, not only a line
+ * said before it, so every attempt shows all of it for the whole wait,
+ * however late (or whether) the renderer draws a line said just before it
+ * lends the terminal.
  */
-export function dlWaitingText(code: DlDeviceCode): string {
-  return `Your code is ${code.userCode} · open ${code.verificationUriComplete} in a browser on any device\n${DL_WAITING_LINE}`;
+export function dlWaitingText(code: DlDeviceCode, opened = false): string {
+  return `${dlSignInLines(code, opened)}\n${DL_WAITING_LINE}`;
 }
 
 /** Said when someone backs out of the free tier's sign-in: nothing was saved, and the question is asked again. */

@@ -30,6 +30,14 @@ export const DEFAULT_AUTO_FRESH_SUGGESTION_TURNS = 30;
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const FEEDBACK_WORKER_URL = "https://hello.kimiflare.com";
 
+/**
+ * The first message to send on start (`--from-claude-code`), or undefined: only once a provider
+ * is set up (after first-run setup, when there was none), and only once.
+ */
+export function initialPromptToSend<P>(initialPrompt: P | undefined, cfg: unknown, alreadySent: boolean): P | undefined {
+  return initialPrompt && cfg && !alreadySent ? initialPrompt : undefined;
+}
+
 /** Replace a queued prompt without appending a second queue item. */
 export function replaceQueuedPrompt(
   queue: QueuedPrompt[],

@@ -153,10 +153,61 @@ describe("first run: one question", () => {
         assert.match(onScreen, /Your code is WLZH-2682/, `attempt ${attempt}: the code is on screen`);
         assert.ok(onScreen.includes("https://free.example/device?user_code=WLZH-2682"), "and where to enter it");
         assert.ok(onScreen.includes(DL_WAITING_LINE));
-        // The waiting text took three rows at 60 columns; all of them are erased.
-        assert.ok(written.at(-1)!.includes("\x1b[2A\x1b[J"), JSON.stringify(written.at(-1)));
+        // Drawn wrapped at word boundaries to fit 60 columns; every row it took is erased.
+        const rows = written[0]!.split("\r\n");
+        assert.ok(rows.every((r) => r.replace("\r\x1b[2K", "").length < 60), JSON.stringify(rows));
+        assert.ok(written.at(-1)!.includes(`\x1b[${rows.length - 1}A\x1b[J`), JSON.stringify(written.at(-1)));
         view.dispose();
       }
+    } finally {
+      if (savedNoBrowser === undefined) delete process.env.AUTOPILOT_NO_BROWSER;
+      else process.env.AUTOPILOT_NO_BROWSER = savedNoBrowser;
+    }
+  });
+
+  it("shows the whole sign-in paragraph on a retry too, not only the waiting line", async () => {
+    await fresh();
+    const savedNoBrowser = process.env.AUTOPILOT_NO_BROWSER;
+    process.env.AUTOPILOT_NO_BROWSER = "1";
+    try {
+      const { view, said } = await fakeView(["free", "free"]);
+      const sdk = (view as unknown as { sdk: Record<string, unknown> }).sdk;
+      sdk.suspendTerminal = async () => ({ supported: true });
+      sdk.resumeTerminal = () => {};
+      const stdin = Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(v: boolean) { this.isRaw = v; return this; }, resume() { return this; }, pause() { return this; } });
+      let written = "";
+      view.terminalIo = { stdin: stdin as never, stdout: { isTTY: true, columns: 120, write: (s: string) => ((written += s), true) } as never };
+      const codes = [code, { ...code, userCode: "VZKH-0699", verificationUriComplete: "https://free.example/device?user_code=VZKH-0699" }];
+      const paragraph = (c: typeof code) =>
+        `Your code is ${c.userCode}. Open ${c.verificationUriComplete} in a browser on any device, sign in with GitHub and approve it (enter an invite code there if asked).`;
+      const drawn: string[] = [];
+      let attempt = 0;
+      view.providerCalls = {
+        dlSignIn: async (onCode) => {
+          const c = codes[attempt++]!;
+          written = "";
+          onCode(c);
+          for (let i = 0; i < 50 && written === ""; i++) await new Promise((r) => setImmediate(r));
+          drawn.push(written.replace(/\r\n/g, " ").replace(/\r\x1b\[2K/, ""));
+          if (attempt === 1) throw new DlError("expired_token", "The sign-in code expired before it was approved. Choose Free again for a new code.");
+          return { key: "at-1" };
+        },
+        verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
+        dlMe: async () => me,
+      };
+      assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
+      assert.strictEqual(drawn.length, 2);
+      for (const [i, d] of drawn.entries()) {
+        assert.ok(d.includes(paragraph(codes[i]!)), `attempt ${i + 1} shows the whole paragraph while it waits: ${d}`);
+        assert.ok(d.endsWith(DL_WAITING_LINE));
+      }
+      // Once each wait ends the paragraph is said, so it stays in the scrollback (before the expiry line).
+      const text = said();
+      const first = text.indexOf(paragraph(codes[0]!));
+      const expired = text.findIndex((l) => /expired before it was approved/.test(l));
+      assert.ok(first >= 0 && expired > first, JSON.stringify(text));
+      assert.ok(text.indexOf(paragraph(codes[1]!)) > expired);
+      view.dispose();
     } finally {
       if (savedNoBrowser === undefined) delete process.env.AUTOPILOT_NO_BROWSER;
       else process.env.AUTOPILOT_NO_BROWSER = savedNoBrowser;

@@ -12,10 +12,12 @@ import {
   encodeClaudeCodeProjectPath,
   findLatestClaudeCodeConversation,
   formatAgo,
+  handoffAfterSetupLine,
   handoffQuestion,
   parseClaudeCodeTranscript,
   type ClaudeCodeConversation,
 } from "./claude-code-handoff.js";
+import { initialPromptToSend } from "./ui/app-helpers.js";
 
 const CWD = "/home/ana/shop_app";
 const SESSION = "8f1c2a7e-3b4d-4e5f-9a0b-1c2d3e4f5a6b";
@@ -126,8 +128,12 @@ describe("Claude Code handoff: the question", () => {
     const now = new Date("2026-11-03T10:00:00Z");
     assert.strictEqual(
       handoffQuestion({ updatedAt: new Date("2026-11-03T09:56:00Z"), title: "fix the discount bug" }, now),
-      "Found your Claude Code conversation from 4 minutes ago: ‘fix the discount bug’. Continue it here? [Enter / n] ",
+      "Found your Claude Code conversation from 4 minutes ago:\n  ‘fix the discount bug’\nContinue it here? [Enter / n] ",
     );
+    // A title at its 60-character cap still leaves "[Enter / n]" whole on its own line at 80 columns.
+    const long = handoffQuestion({ updatedAt: new Date("2026-11-03T09:53:00Z"), title: "x".repeat(59) + "…" }, now);
+    assert.ok(long.split("\n").every((line) => [...line].length <= 80), long);
+    assert.match(long.split("\n").at(-1)!, /^Continue it here\? \[Enter \/ n\] $/);
     assert.strictEqual(formatAgo(new Date("2026-11-03T09:59:30Z"), now), "less than a minute ago");
     assert.strictEqual(formatAgo(new Date("2026-11-03T09:59:00Z"), now), "1 minute ago");
     assert.strictEqual(formatAgo(new Date("2026-11-03T07:00:00Z"), now), "3 hours ago");
@@ -146,6 +152,20 @@ describe("Claude Code handoff: the question", () => {
     assert.strictEqual((await ask("\n", false)).answer, "yes");
     assert.strictEqual((await ask("no\n", false)).answer, "no");
     assert.match((await ask("\r", true)).written, /^Continue\? /);
+  });
+});
+
+describe("Claude Code handoff: before first-run setup", () => {
+  it("says the handoff waits for setup, and sends it once a provider is set up", () => {
+    assert.strictEqual(
+      handoffAfterSetupLine({ title: "add a slugify option to keep emoji" }),
+      "First, choose how it should think; then I'll continue ‘add a slugify option to keep emoji’.",
+    );
+    const prompt = { full: "the handoff", display: "Continue my Claude Code conversation" };
+    assert.strictEqual(initialPromptToSend(prompt, null, false), undefined, "not while setup is still running");
+    assert.strictEqual(initialPromptToSend(prompt, { model: "m" }, false), prompt, "sent once the setup saved a provider");
+    assert.strictEqual(initialPromptToSend(prompt, { model: "m" }, true), undefined, "and only once");
+    assert.strictEqual(initialPromptToSend(undefined, { model: "m" }, false), undefined);
   });
 });
 
