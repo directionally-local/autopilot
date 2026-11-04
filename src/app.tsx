@@ -88,7 +88,7 @@ import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt } from "./hooks/prompt-submit.js";
 import type { ProviderId } from "./providers/presets.js";
 import { runStartupTasks } from "./ui/run-startup-tasks.js";
-import { buildTour, resolveTourInput } from "./ui/project-tour.js";
+import { buildTour, resolveTourInput, tourAtSessionStart } from "./ui/project-tour.js";
 import { tourAskModel } from "./ui/project-tour-model.js";
 import type { SetupGate } from "./ui/use-permission-controller.js";
 import { resolveRepoRoot } from "./memory/repo-root.js";
@@ -552,11 +552,14 @@ function App({
   useEffect(() => {
     if (!cfg || tourCheckedRef.current) return;
     tourCheckedRef.current = true;
-    // Only a brand-new conversation: not a resumed one or the resume picker.
-    if (initialResumeSessionId || initialOpenResumePicker) return;
-    if (messagesRef.current.some((m) => m.role === "user")) return;
-    startTour(false);
-  }, [cfg, initialResumeSessionId, initialOpenResumePicker, startTour]);
+    // Only a brand-new conversation that opens on an empty prompt.
+    const show = tourAtSessionStart({
+      resuming: Boolean(initialResumeSessionId || initialOpenResumePicker),
+      firstMessageQueued: initialPrompt !== undefined,
+      hasUserMessage: messagesRef.current.some((m) => m.role === "user"),
+    });
+    if (show) startTour(false);
+  }, [cfg, initialResumeSessionId, initialOpenResumePicker, initialPrompt, startTour]);
 
   // Periodically clear performance marks to prevent perf_hooks buffer overflow
   // in long-running sessions (react-devtools-core causes marks on every render).

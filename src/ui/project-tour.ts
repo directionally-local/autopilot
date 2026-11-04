@@ -460,6 +460,18 @@ export interface TourDeps {
   issuesTimeoutMs?: number;
 }
 
+/**
+ * Whether a session that just started gets the tour: only one that opens on
+ * an empty prompt. Not a resumed conversation (or the resume picker), and not
+ * one that starts with a message already queued (the Claude Code handoff, a
+ * prompt passed in): the agent is already working there, and a tour landing
+ * in the middle of its first reply only gets in the way. The tour isn't
+ * marked shown then, so the next empty session still gets it.
+ */
+export function tourAtSessionStart(s: { resuming: boolean; firstMessageQueued: boolean; hasUserMessage: boolean }): boolean {
+  return !s.resuming && !s.firstMessageQueued && !s.hasUserMessage;
+}
+
 export type TourResult =
   | { kind: "shown"; text: string; tasks: string[]; source: Suggestions["source"]; facts: ProjectFacts }
   | { kind: "skipped"; reason: "off" | "not-a-repo" | "already-shown" | "typed" };
