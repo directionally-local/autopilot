@@ -13,6 +13,7 @@ import type { PermissionAsker, ToolResult } from "../tools/executor.js";
 import type { PlanOption, Task, ToolRender, ToolSpec } from "../tools/registry.js";
 import type { ChatEvent } from "./view-types.js";
 import { ApiError, humanizeApiError } from "../util/errors.js";
+import { ModelHostError } from "../agent/model-retry.js";
 
 type ToolEvent = Extract<ChatEvent, { kind: "tool" }>;
 type AssistantEvent = Extract<ChatEvent, { kind: "assistant" }>;
@@ -74,11 +75,16 @@ export function settleTurnEvents(events: ChatEvent[]): ChatEvent[] {
 export type TurnFailure =
   | { kind: "aborted" }
   | { kind: "api_error"; httpStatus: number; code?: number; message: string }
-  | { kind: "error"; text: string };
+  | { kind: "error"; text: string; detail?: string };
 
-/** Classify a failed turn: an abort, a transient provider error (429/5xx, shown with a status link), or anything else. */
+/**
+ * Classify a failed turn: an abort, the model's host failing every retry
+ * (a plain message, the host's own error dim below), a transient provider
+ * error (429/5xx, shown with a status link), or anything else.
+ */
 export function classifyTurnFailure(e: Error): TurnFailure {
   if (e.name === "AbortError") return { kind: "aborted" };
+  if (e instanceof ModelHostError) return { kind: "error", text: humanizeApiError(e), detail: e.detail };
   if (e instanceof ApiError && (e.httpStatus === 429 || (e.httpStatus !== undefined && e.httpStatus >= 500))) {
     return { kind: "api_error", httpStatus: e.httpStatus, ...(e.code !== undefined ? { code: e.code } : {}), message: humanizeApiError(e) };
   }
@@ -138,6 +144,21 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
       if (id !== null) deps.updateAssistant(id, (e) => ({ text: e.text + d }));
     },
     onInfo: info,
+    onModelRetry: (r) => {
+      // Drop the failed attempt's answer: an empty final text replaces what
+      // streamed (the renderer keeps paragraphs already in scrollback, so the
+      // line says so when text had shown). The retry streams into a new message.
+      const id = deps.activeAsstIdRef.current;
+      if (id !== null) deps.updateAssistant(id, () => ({ text: "", reasoning: "", streaming: false }));
+      // Tool calls the failed attempt announced never run (tools run only after a stream completes).
+      for (const toolId of deps.pendingToolCallsRef.current.keys()) deps.updateTool(toolId, { status: "cancelled" });
+      deps.pendingToolCallsRef.current.clear();
+      push({ kind: "info", key: deps.mkKey(), text: r.discardedText.trim() ? `${r.line} The cut-off reply is discarded.` : r.line, tone: "dim" });
+      const next = deps.mkAssistantId();
+      deps.activeAsstIdRef.current = next;
+      deps.setTurnPhase("generating");
+      push({ kind: "assistant", key: `asst_${next}`, id: next, text: "", reasoning: "", streaming: true });
+    },
     onAssistantFinal: () => {
       const id = deps.activeAsstIdRef.current;
       if (id !== null) deps.updateAssistant(id, () => ({ streaming: false }));

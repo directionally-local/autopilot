@@ -17,6 +17,7 @@ import { ToolExecutor, getWorkerTools, RESEARCH_WORKER_TOOL_NAMES, permissionFro
 import type { HookFailureNotice } from "./hooks/manager.js";
 import type { ChatMessage, ContentPart } from "./agent/messages.js";
 import { ApiError, humanizeApiError } from "./util/errors.js";
+import { ModelHostError } from "./agent/model-retry.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "./sessions.js";
 import { sessionFileCompactionTarget } from "./agent/context-budget.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
@@ -350,6 +351,17 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
           }
         }
       : undefined,
+    onModelRetry: (r) => {
+      if (format === "text") {
+        // stdout can't be unwritten: end the cut-off text and mark it on stderr.
+        if (r.discardedText) process.stdout.write("\n");
+        process.stderr.write(`\x1b[2m${r.line}${r.discardedText.trim() ? " The cut-off reply above is discarded." : ""}\x1b[0m\n`);
+      } else if (format === "json") {
+        if (r.discardedText && jsonOutput.text.endsWith(r.discardedText)) jsonOutput.text = jsonOutput.text.slice(0, -r.discardedText.length);
+      } else if (format === "stream-json") {
+        emitStreamJson("retry", { retry: r.retry, max_retries: r.maxRetries, delay_ms: r.delayMs, discarded_chars: r.discardedText.length });
+      }
+    },
     onTextDelta: (delta) => {
       if (format === "text") {
         if (opts.showReasoning && printedReasoningHeader && !printedAnswerHeader) {
@@ -525,7 +537,8 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       return;
     }
     if (err instanceof ApiError) {
-      const msg = `Error: ${humanizeApiError(err)}`;
+      // After every retry failed, the host's own error goes on the same line.
+      const msg = err instanceof ModelHostError ? `Error: ${humanizeApiError(err)} (${err.detail})` : `Error: ${humanizeApiError(err)}`;
       if (format === "text") process.stderr.write(`\n\x1b[31m${msg}\x1b[0m\n`);
       else if (format === "stream-json") emitStreamJson("error", { message: msg, code: 1 });
       process.exitCode = 1;

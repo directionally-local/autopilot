@@ -389,6 +389,56 @@ describe("Camouflage jobs database unavailable", () => {
   });
 });
 
+describe("Camouflage history replay at launch (dl -c)", () => {
+  const notice: ChatEvent = { kind: "info", key: "n1", text: "Using your CLAUDE.md" };
+  const history: ChatEvent[] = [
+    { kind: "user", key: "u1", text: "Run the tests" },
+    { kind: "assistant", key: "a1", id: 1, text: "npm test passes.", reasoning: "", streaming: false },
+    { kind: "info", key: "c1", text: "Continuing “Run the tests…” from today at 03:35" },
+  ];
+
+  it("prints the replayed history below the startup notices without clearing the screen", async () => {
+    const { view, sent } = await fakeView({});
+    view.sync(baseSnapshot({ events: [notice] }));
+    view.sync(baseSnapshot({ events: history }));
+    const types = sent.map((s) => s.type);
+    assert.ok(!types.includes("TranscriptCleared"), "no clear: it would push the input box into the scrollback above the history");
+    assert.strictEqual(sent.filter((s) => s.type === "UserMessageCreated").length, 1);
+    assert.strictEqual(sent.filter((s) => s.type === "RuntimeError" && s.payload.message === "Using your CLAUDE.md").length, 1, "the notice isn't repeated");
+    // Later, /clear in the conversation still clears the screen.
+    view.sync(baseSnapshot({ events: [{ kind: "info", key: "n2", text: "Cleared." }] }));
+    assert.ok(sent.some((s) => s.type === "TranscriptCleared"));
+    view.dispose();
+  });
+});
+
+describe("Camouflage model-call retry", () => {
+  it("replaces the cut-off answer with nothing, prints the retry line dim, and the final failure with its detail", async () => {
+    const { view, sent } = await fakeView({});
+    const cut: ChatEvent = { kind: "assistant", key: "a1", id: 1, text: "Half an ans", reasoning: "", streaming: true };
+    view.sync(baseSnapshot({ turnRunning: true, busy: true, events: [cut] }));
+    view.sync(baseSnapshot({
+      turnRunning: true,
+      busy: true,
+      events: [
+        { ...cut, text: "", streaming: false },
+        { kind: "info", key: "i1", text: "↻ The model's host had a hiccup; retrying (1/2)… The cut-off reply is discarded.", tone: "dim" },
+        { kind: "error", key: "e1", text: 'The model\'s host failed 3 times. Type "continue" to try again.', detail: "Upstream error from Morph: error decoding response body" },
+      ],
+    }));
+    const completed = sent.find((s) => s.type === "AssistantMessageCompleted");
+    assert.strictEqual(completed?.payload.text, "", "the final text replaces what streamed");
+    const splashes = sent.filter((s) => s.type === "Splash").map((s) => String(s.payload.text));
+    assert.deepStrictEqual(splashes, [
+      "\x1b[2m↻ The model's host had a hiccup; retrying (1/2)… The cut-off reply is discarded.\x1b[0m",
+      "\x1b[2mUpstream error from Morph: error decoding response body\x1b[0m",
+    ]);
+    const errors = sent.filter((s) => s.type === "RuntimeError").map((s) => s.payload);
+    assert.deepStrictEqual(errors, [{ message: 'The model\'s host failed 3 times. Type "continue" to try again.', severity: "error" }]);
+    view.dispose();
+  });
+});
+
 describe("Camouflage lifecycle auto-settle", () => {
   const openTurn: ChatEvent[] = [
     { kind: "assistant", key: "a1", id: 1, text: "half a reply", reasoning: "", streaming: true },

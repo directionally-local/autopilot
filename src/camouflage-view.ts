@@ -798,8 +798,13 @@ export class View implements AppBridge {
         if (e.kind === "info" && !shouldSendSubagentPolicyNotice(e.text, this.sentSubagentPolicyNotices)) {
           return this.mark(e.key, 0, true);
         }
+        if (e.kind === "info" && e.tone === "dim") return this.dim(e.key, e.text);
         return this.notice(e.key, e.text, noticeSeverity(e));
       case "error":
+        if (e.detail) {
+          this.notice(e.key, e.text, "error");
+          return this.dim(e.key, e.detail);
+        }
         return this.notice(e.key, e.text, "error");
       case "api_error":
         return this.notice(e.key, e.message, "error");
@@ -854,6 +859,12 @@ export class View implements AppBridge {
     } else {
       this.cam.send("RuntimeError", { message, severity });
     }
+    return this.mark(key, 0, true);
+  }
+
+  /** Plain dim lines, no bullet. */
+  private dim(key: string, text: string): boolean {
+    this.cam.send("Splash", { text: text.split("\n").map((l) => `\x1b[2m${l}\x1b[0m`).join("\n") });
     return this.mark(key, 0, true);
   }
 

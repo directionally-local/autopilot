@@ -1722,7 +1722,7 @@ function App({
               const statusUrl = providerPresetOf(llmAuthFromConfig(cfg)).statusUrl;
               setEvents((es) => [...es, { kind: "api_error", key: mkKey(), ...err, ...(statusUrl ? { statusUrl } : {}) }]);
             } else {
-              setEvents((es) => [...es, { kind: "error", key: mkKey(), text: failure.text }]);
+              setEvents((es) => [...es, { kind: "error", key: mkKey(), text: failure.text, ...(failure.detail ? { detail: failure.detail } : {}) }]);
             }
             cleanupTurn();
           },
