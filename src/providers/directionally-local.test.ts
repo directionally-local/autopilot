@@ -644,6 +644,62 @@ describe("Directionally Local free tier", () => {
       assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 2, "neither is retried");
     });
 
+    describe("the new upstream's transient errors", () => {
+      const cases: Array<[number, string, string | undefined]> = [
+        [429, "upstream_busy", "The free tier is busy right now; retrying…"],
+        [503, "upstream_unavailable", "The model host is unavailable"],
+        [503, "upstream_timeout", undefined],
+        [502, "some_new_code", "Something new went wrong upstream"],
+      ];
+      for (const [status, code, message] of cases) {
+        it(`retries a ${status} ${code} with the server's words in the retry line`, async () => {
+          await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+          const body = { error: { code, retryable: true, retryAfter: 0.01, ...(message ? { message } : {}) } };
+          stub.chatReplies = [{ status, body }, { status, body }, { status: 200 }];
+          const lines: string[] = [];
+          await drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2, onRetry: (l: string) => lines.push(l) });
+          assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 3);
+          const said = message ? message.replace(/; retrying…$/, "") : "The model's host had a hiccup";
+          assert.deepStrictEqual(lines, [`↻ ${said}; retrying (1/2)…`, `↻ ${said}; retrying (2/2)…`]);
+        });
+      }
+
+      it("waits 5 s for upstream_busy without Retry-After, honours one up to 20 s, and gives up past that", async () => {
+        await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+        stub.chatReplies = [{ status: 429, body: { error: { code: "upstream_busy", retryable: true, message: "The free tier is busy right now; retrying…" } } }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { retryAfterMs?: number; transient?: boolean }) => e.retryAfterMs === 5_000 && e.transient === true);
+        stub.chatReplies = [{ status: 503, body: { error: { code: "upstream_unavailable", retryable: true } }, headers: { "retry-after": "12" } }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg())), (e: Error & { retryAfterMs?: number }) => e.retryAfterMs === 12_000);
+        // Longer than 20 s: not retried at all, and the user is told.
+        stub.calls = [];
+        stub.chatReplies = [{ status: 503, body: { error: { code: "upstream_unavailable", retryable: true } }, headers: { "retry-after": "60" } }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2 }), /model host is unavailable right now; try again shortly/);
+        assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 1);
+      });
+
+      it("says the plain sentence after the last retry fails", async () => {
+        await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+        const body = { error: { code: "upstream_timeout", retryable: true, retryAfter: 0.01 } };
+        stub.calls = [];
+        stub.chatReplies = [{ status: 503, body }, { status: 503, body }, { status: 503, body }];
+        await assert.rejects(drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2 }), /^Error: autopilot: The free tier's model host took too long to answer; try again shortly\.$|took too long to answer/);
+        assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 3);
+      });
+
+      it("never retries upstream_credit_exhausted, even marked retryable, and words it like the pause", async () => {
+        await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
+        stub.calls = [];
+        stub.chatReplies = [{ status: 503, body: { error: { code: "upstream_credit_exhausted", retryable: true, message: "m" } } }, { status: 200 }];
+        await assert.rejects(
+          drain(llmAuthFromConfig(await readCfg()), { networkRetries: 2 }),
+          (e: Error & { transient?: boolean }) => e.message === "autopilot: Free tokens are paused while we top up. Your own key still works: /provider" && e.transient === false,
+        );
+        assert.strictEqual(stub.calls.filter((c) => c.path === "/v1/chat/completions").length, 1);
+        assert.strictEqual(describeDlError("upstream_credit_exhausted", { where: "cli" }), "Free tokens are paused while we top up. Your own key still works: `autopilot connect`.");
+        assert.strictEqual(describeDlError("upstream_credit_exhausted", { where: "signin" }), "Free tokens are paused while we top up. Your own key still works.");
+      });
+    });
+
     it("retries a 429 rate_limited after retryAfter, then says when to try again", async () => {
       await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
       const body = { error: { code: "rate_limited", retryAfter: 0.01 } };

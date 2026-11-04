@@ -189,6 +189,8 @@ export interface DlErrorDetail {
   position?: number;
   /** free_tier_queued: when free tokens are expected to start. */
   etaAt?: string;
+  /** The service says trying again may work (its upstream's transient trouble). */
+  retryable?: boolean;
 }
 
 // ── Plans, offers, invites and the queue (all optional: older servers send none) ──
@@ -314,6 +316,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const referralLink = str("referralLink", "referral_link");
   const position = num("position");
   const etaAt = str("etaAt", "eta_at");
+  const retryable = e.retryable === true;
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -326,7 +329,21 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(referralLink ? { referralLink } : {}),
     ...(position !== undefined && position >= 1 ? { position: Math.round(position) } : {}),
     ...(etaAt ? { etaAt } : {}),
+    ...(retryable ? { retryable } : {}),
   };
+}
+
+/** The free tier's transient codes: its own rate limit and its upstream's trouble. Retried with the shared policy. */
+export const DL_RETRYABLE_CODES: ReadonlySet<string> = new Set(["rate_limited", "upstream_busy", "upstream_unavailable", "upstream_timeout"]);
+/** Never retried, whatever the body says: free tokens are paused until the service tops up. */
+export const DL_CREDIT_EXHAUSTED = "upstream_credit_exhausted";
+/** upstream_busy without a Retry-After: wait this long. */
+export const DL_BUSY_RETRY_AFTER_MS = 5_000;
+
+/** Whether a free-tier error is worth trying again: a transient code, or any the service marks `retryable: true`. */
+export function dlRetryable(code: string, retryable?: boolean): boolean {
+  if (code === DL_CREDIT_EXHAUSTED) return false;
+  return DL_RETRYABLE_CODES.has(code) || retryable === true;
 }
 
 /**
@@ -456,6 +473,11 @@ export function dlQueueLine(position: number | undefined, etaAt: string | undefi
  */
 export function describeDlError(code: string, extra: DlErrorExtra = {}): string | undefined {
   const where = extra.where ?? "session";
+  // Paused until the service tops up its credit: like the global pause, with the own-key way on.
+  if (code === DL_CREDIT_EXHAUSTED) {
+    const next = where === "session" ? `Your own key still works: ${DL_SWITCH_HINT}` : where === "cli" ? "Your own key still works: `autopilot connect`." : "Your own key still works.";
+    return `Free tokens are paused while we top up. ${next}`;
+  }
   const denial = dlDenialOf(code, extra.reason, extra.pausedForEveryone);
   if (denial) return dlDenialLine(denial, { ...extra, where });
   switch (code) {
@@ -473,6 +495,12 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
     case "quota_exceeded":
       // The token and the spending allowance read the same: both are "this week's free tokens".
       return dlQuotaLine(extra.resetsAt, { ...extra, where });
+    case "upstream_busy":
+      return "The free tier is busy right now; try again shortly.";
+    case "upstream_unavailable":
+      return "The free tier's model host is unavailable right now; try again shortly.";
+    case "upstream_timeout":
+      return "The free tier's model host took too long to answer; try again shortly.";
     case "free_tier_queued":
       return dlQueueLine(extra.position, extra.etaAt, { ...extra, where });
     case "suspended":

@@ -8,6 +8,7 @@
 
 import { ApiError, humanizeApiError } from "../util/errors.js";
 import { NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
+import { dlRetryable } from "../providers/directionally-local.js";
 
 /** Retries after the first attempt. AUTOPILOT_NETWORK_RETRIES overrides it (0–20). */
 export const DEFAULT_MODEL_RETRIES = 2;
@@ -75,7 +76,7 @@ export function isTransientModelError(err: unknown): boolean {
   if (hasAbortName(err)) return false;
   if (err instanceof ApiError) {
     if (err.transient !== undefined) return err.transient;
-    if (err.providerCode !== undefined) return err.providerCode === "rate_limited";
+    if (err.providerCode !== undefined) return dlRetryable(err.providerCode, (err.providerDetail as { retryable?: unknown } | undefined)?.retryable === true);
     if (NON_RETRYABLE_SHARING_CODES.some((c) => err.message.includes(c))) return false;
     if (PERMANENT.test(err.message)) return false;
     const status = err.httpStatus;
@@ -101,8 +102,16 @@ export function shouldRetryModelCall(err: unknown, retriesSoFar: number, maxRetr
   return after === undefined || after <= MAX_RETRY_AFTER_MS;
 }
 
-/** The dim line shown before a retry. */
-export function modelRetryLine(retry: number, maxRetries: number): string {
+/**
+ * The dim line shown before a retry: the provider's own words when it sent
+ * them for a transient failure ("↻ The free tier is busy right now; retrying
+ * (1/2)…"), else the generic one.
+ */
+export function modelRetryLine(retry: number, maxRetries: number, err?: unknown): string {
+  const said = err instanceof ApiError ? err.retryMessage?.trim() : undefined;
+  // The service may already end its sentence with "retrying…": say it once, with the count.
+  const base = said?.replace(/\bretrying\s*(?:\.\.\.|…)?\s*$/i, "").replace(/[\s;,.…]+$/, "");
+  if (base) return `↻ ${base}; retrying (${retry}/${maxRetries})…`;
   return `↻ The model's host had a hiccup; retrying (${retry}/${maxRetries})…`;
 }
 

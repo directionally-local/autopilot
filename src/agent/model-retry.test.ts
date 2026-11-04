@@ -117,3 +117,27 @@ describe("model retry policy", () => {
     assert.strictEqual(err.detail, "Upstream error from Morph: error decoding response body");
   });
 });
+
+describe("free tier upstream errors in the shared policy", () => {
+  const dl = (code: string, detail: Record<string, unknown> = {}, status = 503) => {
+    const e = new ApiError("autopilot: x", undefined, status);
+    e.providerCode = code;
+    e.providerDetail = detail;
+    return e;
+  };
+  it("treats the upstream codes and anything marked retryable as transient, never a credit top-up", () => {
+    for (const code of ["rate_limited", "upstream_busy", "upstream_unavailable", "upstream_timeout"]) assert.ok(isTransientModelError(dl(code)), code);
+    assert.ok(isTransientModelError(dl("brand_new", { retryable: true })));
+    assert.ok(!isTransientModelError(dl("brand_new")));
+    assert.ok(!isTransientModelError(dl("upstream_credit_exhausted", { retryable: true })));
+    assert.ok(!isTransientModelError(dl("quota_exceeded", {}, 402)));
+  });
+  it("shows the server's words in the retry line, once, with the count", () => {
+    const e = dl("upstream_busy");
+    e.retryMessage = "The free tier is busy right now; retrying…";
+    assert.strictEqual(modelRetryLine(1, 2, e), "↻ The free tier is busy right now; retrying (1/2)…");
+    e.retryMessage = "Upstream unavailable.";
+    assert.strictEqual(modelRetryLine(2, 2, e), "↻ Upstream unavailable; retrying (2/2)…");
+    assert.strictEqual(modelRetryLine(1, 2), "↻ The model's host had a hiccup; retrying (1/2)…");
+  });
+});

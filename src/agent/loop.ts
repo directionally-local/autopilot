@@ -1127,7 +1127,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         responseUsage = null;
         lastUsage = usageBeforeCall;
         const delayMs = modelRetryDelay(retries, retryAfterOf(err));
-        const line = modelRetryLine(retries + 1, maxModelRetries);
+        const line = modelRetryLine(retries + 1, maxModelRetries, err);
         logger.warn("turn:model_retry", {
           sessionId: opts.sessionId,
           retry: retries + 1,

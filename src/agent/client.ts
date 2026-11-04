@@ -22,7 +22,7 @@ import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicR
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
 import { modelRetryCount, modelRetryDelay, modelRetryLine, parseRetryAfter, retryAfterOf, shouldRetryModelCall } from "./model-retry.js";
-import { describeDlError, dlAccessToken, DlError, noteDlQuotaExceeded, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
+import { describeDlError, DL_BUSY_RETRY_AFTER_MS, dlRetryable, dlAccessToken, DlError, noteDlQuotaExceeded, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
 import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
 import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
 
@@ -511,15 +511,19 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
         const { code: _code, ...detail } = dlErr;
         apiErr.providerDetail = detail;
       }
-      // Free tier: only rate limits are worth retrying; quota, invites, suspensions and pauses aren't.
-      apiErr.transient = dlErr ? dlErr.code === "rate_limited" : isTransientHttpError(apiErr, msg, !customEndpoint && !requesty);
-      const retryAfterMs = parseRetryAfter(dlErr?.retryAfter ?? res.headers.get("retry-after"));
+      // Free tier: its rate limit and its upstream's trouble (or anything marked retryable) are worth
+      // retrying; quota, invites, suspensions, pauses and a credit top-up aren't.
+      const dlTransient = dlErr ? dlRetryable(dlErr.code, dlErr.retryable) : false;
+      apiErr.transient = dlErr ? dlTransient : isTransientHttpError(apiErr, msg, !customEndpoint && !requesty);
+      if (dlTransient && dlErr?.message) apiErr.retryMessage = dlErr.message;
+      const retryAfterMs =
+        parseRetryAfter(dlErr?.retryAfter ?? res.headers.get("retry-after")) ?? (dlErr?.code === "upstream_busy" ? DL_BUSY_RETRY_AFTER_MS : undefined);
       if (retryAfterMs !== undefined) apiErr.retryAfterMs = retryAfterMs;
       if (dlErr?.code === "quota_exceeded") noteDlQuotaExceeded({ ...(dlErr.reason ? { reason: dlErr.reason } : {}), ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}) });
       traceResponse(attemptStartedAt, apiErr.message);
       if (shouldRetryModelCall(apiErr, attempt, maxRetries)) {
         const delay = modelRetryDelay(attempt, retryAfterMs);
-        opts.onRetry?.(modelRetryLine(attempt + 1, maxRetries));
+        opts.onRetry?.(modelRetryLine(attempt + 1, maxRetries, apiErr));
         logger.warn("runKimi:retrying", { requestId, attempt, code: apiErr.code, httpStatus: apiErr.httpStatus, delay });
         await sleep(delay, opts.signal);
         continue;
@@ -566,7 +570,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       // discard what streamed); other callers get the error.
       if (!emittedAny && shouldRetryModelCall(streamErr, attempt, maxRetries)) {
         const delay = modelRetryDelay(attempt, retryAfterOf(streamErr));
-        opts.onRetry?.(modelRetryLine(attempt + 1, maxRetries));
+        opts.onRetry?.(modelRetryLine(attempt + 1, maxRetries, streamErr));
         logger.warn("runKimi:stream_retry", { requestId, attempt, error: streamError, delay });
         await sleep(delay, opts.signal);
         continue;
