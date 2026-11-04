@@ -46,6 +46,7 @@ import {
   envKeyProvider,
   FIRST_RUN_QUESTION,
   firstRunChoices,
+  DL_FREE_MODEL_LINE,
   leavingFreeTierLine,
   OWN_KEY_BILLING_LINE,
   OWN_KEY_EXCLUDE,
@@ -1487,7 +1488,7 @@ export class View implements AppBridge {
         FIRST_RUN_QUESTION,
         firstRunChoices(),
         current,
-        o.firstRun ? "Enter to choose · Esc to quit" : "Enter to choose · Esc to cancel",
+        `${DL_FREE_MODEL_LINE} · ${o.firstRun ? "Esc to quit" : "Esc to cancel"}`,
       );
       if (choice === null) return null;
       if (choice === "own-key") {
