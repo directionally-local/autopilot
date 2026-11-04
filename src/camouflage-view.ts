@@ -1474,21 +1474,32 @@ export class View implements AppBridge {
     this.signIn = ctrl;
     // Once the code is shown, the chat input gives way to the waiting text (code included) until the sign-in ends.
     let waiting: Promise<(() => void) | null> | null = null;
+    // The sign-in paragraph, said once the wait ends when it was drawn in the lent terminal (so it stays in the scrollback).
+    let sayAfter: string | null = null;
     const stopWaiting = async () => {
       const end = await waiting;
-      end?.();
+      if (end) {
+        end();
+        if (sayAfter) say(sayAfter);
+      }
       this.signInWaiting = null;
     };
     let key: string;
     try {
       key = (
         await this.providerCalls.dlSignIn((code) => {
-          say(dlSignInLines(code, openBrowser(code.verificationUriComplete)));
-          // The renderer may not have drawn that line yet when it lends the terminal
-          // (and it has no event to wait for), so the waiting text carries the code too.
-          const text = dlWaitingText(code);
+          const opened = openBrowser(code.verificationUriComplete);
+          // Not said first: a line said just before the renderer lends the terminal is
+          // drawn late or not at all (it has no event to wait for), which on a retry
+          // left only the waiting line. The waiting text carries the whole paragraph.
+          const text = dlWaitingText(code, opened);
           this.signInWaiting = text;
-          waiting = ctrl.signal.aborted ? null : this.waitWithoutInput(text, () => ctrl.abort());
+          if (ctrl.signal.aborted) {
+            say(dlSignInLines(code, opened));
+            return;
+          }
+          sayAfter = dlSignInLines(code, opened);
+          waiting = this.waitWithoutInput(text, () => ctrl.abort());
         }, ctrl.signal)
       ).key;
     } catch (e) {

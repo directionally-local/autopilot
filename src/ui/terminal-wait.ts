@@ -8,6 +8,8 @@
  * caller shows the text itself and ignores typed input until the wait ends.
  */
 
+import { terminalWrapWidth, wrapText } from "../util/wrap.js";
+
 /** Esc or Ctrl+C, as a raw byte or in the kitty keyboard protocol's CSI-u form. */
 export function isCancelKey(chunk: string): boolean {
   return chunk === "\x1b" || chunk === "\x03" || /^\x1b\[27(?:;1)?u$/.test(chunk) || /^\x1b\[99;5u$/.test(chunk);
@@ -44,6 +46,8 @@ export async function waitWithoutInput(
   const { stdin, stdout } = io;
   if (!stdin.isTTY || !stdout.isTTY || typeof stdin.setRawMode !== "function") return null;
   if (!(await lender.suspend().catch(() => false))) return null;
+  // Wrapped at word boundaries, like the renderer's own lines, not mid-word by the terminal.
+  const text = wrapText(line, terminalWrapWidth(stdout)).join("\n");
   const wasRaw = stdin.isRaw;
   const onData = (chunk: Buffer | string) => {
     if (isCancelKey(typeof chunk === "string" ? chunk : chunk.toString("latin1"))) cancel();
@@ -52,14 +56,14 @@ export async function waitWithoutInput(
     stdin.setRawMode(true);
     stdin.on("data", onData);
     stdin.resume();
-    stdout.write(`\r\x1b[2K${line.split("\n").join("\r\n")}`);
+    stdout.write(`\r\x1b[2K${text.split("\n").join("\r\n")}`);
   } catch {
     stdin.off("data", onData);
     lender.resume();
     return null;
   }
   // Erased by going back up over every row it took (long lines wrap).
-  const up = textRows(line, stdout.columns || 80) - 1;
+  const up = textRows(text, stdout.columns || 80) - 1;
   let done = false;
   return () => {
     if (done) return;

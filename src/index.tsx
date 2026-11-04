@@ -1220,7 +1220,7 @@ async function main() {
   // runs inside it before the session starts. A machine where the renderer
   // can't start gets an explanation and exit code 2.
   // `autopilot resume [id]`, `-c` or `-S <id>`: which saved session to open (#906).
-  const startup = opts.fromClaudeCode ? await claudeCodeStartup() : await interactiveStartup(cfg);
+  const startup = opts.fromClaudeCode ? await claudeCodeStartup(!cfg) : await interactiveStartup(cfg);
   // Null on first run until Camouflage's onboarding saves a provider and model.
   let sessionCfg: AutopilotConfig | null = cfg ? { ...cfg, model: requireModel(opts.model || cfg.model) } : null;
   const { runCamouflageView } = await import("./camouflage-view.js");
@@ -1303,7 +1303,7 @@ async function interactiveStartup(cfg: AutopilotConfig | null): Promise<import("
  * new session whose first message is the handoff. Read locally; exits when there is nothing
  * to continue or the answer is no.
  */
-async function claudeCodeStartup(): Promise<import("./app.js").RenderAppOpts> {
+async function claudeCodeStartup(firstRun: boolean): Promise<import("./app.js").RenderAppOpts> {
   const handoff = await import("./claude-code-handoff.js");
   const cwd = process.cwd();
   let conversation: Awaited<ReturnType<typeof handoff.findLatestClaudeCodeConversation>>;
@@ -1322,6 +1322,12 @@ async function claudeCodeStartup(): Promise<import("./app.js").RenderAppOpts> {
   if (answer === "no") {
     console.log("Not continued; nothing was sent.");
     process.exit(0);
+  }
+  // First run asks its question before the session starts (unless a key in the environment
+  // skips it); the handoff is sent once a provider is saved (App's initialPrompt).
+  if (firstRun) {
+    const { envKeyProvider } = await import("./providers/connect.js");
+    if (!envKeyProvider()) console.log(handoff.handoffAfterSetupLine(conversation));
   }
   return { initialPrompt: { full: handoff.buildHandoffMessage(conversation), display: handoff.handoffDisplay(conversation) } };
 }

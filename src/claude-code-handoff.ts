@@ -321,9 +321,17 @@ export function formatAgo(then: Date, now: Date = new Date()): string {
   return unit(Math.round(hours / 24), "day");
 }
 
-/** The question `--from-claude-code` asks before starting. */
+/**
+ * The question `--from-claude-code` asks before starting. The title has a line of its own,
+ * so a long one never pushes "[Enter / n]" across the terminal's edge.
+ */
 export function handoffQuestion(conversation: Pick<ClaudeCodeConversation, "updatedAt" | "title">, now: Date = new Date()): string {
-  return `Found your Claude Code conversation from ${formatAgo(conversation.updatedAt, now)}: ‘${conversation.title}’. Continue it here? [Enter / n] `;
+  return `Found your Claude Code conversation from ${formatAgo(conversation.updatedAt, now)}:\n  ‘${conversation.title}’\nContinue it here? [Enter / n] `;
+}
+
+/** Said after a yes when first-run setup comes before the session: the handoff waits for it. */
+export function handoffAfterSetupLine(conversation: Pick<ClaudeCodeConversation, "title">): string {
+  return `First, choose how it should think; then I'll continue ‘${conversation.title}’.`;
 }
 
 /** Why there's nothing to continue. */

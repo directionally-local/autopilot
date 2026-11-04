@@ -126,6 +126,7 @@ import {
   mkAssistantId,
   mkKey,
   replaceUserPromptEvent,
+  initialPromptToSend,
 } from "./ui/app-helpers.js";
 import { projectDirsToRead } from "./util/app-dirs.js";
 
@@ -497,9 +498,10 @@ function App({
   // (after first-run onboarding, when there was none). The screen shows `display`.
   const sentInitialPromptRef = useRef(false);
   useEffect(() => {
-    if (!initialPrompt || sentInitialPromptRef.current || !cfg) return;
+    const prompt = initialPromptToSend(initialPrompt, cfg, sentInitialPromptRef.current);
+    if (!prompt) return;
     sentInitialPromptRef.current = true;
-    submitRef.current(initialPrompt.full, initialPrompt.display);
+    submitRef.current(prompt.full, prompt.display);
   }, [initialPrompt, cfg]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customCommandsRef = useRef<CustomCommand[]>([]);
