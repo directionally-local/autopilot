@@ -308,7 +308,7 @@ export function dlWaitingText(code: DlDeviceCode, opened = false): string {
 export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved.";
 
 /** The free tier's model and who serves it, under the first-run question (a plain fact, and their site). */
-export const DL_FREE_MODEL_LINE = "Free: DeepSeek V4.1 Flash on Luminal (YC S25, luminal.com)";
+export const DL_FREE_MODEL_LINE = "Free: DeepSeek V4.1 Flash on Luminal (luminal.com)";
 
 /** The first-run question's answers. */
 export type FirstRunChoice = "free" | "own-key";
