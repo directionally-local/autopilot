@@ -21,9 +21,10 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { statePath } from "../util/app-dirs.js";
-import { simpleCommands, writesFile, type SimpleCommand } from "./shell-commands.js";
+import { simpleCommands, writesFile, type Redirect, type SimpleCommand } from "./shell-commands.js";
 
 export type SetupKind = "install" | "fetch-run" | "write";
 
@@ -44,23 +45,104 @@ const GIT_WRITES = new Set([
 ]);
 const FILE_WRITES = new Set(["rm", "rmdir", "mv", "cp", "mkdir", "touch", "chmod", "chown", "ln", "dd", "truncate", "tee", "unlink", "shred", "wget"]);
 
+/** Where a command runs and what is on disk there; tests pass their own. */
+export interface SetupContext {
+  /** The directory the command starts in (a leading `cd dir &&` moves it). */
+  cwd?: string;
+  /** Temporary directories whose files don't count as changes (default: /tmp, /var/tmp, the OS temp dir, $TMPDIR). */
+  tempDirs?: string[];
+  exists?: (path: string) => boolean;
+}
+
+function defaultTempDirs(): string[] {
+  const dirs = ["/tmp", "/var/tmp", "/private/tmp", tmpdir()];
+  if (process.env.TMPDIR) dirs.push(process.env.TMPDIR);
+  return dirs;
+}
+
+/** A path in a temporary directory: scratch output there (`> /tmp/test.log`) changes nothing of the person's. */
+export function isTempPath(target: string, cwd: string | undefined, tempDirs: string[] = defaultTempDirs()): boolean {
+  const t = target.trim();
+  if (/^(?:\$TMPDIR|\$\{TMPDIR\})(?:\/|$)/.test(t)) return true;
+  if (!isAbsolute(t) && !cwd) return false;
+  const abs = resolve(cwd ?? "/", t);
+  return tempDirs.some((d) => {
+    const dir = resolve(d);
+    return dir !== "/" && (abs === dir || abs.startsWith(`${dir}/`));
+  });
+}
+
+/**
+ * Whether `npx NAME` (and friends) would run a binary that is already
+ * installed here rather than download one: NAME in node_modules/.bin of this
+ * directory or one above (where workspace packages' bins are linked too), an
+ * installed package by that name, or this package's own `bin`.
+ */
+export function resolvesToLocalBin(name: string, cwd: string, exists: (path: string) => boolean = existsSync): boolean {
+  // `pkg@version` asks for a specific (possibly different) version: npx may download it.
+  const pkg = name.replace(/^(@?[^@]+)@.*$/, "$1");
+  if (pkg !== name || !pkg || pkg.startsWith(".") || pkg.includes("..")) return false;
+  const binName = pkg.includes("/") ? pkg.slice(pkg.lastIndexOf("/") + 1) : pkg;
+  let dir = resolve(cwd);
+  for (;;) {
+    if (exists(join(dir, "node_modules", ".bin", binName))) return true;
+    if (exists(join(dir, "node_modules", pkg, "package.json"))) return true;
+    if (ownBin(join(dir, "package.json"), binName, exists)) return true;
+    const up = dirname(dir);
+    if (up === dir) return false;
+    dir = up;
+  }
+}
+
+function ownBin(manifest: string, binName: string, exists: (path: string) => boolean): boolean {
+  if (!exists(manifest)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown; bin?: unknown };
+    if (typeof pkg.bin === "string") return typeof pkg.name === "string" && pkg.name.replace(/^@[^/]+\//, "") === binName;
+    return !!pkg.bin && typeof pkg.bin === "object" && Object.prototype.hasOwnProperty.call(pkg.bin, binName);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The package `npx`, `bunx`, `bun x` or `npm exec` would run, or undefined
+ * when it names one explicitly with `-p`/`--package` (then it may download).
+ */
+function execTarget(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--") return args[i + 1];
+    if (a === "-p" || a === "--package" || a.startsWith("--package=") || a === "-c" || a === "--call") return undefined;
+    if (a.startsWith("-")) continue;
+    return a;
+  }
+  return undefined;
+}
+
 /** The second word, skipping options (`npm --silent install`). */
 function sub(w: string[], from = 1): string | undefined {
   return w.slice(from).find((a) => !a.startsWith("-"));
 }
 
-function classify(sc: SimpleCommand): SetupKind | null {
+function classify(sc: SimpleCommand, ctx: Required<Pick<SetupContext, "tempDirs" | "exists">> & { cwd: string | undefined }): SetupKind | null {
   const w = [sc.name, ...sc.argv.slice(1)];
   const cmd = sc.name;
   const s = sub(w);
+  // Running an installed binary downloads nothing.
+  const fetchOrLocal = (args: string[]): SetupKind | null => {
+    const target = execTarget(args);
+    return target && ctx.cwd && resolvesToLocalBin(target, ctx.cwd, ctx.exists) ? null : "fetch-run";
+  };
+  const temp = (path: string) => isTempPath(path, ctx.cwd, ctx.tempDirs);
   switch (cmd) {
     case "npm":
       if (s && NPM_INSTALL.has(s)) return "install";
-      if (s === "exec" || s === "x") return "fetch-run";
+      if (s === "exec" || s === "x") return fetchOrLocal(w.slice(w.indexOf(s) + 1));
       break;
     case "npx":
     case "bunx":
-      return "fetch-run";
+      return fetchOrLocal(w.slice(1));
     case "yarn":
       if (!s || s === "install" || s === "add" || s === "upgrade" || s === "up") return "install";
       if (s === "dlx") return "fetch-run";
@@ -71,7 +153,7 @@ function classify(sc: SimpleCommand): SetupKind | null {
       break;
     case "bun":
       if (s && BUN_INSTALL.has(s)) return "install";
-      if (s === "x") return "fetch-run";
+      if (s === "x") return fetchOrLocal(w.slice(w.indexOf(s) + 1));
       break;
     case "pip":
     case "pip3":
@@ -146,10 +228,15 @@ function classify(sc: SimpleCommand): SetupKind | null {
     case "":
       break;
     default:
-      if (FILE_WRITES.has(cmd)) return "write";
+      if (FILE_WRITES.has(cmd)) {
+        // Only scratch files in a temp directory (`rm -f /tmp/out.log`, `mkdir -p /tmp/x`).
+        const paths = w.slice(1).filter((a) => !a.startsWith("-"));
+        if (paths.length > 0 && paths.every(temp)) break;
+        return "write";
+      }
   }
-  // Output redirected into a file (not /dev/null, not another descriptor).
-  if (sc.redirects.some(writesFile)) return "write";
+  // Output redirected into a file (not /dev/null, not another descriptor, not a temp file).
+  if (sc.redirects.some((r: Redirect) => writesFile(r) && !temp(r.target))) return "write";
   return null;
 }
 
@@ -159,11 +246,20 @@ function classify(sc: SimpleCommand): SetupKind | null {
  * wrappers like `timeout 120`, `sudo -u x` or `bash -c "…"` included (see
  * shell-commands.ts).
  */
-export function setupCommandOf(command: string): SetupCommand | null {
+export function setupCommandOf(command: string, context: SetupContext = {}): SetupCommand | null {
   let best: SetupCommand | null = null;
   const rank: Record<SetupKind, number> = { install: 3, "fetch-run": 2, write: 1 };
+  const tempDirs = context.tempDirs ?? defaultTempDirs();
+  const exists = context.exists ?? existsSync;
+  let cwd = context.cwd;
   for (const sc of simpleCommands(command)) {
-    const kind = classify(sc);
+    // `cd dir && npx xo`: follow the directory the rest runs in.
+    if (sc.name === "cd" && sc.wrappers.length === 0) {
+      const to = sc.argv.slice(1).find((a) => !a.startsWith("-"));
+      cwd = to && !to.includes("$") && !to.startsWith("~") && (isAbsolute(to) || cwd) ? resolve(cwd ?? "/", to) : undefined;
+      continue;
+    }
+    const kind = classify(sc, { cwd, tempDirs, exists });
     // Shown in the question: descriptor redirections like `2>&1` add nothing there.
     if (kind && (!best || rank[kind] > rank[best.kind])) best = { kind, segment: sc.text.replace(/\s*\d*>&\d+/g, "").trim() };
   }

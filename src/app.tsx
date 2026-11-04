@@ -241,6 +241,7 @@ function App({
     const cwd = process.cwd();
     return {
       root: resolveRepoRoot(cwd),
+      cwd,
       ruleAllows: (req) => !!c?.permissions && evaluatePermissionRules({ tool: req.tool.name, args: req.args, cwd }, c.permissions) === "allow",
     };
   }, []);
