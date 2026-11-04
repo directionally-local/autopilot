@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.6.0](https://github.com/directionally-local/autopilot/compare/v3.5.0...v3.6.0) (2026-11-04)
+
+
+### Features
+
+* auto-retry model-host failures, plus four first-run fixes ([#1148](https://github.com/directionally-local/autopilot/issues/1148)) ([0c4d063](https://github.com/directionally-local/autopilot/commit/0c4d0632fc9a7c5934fcd6a7ff17cd9f9a20ea14))
+
+
+### Bug Fixes
+
+* **first-run:** confirm the Claude Code handoff, full sign-in text on retries, unwrapped question ([#1145](https://github.com/directionally-local/autopilot/issues/1145)) ([a5e0182](https://github.com/directionally-local/autopilot/commit/a5e0182ad0d9c3ff2b5d01552a57771f95ad04c6))
+
 ## [3.5.0](https://github.com/directionally-local/autopilot/compare/v3.4.0...v3.5.0) (2026-11-03)
 
 
