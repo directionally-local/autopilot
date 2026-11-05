@@ -121,7 +121,7 @@ export const CATEGORIES: Category[] = [
       { command: "/cost", description: "show cost report" },
       { command: "/model", description: "show current model" },
       { command: "/update", description: "check for updates" },
-      { command: "/hello", description: "send a voice note to the creator" },
+      { command: "/hello", description: "open a GitHub issue to reach the team" },
     ],
   },
   {
@@ -163,5 +163,6 @@ export const CATEGORIES: Category[] = [
 export const SINGLE_COMMANDS: CommandItem[] = [
   { command: "/reasoning", description: "toggle show/hide model reasoning" },
   { command: "/help", description: "show this menu" },
-  { command: "/exit", description: "exit autopilot (formerly kimiflare); typing exit on its own also works" },
+  { command: "/bug", description: "how to report a bug: GitHub issues or email" },
+  { command: "/exit", description: "exit Autopilot; typing exit on its own also works" },
 ];

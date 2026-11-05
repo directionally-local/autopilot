@@ -14,7 +14,6 @@ import { workerRegistry } from "../tools/worker-registry.js";
 import { formatSubagentStats, readSubagentStats } from "../tools/subagent-stats.js";
 import { join } from "node:path";
 import { unlink, writeFile } from "node:fs/promises";
-import { renderTerminalQr } from "./terminal-qr.js";
 
 import type { Cfg } from "../app.js";
 import { configPath, loadConfig, saveConfig, patchPersistedConfig, readPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf, type AutopilotConfig } from "../config.js";
@@ -93,7 +92,6 @@ import { checkForUpdate, updateNotice } from "../util/update-check.js";
 import { getAppVersion } from "../util/version.js";
 import {
   detectGitHubRepo,
-  FEEDBACK_WORKER_URL,
   mkAssistantId,
   openBrowser,
   rebuildSystemPromptForMode,
@@ -105,6 +103,7 @@ import type { Task } from "../tools/registry.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnRecord } from "./use-session-manager.js";
 import { launchedByDl, readEnv } from "../util/env.js";
+import { BUG_REPORT_EMAIL, BUG_REPORT_LINE, BUG_REPORT_URL } from "./bug-report.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -1797,35 +1796,17 @@ const handleHooks: Handler = (ctx, rest, arg) => {
   return true;
 };
 
+/** /hello: the old voice-note page is retired; open a GitHub issue instead. */
 const handleHello: Handler = (ctx) => {
   const { setEvents, mkKey } = ctx;
-  const session = crypto.randomUUID();
-  const url = `${FEEDBACK_WORKER_URL}/?s=${session}&v=${getAppVersion()}`;
-  openBrowser(url);
-  void (async () => {
-    try {
-      const lines = renderTerminalQr(url);
-      setEvents((e) => [
-        ...e,
-        {
-          kind: "qrcode",
-          key: mkKey(),
-          lines,
-          caption: "Scan this QR code with your phone to send a voice note:",
-        },
-        { kind: "info", key: mkKey(), text: "Also opened voice note page in your browser." },
-      ]);
-    } catch {
-      setEvents((e) => [
-        ...e,
-        {
-          kind: "info",
-          key: mkKey(),
-          text: "Opened voice note page in your browser. Record your message there and hit Send when you're done.",
-        },
-      ]);
-    }
-  })();
+  openBrowser(BUG_REPORT_URL);
+  setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `Opened ${BUG_REPORT_URL} in your browser. No GitHub account? Email ${BUG_REPORT_EMAIL}` }]);
+  return true;
+};
+
+/** /bug: where to report a bug. It only prints; nothing is filed for the person. */
+const handleBug: Handler = (ctx) => {
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text: BUG_REPORT_LINE }]);
   return true;
 };
 
@@ -1931,6 +1912,9 @@ const handleRemote: Handler = (ctx) => {
 };
 
 const handleHelp: Handler = (ctx) => {
+  // The help's footer: the renderer draws no subtitle under a searchable list,
+  // so the line goes under "› /help", where it stays visible above the menu.
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text: BUG_REPORT_LINE }]);
   ctx.setShowHelpMenu(true);
   return true;
 };
@@ -2128,7 +2112,7 @@ const handleUpgrade: Handler = async (ctx) => {
   const step = await dlUpgradeStep({ providerId: provider.id, providerName: provider.name, portal: () => dlBillingPortal(), openBrowser });
   if (step.kind === "screen" && ctx.openDlScreen) ctx.openDlScreen(step.screen);
   else {
-    const text = step.kind === "text" ? step.text : `Upgrade from the terminal with \`autopilot upgrade\`.`;
+    const text = step.kind === "text" ? step.text : launchedByDl() ? "Upgrade with /upgrade in a dl session." : `Upgrade from the terminal with \`autopilot upgrade\`.`;
     ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
   }
   return true;
@@ -2189,6 +2173,7 @@ const handlers: Record<string, Handler> = {
   "/hooks": handleHooks,
   "/trust": handleTrust,
   "/hello": handleHello,
+  "/bug": handleBug,
   "/inbox": handleInbox,
   "/logout": handleLogout,
   "/command": handleCommand,

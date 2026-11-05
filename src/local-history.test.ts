@@ -50,6 +50,9 @@ describe("localHistoryUsage", () => {
     assert.strictEqual(historyHint(usage, 351), null);
     const hint = historyHint(usage, 350);
     assert.ok(hint?.includes("autopilot history prune --older-than"));
+    const dlHint = historyHint(usage, 350, { AUTOPILOT_LAUNCHED_BY: "dl" });
+    assert.ok(dlHint && !dlHint.includes("autopilot"), "dl has no `history` command: no autopilot commands");
+    assert.ok(dlHint.includes(usage.sessionsDir) && dlHint.startsWith("Your local session history is 350 B"));
     assert.match(formatHistoryUsage(usage), /total\s+350 B/);
   });
 });

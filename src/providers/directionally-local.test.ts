@@ -385,6 +385,58 @@ describe("Directionally Local free tier", () => {
       );
     });
 
+    it("under dl, points at /provider instead of a command dl users don't have", () => {
+      const env = { AUTOPILOT_LAUNCHED_BY: "dl" };
+      assert.strictEqual(describeDlError("invalid_grant", { env }), "Your free-tier sign-in expired. Run /provider and choose Free to sign in again.");
+      assert.strictEqual(describeDlError("invalid_token", { env }), "The free tier didn't accept your sign-in. Run /provider and choose Free to sign in again.");
+      assert.ok(!/autopilot/.test(describeDlError("invalid_grant", { env })!));
+      assert.match(describeDlError("invalid_grant", { env: {} })!, /`autopilot auth directionally-local`/, "standalone wording unchanged");
+    });
+
+    describe("a refresh lost to another session on this machine", () => {
+      const invalidGrant = () => new Response(JSON.stringify({ error: { code: "invalid_grant" } }), { status: 401, headers: { "content-type": "application/json" } });
+      const winner = { apiKey: "winner-at", refreshToken: "rt-2", expiresAt: NOW + 3_600_000 };
+
+      it("uses the pair the other session already saved", async () => {
+        await writeCfg({ providers: { "directionally-local": { apiKey: "old", refreshToken: "rt-1", expiresAt: NOW - 1 } } });
+        const sleeps: number[] = [];
+        const fetchImpl = (async () => {
+          // The other session rotated rt-1 and saved its pair while this request was in flight.
+          await writeCfg({ providers: { "directionally-local": winner } });
+          return invalidGrant();
+        }) as unknown as typeof fetch;
+        assert.strictEqual(await dlAccessToken({ now: NOW, fetchImpl, sleep: async (ms) => void sleeps.push(ms) }), "winner-at");
+        assert.deepStrictEqual(sleeps, [], "already on disk: no wait");
+        assert.deepStrictEqual((await readCfg()).providers["directionally-local"], winner, "the winner's pair is left as is");
+      });
+
+      it("waits once for a winner that is still saving", async () => {
+        await writeCfg({ providers: { "directionally-local": { apiKey: "old", refreshToken: "rt-1", expiresAt: NOW - 1 } } });
+        const sleeps: number[] = [];
+        const fetchImpl = (async () => invalidGrant()) as unknown as typeof fetch;
+        const sleep = async (ms: number) => {
+          sleeps.push(ms);
+          await writeCfg({ providers: { "directionally-local": winner } });
+        };
+        assert.strictEqual(await dlAccessToken({ now: NOW, fetchImpl, sleep }), "winner-at");
+        assert.strictEqual(sleeps.length, 1);
+        assert.ok(sleeps[0]! >= 750 && sleeps[0]! < 1_500, String(sleeps[0]));
+      });
+
+      it("still asks to sign in again when nobody rotated it", async () => {
+        await writeCfg({ providers: { "directionally-local": { apiKey: "old", refreshToken: "rt-1", expiresAt: NOW - 1 } } });
+        let calls = 0;
+        const fetchImpl = (async () => {
+          calls++;
+          return invalidGrant();
+        }) as unknown as typeof fetch;
+        const sleeps: number[] = [];
+        await assert.rejects(dlAccessToken({ now: NOW, fetchImpl, sleep: async (ms) => void sleeps.push(ms) }), (e: unknown) => e instanceof DlError && e.code === "invalid_grant");
+        assert.strictEqual(calls, 1, "the dead token is not sent again");
+        assert.strictEqual(sleeps.length, 1, "one re-check, then give up");
+      });
+    });
+
     it("uses AUTOPILOT_DL_FREE_TOKEN as is", async () => {
       process.env.AUTOPILOT_DL_FREE_TOKEN = "env-token";
       assert.strictEqual(await dlAccessToken(), "env-token");

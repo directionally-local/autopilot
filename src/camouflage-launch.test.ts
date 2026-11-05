@@ -113,6 +113,13 @@ describe("formatUnavailable", () => {
     assert.match(msg, /autopilot -p "\.\.\."/);
   });
 
+  it("under dl, says to reinstall dl, not autopilot-ai", () => {
+    const d = diagnoseRenderer(deps({}));
+    const msg = formatUnavailable(d, "boom", { AUTOPILOT_LAUNCHED_BY: "dl" });
+    assert.ok(msg.includes("  - Reinstall dl: curl -fsSL https://dl.new | sh"));
+    assert.doesNotMatch(msg, /npm install -g autopilot-ai|npm rebuild|autopilot -p/);
+  });
+
   it("flags an unsupported platform and a bad CAMOUFLAGE_BIN", () => {
     const d = diagnoseRenderer(deps({ platform: "linux", arch: "riscv64", env: { CAMOUFLAGE_BIN: "/x/r" } }));
     const err = new CamouflageUnavailable(rendererBlocker(d)!, d);
@@ -215,6 +222,12 @@ describe("crashGiveUpMessage", () => {
     assert.match(msg, /crash-\*\.txt/);
     assert.match(msg, /\/resume/);
     assert.match(msg, /autopilot -S abc-123 -p/);
+  });
+
+  it("under dl, resumes with dl -c", () => {
+    const msg = crashGiveUpMessage({ crashes: 3, sessionId: "abc-123" }, 60_000, { AUTOPILOT_LAUNCHED_BY: "dl" });
+    assert.match(msg, /run `dl -c` in the same folder/);
+    assert.doesNotMatch(msg, /autopilot -S/);
   });
 
   it("says nothing was lost when no session started", () => {

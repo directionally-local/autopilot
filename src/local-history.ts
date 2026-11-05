@@ -7,6 +7,7 @@
  */
 
 import { formatBytes } from "./agent/request-size.js";
+import { launchedByDl } from "./util/env.js";
 import { sessionsDir } from "./sessions.js";
 import { listFilesByMtime } from "./storage-limits.js";
 import { dirSize, listTraceSessions } from "./trace/retention.js";
@@ -53,8 +54,16 @@ export async function localHistoryUsage(traceRootOverride?: string | null): Prom
 }
 
 /** The startup hint, or null while history is under the threshold. */
-export function historyHint(usage: LocalHistoryUsage, threshold = HISTORY_HINT_BYTES): string | null {
+export function historyHint(usage: LocalHistoryUsage, threshold = HISTORY_HINT_BYTES, env: NodeJS.ProcessEnv = process.env): string | null {
   if (usage.totalBytes < threshold) return null;
+  // dl has no `history` command (and no `autopilot` on PATH): say where it lives instead.
+  if (launchedByDl(env)) {
+    return (
+      `Your local session history is ${formatBytes(usage.totalBytes)} ` +
+      `(${usage.sessionCount} sessions, ${usage.traceCount} traces). dl keeps it so you can analyze your usage: ` +
+      `sessions are in ${usage.sessionsDir}, traces in ${usage.tracesDir}.`
+    );
+  }
   return (
     `Your local session history is ${formatBytes(usage.totalBytes)} ` +
     `(${usage.sessionCount} sessions, ${usage.traceCount} traces). Autopilot keeps it so you can analyze your usage: ` +

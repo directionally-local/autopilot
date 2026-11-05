@@ -33,12 +33,32 @@ describe("model retry policy", () => {
     }
   });
 
-  it("waits 1 s, then 3 s, or the host's Retry-After up to 20 s", () => {
-    assert.strictEqual(modelRetryDelay(0), 1_000);
-    assert.strictEqual(modelRetryDelay(1), 3_000);
-    assert.strictEqual(modelRetryDelay(5), 3_000);
-    assert.strictEqual(modelRetryDelay(0, 7_000), 7_000);
-    assert.strictEqual(modelRetryDelay(0, 60_000), MAX_RETRY_AFTER_MS);
+  it("waits 1 s, then 3 s, or the host's Retry-After up to 20 s (jitter at its middle / low end)", () => {
+    const mid = () => 0.5;
+    const low = () => 0;
+    assert.strictEqual(modelRetryDelay(0, undefined, mid), 1_000);
+    assert.strictEqual(modelRetryDelay(1, undefined, mid), 3_000);
+    assert.strictEqual(modelRetryDelay(5, undefined, mid), 3_000);
+    assert.strictEqual(modelRetryDelay(0, 7_000, low), 7_000);
+    assert.strictEqual(modelRetryDelay(0, 60_000, low), MAX_RETRY_AFTER_MS);
+  });
+
+  it("jitters the backoff ±50% and Retry-After by up to +50%, within the 20 s cap", () => {
+    assert.strictEqual(modelRetryDelay(0, undefined, () => 0), 500);
+    assert.strictEqual(modelRetryDelay(0, undefined, () => 0.999), 1_499);
+    assert.strictEqual(modelRetryDelay(1, undefined, () => 0), 1_500);
+    assert.strictEqual(modelRetryDelay(1, undefined, () => 0.75), 3_750);
+    assert.strictEqual(modelRetryDelay(0, 4_000, () => 0.5), 5_000, "Retry-After is never shortened");
+    assert.strictEqual(modelRetryDelay(0, 4_000, () => 0.999), 5_998);
+    assert.strictEqual(modelRetryDelay(0, 18_000, () => 0.999), MAX_RETRY_AFTER_MS);
+    // Out-of-range randoms are clamped, so a bad source can't go negative or past +50%.
+    assert.strictEqual(modelRetryDelay(0, undefined, () => -3), 500);
+    assert.strictEqual(modelRetryDelay(0, undefined, () => 7), 1_500);
+    // Unpinned: always inside the band.
+    for (let i = 0; i < 200; i++) {
+      const d = modelRetryDelay(1);
+      assert.ok(d >= 1_500 && d <= 4_500, String(d));
+    }
   });
 
   it("reads Retry-After as seconds or an HTTP date", () => {
@@ -109,11 +129,14 @@ describe("model retry policy", () => {
 
   it("words the retry line and the final failure plainly", () => {
     assert.strictEqual(modelRetryLine(1, 2), "↻ The model's host had a hiccup; retrying (1/2)…");
-    assert.strictEqual(modelHostFailedText(3), 'The model\'s host failed 3 times. Type "continue" to try again.');
+    assert.strictEqual(modelHostFailedText(3), 'The model\'s host failed 3 times. Type "continue" to try again. Still stuck? /bug');
+    assert.strictEqual(modelHostFailedText(1), 'The model\'s host failed. Type "continue" to try again. Still stuck? /bug');
+    assert.strictEqual(modelHostFailedText(3, { freeTier: true }), 'The model\'s host failed 3 times. Type "continue" to try again or use your own key: /provider');
+    assert.strictEqual(humanizeApiError(new ModelHostError(3, api("autopilot: x", 503), { freeTier: true })), 'The model\'s host failed 3 times. Type "continue" to try again or use your own key: /provider');
     const err = new ModelHostError(3, api("autopilot: Upstream error from Morph: error decoding response body", 502));
     assert.ok(err instanceof ApiError);
     assert.strictEqual(err.httpStatus, 502);
-    assert.strictEqual(humanizeApiError(err), 'The model\'s host failed 3 times. Type "continue" to try again.');
+    assert.strictEqual(humanizeApiError(err), 'The model\'s host failed 3 times. Type "continue" to try again. Still stuck? /bug');
     assert.strictEqual(err.detail, "Upstream error from Morph: error decoding response body");
   });
 });

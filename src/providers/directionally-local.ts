@@ -24,6 +24,7 @@ import { getUserAgent } from "../util/version.js";
 import type { ProviderSettings } from "./resolve.js";
 import type { ModelEntry } from "../models/registry.js";
 import { dlOrigin } from "./dl-endpoint.js";
+import { launchedByDl, type EnvLike } from "../util/env.js";
 
 export { DL_FREE_DEFAULT_URL, dlApiBase, dlOrigin } from "./dl-endpoint.js";
 
@@ -39,6 +40,16 @@ export const DL_INVITE_BONUS_CAP_TOKENS = 50_000_000;
 /** Env var holding an access token (no refresh): sandboxes and short headless runs. */
 export const DL_TOKEN_ENV = "AUTOPILOT_DL_FREE_TOKEN";
 export const DL_SIGN_IN_COMMAND = "autopilot auth directionally-local";
+/** Under dl there is no `autopilot` command: the free tier is signed into from /provider. */
+export const DL_FREE_SIGN_IN_AGAIN = "Run /provider and choose Free to sign in again.";
+/** The sentence for a dead sign-in: dl names /provider, standalone the `autopilot auth` command. */
+export function dlSignInExpiredLine(env: EnvLike = process.env): string {
+  return launchedByDl(env) ? `Your free-tier sign-in expired. ${DL_FREE_SIGN_IN_AGAIN}` : `Your Directionally Local sign-in has expired; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
+}
+/** Not signed in at all. */
+export function dlSignedOutLine(env: EnvLike = process.env): string {
+  return launchedByDl(env) ? "You're not signed in to the free tier. Run /provider and choose Free to sign in." : `You're not signed in to Directionally Local; sign in with \`${DL_SIGN_IN_COMMAND}\`.`;
+}
 /** How to leave the free tier from inside a session: the provider picker. */
 export const DL_SWITCH_HINT = "/provider";
 /** The weekly allowance's reset when the service didn't say: Monday 00:00 UTC, like its weeks. */
@@ -300,6 +311,8 @@ export type DlWhere = "signin" | "cli" | "session";
 export interface DlErrorExtra extends DlErrorDetail, DlTimeOpts {
   /** Default "session". */
   where?: DlWhere;
+  /** Picks dl's wording when dl started this process; default process.env. */
+  env?: EnvLike;
 }
 
 /** The service's `{error:{code,…}}`, if the body is one. Reads both camelCase and snake_case extras. */
@@ -493,9 +506,11 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       if (extra.reason === "device_taken") return "This device already has a free allowance under another GitHub account; sign in with that account instead.";
       return "The sign-in was declined in the browser, so nothing was saved.";
     case "invalid_grant":
-      return `Your Directionally Local sign-in has expired; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
+      return dlSignInExpiredLine(extra.env);
     case "invalid_token":
-      return `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
+      return launchedByDl(extra.env ?? process.env)
+        ? `The free tier didn't accept your sign-in. ${DL_FREE_SIGN_IN_AGAIN}`
+        : `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
     case "quota_exceeded":
       // The token and the spending allowance read the same: both are "this week's free tokens".
       return dlQuotaLine(extra.resetsAt, { ...extra, where });
@@ -738,11 +753,40 @@ export async function saveDlSettings(settings: ProviderSettings): Promise<void> 
 
 let refreshing: Promise<string> | null = null;
 
+/** How long to wait before re-reading config.json once more after a lost refresh race. */
+const ROTATED_RECHECK_MS = 750;
+
+/**
+ * The pair another process saved after rotating `usedRefreshToken`, if any.
+ * Refresh tokens rotate, so with several sessions on one machine the loser of
+ * a concurrent refresh gets `invalid_grant` for a token the winner already
+ * swapped and saved. Re-read config.json (twice: the winner may still be
+ * writing) and take its pair instead of asking to sign in again.
+ */
+async function rotatedElsewhere(usedRefreshToken: string, sleep: (ms: number) => Promise<void>): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await sleep(ROTATED_RECHECK_MS + Math.floor(Math.random() * ROTATED_RECHECK_MS));
+    const s = (await readPersisted())?.providers?.[DL_PROVIDER_ID];
+    if (s?.apiKey && s.refreshToken && s.refreshToken !== usedRefreshToken) return s.apiKey;
+  }
+  return undefined;
+}
+
 /** Exchange the refresh token for a new pair (the old refresh token stops working) and save it. */
-export async function refreshDlTokens(refreshToken: string, opts: { fetchImpl?: typeof fetch; now?: number; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+export async function refreshDlTokens(
+  refreshToken: string,
+  opts: { fetchImpl?: typeof fetch; now?: number; env?: NodeJS.ProcessEnv; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<string> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const res = await jsonPost(`${dlOrigin(opts.env)}/v1/token/refresh`, { refresh_token: refreshToken }, fetchImpl);
-  if (!res.ok) throw await errorFrom(res, "Refreshing the Directionally Local sign-in");
+  if (!res.ok) {
+    const err = await errorFrom(res, "Refreshing the Directionally Local sign-in");
+    if (err.code === "invalid_grant") {
+      const rotated = await rotatedElsewhere(refreshToken, opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))));
+      if (rotated) return rotated;
+    }
+    throw err;
+  }
   const t = (await readJson(res)) as Partial<DlTokens> | null;
   if (!t?.access_token) throw new DlError("bad_response", "Directionally Local returned no access token; sign in again.");
   await saveDlSettings(dlSettings({ access_token: t.access_token, refresh_token: t.refresh_token || refreshToken, ...(t.expires_in ? { expires_in: t.expires_in } : {}) }, opts.now));
@@ -757,7 +801,7 @@ export async function refreshDlTokens(refreshToken: string, opts: { fetchImpl?: 
  * to sign in again; a network failure before expiry returns the saved token.
  */
 export async function dlAccessToken(
-  opts: { fetchImpl?: typeof fetch; now?: number; force?: boolean; env?: NodeJS.ProcessEnv } = {},
+  opts: { fetchImpl?: typeof fetch; now?: number; force?: boolean; env?: NodeJS.ProcessEnv; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<string | undefined> {
   const env = opts.env ?? process.env;
   const fromEnv = env[DL_TOKEN_ENV]?.trim();
@@ -769,12 +813,12 @@ export async function dlAccessToken(
   const fresh = !s.expiresAt || s.expiresAt - now > 60_000;
   if (!opts.force && fresh) return s.apiKey;
   if (!s.refreshToken) {
-    if (opts.force || (s.expiresAt && s.expiresAt <= now)) throw new DlError("invalid_grant", describeDlError("invalid_grant")!);
+    if (opts.force || (s.expiresAt && s.expiresAt <= now)) throw new DlError("invalid_grant", describeDlError("invalid_grant", { env })!);
     return s.apiKey;
   }
   refreshing = (async () => {
     try {
-      return await refreshDlTokens(s.refreshToken!, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}), now, env });
+      return await refreshDlTokens(s.refreshToken!, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}), ...(opts.sleep ? { sleep: opts.sleep } : {}), now, env });
     } catch (e) {
       if (e instanceof DlError && e.status !== undefined && e.status < 500) throw e;
       // The service is unreachable: let the request go out with what we have.
@@ -859,7 +903,7 @@ export async function fetchDlMe(opts: { fetchImpl?: typeof fetch; env?: NodeJS.P
       signal: AbortSignal.timeout(10_000),
     });
   let token = opts.token ?? (await dlAccessToken({ fetchImpl, ...(opts.env ? { env: opts.env } : {}) }));
-  if (!token) throw new DlError("signed_out", `You're not signed in to Directionally Local; sign in with \`${DL_SIGN_IN_COMMAND}\`.`);
+  if (!token) throw new DlError("signed_out", dlSignedOutLine(opts.env));
   let res = await call(token);
   if (res.status === 401 && !opts.token) {
     const err = parseDlError(await readJson(res.clone()));
@@ -1043,7 +1087,7 @@ async function dlAuthedPost(path: string, body: unknown, opts: { fetchImpl?: typ
       signal: AbortSignal.timeout(15_000),
     });
   let token = await dlAccessToken({ fetchImpl, ...env });
-  if (!token) throw new DlError("signed_out", `You're not signed in to Directionally Local; sign in with \`${DL_SIGN_IN_COMMAND}\`.`);
+  if (!token) throw new DlError("signed_out", dlSignedOutLine(opts.env));
   let res: Response;
   try {
     res = await call(token);

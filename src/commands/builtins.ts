@@ -36,11 +36,12 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "tour", description: "Summarize this project and suggest three tasks to start with", source: "builtin" },
   { name: "setup-import", description: "Show what Autopilot uses from your other coding agents (Claude Code, Cursor, …)", source: "builtin" },
   { name: "update", description: "Check for updates", source: "builtin" },
-  { name: "hello", description: "Send a voice note to the creator", source: "builtin" },
+  { name: "hello", description: "Open a GitHub issue to reach the team", source: "builtin" },
+  { name: "bug", description: "How to report a bug: GitHub issues or email", source: "builtin" },
   { name: "shell", argHint: "[auto|bash|cmd|powershell|<path>]", description: "Show or set shell for bash tool", source: "builtin" },
   { name: "changelog-image", argHint: "[owner/repo] [days]", description: "Generate a changelog image from merged PRs", source: "builtin" },
   { name: "logout", description: "Clear stored credentials", source: "builtin" },
-  { name: "exit", description: "Exit autopilot (formerly kimiflare)", source: "builtin" },
+  { name: "exit", description: "Exit Autopilot", source: "builtin" },
 ];
 
 export const BUILTIN_COMMAND_NAMES = new Set(

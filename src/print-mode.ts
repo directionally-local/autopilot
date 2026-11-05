@@ -34,6 +34,7 @@ import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import type { AutopilotConfig, PermissionRules, ReasoningEffort } from "./config.js";
 import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
+import { defaultCoauthor } from "./util/dl-identity.js";
 
 export type PrintFormat = "text" | "json" | "stream-json";
 
@@ -508,7 +509,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       maxInputTokens: opts.maxInputTokens,
       coauthor:
         opts.coauthor !== false
-          ? { name: opts.coauthorName || "autopilot", email: opts.coauthorEmail || "kimiflare@proton.me" }
+          ? { name: opts.coauthorName || defaultCoauthor().name, email: opts.coauthorEmail || defaultCoauthor().email }
           : undefined,
       allowDirectPush: opts.allowDirectPush,
       preferPullRequests: opts.preferPullRequests,

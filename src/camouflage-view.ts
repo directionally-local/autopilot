@@ -69,6 +69,7 @@ import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 import { launchedByDl } from "./util/env.js";
 import { headerTitle, productName } from "./util/dl-identity.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
+import { BUG_REPORT_LINE } from "./ui/bug-report.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
 import { readKeyWithoutInput, waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
 import { runStarAsk } from "./star-ask.js";
@@ -1092,7 +1093,7 @@ export class View implements AppBridge {
       case "help":
         a.closeModal("help");
         return want("help", async () => {
-          const r = await this.select("Help", helpOptions(s.customCommands), undefined, "Pick a command to run · type to search");
+          const r = await this.select("Help", helpOptions(s.customCommands), undefined, helpFooter());
           if (r) await this.runWithArgs(r);
         });
       case "shell":
@@ -2237,6 +2238,11 @@ export function validateCommandName(name: string, existing: string[]): string | 
   if (BUILTIN_COMMAND_NAMES.has(name.toLowerCase())) return `/${name} is a built-in command`;
   if (existing.includes(name)) return `/${name} already exists`;
   return null;
+}
+
+/** The help menu's dim line: where to report a bug (the renderer's own hint line says how to pick). */
+export function helpFooter(): string {
+  return BUG_REPORT_LINE;
 }
 
 /** The Ink help menu's pages as sections, plus custom commands. */

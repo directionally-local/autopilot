@@ -161,8 +161,28 @@ describe("loadConfig", () => {
     assert.ok(cfg);
     assert.strictEqual(cfg.openrouterApiKey, "sk-or-env");
     assert.strictEqual(cfg.model, DEFAULT_MODEL);
-    assert.strictEqual(cfg.coauthorName, "autopilot");
-    assert.strictEqual(cfg.coauthorEmail, "kimiflare@proton.me");
+    assert.strictEqual(cfg.coauthorName, "Autopilot");
+    assert.strictEqual(cfg.coauthorEmail, "autopilot@directionallylocal.com");
+  });
+
+  it("credits dl in commits when dl started it; AUTOPILOT_COAUTHOR=0 still turns the trailer off", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-env";
+    const prev = { by: process.env.AUTOPILOT_LAUNCHED_BY, co: process.env.AUTOPILOT_COAUTHOR };
+    try {
+      process.env.AUTOPILOT_LAUNCHED_BY = "dl";
+      const cfg = await loadConfig();
+      assert.deepStrictEqual([cfg?.coauthor, cfg?.coauthorName, cfg?.coauthorEmail], [true, "dl", "dl@directionallylocal.com"]);
+      process.env.AUTOPILOT_COAUTHOR = "0";
+      assert.strictEqual((await loadConfig())?.coauthor, false);
+      delete process.env.AUTOPILOT_COAUTHOR;
+      await writeConfigFile({ openrouterApiKey: "sk-or-file", coauthor: false });
+      assert.strictEqual((await loadConfig())?.coauthor, false, "config.json's switch is kept");
+    } finally {
+      if (prev.by === undefined) delete process.env.AUTOPILOT_LAUNCHED_BY;
+      else process.env.AUTOPILOT_LAUNCHED_BY = prev.by;
+      if (prev.co === undefined) delete process.env.AUTOPILOT_COAUTHOR;
+      else process.env.AUTOPILOT_COAUTHOR = prev.co;
+    }
   });
 
   describe("memoryExtraction policy (#1073)", () => {

@@ -6,6 +6,7 @@ import { migrateLegacyModelId } from "./models/registry.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
 import { readEnv } from "./util/env.js";
+import { defaultCoauthor } from "./util/dl-identity.js";
 import { configPath as userConfigPath } from "./util/app-dirs.js";
 
 export type ReasoningEffort = "low" | "medium" | "high";
@@ -323,12 +324,12 @@ function readSubagentPolicyEnv(): SubagentPolicy | undefined {
   return raw === "off" || raw === "suggest" || raw === "auto" ? raw : undefined;
 }
 
-function readCoauthorEnv(): { enabled: boolean; name: string; email: string } | undefined {
-  const enabled = readEnv("COAUTHOR");
-  if (enabled === "0" || enabled === "false") return undefined;
-  const name = readEnv("COAUTHOR_NAME") || "autopilot";
-  const email = readEnv("COAUTHOR_EMAIL") || "kimiflare@proton.me";
-  return { enabled: true, name, email };
+/** What AUTOPILOT_COAUTHOR / _NAME / _EMAIL set; each unset one leaves config.json's value (or the default) in place. */
+function readCoauthorEnv(): { enabled?: boolean; name?: string; email?: string } {
+  const enabled = parseBooleanEnv(readEnv("COAUTHOR"));
+  const name = readEnv("COAUTHOR_NAME") || undefined;
+  const email = readEnv("COAUTHOR_EMAIL") || undefined;
+  return { ...(enabled !== undefined ? { enabled } : {}), ...(name ? { name } : {}), ...(email ? { email } : {}) };
 }
 
 /** Boolean `AUTOPILOT_<suffix>` (or legacy `KIMIFLARE_<suffix>`) setting. */
@@ -465,9 +466,10 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
           : "auto"
     ),
     modesEnabled: persisted.modesEnabled,
-    coauthor: envCoauthor?.enabled ?? persisted.coauthor ?? true,
-    coauthorName: envCoauthor?.name ?? persisted.coauthorName,
-    coauthorEmail: envCoauthor?.email ?? persisted.coauthorEmail,
+    coauthor: envCoauthor.enabled ?? persisted.coauthor ?? true,
+    // Unset: dl when dl started this process, else Autopilot (session-core, print mode and the SDK fall back the same way).
+    coauthorName: envCoauthor.name ?? persisted.coauthorName ?? defaultCoauthor().name,
+    coauthorEmail: envCoauthor.email ?? persisted.coauthorEmail ?? defaultCoauthor().email,
     mcpServers: persisted.mcpServers,
     runNotifications: persisted.runNotifications,
     maxConcurrentRuns: persisted.maxConcurrentRuns,
