@@ -243,7 +243,7 @@ describe("Directionally Local free tier", () => {
     it("says what sign-in collects, and that cancelling leaves it unconnected", () => {
       const before = dlSignInLines().split("\n");
       assert.deepStrictEqual(before, [
-        "Free: 50M tokens a week on deepseek/deepseek-v4.1-flash-1017, no card. Sign in with GitHub to start.",
+        "Free: 50M tokens a week on deepseek/deepseek-v4.1-flash-1017, no credit card. Sign in with GitHub to start.",
         DL_DISCLOSURE,
       ]);
       const code = { deviceCode: "d", userCode: "ABCD-1234", verificationUri: "u", verificationUriComplete: "https://x/device?code=ABCD-1234", intervalSec: 5, expiresInSec: 600 };

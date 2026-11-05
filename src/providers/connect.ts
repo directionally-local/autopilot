@@ -282,7 +282,7 @@ export function leavingFreeTierLine(active: ProviderId | undefined, to: Provider
  * a browser really opened (`opened`); otherwise the link is for any device.
  */
 export function dlSignInLines(code?: DlDeviceCode, opened = false): string {
-  if (!code) return `Free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}, no card. Sign in with GitHub to start.\n${DL_DISCLOSURE}`;
+  if (!code) return `Free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}, no credit card. Sign in with GitHub to start.\n${DL_DISCLOSURE}`;
   const where = opened
     ? `Opened your browser at ${code.verificationUriComplete} — sign in with GitHub and approve it`
     : `Open ${code.verificationUriComplete} in a browser on any device, sign in with GitHub and approve it`;
@@ -319,7 +319,7 @@ export const FIRST_RUN_QUESTION = "How should it think?";
 /** Its two answers: the free tier, or the provider picker (without the free tier). */
 export function firstRunChoices(): Array<{ value: FirstRunChoice; label: string; description: string }> {
   return [
-    { value: "free", label: "Free — sign in with GitHub", description: `${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no card` },
+    { value: "free", label: "Free — sign in with GitHub", description: `${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card` },
     { value: "own-key", label: "Use my own API key", description: "OpenRouter, Anthropic, OpenAI and more" },
   ];
 }
