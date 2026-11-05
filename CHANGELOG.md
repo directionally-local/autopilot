@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.13.0](https://github.com/directionally-local/autopilot/compare/v3.12.0...v3.13.0) (2026-11-05)
+
+
+### Features
+
+* the first-run and provider pickers show when the free tier has a waitlist or is paused ([#1168](https://github.com/directionally-local/autopilot/issues/1168)) ([4236bf6](https://github.com/directionally-local/autopilot/commit/4236bf6ce6e603bd6d40f59f597ec54568d67ef4))
+
 ## [3.12.0](https://github.com/directionally-local/autopilot/compare/v3.11.0...v3.12.0) (2026-11-05)
 
 
