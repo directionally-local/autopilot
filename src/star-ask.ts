@@ -1,7 +1,10 @@
 /**
  * The GitHub star ask: one line, once per person, after a win (an opened PR
  * or passing tests, the same as the free tier's invite tip), and only once
- * Autopilot has been used on 3 or more distinct days. Never in the same
+ * Autopilot has been used on 3 or more distinct days or for 10M+ tokens in
+ * total, whichever comes first (all-time input + output tokens across
+ * providers, cached input counted as input, read from the local usage files
+ * /cost's "All time" line uses). Never in the same
  * session as the invite tip (App keeps that), never in headless runs or
  * `-p` (only the interactive App asks), and off with `/settings star-tip off`.
  *
@@ -15,6 +18,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { allTimeTokens } from "./usage-tracker.js";
 import { statePath } from "./util/app-dirs.js";
 import { launchedByDl } from "./util/env.js";
 import { ghStatus, runGh, type GhRun } from "./util/gh-cli.js";
@@ -24,6 +28,8 @@ export const STAR_URL = `https://github.com/${STAR_REPO}`;
 export const STAR_API_PATH = `/user/starred/${STAR_REPO}`;
 /** Distinct days of use before the ask can show. */
 export const STAR_MIN_DAYS = 3;
+/** Or all-time tokens (input + output) before the ask can show, whichever comes first. */
+export const STAR_MIN_TOKENS = 10_000_000;
 /** How long the "already starred?" check may take. */
 export const STAR_CHECK_TIMEOUT_MS = 1_000;
 export const STAR_KEY_HINT = "(press s to star · any other key to dismiss)";
@@ -96,7 +102,8 @@ function markStarTip(field: "shownAt" | "starredAt", path: string, now: number):
 
 /**
  * The star ask after a win, or undefined: the setting on, never shown (or
- * found starred) before, used on 3+ distinct days, and, when gh is installed
+ * found starred) before, used on 3+ distinct days or for 10M+ tokens in
+ * total (whichever first), and, when gh is installed
  * and signed in, not already starred (`gh api` with a 1 s timeout). Marks
  * it shown, so it never shows again.
  */
@@ -106,12 +113,19 @@ export async function starAskAfterWin(o: {
   now?: number;
   gh?: GhRun;
   env?: NodeJS.ProcessEnv;
+  /** All-time input + output tokens; defaults to the local usage files. */
+  totalTokens?: () => Promise<number>;
 }): Promise<string | undefined> {
   if (!o.enabled) return undefined;
   const path = o.statePath ?? starTipStatePath();
   const now = o.now ?? Date.now();
   const state = readStarTipState(path);
-  if (state.shownAt || state.starredAt || state.days < STAR_MIN_DAYS) return undefined;
+  if (state.shownAt || state.starredAt) return undefined;
+  if (state.days < STAR_MIN_DAYS) {
+    // Only read the token total when the days alone don't make it due.
+    const tokens = await (o.totalTokens ?? allTimeTokens)().catch(() => 0);
+    if (!(tokens >= STAR_MIN_TOKENS)) return undefined;
+  }
   const gh = o.gh ?? runGh;
   if ((await ghStatus(gh).catch(() => "missing" as const)) === "signed-in") {
     const r = await gh(["api", STAR_API_PATH], { timeoutMs: STAR_CHECK_TIMEOUT_MS }).catch(() => null);

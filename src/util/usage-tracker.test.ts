@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fetchGenerationSnapshot, getCostReport, reconcileTurnCost, recordUsage, usageEvents, type UsageLog } from "../usage-tracker.js";
+import { allTimeTokens, fetchGenerationSnapshot, getCostReport, reconcileTurnCost, recordUsage, usageEvents, type UsageLog } from "../usage-tracker.js";
 
 describe("OpenRouter cost confirmation", () => {
   let originalXdgDataHome: string | undefined;
@@ -260,6 +260,26 @@ describe("Persistent history.jsonl", () => {
       // Today's total should reflect the fresh usage.json data, not stale history
       assert.strictEqual(report.today.promptTokens, 100);
       assert.strictEqual(report.allTime.promptTokens, 100);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allTimeTokens: input (cached included) + output over every day, old history too", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "autopilot-alltime-"));
+    process.env.XDG_DATA_HOME = dir;
+    try {
+      assert.strictEqual(await allTimeTokens(), 0, "no usage yet");
+      await mkdir(join(dir, "autopilot"), { recursive: true });
+      await writeFile(
+        join(dir, "autopilot", "history.jsonl"),
+        JSON.stringify({ date: "2025-01-01", promptTokens: 1000, completionTokens: 500, cachedTokens: 100, cost: 0.5 }) + "\n",
+        "utf8",
+      );
+      await recordUsage("s-all", { prompt_tokens: 1200, completion_tokens: 40, total_tokens: 1240, prompt_tokens_details: { cached_tokens: 1000 } }, undefined);
+      assert.strictEqual(await allTimeTokens(), 1000 + 500 + 1200 + 40);
+      const report = await getCostReport();
+      assert.strictEqual(await allTimeTokens(), report.allTime.promptTokens + report.allTime.completionTokens, "matches /cost's All time");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

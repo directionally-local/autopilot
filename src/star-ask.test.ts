@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   STAR_API_PATH,
+  STAR_MIN_TOKENS,
   STAR_URL,
   STARRED_LINE,
   isStarKey,
@@ -86,10 +87,52 @@ describe("star ask: when it shows", () => {
   it("not before 3 distinct days of use", async () => {
     const path = tmpState();
     const gh = fakeGh({}, { missing: true });
+    const few = async () => 50_000;
     usedOn(2, path);
-    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, env: {} }), undefined);
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, env: {}, totalTokens: few }), undefined);
     noteDayOfUse(path, T0 + 2 * DAY);
-    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, env: {} }), starAskLine({}));
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, env: {}, totalTokens: few }), starAskLine({}), "3 days with few tokens");
+  });
+
+  it("10M+ tokens on day 1: shown after a win, without waiting for 3 days", async () => {
+    const path = tmpState();
+    const gh = fakeGh({}, { missing: true });
+    usedOn(1, path);
+    assert.strictEqual(STAR_MIN_TOKENS, 10_000_000);
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, env: {}, totalTokens: async () => STAR_MIN_TOKENS - 1 }), undefined);
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, env: {}, totalTokens: async () => STAR_MIN_TOKENS }), starAskLine({}));
+    assert.ok(readStarTipState(path).shownAt);
+  });
+
+  it("neither 3 days nor 10M tokens: not shown, and nothing marked", async () => {
+    const path = tmpState();
+    const gh = fakeGh(SIGNED_IN);
+    usedOn(2, path);
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, totalTokens: async () => 9_999_999 }), undefined);
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, totalTokens: async () => { throw new Error("unreadable"); } }), undefined);
+    assert.strictEqual(gh.calls.length, 0);
+    assert.strictEqual(readStarTipState(path).shownAt, undefined);
+  });
+
+  it("once via tokens: never again, however many more tokens or days", async () => {
+    const path = tmpState();
+    const gh = fakeGh({}, { missing: true });
+    const lots = async () => 50_000_000;
+    usedOn(1, path);
+    assert.ok(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, totalTokens: lots }));
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, totalTokens: lots }), undefined);
+    usedOn(5, path);
+    noteDayOfUse(path, T0 + 10 * DAY);
+    assert.strictEqual(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, totalTokens: lots }), undefined);
+  });
+
+  it("the token total is only read when the days alone don't make it due", async () => {
+    const path = tmpState();
+    const gh = fakeGh({}, { missing: true });
+    let reads = 0;
+    usedOn(3, path);
+    assert.ok(await starAskAfterWin({ enabled: true, statePath: path, gh: gh.run, totalTokens: async () => (reads++, 0) }));
+    assert.strictEqual(reads, 0);
   });
 
   it("once: never again after it was shown", async () => {
