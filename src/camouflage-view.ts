@@ -29,8 +29,10 @@ import { onboardingCancelledMessage, ownKeyIntro, runFirstRun, type FirstRunOutc
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlCheckout, dlHeaderLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlCheckout, dlHeaderLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
+import { getAppVersion } from "./util/version.js";
+import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
 import { copyWithOsc52 } from "./util/osc52.js";
 import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
@@ -458,6 +460,8 @@ export class View implements AppBridge {
   terminalIo: WaitIo | undefined = undefined;
   /** The provider calls the setup screens make; replaced in tests. */
   providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
+  /** What /feedback calls (the free tier token, and fetch); replaced in tests. */
+  feedbackCalls: { token: () => Promise<string | undefined>; fetchImpl?: typeof fetch } = { token: () => dlAccessToken() };
   /** What the free tier's limit, queue and /upgrade screens call; replaced in tests. */
   dlScreenCalls: Pick<DlScreenDeps, "checkout" | "fetchMe" | "openBrowser" | "copy" | "sleep" | "now"> = {
     checkout: (product) => dlCheckout(product),
@@ -1049,6 +1053,13 @@ export class View implements AppBridge {
         a.dlScreenDone?.(outcome);
       });
     }
+    if (s.feedback) {
+      const req = s.feedback;
+      return want("feedback", async () => {
+        const line = await this.feedback(req).catch((): FeedbackLine => ({ text: FEEDBACK_FALLBACK_LINE, severity: "error" }));
+        a.feedbackDone?.(line);
+      });
+    }
     if (s.queuePlan) {
       const prompts = s.queuePlan.prompts;
       return want("queuePlan", async () => {
@@ -1607,6 +1618,45 @@ export class View implements AppBridge {
           this.signIn = null;
           this.signInWaiting = null;
         };
+      },
+    });
+  }
+
+  /**
+   * `/feedback`: a multi-line message (unless typed after the command), then
+   * the reply address on one line (prefilled with the public GitHub email
+   * when signed in to the free tier), then the send. Only the typed message
+   * leaves this machine (see feedback.ts).
+   */
+  feedback(req: FeedbackRequest): Promise<FeedbackLine> {
+    const say = (message: string) => void this.cam.send("RuntimeError", { message, severity: "info" });
+    return runFeedback(req.inline ? { inline: req.inline } : {}, {
+      providerId: req.providerId,
+      autopilotVersion: getAppVersion(),
+      token: this.feedbackCalls.token,
+      ...(this.feedbackCalls.fetchImpl ? { fetchImpl: this.feedbackCalls.fetchImpl } : {}),
+      status: say,
+      askMessage: async ({ problem, draft }) => {
+        const f = await this.sdk.form(this.cam, {
+          id: `feedback-message-${Date.now()}`,
+          title: `Feedback for the team${problem ? ` · ${problem}` : ""}`,
+          fields: [{ name: "message", label: FEEDBACK_MESSAGE_PROMPT, kind: "multiline", required: true, ...(draft ? { default: draft } : {}) }],
+        });
+        return f.cancelled ? null : f.values?.message ?? "";
+      },
+      askEmail: async ({ suggested, problem }) => {
+        const f = await this.sdk.form(this.cam, {
+          id: `feedback-email-${Date.now()}`,
+          title: `Feedback for the team${problem ? ` · ${problem}` : ""}`,
+          fields: [
+            {
+              name: "email",
+              label: suggested ? `Replies go to ${suggested} · Enter to keep, or type another` : "Email for a reply (optional) · Enter to skip",
+              ...(suggested ? { default: suggested } : { placeholder: "you@example.com" }),
+            },
+          ],
+        });
+        return f.cancelled ? null : f.values?.email ?? "";
       },
     });
   }

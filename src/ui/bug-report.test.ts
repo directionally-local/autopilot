@@ -13,7 +13,7 @@ describe("/bug", () => {
       setEvents: (f: (e: Array<{ text: string }>) => Array<{ text: string }>) => infos.push(...f([]).map((e) => e.text)),
     } as unknown as SlashContext;
     assert.strictEqual(await dispatchSlashCommand(ctx, "/bug"), true);
-    assert.deepStrictEqual(infos, ["Report a bug: https://github.com/directionally-local/autopilot/issues/new · or email contact@directionallylocal.com"]);
+    assert.deepStrictEqual(infos, ["Report a bug: https://github.com/directionally-local/autopilot/issues/new · or email contact@directionallylocal.com · Feedback: /feedback"]);
     assert.strictEqual(infos[0], BUG_REPORT_LINE);
   });
 

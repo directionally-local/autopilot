@@ -129,6 +129,7 @@ import { projectDirsToRead } from "./util/app-dirs.js";
 import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
 import { lastKnownDlMe } from "./providers/directionally-local.js";
 import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
+import type { FeedbackLine, FeedbackRequest } from "./feedback.js";
 import type { GithubAccessOutcome, GithubAccessRequest } from "./github-access.js";
 import { ApiError as DlApiError } from "./util/errors.js";
 
@@ -294,6 +295,8 @@ function App({
   // GitHub star ask, never both in the same session.
   const winTipRef = useRef<WinTipState>(null);
   const [starAsk, setStarAsk] = useState<string | null>(null);
+  // /feedback's inputs, while open (the view runs the flow; see feedback.ts).
+  const [feedback, setFeedback] = useState<FeedbackRequest | null>(null);
   // A push or pull request without GitHub access: the question, and the tool call waiting on it.
   const [githubAccess, setGithubAccess] = useState<GithubAccessRequest | null>(null);
   const githubAccessResolveRef = useRef<((outcome: GithubAccessOutcome) => void) | null>(null);
@@ -1073,6 +1076,7 @@ function App({
     traceRef,
     turnHistoryRef,
     openDlScreen: setDlScreen,
+    openFeedback: setFeedback,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage,
@@ -2185,6 +2189,10 @@ function App({
         else if (next.kind === "retry") void processMessage(next.text, next.display, { retry: true });
       },
       starAskDone: () => setStarAsk(null),
+      feedbackDone: (line: FeedbackLine) => {
+        setFeedback(null);
+        setEvents((es) => [...es, { kind: line.severity, key: mkKey(), text: line.text }]);
+      },
       githubAccessDone: (outcome: GithubAccessOutcome) => {
         setGithubAccess(null);
         const resolve = githubAccessResolveRef.current;
@@ -2261,6 +2269,7 @@ function App({
       dlScreen,
       starAsk,
       githubAccess,
+      feedback,
       lsp: {
         servers: cfg?.lspServers ?? {},
         scope: lspScope,

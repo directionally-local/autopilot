@@ -155,7 +155,7 @@ describe("helpOptions", () => {
 
   it("lists /bug, and ends with where to report a bug", () => {
     assert.ok(helpOptions([], {}).some((o) => o.value === "/bug"));
-    assert.equal(helpFooter(), "Report a bug: https://github.com/directionally-local/autopilot/issues/new · or email contact@directionallylocal.com");
+    assert.equal(helpFooter(), "Report a bug: https://github.com/directionally-local/autopilot/issues/new · or email contact@directionallylocal.com · Feedback: /feedback");
   });
 });
 
@@ -538,6 +538,49 @@ describe("Camouflage free-tier limit screen", () => {
       assert.deepStrictEqual(calls, [["dlScreenDone", outcome]]);
       view.dispose();
     }
+  });
+});
+
+describe("Camouflage /feedback", () => {
+  it("asks for the message (multi-line), then the reply address prefilled from GitHub, sends, and hands App the line", async () => {
+    const { view, prompts, calls } = await fakeView({
+      form: [{ values: { message: "line one\nline two" }, cancelled: false }, { values: { email: "ana@example.com" }, cancelled: false }],
+    });
+    const posted: unknown[] = [];
+    view.feedbackCalls = {
+      token: async () => "tok",
+      fetchImpl: (async (url: string, init: RequestInit = {}) => {
+        if (String(url).endsWith("/v1/feedback/reply-address")) return new Response(JSON.stringify({ email: "ana@example.com" }));
+        posted.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ ok: true, replyTo: "ana@example.com" }));
+      }) as typeof fetch,
+    };
+    view.sync(baseSnapshot({ feedback: { providerId: "directionally-local" } }));
+    await settle();
+    const [message, email] = prompts.map((p) => (p.payload.fields as Record<string, string>[])[0]!);
+    assert.strictEqual(message!.label, "What's on your mind? (Tab to send, Esc to cancel)");
+    assert.strictEqual(message!.kind, "multiline");
+    assert.strictEqual(email!.label, "Replies go to ana@example.com · Enter to keep, or type another");
+    assert.strictEqual(email!.default, "ana@example.com");
+    assert.strictEqual((posted[0] as { message: string }).message, "line one\nline two");
+    assert.deepStrictEqual(calls, [["feedbackDone", { text: "✓ Sent. Thanks — replies go to ana@example.com.", severity: "info" }]]);
+    view.dispose();
+  });
+
+  it("text after /feedback skips the message input; without a sign-in the address is optional", async () => {
+    const { view, prompts, calls } = await fakeView({ form: [{ values: { email: "" }, cancelled: false }] });
+    const seen: string[] = [];
+    view.feedbackCalls = {
+      token: async () => undefined,
+      fetchImpl: (async (url: string) => (seen.push(String(url)), new Response(JSON.stringify({ ok: true, replyTo: null })))) as typeof fetch,
+    };
+    view.sync(baseSnapshot({ feedback: { providerId: "openrouter", inline: "nice" } }));
+    await settle();
+    assert.strictEqual(prompts.length, 1);
+    assert.strictEqual((prompts[0]!.payload.fields as Record<string, string>[])[0]!.label, "Email for a reply (optional) · Enter to skip");
+    assert.deepStrictEqual(seen.map((u) => new URL(u).pathname), ["/v1/feedback"]);
+    assert.deepStrictEqual(calls, [["feedbackDone", { text: "✓ Sent. Thanks — (no reply address, so we can't answer by email)", severity: "info" }]]);
+    view.dispose();
   });
 });
 
