@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.0](https://github.com/directionally-local/autopilot/compare/v3.10.1...v3.11.0) (2026-11-05)
+
+
+### Features
+
+* the star ask can also come after 10M tokens, still once ([#1163](https://github.com/directionally-local/autopilot/issues/1163)) ([7d09786](https://github.com/directionally-local/autopilot/commit/7d097860bab07f2357bc4a6739b4ac1ff51ceb16))
+
 ## [3.10.1](https://github.com/directionally-local/autopilot/compare/v3.10.0...v3.10.1) (2026-11-05)
 
 
