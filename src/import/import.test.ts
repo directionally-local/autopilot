@@ -5,7 +5,7 @@
  */
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildInstructionsBlock, findImports, loadInstructions, MAX_FILE_BYTES } from "./instructions.js";
@@ -14,7 +14,6 @@ import {
   createImportedMcpTool,
   discoverMcpServers,
   displayCommand,
-  importedMcpPromptFor,
   resetMcpSessionState,
   type McpLaunch,
 } from "./mcp.js";
@@ -24,14 +23,13 @@ import { loadCustomCommands } from "../commands/loader.js";
 import { renderCommand } from "../commands/renderer.js";
 import { ToolExecutor } from "../tools/executor.js";
 import type { ToolSpec } from "../tools/registry.js";
-import { resolvePermission, type SetupPrompt } from "../ui/use-permission-controller.js";
+import { resolvePermission } from "../ui/use-permission-controller.js";
 
 const SECRET = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 
 let base: string;
 let home: string;
 let repo: string;
-let state: string;
 
 function write(path: string, text: string): void {
   mkdirSync(join(path, ".."), { recursive: true });
@@ -64,7 +62,6 @@ function buildFixture(): void {
   // XDG folders; the fake Claude Code + Cursor setup goes there.
   assert.ok(process.env.AUTOPILOT_TEST_ROOT, "run through npm test / npm run test:file");
   home = process.env.HOME!;
-  state = process.env.XDG_STATE_HOME!;
   base = mkdtempSync(join(process.env.AUTOPILOT_TEST_ROOT!, "ap-import-"));
   repo = join(base, "repo");
   mkdirSync(join(repo, ".git"), { recursive: true });
@@ -284,7 +281,7 @@ describe("MCP servers", () => {
     assert.ok(!tool.description.includes(SECRET));
   });
 
-  it("asks once before a server starts and never starts one silently", async () => {
+  it("starts a server the first time a task uses it, without a question", async () => {
     const { servers } = discoverMcpServers(repo, env());
     const launches: McpLaunch[] = [];
     const started: string[] = [];
@@ -305,20 +302,7 @@ describe("MCP servers", () => {
     assert.equal(tool.name, "mcp_imported");
     assert.equal(tool.needsPermission, true);
 
-    const req = { tool, args: { server: "github" } };
-    const prompt = importedMcpPromptFor(req);
-    assert.ok(prompt, "the first use asks");
-    assert.equal(prompt.prompt, "Use the `github` MCP server from your Claude Code setup?");
-    assert.equal(prompt.subtitle, "It runs `npx -y @modelcontextprotocol/server-github`. Its settings and any keys stay in ~/.claude.json.");
-    assert.deepEqual(prompt.choices.map((c) => c.label), ["Allow once", "Always", "Don't"]);
-
-    // Called without an answer (a host that skipped the prompt): nothing starts.
-    const blocked = await tool.run({ server: "github" }, { cwd: repo });
-    assert.match(String(blocked), /not turned on/);
-    assert.equal(launches.length, 0);
-
-    prompt.onAnswer("once");
-    assert.equal(importedMcpPromptFor(req), null, "asked only once");
+    assert.equal(launches.length, 0, "off until a task needs it");
     const listed = String(await tool.run({ server: "github" }, { cwd: repo }));
     assert.match(listed, /The github MCP server is on, with 1 tool/);
     assert.match(listed, /- search_issues: Search issues/);
@@ -328,46 +312,19 @@ describe("MCP servers", () => {
     assert.equal((launches[0] as { env?: Record<string, string> }).env?.GITHUB_PERSONAL_ACCESS_TOKEN, SECRET);
     assert.equal(await tool.run({ server: "github", tool: "search_issues", arguments: { q: "bug" } }, { cwd: repo }), "found 3 issues for bug");
     assert.equal(launches.length, 1, "started once");
-    // "Allow once" is not remembered on disk.
-    assert.ok(!existsSync(join(state, "autopilot", "imported-mcp.json")));
   });
 
-  it("asks in the session even in auto mode, through the once-per-project prompt", async () => {
+  it("is allowed in auto mode like any MCP tool, and blocked in plan mode", async () => {
     const { servers } = discoverMcpServers(repo, env());
     const tool = createImportedMcpTool(servers, { connect: async () => [] })!;
-    const shown: SetupPrompt[] = [];
     const host = {
       onPlanModeBlocked: () => {},
-      prompt: async () => "allow" as const,
-      promptSetup: async (p: SetupPrompt) => {
-        shown.push(p);
-        p.onAnswer?.("deny");
-        return "deny" as const;
-      },
+      prompt: async () => assert.fail("asked"),
     };
     const decision = await resolvePermission({ tool, args: { server: "github" }, sessionKey: "k" }, "auto", undefined, host);
-    assert.equal(decision, "deny");
-    assert.equal(shown.length, 1);
-    assert.equal(shown[0]!.kind, "mcp");
-    assert.equal(shown[0]!.prompt, "Use the `github` MCP server from your Claude Code setup?");
-    // Plan mode blocks MCP calls before any question.
+    assert.deepEqual(decision, { decision: "allow", scope: "once" });
     const planned = await resolvePermission({ tool, args: { server: "sentry" }, sessionKey: "k" }, "plan", undefined, host);
     assert.deepEqual(planned, { decision: "deny", scope: "once" });
-    assert.equal(shown.length, 1);
-  });
-
-  it("remembers Always and Don't per machine, without secrets", async () => {
-    const { servers } = discoverMcpServers(repo, env());
-    createImportedMcpTool(servers, { connect: async () => [] });
-    importedMcpPromptFor({ tool: { name: "mcp_imported" }, args: { server: "sentry" } })!.onAnswer("always");
-    importedMcpPromptFor({ tool: { name: "mcp_imported" }, args: { server: "linear" } })!.onAnswer("deny");
-    const stored = readFileSync(join(state, "autopilot", "imported-mcp.json"), "utf8");
-    assert.ok(!stored.includes(SECRET) && !stored.includes("SENTRY_TOKEN"));
-    resetMcpSessionState(); // a new session
-    const tool = createImportedMcpTool(servers, { connect: async () => [] })!;
-    assert.equal(importedMcpPromptFor({ tool, args: { server: "sentry" } }), null, "Always: not asked again");
-    const props = (tool.parameters as { properties: { server: { enum: string[] } } }).properties;
-    assert.ok(!props.server.enum.includes("linear"), "Don't: no longer offered");
   });
 });
 
@@ -460,7 +417,7 @@ describe("the checklist", () => {
         "  ↷ dangerous MCP server (Claude Code) not brought in · denied in your Claude Code settings",
         "  ↷ off-server MCP server (Claude Code) not brought in · turned off in Claude Code",
         "  ↷ notion MCP server (Claude Code) not brought in · remote HTTP servers aren't supported yet",
-        "  MCP servers stay off until a task needs one; you're asked before each starts the first time.",
+        "  MCP servers stay off until a task needs one.",
       ].join("\n"),
     );
   });

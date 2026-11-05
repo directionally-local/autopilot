@@ -50,7 +50,7 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
 
   if (mcpInitRef.current) return;
   // MCP servers from other agents' setups (#1126): offered through one tool,
-  // never started until a task needs one and the user allows it.
+  // started the first time a task needs one.
   const importedTool = importedMcpTool(deps);
   if (!cfg.mcpServers && !importedTool) return;
   mcpInitRef.current = true;

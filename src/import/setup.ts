@@ -159,7 +159,7 @@ export function formatChecklist(s: SetupScan): string | null {
   for (const c of s.commandsSkipped) byReason.set(c.reason, (byReason.get(c.reason) ?? 0) + 1);
   for (const [reason, n] of byReason) skip(`${plural(n, "Claude Code command")} not brought in · ${SKIP_REASON_TEXT[reason][n === 1 ? 0 : 1]}`);
   for (const m of s.mcpSkipped) skip(`${m.name} MCP server (${MCP_AGENT_NAMES[m.agent]}) not brought in · ${m.reason}`);
-  if (s.mcp.length > 0) lines.push("  MCP servers stay off until a task needs one; you're asked before each starts the first time.");
+  if (s.mcp.length > 0) lines.push("  MCP servers stay off until a task needs one.");
   return lines.join("\n");
 }
 

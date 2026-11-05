@@ -1,6 +1,5 @@
 /**
- * MCP servers from other coding agents (#1126): listed, never started
- * silently.
+ * MCP servers from other coding agents (#1126).
  *
  * Found in, first name wins:
  *   Claude Code  ~/.claude.json (this project's entry, then .mcp.json, then user-wide)
@@ -10,20 +9,17 @@
  * Code `mcp__<server>` rule, or one turned off in its source is left out.
  *
  * Each server stays off until a task needs it. The interactive session
- * offers one tool, `mcp_imported`; the first time the model calls it for a
- * server the user is asked once ("Allow once / Always / Don't"). "Always"
- * and "Don't" are remembered per machine under Autopilot's state folder,
- * keyed by the server's command or URL, so a changed command asks again.
+ * offers one tool, `mcp_imported`, which starts a server the first time the
+ * model calls it for that server and then calls its tools. It goes through
+ * the same permission rules as any other MCP tool.
  *
  * Secrets: env values and headers are never copied or stored. They are
  * read from the source file at the moment the server starts and handed to
  * that process only.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, isAbsolute, sep } from "node:path";
+import { join } from "node:path";
 import type { ToolContext, ToolSpec } from "../tools/registry.js";
-import { statePath } from "../util/app-dirs.js";
 import { homeOf, isRecord, projectRootOf, readJson, setupImportEnabled, type ImportEnv } from "./paths.js";
 import { loadDenyRules, mcpDenied } from "./permissions.js";
 
@@ -49,7 +45,7 @@ export interface ImportedMcpServer {
   /** False when Autopilot can't run it yet; `reason` says why. */
   supported: boolean;
   reason?: string;
-  /** Changes when the command or URL changes, so consent is asked again. */
+  /** Changes when the command or URL changes, so a changed source is not started with the old launch. */
   fingerprint: string;
 }
 
@@ -244,81 +240,11 @@ export function resolveLaunch(server: ImportedMcpServer): McpLaunch {
   return { kind: "remote", url: expandVars(now.url!), ...(headers ? { headers } : {}) };
 }
 
-// ── Consent: one question per server ──────────────────────────────────────
-
-export type McpConsent = "once" | "always" | "deny";
-
-interface ConsentFile {
-  version: 1;
-  servers: Record<string, { decision: "always" | "never"; at: string }>;
-}
-
-function consentPath(): string {
-  return statePath("imported-mcp.json");
-}
-
-function consentKey(s: ImportedMcpServer): string {
-  return `${s.agent}:${s.name}:${s.fingerprint}`;
-}
-
-function readConsent(): ConsentFile {
-  try {
-    const parsed = JSON.parse(readFileSync(consentPath(), "utf8")) as Partial<ConsentFile>;
-    if (parsed && isRecord(parsed.servers)) return { version: 1, servers: parsed.servers as ConsentFile["servers"] };
-  } catch {
-    /* nothing remembered yet */
-  }
-  return { version: 1, servers: {} };
-}
-
-function writeConsent(file: ConsentFile): void {
-  try {
-    const path = consentPath();
-    if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n", { mode: 0o600 });
-    renameSync(tmp, path);
-  } catch {
-    /* asked again next time */
-  }
-}
-
-/** This process's answers ("Allow once" lasts for the session). */
-const sessionAnswers = new Map<string, "allow" | "deny">();
-
-export function storedConsent(s: ImportedMcpServer): "always" | "never" | null {
-  return readConsent().servers[consentKey(s)]?.decision ?? null;
-}
-
-export function consentState(s: ImportedMcpServer): "allowed" | "denied" | "unasked" {
-  const session = sessionAnswers.get(consentKey(s));
-  if (session === "allow") return "allowed";
-  if (session === "deny") return "denied";
-  const stored = storedConsent(s);
-  return stored === "always" ? "allowed" : stored === "never" ? "denied" : "unasked";
-}
-
-export function recordConsent(s: ImportedMcpServer, answer: McpConsent, now = new Date()): void {
-  const key = consentKey(s);
-  sessionAnswers.set(key, answer === "deny" ? "deny" : "allow");
-  if (answer === "once") return;
-  const file = readConsent();
-  file.servers[key] = { decision: answer === "always" ? "always" : "never", at: now.toISOString() };
-  writeConsent(file);
-}
-
 /** Test hook. */
 export function resetMcpSessionState(): void {
-  sessionAnswers.clear();
   registered.clear();
   connected.clear();
 }
-
-export const MCP_CHOICES: ReadonlyArray<{ value: McpConsent; label: string }> = [
-  { value: "once", label: "Allow once" },
-  { value: "always", label: "Always" },
-  { value: "deny", label: "Don't" },
-];
 
 function shown(s: string): string {
   return s.length > 100 ? `${s.slice(0, 99)}…` : s;
@@ -355,49 +281,10 @@ function describe(s: ImportedMcpServer): string {
   return shown(s.kind === "local" ? displayCommand(s.command!) : displayUrl(s.url!));
 }
 
-function displayPath(path: string, home: string): string {
-  const rel = relative(home, path);
-  return !rel.startsWith("..") && !isAbsolute(rel) ? `~/${rel.split(sep).join("/")}` : path;
-}
-
-/** The one-time question's text. */
-export function mcpQuestion(s: ImportedMcpServer, env?: ImportEnv): { prompt: string; subtitle: string } {
-  const what = s.kind === "local" ? `It runs \`${describe(s)}\`.` : `It connects to ${describe(s)}.`;
-  return {
-    prompt: `Use the \`${s.name}\` MCP server from your ${MCP_AGENT_NAMES[s.agent]} setup?`,
-    subtitle: `${what} Its settings and any keys stay in ${displayPath(s.sourcePath, homeOf(env))}.`,
-  };
-}
-
-/** The question for a call that would start an imported server not yet answered for, or null. */
-export interface McpConsentPrompt {
-  kind: "mcp";
-  prompt: string;
-  subtitle: string;
-  root: string;
-  choices: ReadonlyArray<{ value: McpConsent; label: string }>;
-  onAnswer: (answer: McpConsent) => void;
-}
-
 /** Servers the session's `mcp_imported` tool offers, by name. */
 const registered = new Map<string, ImportedMcpServer>();
 /** Started servers' tools, by server name. */
 const connected = new Map<string, ToolSpec[]>();
-
-export function importedMcpPromptFor(req: { tool: { name: string }; args: Record<string, unknown> }): McpConsentPrompt | null {
-  if (req.tool.name !== IMPORTED_MCP_TOOL) return null;
-  const name = req.args.server;
-  if (typeof name !== "string") return null;
-  const server = registered.get(name);
-  if (!server || consentState(server) !== "unasked") return null;
-  return {
-    kind: "mcp",
-    ...mcpQuestion(server),
-    root: "",
-    choices: MCP_CHOICES,
-    onAnswer: (answer) => recordConsent(server, answer),
-  };
-}
 
 // ── The tool ──────────────────────────────────────────────────────────────
 
@@ -430,25 +317,24 @@ export function startedLine(server: ImportedMcpServer, toolCount: number): strin
 
 /**
  * The `mcp_imported` tool for these servers, or null when there are none.
- * Registers the servers so the permission prompt can find them.
+ * Registers the servers so the tool and `/mcp list` can find them.
  */
 export function createImportedMcpTool(servers: ImportedMcpServer[], deps: ImportedMcpDeps): ToolSpec | null {
-  const usable = servers.filter((s) => consentState(s) !== "denied");
   registered.clear();
-  for (const s of usable) registered.set(s.name, s);
-  if (usable.length === 0) return null;
-  const list = usable
+  for (const s of servers) registered.set(s.name, s);
+  if (servers.length === 0) return null;
+  const list = servers
     .map((s) => `${s.name} (${MCP_AGENT_NAMES[s.agent]}: ${describe(s)})`)
     .join("; ");
   return {
     name: IMPORTED_MCP_TOOL,
     description:
-      `Use an MCP server from the user's other coding agents. Each is off until needed; the user is asked the first time one starts. ` +
+      `Use an MCP server from the user's other coding agents. Each is off until needed. ` +
       `Call with only \`server\` to turn it on and list its tools, then with \`server\`, \`tool\` and \`arguments\` to call one. Available: ${list}.`,
     parameters: {
       type: "object",
       properties: {
-        server: { type: "string", enum: usable.map((s) => s.name), description: "The server to use." },
+        server: { type: "string", enum: servers.map((s) => s.name), description: "The server to use." },
         tool: { type: "string", description: "A tool on that server. Omit to turn the server on and list its tools." },
         arguments: { type: "object", description: "Arguments for the tool." },
       },
@@ -462,9 +348,6 @@ export function createImportedMcpTool(servers: ImportedMcpServer[], deps: Import
       const name = typeof args.server === "string" ? args.server : "";
       const server = registered.get(name);
       if (!server) return `Error: no imported MCP server named "${name}". Available: ${[...registered.keys()].join(", ") || "none"}.`;
-      const state = consentState(server);
-      if (state === "denied") return `The user chose not to use the ${name} MCP server. Do not ask again; do the task another way.`;
-      if (state !== "allowed") return `The ${name} MCP server is not turned on: the user has not allowed it.`;
       let tools = connected.get(name);
       if (!tools) {
         try {
@@ -497,7 +380,7 @@ export function isImportedServerTool(toolName: string): boolean {
 export function importedMcpListLines(): string[] {
   return [...registered.values()].map((s) => {
     const on = connected.has(s.name);
-    const state = on ? "on" : consentState(s) === "denied" ? "not used (you said Don't)" : "off until a task needs it";
+    const state = on ? "on" : "off until a task needs it";
     return `  ${s.name} (from ${MCP_AGENT_NAMES[s.agent]}) — ${state}`;
   });
 }

@@ -2,15 +2,15 @@
  * What a bash command really runs: every simple command inside it, with the
  * wrappers around it taken off.
  *
- * Permission checks (the once-per-project setup question, and any
- * classifier of destructive actions) need to see `npm install` in all of:
+ * The classifier of destructive actions (permissions/destructive.ts) needs
+ * to see `rm -rf dist` in all of:
  *
- *   timeout 120 npm install 2>&1 | tail -5
- *   cd app && sudo -u ci env CI=1 nice -n 5 npm install
- *   bash -c "npm install"            ( npm install )      echo $(npm install)
+ *   timeout 120 rm -rf dist 2>&1 | tail -5
+ *   cd app && sudo -u ci env CI=1 nice -n 5 rm -rf dist
+ *   bash -c "rm -rf dist"            ( rm -rf dist )      echo $(rm -rf dist)
  *   find . -name '*.lock' | xargs rm -f
  *
- * and must not see it in `echo "npm install"`. So the command is split the
+ * and must not see it in `echo "rm -rf dist"`. So the command is split the
  * way a shell would split it (quotes, escapes, `;` `&&` `||` `|` `&`,
  * newlines, subshells, `$( … )`, backticks, process substitution,
  * here-documents), every segment is listed, and for each one the leading
@@ -457,11 +457,4 @@ function segment(src: string, seg: Token[], depth: number, out: SimpleCommand[])
   const argv = words.slice(i);
   if (argv.length === 0 && redirects.length === 0) return;
   out.push({ argv, name: argv[0] ? basename(argv[0]) : "", text, wrappers, assignments, redirects });
-}
-
-/** True for an output redirection into a file (not a descriptor, not /dev/null or the terminal). */
-export function writesFile(r: Redirect): boolean {
-  if (!r.op.includes(">") || r.op === "<>") return r.op === "<>";
-  if (r.op === ">&" && /^(\d+-?|-)$/.test(r.target)) return false;
-  return !/^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/.test(r.target);
 }

@@ -1,7 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { simpleCommands, writesFile } from "./shell-commands.js";
-import { setupCommandOf } from "./setup-consent.js";
+import { simpleCommands } from "./shell-commands.js";
 
 const argvs = (c: string) => simpleCommands(c).map((s) => s.argv.join(" "));
 
@@ -112,50 +111,5 @@ describe("simpleCommands", () => {
 
   it("knows wrappers that run nothing", () => {
     for (const c of ["command -v npm", "ionice -p 123", "taskset -p 0x3 123", "chrt -p 10 123", "flock 9"]) assert.deepStrictEqual(argvs(c), [], c);
-  });
-
-  it("tells files from descriptors and /dev/null", () => {
-    const r = (c: string) => simpleCommands(c).flatMap((s) => s.redirects).map(writesFile);
-    assert.deepStrictEqual(r("a 2>&1 >/dev/null 2>/dev/stderr"), [false, false, false]);
-    assert.deepStrictEqual(r("a > out &> both >> log 2> err"), [true, true, true, true]);
-    assert.deepStrictEqual(r("a < in"), [false]);
-  });
-});
-
-describe("the setup question with wrappers", () => {
-  const kind = (c: string) => setupCommandOf(c)?.kind ?? null;
-
-  for (const form of WRAPPED) {
-    it(`asks for ${JSON.stringify(form)}`, () => {
-      for (const inner of INSTALLS) assert.strictEqual(kind(form.replace("%", inner)), "install", form.replace("%", inner));
-      assert.ok(kind(form.replace("%", "rm -rf dist")) !== null, form.replace("%", "rm -rf dist"));
-    });
-  }
-
-  it("asks for the command a fresh-machine install test ran without a question", () => {
-    assert.deepStrictEqual(setupCommandOf("timeout 120 npm install --no-audit --no-fund 2>&1 | tail -5"), {
-      kind: "install",
-      segment: "timeout 120 npm install --no-audit --no-fund",
-    });
-  });
-
-  it("does not ask for tests, reads or quoted text, wrapped or not", () => {
-    for (const c of [
-      "timeout 5 npm test",
-      "timeout 120 npm test 2>&1 | tail -5",
-      "nice -n 5 npm run build",
-      "sudo -u ci npm test",
-      "env CI=1 npm test",
-      "bash -c 'npm test && ls'",
-      "xargs -n1 echo",
-      "echo \"npm install\"",
-      "echo 'pip install -r requirements.txt'",
-      "printf '%s\\n' 'rm -rf dist'",
-      "command -v npm",
-      "(cd app && npm test)",
-      "echo $(git rev-parse HEAD)",
-    ]) {
-      assert.strictEqual(kind(c), null, c);
-    }
   });
 });
