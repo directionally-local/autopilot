@@ -745,8 +745,9 @@ const handleModel: Handler = (ctx, rest, arg) => {
   }
   // Free only: any other model needs the person's own key, so connect a provider for it.
   if (provider.id === "directionally-local" && id !== DL_FREE_MODEL) {
-    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `${dlNotFreeLine(id)} Connect a provider for it (OpenRouter serves ids like this one); /model ${DL_FREE_MODEL} keeps you on the free tier.` }]);
-    ctx.setProviderSetup(id.includes("/") ? { initial: "openrouter" } : {});
+    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `${dlNotFreeLine(id)} Pick a provider for your own key below (or any time with /provider); /model ${DL_FREE_MODEL} keeps you on the free tier.` }]);
+    // The whole provider list (OpenRouter, Anthropic, OpenAI and the rest), not one provider chosen for them.
+    ctx.setProviderSetup({});
     return true;
   }
   const entry = getModelOrInfer(id);
