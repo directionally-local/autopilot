@@ -31,7 +31,7 @@ function deps(over: Partial<FirstRunDeps> & { calls?: string[] } = {}): FirstRun
 describe("firstRunIntro", () => {
   it("welcomes a new user with one line, nothing about API keys before the question", () => {
     assert.deepStrictEqual(firstRunIntro({ upgrading: false, configPath: "/x/config.json", env: {} }), ["Welcome to Autopilot."]);
-    assert.deepStrictEqual(firstRunIntro({ upgrading: false, configPath: "/x/config.json", env: { AUTOPILOT_LAUNCHED_BY: "dl" } }), ["Welcome to Directionally Local."]);
+    assert.deepStrictEqual(firstRunIntro({ upgrading: false, configPath: "/x/config.json", env: { AUTOPILOT_LAUNCHED_BY: "dl" } }), ["Welcome to dl."]);
     const text = firstRunIntro({ upgrading: false, configPath: "/x/config.json" }).join("\n");
     assert.doesNotMatch(text, /API keys you enter/);
     assert.doesNotMatch(text, /this question is skipped/);
@@ -125,6 +125,12 @@ describe("runFirstRun", () => {
 });
 
 describe("onboardingCancelledMessage", () => {
+  it("names dl's command when dl started it", () => {
+    const m = onboardingCancelledMessage({ AUTOPILOT_LAUNCHED_BY: "dl" });
+    assert.match(m, /Run `dl` again/);
+    assert.doesNotMatch(m, /autopilot/);
+  });
+
   it("says nothing was saved and how to get going", () => {
     const m = onboardingCancelledMessage();
     assert.match(m, /nothing was saved/);

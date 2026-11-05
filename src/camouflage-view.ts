@@ -66,6 +66,8 @@ import { OPENROUTER_KEYS_URL } from "./models/openrouter.js";
 import { featuredModels, listModels, type ModelEntry } from "./models/registry.js";
 import { formatContext, formatModelPrice } from "./ui/model-format.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
+import { launchedByDl } from "./util/env.js";
+import { headerTitle, productName } from "./util/dl-identity.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
 import { readKeyWithoutInput, waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
@@ -251,7 +253,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   try {
     cam = await sdk.mount({
       ui: "inline",
-      appTitle: "autopilot",
+      appTitle: productName(),
       inheritStderr: false,
       ...(process.env.CAMOUFLAGE_BIN ? { bin: process.env.CAMOUFLAGE_BIN } : {}),
     });
@@ -273,10 +275,10 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   const branch = gitBranch(cwd);
   const startSession = (cfg: Cfg | null, me: DlMe | null) =>
     cam.send("SessionStarted", {
-      title: custom ? custom.header.title : `autopilot ${opts.version}`,
+      title: custom ? custom.header.title : headerTitle(opts.version),
       detail: custom ? custom.header.detail : sessionHeaderDetail(cfg, cwd, branch, onFreeTier(cfg) ? dlHeaderLine(me) : undefined),
       accent: "orange",
-      assistant_label: "autopilot",
+      assistant_label: productName(),
     });
   // A slow account read doesn't hold the session up: the header goes without the line.
   startSession(
@@ -2270,15 +2272,19 @@ export function validateCommandName(name: string, existing: string[]): string | 
 }
 
 /** The Ink help menu's pages as sections, plus custom commands. */
-export function helpOptions(custom: { name: string; description?: string }[]): PickOption[] {
+export function helpOptions(custom: { name: string; description?: string }[], env: NodeJS.ProcessEnv = process.env): PickOption[] {
   const out: PickOption[] = [];
+  // Started by dl, the product the person knows is dl.
+  const dl = launchedByDl(env);
+  const describe = (c: { command: string; description: string }) =>
+    dl && c.command === "/exit" ? "exit dl; typing exit on its own also works" : dl && c.command === "/update" ? "check for a newer dl" : c.description;
   for (const cat of CATEGORIES) {
     for (const c of cat.commands) {
       if (!c.command.startsWith("/")) continue;
-      out.push({ value: c.command, label: c.command, description: c.description, section: cat.label });
+      out.push({ value: c.command, label: c.command, description: describe(c), section: cat.label });
     }
   }
-  for (const c of SINGLE_COMMANDS) out.push({ value: c.command, label: c.command, description: c.description, section: "General" });
+  for (const c of SINGLE_COMMANDS) out.push({ value: c.command, label: c.command, description: describe(c), section: "General" });
   for (const c of custom) out.push({ value: `/${c.name}`, label: `/${c.name}`, description: c.description, section: "Custom commands" });
   return out;
 }

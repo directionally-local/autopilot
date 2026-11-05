@@ -143,6 +143,14 @@ describe("helpOptions", () => {
     assert.ok(opts.some((o) => o.value === "/memory search <query>"), "argument templates are pickable");
     assert.deepEqual(opts[opts.length - 1], { value: "/ship", label: "/ship", description: "Ship it", section: "Custom commands" });
   });
+
+  it("names dl, not autopilot, when dl started it", () => {
+    const dl = helpOptions([], { AUTOPILOT_LAUNCHED_BY: "dl" });
+    assert.equal(dl.find((o) => o.value === "/exit")?.description, "exit dl; typing exit on its own also works");
+    assert.equal(dl.find((o) => o.value === "/update")?.description, "check for a newer dl");
+    assert.ok(dl.every((o) => !/autopilot/i.test(o.description ?? "")), "no option mentions autopilot");
+    assert.match(helpOptions([], {}).find((o) => o.value === "/exit")?.description ?? "", /^exit autopilot/);
+  });
 });
 
 describe("validateCommandName", () => {

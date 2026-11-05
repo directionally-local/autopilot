@@ -7,6 +7,7 @@ import { resolveLspConfig } from "./util/lsp-config.js";
 import { checkForUpdate } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { getAppVersion } from "./util/version.js";
+import { headerTitle, versionText } from "./util/dl-identity.js";
 import { runPrintMode } from "./print-mode.js";
 import { registerEvalCommand } from "./eval/cli.js";
 import { registerInsightsCommand } from "./insights/cli.js";
@@ -20,7 +21,7 @@ const program = new Command();
 program
   .name("autopilot")
   .description("Terminal coding agent. Bring your own provider: OpenRouter, OpenAI, DeepSeek, Kimi, Z.ai, Ollama, any OpenAI-compatible endpoint.")
-  .version(getAppVersion())
+  .version(versionText())
   .option("-p, --print <prompt>", "one-shot mode: send prompt, stream reply to stdout, exit")
   .option("-m, --model <id>", "model id for the active provider (defaults to its configured model)")
   // KimiFlare Cloud was retired with the move to OpenRouter. Keep the flag
@@ -617,7 +618,7 @@ program
       mount: (run) =>
         runCamouflageView({
           version: getAppVersion(),
-          header: { title: `autopilot ${getAppVersion()}`, detail: ["Connect a model provider", "Billed to your own account with that provider · Esc to cancel"] },
+          header: { title: headerTitle(), detail: ["Connect a model provider", "Billed to your own account with that provider · Esc to cancel"] },
           commands: [],
           run,
         }).then(() => undefined),

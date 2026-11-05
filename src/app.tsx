@@ -46,7 +46,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTerminalTitle } from "./ui/terminal-title.js";
 import { syncHerdrFromTui } from "./util/herdr.js";
-import { checkForUpdate } from "./util/update-check.js";
+import { checkForUpdate, updateNotice } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, type Mode } from "./mode.js";
@@ -627,22 +627,7 @@ function App({
     if (initialUpdateResult) {
       if (initialUpdateResult.hasUpdate && !updateNudgedRef.current) {
         updateNudgedRef.current = true;
-        setEvents((e) => [
-          ...e,
-          {
-            kind: "info",
-            key: mkKey(),
-            text: `update available: ${initialUpdateResult.localVersion} → ${initialUpdateResult.latestVersion}`,
-          },
-        ]);
-        setEvents((e) => [
-          ...e,
-          {
-            kind: "info",
-            key: mkKey(),
-            text: "run:  npm i -g autopilot-ai@latest  then restart",
-          },
-        ]);
+        for (const text of updateNotice(initialUpdateResult)) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
       }
       return;
     }
@@ -650,22 +635,7 @@ function App({
     void checkForUpdate().then((result) => {
       if (result.hasUpdate && !updateNudgedRef.current) {
         updateNudgedRef.current = true;
-        setEvents((e) => [
-          ...e,
-          {
-            kind: "info",
-            key: mkKey(),
-            text: `update available: ${result.localVersion} → ${result.latestVersion}`,
-          },
-        ]);
-        setEvents((e) => [
-          ...e,
-          {
-            kind: "info",
-            key: mkKey(),
-            text: "run:  npm i -g autopilot-ai@latest  then restart",
-          },
-        ]);
+        for (const text of updateNotice(result)) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
       }
     });
     // Camouflage UI access is temporarily disabled; skip camouflage-tui update checks.
@@ -711,22 +681,7 @@ function App({
         if (result.hasUpdate) {
           if (!updateNudgedRef.current) {
             updateNudgedRef.current = true;
-            setEvents((e) => [
-              ...e,
-              {
-                kind: "info",
-                key: mkKey(),
-                text: `update available: ${result.localVersion} → ${result.latestVersion}`,
-              },
-            ]);
-            setEvents((e) => [
-              ...e,
-              {
-                kind: "info",
-                key: mkKey(),
-                text: "run:  npm i -g autopilot-ai@latest  then restart",
-              },
-            ]);
+            for (const text of updateNotice(result)) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
           }
         }
       });
