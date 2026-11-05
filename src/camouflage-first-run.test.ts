@@ -11,6 +11,7 @@ import { DL_WAITING_LINE, dlWaitingText, envKeyLine, envKeyProvider, FIRST_RUN_Q
 import { HIDDEN_WITHOUT_GATEWAY } from "./providers/connect-state.js";
 import { DL_DISCLOSURE, DL_FREE_MODEL, dlDenialLine, DlError, type DlDenial, type DlMe } from "./providers/directionally-local.js";
 import type { ProviderId } from "./providers/presets.js";
+import { DL_STATUS_OPEN, type DlFreeStatus } from "./providers/dl-status.js";
 
 type Sent = { type: string; payload: Record<string, unknown> };
 type Option = { value: string; label: string; description?: string };
@@ -37,6 +38,8 @@ async function fakeView(select: (string | null)[]) {
   };
   const view = new View(cam as never, sdk as never);
   view.connect(new Proxy({}, { get: () => () => undefined }) as AppActions);
+  // No network in tests: the free tier reads as open unless a test says otherwise.
+  view.freeStatus = async () => DL_STATUS_OPEN;
   const said = () => sent.filter((s) => s.type === "RuntimeError").map((s) => String(s.payload.message));
   const options = (i: number) => (prompts[i]?.payload.options as Option[]).map((o) => o.value);
   return { view, sent, prompts, said, options };
@@ -363,3 +366,108 @@ describe("first run: one question", () => {
     view.dispose();
   });
 });
+
+describe("first run and /provider: the free tier's status", () => {
+  const ENV = ["XDG_CONFIG_HOME", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "AUTOPILOT_PROVIDER", "AUTOPILOT_DL_FREE_TOKEN"];
+  const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+  let root: string;
+  before(async () => {
+    root = await mkdtemp(join(tmpdir(), "free-status-home-"));
+  });
+  const fresh = async () => {
+    for (const k of ENV) delete process.env[k];
+    process.env.XDG_CONFIG_HOME = await mkdtemp(join(root, "h-"));
+  };
+  after(async () => {
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  const waitlist: DlFreeStatus = { free: "waitlist", reason: "weekly_budget", message: "Free is full this week; sign in to join the queue.", opensAt: "2026-11-09T12:00:00.000Z" };
+  const paused: DlFreeStatus = { free: "paused", reason: "credit_exhausted", message: "Free is paused for now; use your own key meanwhile.", opensAt: null };
+
+  it("waitlist: Free says when it opens, the subtitle carries the message, and choosing it still signs in", async () => {
+    await fresh();
+    const { view, prompts } = await fakeView(["free"]);
+    view.freeStatus = async () => waitlist;
+    let signIns = 0;
+    view.providerCalls = {
+      dlSignIn: async () => (signIns++, { key: "at-1" }),
+      verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
+      dlMe: async () => me,
+    };
+    assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
+    const first = prompts[0]!.payload;
+    const free = (first.options as Option[])[0]!;
+    assert.strictEqual(free.value, "free");
+    assert.match(String(free.description), /^waitlist, opens \w{3} \d{1,2} \w{3}$/);
+    assert.strictEqual(first.subtitle, `${waitlist.message} · Esc to quit`);
+    assert.strictEqual(signIns, 1);
+    view.dispose();
+  });
+
+  it("paused: own key is first, choosing Free says the message and asks again", async () => {
+    await fresh();
+    const { view, prompts, said } = await fakeView(["free", null]);
+    view.freeStatus = async () => paused;
+    let signIns = 0;
+    view.providerCalls = {
+      dlSignIn: async () => (signIns++, { key: "at-1" }),
+      verify: async () => ({ ok: false, message: "unexpected" }) as never,
+      dlMe: async () => me,
+    };
+    assert.strictEqual(await view.firstRunSetup({ upgrading: false }), false);
+    const options = prompts[0]!.payload.options as Option[];
+    assert.deepStrictEqual(options.map((o) => o.value), ["own-key", "free"]);
+    assert.strictEqual(options[1]!.label, "Free — paused");
+    assert.strictEqual(prompts[0]!.payload.default, undefined, "no ✓ current: own key is selected by being first");
+    assert.strictEqual(prompts[0]!.payload.subtitle, `${paused.message} · Esc to quit`);
+    assert.ok(said().includes(paused.message));
+    assert.strictEqual(prompts[1]?.payload.prompt, FIRST_RUN_QUESTION, "back to the question");
+    assert.strictEqual(signIns, 0);
+    view.dispose();
+  });
+
+  it("a status that can't be read leaves the question as it was", async () => {
+    await fresh();
+    const { view, prompts } = await fakeView([null]);
+    view.freeStatus = async () => {
+      throw new Error("boom");
+    };
+    assert.strictEqual(await view.firstRunSetup({ upgrading: false }), false);
+    assert.deepStrictEqual(
+      (prompts[0]!.payload.options as Option[]).map((o) => `${o.value} · ${o.description}`),
+      firstRunChoices().map((c) => `${c.value} · ${c.description}`),
+    );
+    view.dispose();
+  });
+
+  it("/provider paused: the free row is last and choosing it says the message and shows the list again", async () => {
+    await fresh();
+    const { view, prompts, said } = await fakeView(["directionally-local", null]);
+    view.freeStatus = async () => paused;
+    await (view as unknown as { providerSetup(): Promise<void> }).providerSetup();
+    const options = prompts[0]!.payload.options as Option[];
+    assert.strictEqual(options.at(-1)?.value, "directionally-local");
+    assert.match(options.at(-1)!.label, /— paused$/);
+    assert.notStrictEqual(prompts[0]!.payload.default, "directionally-local");
+    assert.match(String(prompts[0]!.payload.subtitle), new RegExp(`^${paused.message.replace(/[.;]/g, "\\$&")} · `));
+    assert.ok(said().includes(paused.message));
+    assert.strictEqual(prompts[1]?.payload.prompt, prompts[0]!.payload.prompt, "the list again");
+    view.dispose();
+  });
+
+  it("/provider when signed in: no change", async () => {
+    await fresh();
+    process.env.AUTOPILOT_DL_FREE_TOKEN = "at-1";
+    const { view, prompts } = await fakeView([null]);
+    view.freeStatus = async () => paused;
+    await (view as unknown as { providerSetup(): Promise<void> }).providerSetup();
+    const free = (prompts[0]!.payload.options as Option[]).find((o) => o.value === "directionally-local");
+    assert.ok(free && !/paused/.test(free.label));
+    view.dispose();
+  });
+});
+
