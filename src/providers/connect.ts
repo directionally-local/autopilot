@@ -16,6 +16,7 @@ import { getPreset, type ProviderId } from "./presets.js";
 import { detectEnvProviders, resolveActiveProvider, resolveProviderKey } from "./resolve.js";
 import { checkProviderKey, patchProviderSettings, saveProviderKey, switchProvider } from "./keys.js";
 import { DL_DISCLOSURE, DL_FREE_MODEL, DL_FREE_WEEKLY_TOKENS, dlNotFreeLine, dlPickerHint, formatTokens, type DlDeviceCode } from "./directionally-local.js";
+import { DL_STATUS_OPEN, dlPausedLine, dlWaitlistText, type DlFreeStatus } from "./dl-status.js";
 
 /** Every provider we offer, in order, with a one-line hint. */
 export const PROVIDER_CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
@@ -316,12 +317,48 @@ export type FirstRunChoice = "free" | "own-key";
 /** The one question first run asks when no provider is usable. */
 export const FIRST_RUN_QUESTION = "How should it think?";
 
-/** Its two answers: the free tier, or the provider picker (without the free tier). */
-export function firstRunChoices(): Array<{ value: FirstRunChoice; label: string; description: string }> {
-  return [
-    { value: "free", label: "Free — sign in with GitHub", description: `${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card` },
-    { value: "own-key", label: "Use my own API key", description: "OpenRouter, Anthropic, OpenAI and more" },
-  ];
+/** The label of Free while the service has it paused (it can't be chosen). */
+export const DL_FREE_PAUSED_LABEL = "Free — paused";
+
+/**
+ * Its two answers: the free tier, or the provider picker (without the free
+ * tier). With the free tier on a waitlist, Free says when it opens; paused,
+ * Free goes last (choosing it only says why: see `freeChoosable`), so own
+ * key is the one selected.
+ */
+export function firstRunChoices(status: DlFreeStatus = DL_STATUS_OPEN, timeZone?: string): Array<{ value: FirstRunChoice; label: string; description: string }> {
+  const ownKey = { value: "own-key" as const, label: "Use my own API key", description: "OpenRouter, Anthropic, OpenAI and more" };
+  if (status.free === "paused") return [ownKey, { value: "free", label: DL_FREE_PAUSED_LABEL, description: "not taking new sign-ins right now" }];
+  const description = status.free === "waitlist" ? dlWaitlistText(status, timeZone) : `${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card`;
+  return [{ value: "free", label: "Free — sign in with GitHub", description }, ownKey];
+}
+
+/** The first-run question's subtitle: the free model's line, or the service's word on a waitlist or pause. */
+export function firstRunSubtitle(status: DlFreeStatus, escape: string): string {
+  return `${statusMessage(status) ?? DL_FREE_MODEL_LINE} · ${escape}`;
+}
+
+/** The service's message while Free is on a waitlist or paused; undefined when open. */
+export function statusMessage(status: DlFreeStatus): string | undefined {
+  if (status.free === "open") return undefined;
+  return status.free === "paused" ? dlPausedLine(status) : status.message || undefined;
+}
+
+/** Whether choosing Free goes on to the sign-in (a waitlist still does: the service queues them). */
+export function freeChoosable(status: DlFreeStatus): boolean {
+  return status.free !== "paused";
+}
+
+/**
+ * The `/provider` rows under the free tier's status: on a waitlist its hint
+ * says when it opens; paused, it moves last and says so in its name. The
+ * free row is left alone once signed in.
+ */
+export function rowsWithFreeStatus(rows: ProviderRow[], status: DlFreeStatus, timeZone?: string): ProviderRow[] {
+  const free = rows.find((r) => r.id === "directionally-local");
+  if (!free || free.credentials || status.free === "open") return rows;
+  if (status.free === "waitlist") return rows.map((r) => (r === free ? { ...r, hint: `free — ${dlWaitlistText(status, timeZone)}, sign in with GitHub` } : r));
+  return [...rows.filter((r) => r !== free), { ...free, name: `${free.name} — paused`, hint: "paused — not taking new sign-ins right now" }];
 }
 
 /** Said on the own-key picker, and only there: the free tier is never on that screen. */

@@ -29,6 +29,7 @@ import { onboardingCancelledMessage, ownKeyIntro, runFirstRun, type FirstRunOutc
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
+import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
 import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlCheckout, dlHeaderLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
@@ -48,7 +49,10 @@ import {
   envKeyProvider,
   FIRST_RUN_QUESTION,
   firstRunChoices,
-  DL_FREE_MODEL_LINE,
+  firstRunSubtitle,
+  freeChoosable,
+  rowsWithFreeStatus,
+  statusMessage,
   leavingFreeTierLine,
   OWN_KEY_BILLING_LINE,
   OWN_KEY_EXCLUDE,
@@ -248,6 +252,8 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   // On the free tier, read the account while the renderer mounts: the header shows what's left.
   const onFreeTier = (cfg: Cfg | null) => !custom && !!cfg && resolveActiveProvider(cfg).id === DL_PROVIDER_ID;
   const meSoon: Promise<DlMe | null> = onFreeTier(opts.cfg) ? fetchDlMe().catch(() => null) : Promise.resolve(null);
+  // First run asks "How should it think?": read the free tier's status while the renderer mounts.
+  if (!custom && !opts.cfg && !envKeyProvider()) void dlFreeStatus();
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
   try {
@@ -460,6 +466,8 @@ export class View implements AppBridge {
   terminalIo: WaitIo | undefined = undefined;
   /** The provider calls the setup screens make; replaced in tests. */
   providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
+  /** The free tier's public status (open on any failure, within 1.5 s). */
+  freeStatus: () => Promise<DlFreeStatus> = () => dlFreeStatus();
   /** What /feedback calls (the free tier token, and fetch); replaced in tests. */
   feedbackCalls: { token: () => Promise<string | undefined>; fetchImpl?: typeof fetch } = { token: () => dlAccessToken() };
   /** What the free tier's limit, queue and /upgrade screens call; replaced in tests. */
@@ -1424,6 +1432,8 @@ export class View implements AppBridge {
    * runtimes — then pick one of its models. Keys never reach the transcript.
    */
   private async providerSetup(initial?: ProviderId): Promise<void> {
+    // Read the free tier's status while the config loads; the picker waits for it at most 1.5 s.
+    if (!initial) void this.freeStatus();
     const cfg = await loadConfig().catch(() => null);
     const saved = await this.connectAndPickModel({ cfg, initial, firstRun: false });
     if (saved) this.actions?.providerSwitched(saved.id);
@@ -1463,16 +1473,24 @@ export class View implements AppBridge {
     }
     // The renderer marks the default "✓ current", so there is one only when a provider is configured.
     const configured = o.firstRun ? undefined : o.cfg?.provider;
-    const current: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : "own-key") : undefined;
+    const status = await this.freeTierStatus(o.cfg);
+    const chosen: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : "own-key") : undefined;
+    // Paused, Free can't be chosen: it is never the default (own key comes first instead).
+    const current = chosen === "free" && !freeChoosable(status) ? undefined : chosen;
     let ownKeyIntroShown = false;
     for (;;) {
       const choice = await this.select(
         FIRST_RUN_QUESTION,
-        firstRunChoices(),
+        firstRunChoices(status),
         current,
-        `${DL_FREE_MODEL_LINE} · ${o.firstRun ? "Esc to quit" : "Esc to cancel"}`,
+        firstRunSubtitle(status, o.firstRun ? "Esc to quit" : "Esc to cancel"),
       );
       if (choice === null) return null;
+      if (choice === "free" && !freeChoosable(status)) {
+        // The select can't disable a row: say why and ask again.
+        say(dlPausedLine(status));
+        continue;
+      }
       if (choice === "own-key") {
         if (o.firstRun && !ownKeyIntroShown) this.showLines(ownKeyIntro(configPath()));
         ownKeyIntroShown = true;
@@ -1491,6 +1509,15 @@ export class View implements AppBridge {
       const saved = await this.commitChoice(free.connection, DL_FREE_MODEL, { firstRun: o.firstRun, standalone: !!o.standalone }, say);
       if (saved) return saved;
     }
+  }
+
+  /**
+   * The free tier's status for a picker that offers it: open once signed in
+   * (their errors already say what's going on), else the service's answer.
+   */
+  private async freeTierStatus(cfg: Partial<Cfg> | null): Promise<DlFreeStatus> {
+    if (resolveProviderKey("directionally-local", cfg as Cfg | null)) return DL_STATUS_OPEN;
+    return this.freeStatus().catch(() => DL_STATUS_OPEN);
   }
 
   /** Save the provider and model, and confirm it. Null when the save failed (said). */
@@ -1814,8 +1841,13 @@ export class View implements AppBridge {
     let id: ProviderId | undefined = o.initial;
     for (;;) {
       if (!id) {
-        const rows = providerRows(cfg, { markActive: !firstRun, upgrading: o.upgrading }).filter((row) => !o.exclude?.has(row.id));
-        const current = rows.find((r) => r.active)?.id;
+        const offered = providerRows(cfg, { markActive: !firstRun, upgrading: o.upgrading }).filter((row) => !o.exclude?.has(row.id));
+        const status = offered.some((r) => r.id === "directionally-local") ? await this.freeTierStatus(cfg) : DL_STATUS_OPEN;
+        const rows = rowsWithFreeStatus(offered, status);
+        const notice = statusMessage(status);
+        // Paused (and not signed in), the free row can't be chosen: never the default, and choosing it says why.
+        const freePaused = !freeChoosable(status) && !offered.find((r) => r.id === "directionally-local")?.credentials;
+        const current = rows.find((r) => r.active && !(freePaused && r.id === "directionally-local"))?.id;
         const r = await this.select(
           o.title ?? (firstRun ? "Choose where your models run" : "Switch provider"),
           rows.map((row) => ({
@@ -1827,11 +1859,17 @@ export class View implements AppBridge {
           })),
           current,
           o.subtitle ??
-            (firstRun
-              ? `${OWN_KEY_BILLING_LINE} · type to search · Enter to connect · Esc to quit`
-              : "Conversation history is kept · type to search · Enter to connect"),
+            `${notice ? `${notice} · ` : ""}${
+              firstRun
+                ? `${OWN_KEY_BILLING_LINE} · type to search · Enter to connect · Esc to quit`
+                : "Conversation history is kept · type to search · Enter to connect"
+            }`,
         );
         if (r === null) return null;
+        if (freePaused && r === "directionally-local") {
+          say(dlPausedLine(status));
+          continue;
+        }
         id = r as ProviderId;
       }
       // Leaving the free tier for a provider that bills your own key: say so first.
