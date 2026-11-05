@@ -31,6 +31,7 @@ import { checkHotcellReadiness, type HotcellReadiness } from "../tools/hotcell-r
 import type { AutopilotConfig } from "../config.js";
 import type { ToolSpec } from "../tools/registry.js";
 import type { ChatMessage } from "./messages.js";
+import { defaultCoauthor } from "../util/dl-identity.js";
 
 /** Text of the latest user message — what a turn's policy is decided on. */
 export function lastUserText(messages: ChatMessage[]): string {
@@ -131,7 +132,7 @@ export function configTurnOpts(cfg: CoreConfig): Pick<
     ...llmAuthFromConfig(cfg),
     coauthor:
       cfg.coauthor !== false
-        ? { name: cfg.coauthorName || "autopilot", email: cfg.coauthorEmail || "kimiflare@proton.me" }
+        ? { name: cfg.coauthorName || defaultCoauthor().name, email: cfg.coauthorEmail || defaultCoauthor().email }
         : undefined,
     ...(cfg.githubOAuthToken ? { githubToken: cfg.githubOAuthToken } : {}),
     keepLastImageTurns: cfg.imageHistoryTurns ?? 2,

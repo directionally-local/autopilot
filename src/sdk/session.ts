@@ -34,6 +34,7 @@ import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type
 import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 import { dataPath, migrateLegacyDirs } from "../util/app-dirs.js";
+import { defaultCoauthor } from "../util/dl-identity.js";
 
 export async function createAgentSession(
   opts: CreateSessionOptions,
@@ -550,8 +551,8 @@ class InternalSession implements AutopilotSession {
     const coauthor =
       this.config.coauthor !== false
         ? {
-            name: this.config.coauthorName || "autopilot",
-            email: this.config.coauthorEmail || "kimiflare@proton.me",
+            name: this.config.coauthorName || defaultCoauthor().name,
+            email: this.config.coauthorEmail || defaultCoauthor().email,
           }
         : undefined;
 

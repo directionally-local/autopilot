@@ -69,7 +69,7 @@ describe("runAgentTurn model-call retries", () => {
     const retries: ModelRetryInfo[] = [];
     const infos: string[] = [];
     const streamed: string[] = [];
-    const run = (callbacks: Partial<AgentCallbacks> = {}, extra: { signal?: AbortSignal } = {}) =>
+    const run = (callbacks: Partial<AgentCallbacks> = {}, extra: { signal?: AbortSignal; retryRandom?: () => number } = {}) =>
       runAgentTurn({
         ...auth,
         model: (auth.model as string | undefined) ?? "test/model",
@@ -81,6 +81,8 @@ describe("runAgentTurn model-call retries", () => {
         retrySleep: async (ms) => {
           sleeps.push(ms);
         },
+        // 0.5 is the middle of the ±50% jitter: the waits read as the plain backoff.
+        retryRandom: extra.retryRandom ?? (() => 0.5),
         callbacks: {
           askPermission: async () => "allow",
           onModelRetry: (r) => retries.push(r),
@@ -118,7 +120,8 @@ describe("runAgentTurn model-call retries", () => {
       { status: 503, body: JSON.stringify({ error: { message: "temporarily unavailable" } }), headers: { "retry-after": "5" } },
       { sse: [text("ok"), stop] },
     ]);
-    await t.run();
+    // Jitter at its low end: exactly what the host asked, never sooner.
+    await t.run({}, { retryRandom: () => 0 });
     assert.strictEqual(t.calls(), 2);
     assert.deepStrictEqual(t.sleeps, [5_000]);
     assert.strictEqual(t.retries[0]!.discardedText, "");
@@ -129,7 +132,7 @@ describe("runAgentTurn model-call retries", () => {
     await assert.rejects(t.run(), (e: unknown) => {
       assert.ok(e instanceof ModelHostError);
       assert.strictEqual(e.attempts, 3);
-      assert.strictEqual(e.message, 'autopilot: The model\'s host failed 3 times. Type "continue" to try again.');
+      assert.strictEqual(e.message, 'autopilot: The model\'s host failed 3 times. Type "continue" to try again. Still stuck? /bug');
       assert.strictEqual(e.detail, MORPH);
       return true;
     });
@@ -223,20 +226,21 @@ describe("runAgentTurn model-call retries", () => {
 
     it("retries upstream_busy in the turn with the server's words, 5 s apart without Retry-After", async () => {
       const t = setup([busy, { sse: [text("ok"), stop] }], [], dlAuth());
-      await t.run();
+      await t.run({}, { retryRandom: () => 0 });
       assert.strictEqual(t.calls(), 2);
       assert.deepStrictEqual(t.sleeps, [5_000]);
       assert.strictEqual(t.retries[0]!.line, "↻ The free tier is busy right now; retrying (1/2)…");
     });
 
-    it("keeps the after-3-failures message, and caps Retry-After at 20 s", async () => {
+    it("ends the after-3-failures message with the own-key way, and caps Retry-After at 20 s", async () => {
       const t = setup([{ status: 503, body: JSON.stringify({ error: { code: "upstream_unavailable", retryable: true } }), headers: { "retry-after": "15" } }], [], dlAuth());
       await assert.rejects(t.run(), (e: unknown) => {
         assert.ok(e instanceof ModelHostError);
-        assert.strictEqual(e.message, 'autopilot: The model\'s host failed 3 times. Type "continue" to try again.');
+        assert.strictEqual(e.message, 'autopilot: The model\'s host failed 3 times. Type "continue" to try again or use your own key: /provider');
         return true;
       });
-      assert.deepStrictEqual(t.sleeps, [15_000, 15_000]);
+      // Retry-After 15 s plus up to 50% jitter (0.5 → +25%), never past the 20 s cap.
+      assert.deepStrictEqual(t.sleeps, [18_750, 18_750]);
     });
 
     it("does not retry upstream_credit_exhausted", async () => {

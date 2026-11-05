@@ -4,6 +4,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  defaultCoauthor,
+  DL_REINSTALL_LINE,
   DL_NPM_UPDATE,
   DL_SCRIPT_UPDATE,
   DL_SERVER_UPDATE,
@@ -26,6 +28,14 @@ function write(path: string, json: unknown): void {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, JSON.stringify(json));
 }
+
+describe("commit co-author", () => {
+  it("is dl under dl, Autopilot otherwise, with a directionallylocal.com address", () => {
+    assert.deepStrictEqual(defaultCoauthor({ AUTOPILOT_LAUNCHED_BY: "dl" }), { name: "dl", email: "dl@directionallylocal.com" });
+    assert.deepStrictEqual(defaultCoauthor({}), { name: "Autopilot", email: "autopilot@directionallylocal.com" });
+    assert.strictEqual(DL_REINSTALL_LINE, "Reinstall dl: curl -fsSL https://dl.new | sh");
+  });
+});
 
 describe("header title", () => {
   it("is autopilot <version> when started standalone", () => {

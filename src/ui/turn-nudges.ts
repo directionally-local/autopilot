@@ -8,7 +8,7 @@
 import type { Mode } from "../mode.js";
 
 export const INIT_TIP_EVERY_TURNS = 15;
-export const INIT_TIP = "Tip: Rerunning /init occasionally helps autopilot (formerly kimiflare) stay accurate as your project evolves.";
+export const INIT_TIP = "Tip: Rerunning /init occasionally helps Autopilot stay accurate as your project evolves.";
 
 export interface TurnNudgeInput {
   /** This turn's number in the session (1-based). */

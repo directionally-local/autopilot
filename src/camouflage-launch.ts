@@ -11,6 +11,8 @@ import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { launchedByDl } from "./util/env.js";
+import { DL_REINSTALL_LINE } from "./util/dl-identity.js";
 
 /** Platforms camouflage-tui publishes a prebuilt renderer for (its scripts/install.js). */
 export const PREBUILT_PLATFORMS: Readonly<Record<string, string>> = {
@@ -169,7 +171,8 @@ export class CamouflageUnavailable extends Error {
 }
 
 /** The multi-line error shown when the interactive UI can't start. */
-export function formatUnavailable(d: RendererDiagnosis, reason: string): string {
+export function formatUnavailable(d: RendererDiagnosis, reason: string, env: NodeJS.ProcessEnv = process.env): string {
+  const dl = launchedByDl(env);
   const platform = `${d.platform}-${d.arch}`;
   const lines = [
     "autopilot: the interactive UI can't start: its terminal renderer (camouflage-tui) is unavailable.",
@@ -188,18 +191,17 @@ export function formatUnavailable(d: RendererDiagnosis, reason: string): string 
   lines.push("", "To fix it:");
   if (d.envBin) lines.push(`  - point CAMOUFLAGE_BIN at an existing camouflage-tui binary, or unset it to use the bundled one`);
   if (d.packageDir) {
-    lines.push(
-      `  - download the renderer again:  node "${join(d.packageDir, "scripts", "install.js")}"`,
-      `    (or run \`npm rebuild camouflage-tui\` where autopilot-ai is installed; \`npm rebuild -g camouflage-tui\` for a global install)`,
-    );
+    lines.push(`  - download the renderer again:  node "${join(d.packageDir, "scripts", "install.js")}"`);
+    // dl installs its Autopilot privately: npm commands would touch a copy dl doesn't run.
+    if (!dl) lines.push(`    (or run \`npm rebuild camouflage-tui\` where autopilot-ai is installed; \`npm rebuild -g camouflage-tui\` for a global install)`);
   }
-  lines.push("  - reinstall autopilot:  npm install -g autopilot-ai");
+  lines.push(dl ? `  - ${DL_REINSTALL_LINE}` : "  - reinstall autopilot:  npm install -g autopilot-ai");
   if (!d.prebuilt || !d.packageDir) {
     lines.push("  - build the renderer yourself and set CAMOUFLAGE_BIN to it:", "      cargo install --git https://github.com/sinameraji/camouflage camouflage-tui");
   } else if (!d.envBin) {
     lines.push("  - or set CAMOUFLAGE_BIN to a camouflage-tui binary you built (cargo install --git https://github.com/sinameraji/camouflage camouflage-tui)");
   }
-  lines.push("", "Print mode works without the renderer:  autopilot -p \"...\"");
+  if (!dl) lines.push("", "Print mode works without the renderer:  autopilot -p \"...\"");
   return lines.join("\n") + "\n";
 }
 
@@ -274,12 +276,14 @@ export async function runWithCrashRestarts(
 }
 
 /** What to tell the user when the renderer keeps crashing. */
-export function crashGiveUpMessage(outcome: { crashes: number; sessionId: string | null }, windowMs = 60_000): string {
+export function crashGiveUpMessage(outcome: { crashes: number; sessionId: string | null }, windowMs = 60_000, env: NodeJS.ProcessEnv = process.env): string {
   const lines = [
     `autopilot: the Camouflage renderer crashed ${outcome.crashes} times within ${Math.round(windowMs / 1000)} seconds, so autopilot stopped restarting it.`,
     `Crash reports: ${join(homedir(), ".camouflage")} (crash-*.txt). Please attach one to an issue: https://github.com/directionally-local/autopilot/issues`,
   ];
-  if (outcome.sessionId) {
+  if (outcome.sessionId && launchedByDl(env)) {
+    lines.push("Your conversation is saved. To pick it up again, run `dl -c` in the same folder.");
+  } else if (outcome.sessionId) {
     lines.push(
       "Your conversation is saved. To pick it up again:",
       `  autopilot            then type /resume and choose it (session ${outcome.sessionId})`,

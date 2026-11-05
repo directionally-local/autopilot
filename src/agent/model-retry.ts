@@ -8,7 +8,7 @@
 
 import { ApiError, humanizeApiError } from "../util/errors.js";
 import { NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
-import { dlRetryable } from "../providers/directionally-local.js";
+import { DL_SWITCH_HINT, dlRetryable } from "../providers/directionally-local.js";
 
 /** Retries after the first attempt. AUTOPILOT_NETWORK_RETRIES overrides it (0–20). */
 export const DEFAULT_MODEL_RETRIES = 2;
@@ -22,12 +22,20 @@ export function modelRetryCount(override?: number): number {
   return Number.isFinite(raw) ? Math.max(0, Math.min(20, Math.floor(raw))) : DEFAULT_MODEL_RETRIES;
 }
 
-/** The wait before retry number `retryIndex` (0-based): the host's Retry-After when it sent one, else the backoff. */
-export function modelRetryDelay(retryIndex: number, retryAfterMs?: number): number {
+/**
+ * The wait before retry number `retryIndex` (0-based): the backoff ±50%, or
+ * the host's Retry-After plus up to 50% when it sent one (never sooner than it
+ * asked), capped at MAX_RETRY_AFTER_MS. The jitter keeps sessions that failed
+ * together (one host blip, many agents on one machine) from retrying in step.
+ * `random` returns [0, 1); tests inject it.
+ */
+export function modelRetryDelay(retryIndex: number, retryAfterMs?: number, random: () => number = Math.random): number {
+  const r = Math.min(Math.max(random(), 0), 1);
   if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-    return Math.min(retryAfterMs, MAX_RETRY_AFTER_MS);
+    return Math.round(Math.min(retryAfterMs * (1 + 0.5 * r), MAX_RETRY_AFTER_MS));
   }
-  return MODEL_RETRY_DELAYS_MS[Math.min(retryIndex, MODEL_RETRY_DELAYS_MS.length - 1)]!;
+  const base = MODEL_RETRY_DELAYS_MS[Math.min(retryIndex, MODEL_RETRY_DELAYS_MS.length - 1)]!;
+  return Math.round(base * (0.5 + r));
 }
 
 /** Retry-After as milliseconds: a number of seconds or an HTTP date. */
@@ -115,11 +123,11 @@ export function modelRetryLine(retry: number, maxRetries: number, err?: unknown)
   return `↻ The model's host had a hiccup; retrying (${retry}/${maxRetries})…`;
 }
 
-/** What the user reads after the last attempt failed. */
-export function modelHostFailedText(attempts: number): string {
-  return attempts > 1
-    ? `The model's host failed ${attempts} times. Type "continue" to try again.`
-    : `The model's host failed. Type "continue" to try again.`;
+/** What the user reads after the last attempt failed, with a next step: on the free tier their own key, else /bug. */
+export function modelHostFailedText(attempts: number, o: { freeTier?: boolean } = {}): string {
+  const failed = attempts > 1 ? `The model's host failed ${attempts} times.` : "The model's host failed.";
+  const next = o.freeTier ? ` or use your own key: ${DL_SWITCH_HINT}` : ". Still stuck? /bug";
+  return `${failed} Type "continue" to try again${next}`;
 }
 
 /**
@@ -133,9 +141,10 @@ export class ModelHostError extends ApiError {
   constructor(
     public readonly attempts: number,
     public override readonly cause: unknown,
+    o: { freeTier?: boolean } = {},
   ) {
     super(
-      `autopilot: ${modelHostFailedText(attempts)}`,
+      `autopilot: ${modelHostFailedText(attempts, o)}`,
       cause instanceof ApiError ? cause.code : undefined,
       cause instanceof ApiError ? cause.httpStatus : undefined,
     );

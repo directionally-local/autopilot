@@ -83,6 +83,14 @@ export function dlVersion(o: DlLookup = {}): string | null {
   return (o.findPackage ?? dlPackage)()?.version ?? null;
 }
 
+/** How a dl user reinstalls: dl owns the Autopilot it runs, so never `npm install -g autopilot-ai`. */
+export const DL_REINSTALL_LINE = "Reinstall dl: curl -fsSL https://dl.new | sh";
+
+/** Who agent commits credit by default: dl under dl, else Autopilot. */
+export function defaultCoauthor(env: EnvLike = process.env): { name: string; email: string } {
+  return launchedByDl(env) ? { name: "dl", email: "dl@directionallylocal.com" } : { name: "Autopilot", email: "autopilot@directionallylocal.com" };
+}
+
 /** The product name the person knows: "dl" under dl, else "autopilot". */
 export function productName(env: EnvLike = process.env): string {
   return launchedByDl(env) ? "dl" : "autopilot";

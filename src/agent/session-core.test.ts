@@ -83,7 +83,7 @@ describe("assembleTurn", () => {
       host: { model: "deepseek-flash", messages: [], executor: {} as never, cwd: "/tmp", signal: new AbortController().signal, callbacks: { askPermission: async () => "allow" }, maxTotalToolIterations: 5 },
     });
     assert.strictEqual(opts.providerId, "deepseek");
-    assert.deepStrictEqual(opts.coauthor, { name: "Bot", email: "kimiflare@proton.me" });
+    assert.deepStrictEqual(opts.coauthor, { name: "Bot", email: "autopilot@directionallylocal.com" });
     assert.strictEqual(opts.preferPullRequests, true);
     assert.strictEqual(opts.maxTotalToolIterations, 5, "host override wins");
     assert.strictEqual(opts.model, "deepseek-flash");

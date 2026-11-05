@@ -15,6 +15,25 @@ const DUMMY_TOOLS: ToolSpec[] = [
 ];
 
 describe("buildStaticPrefix", () => {
+  it("introduces itself as Autopilot and credits Autopilot in commits; under dl, as dl", () => {
+    const prev = process.env.AUTOPILOT_LAUNCHED_BY;
+    try {
+      delete process.env.AUTOPILOT_LAUNCHED_BY;
+      const p = buildStaticPrefix({ model: "m" });
+      assert.ok(p.startsWith("You are Autopilot, an interactive coding assistant"));
+      assert.ok(p.includes("`Co-authored-by: Autopilot <autopilot@directionallylocal.com>`"));
+      assert.doesNotMatch(p, /kimiflare/i);
+      process.env.AUTOPILOT_LAUNCHED_BY = "dl";
+      const dl = buildStaticPrefix({ model: "m" });
+      assert.ok(dl.startsWith("You are dl, an interactive coding assistant"));
+      assert.ok(dl.includes("`Co-authored-by: dl <dl@directionallylocal.com>` in the commit message so dl is credited"));
+      assert.doesNotMatch(dl, /kimiflare|autopilot/i);
+    } finally {
+      if (prev === undefined) delete process.env.AUTOPILOT_LAUNCHED_BY;
+      else process.env.AUTOPILOT_LAUNCHED_BY = prev;
+    }
+  });
+
   it("is byte-for-byte identical across different dates", () => {
     const a = buildStaticPrefix({ model: "@cf/moonshotai/kimi-k2.6" });
     const b = buildStaticPrefix({ model: "@cf/moonshotai/kimi-k2.6" });

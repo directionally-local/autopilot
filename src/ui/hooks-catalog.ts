@@ -56,7 +56,7 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
     `printf '\\a'`,
     ``,
     `# macOS desktop notification:`,
-    `osascript -e 'display notification "Turn complete" with title "autopilot (formerly kimiflare)"'`,
+    `osascript -e 'display notification "Turn complete" with title "Autopilot"'`,
   ],
   PreCompact: [
     `# Snapshot the session file before compaction shrinks it:`,

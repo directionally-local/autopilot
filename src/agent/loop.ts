@@ -45,6 +45,7 @@ import type { TurnEndReason } from "../trace/types.js";
 import { readEnv } from "../util/env.js";
 import type { GithubAccessAsker } from "../github-access.js";
 import { isTransientModelError, ModelHostError, modelRetryCount, modelRetryDelay, modelRetryLine, retryAfterOf, shouldRetryModelCall, type ModelRetryInfo } from "./model-retry.js";
+import { DL_PROVIDER_ID } from "../providers/directionally-local.js";
 
 export interface AgentCallbacks {
   onAssistantStart?: () => void;
@@ -204,6 +205,8 @@ export interface AgentTurnOpts extends LlmAuth {
   modelRetries?: number;
   /** Waits before a model-call retry; tests pass a fast one. */
   retrySleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** [0, 1) source for the retry wait's jitter (default Math.random); tests pin it. */
+  retryRandom?: () => number;
   /** Abort the API stream if no data arrives for this many milliseconds. Default 60000.
    *  A cold upstream provider after tool use can exceed the default — bump this for
    *  long-running embeddings / image-heavy turns. */
@@ -1116,7 +1119,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         if (opts.signal.aborted) throw err;
         if (!shouldRetryModelCall(err, retries, maxModelRetries)) {
           if (retries > 0 && isTransientModelError(err)) {
-            throw new ModelHostError(retries + 1, err);
+            throw new ModelHostError(retries + 1, err, { freeTier: opts.providerId === DL_PROVIDER_ID });
           }
           throw err;
         }
@@ -1130,7 +1133,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         responseMeta = undefined;
         responseUsage = null;
         lastUsage = usageBeforeCall;
-        const delayMs = modelRetryDelay(retries, retryAfterOf(err));
+        const delayMs = modelRetryDelay(retries, retryAfterOf(err), opts.retryRandom);
         const line = modelRetryLine(retries + 1, maxModelRetries, err);
         logger.warn("turn:model_retry", {
           sessionId: opts.sessionId,

@@ -29,6 +29,7 @@ import { RETENTION } from "../storage-limits.js";
 import type { HybridResult } from "../memory/schema.js";
 import { ignoreProjectDir, projectDir, projectPath } from "../util/app-dirs.js";
 import { productName } from "../util/dl-identity.js";
+import { homeFolderNoticeOnce } from "../home-folder-notice.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -54,6 +55,10 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   // An `.autopilot/` folder from an earlier version may lack its own .gitignore.
   for (const root of new Set([resolveRepoRoot(process.cwd()), process.cwd()])) ignoreProjectDir(projectDir(root));
   const auth = llmAuthFromConfig(cfg);
+
+  // Started in the home folder: say once that a project folder works better.
+  const homeNotice = homeFolderNoticeOnce();
+  if (homeNotice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: homeNotice }]);
 
   // Sessions and traces are never deleted automatically; once they get big,
   // say so and point at `autopilot history`.

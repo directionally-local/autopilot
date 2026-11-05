@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View } from "./camouflage-view.js";
+import { helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View } from "./camouflage-view.js";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/view-types.js";
@@ -149,7 +149,13 @@ describe("helpOptions", () => {
     assert.equal(dl.find((o) => o.value === "/exit")?.description, "exit dl; typing exit on its own also works");
     assert.equal(dl.find((o) => o.value === "/update")?.description, "check for a newer dl");
     assert.ok(dl.every((o) => !/autopilot/i.test(o.description ?? "")), "no option mentions autopilot");
-    assert.match(helpOptions([], {}).find((o) => o.value === "/exit")?.description ?? "", /^exit autopilot/);
+    assert.match(helpOptions([], {}).find((o) => o.value === "/exit")?.description ?? "", /^exit Autopilot;/);
+    assert.ok(helpOptions([], {}).every((o) => !/kimiflare/i.test(o.description ?? "")), "no option names the old brand");
+  });
+
+  it("lists /bug, and ends with where to report a bug", () => {
+    assert.ok(helpOptions([], {}).some((o) => o.value === "/bug"));
+    assert.equal(helpFooter(), "Report a bug: https://github.com/directionally-local/autopilot/issues/new · or email contact@directionallylocal.com");
   });
 });
 

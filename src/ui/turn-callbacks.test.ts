@@ -161,7 +161,7 @@ describe("classifyTurnFailure", () => {
     const err = new ModelHostError(3, new ApiError("autopilot: Upstream error from Morph: error decoding response body", undefined, 502));
     assert.deepStrictEqual(classifyTurnFailure(err), {
       kind: "error",
-      text: 'The model\'s host failed 3 times. Type "continue" to try again.',
+      text: 'The model\'s host failed 3 times. Type "continue" to try again. Still stuck? /bug',
       detail: "Upstream error from Morph: error decoding response body",
     });
   });
