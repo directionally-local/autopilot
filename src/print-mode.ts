@@ -27,7 +27,7 @@ import { isImagePath } from "./util/image.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt, PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submit.js";
 import { buildAttachmentMessage } from "./util/attachments.js";
-import type { UpdateCheckResult } from "./util/update-check.js";
+import { updateNotice, type UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
 import { evaluatePermissionRules } from "./permissions-evaluator.js";
 import { unattendedDestructiveDecision } from "./permissions/guardrails.js";
@@ -167,10 +167,15 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   const startMs = Date.now();
 
   if (opts.updateResult.hasUpdate) {
-    process.stderr.write(
-      `\x1b[33mautopilot update available: ${opts.updateResult.localVersion} → ${opts.updateResult.latestVersion}\x1b[0m\n` +
-        `\x1b[33m  npm i -g autopilot-ai@latest  then restart\x1b[0m\n\n`,
-    );
+    if (opts.updateResult.product === "dl") {
+      for (const line of updateNotice(opts.updateResult)) process.stderr.write(`\x1b[33m${line}\x1b[0m\n`);
+      process.stderr.write("\n");
+    } else {
+      process.stderr.write(
+        `\x1b[33mautopilot update available: ${opts.updateResult.localVersion} → ${opts.updateResult.latestVersion}\x1b[0m\n` +
+          `\x1b[33m  npm i -g autopilot-ai@latest  then restart\x1b[0m\n\n`,
+      );
+    }
   }
 
   const cwd = opts.dir ? resolve(opts.dir) : process.cwd();

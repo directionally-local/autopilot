@@ -18,7 +18,7 @@
 export const ENV_PREFIX = "AUTOPILOT_";
 export const LEGACY_ENV_PREFIX = "KIMIFLARE_";
 
-type EnvLike = Readonly<Record<string, string | undefined>>;
+export type EnvLike = Readonly<Record<string, string | undefined>>;
 
 /** `[AUTOPILOT_<suffix>, KIMIFLARE_<suffix>]`, preferred name first. */
 export function envNames(suffix: string): [current: string, legacy: string] {

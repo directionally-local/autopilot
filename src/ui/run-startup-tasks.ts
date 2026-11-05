@@ -28,6 +28,7 @@ import { indexSkills, initSkillsSchema } from "../skills/index.js";
 import { RETENTION } from "../storage-limits.js";
 import type { HybridResult } from "../memory/schema.js";
 import { ignoreProjectDir, projectDir, projectPath } from "../util/app-dirs.js";
+import { productName } from "../util/dl-identity.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -139,7 +140,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
           kind: "memory",
           key: mkKey(),
           text:
-            `memory is on — autopilot remembers project facts across sessions in ${dbPath} (repo-scoped, secrets redacted). ` +
+            `memory is on — ${productName()} remembers project facts across sessions in ${dbPath} (repo-scoped, secrets redacted). ` +
             `/memory off to disable · /memory doctor for health · /memory export to back up.`,
         },
       ]);

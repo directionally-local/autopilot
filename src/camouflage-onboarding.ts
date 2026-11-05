@@ -28,8 +28,8 @@ export function firstRunIntro(o: {
   envKey?: { id: ProviderId; envVar: string };
   env?: NodeJS.ProcessEnv;
 }): string[] {
-  // Started by `dl`, the product the person installed is Directionally Local.
-  const welcome = o.upgrading ? [...UPGRADE_NOTICE, ""] : [launchedByDl(o.env) ? "Welcome to Directionally Local." : "Welcome to Autopilot."];
+  // Started by `dl`, the product the person installed is dl.
+  const welcome = o.upgrading ? [...UPGRADE_NOTICE, ""] : [launchedByDl(o.env) ? "Welcome to dl." : "Welcome to Autopilot."];
   // The free tier is on the next screen, so nothing here says calls are billed to your own account.
   // What happens to API keys is said only once the person picks their own key (ownKeyIntro).
   if (o.envKey) return [...welcome, envKeyLine(o.envKey)];
@@ -45,7 +45,14 @@ export function ownKeyIntro(configPath: string): string[] {
 }
 
 /** Printed after the renderer closes when the user backs out of setup. */
-export function onboardingCancelledMessage(): string {
+export function onboardingCancelledMessage(env: NodeJS.ProcessEnv = process.env): string {
+  // dl users don't have `autopilot` on their PATH.
+  if (launchedByDl(env)) {
+    return [
+      "Setup cancelled — nothing was saved.",
+      "Run `dl` again to connect a provider, or set a provider's API key (e.g. OPENROUTER_API_KEY) to skip setup.",
+    ].join("\n");
+  }
   return [
     "Setup cancelled — nothing was saved.",
     "Run `autopilot` again to connect a provider, or set a provider's API key (e.g. OPENROUTER_API_KEY) to skip setup.",

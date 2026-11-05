@@ -16,6 +16,7 @@ import type { AppBridge } from "../ui/app-bridge.js";
 import { RemoteApiError, RemoteClient, type RemoteConversation } from "./client.js";
 import { normalizeServerUrl } from "./config.js";
 import { describeRemoteFailure, REMOTE_COMMANDS, RemoteAttachSession, writeStateFile, type AttachOutcome } from "./attach-session.js";
+import { productName } from "../util/dl-identity.js";
 
 export interface AttachRemoteFlags {
   conversation?: string;
@@ -92,7 +93,7 @@ export function remoteHeader(conversation: RemoteConversation, title: string | u
   const place = chat ? workspaceTitle?.trim() || conversation.workspaceId : conversation.repository;
   const where = [conversation.model, chat ? place : conversation.repository, chat ? undefined : conversation.branch].filter(Boolean).join(" · ");
   return {
-    title: title?.trim() || `autopilot · ${place || "remote"}`,
+    title: title?.trim() || `${productName()} · ${place || "remote"}`,
     detail: [
       `${where ? `${where} · ` : ""}remote session`,
       "/ for commands · Esc cancels the turn · Ctrl-D detaches (it keeps running on the server)",

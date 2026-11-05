@@ -89,7 +89,7 @@ import { HOOK_EVENTS } from "../hooks/types.js";
 import { formatPendingReview, pendingProjectConfig, trustPendingProjectConfig, type PendingProjectFile } from "../util/project-config-review.js";
 import type { AbortScope } from "../util/abort-scope.js";
 import type { CustomCommand } from "../commands/types.js";
-import { checkForUpdate } from "../util/update-check.js";
+import { checkForUpdate, updateNotice } from "../util/update-check.js";
 import { getAppVersion } from "../util/version.js";
 import {
   detectGitHubRepo,
@@ -104,7 +104,7 @@ import { writeToClipboard } from "../util/clipboard.js";
 import type { Task } from "../tools/registry.js";
 import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnRecord } from "./use-session-manager.js";
-import { readEnv } from "../util/env.js";
+import { launchedByDl, readEnv } from "../util/env.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -1498,23 +1498,18 @@ const handleUpdate: Handler = (ctx, _rest, arg) => {
   if (arg === "camouflage") {
     setEvents((e) => [
       ...e,
-      { kind: "info", key: mkKey(), text: "The Camouflage renderer ships with autopilot; updating autopilot updates it." },
+      {
+        kind: "info",
+        key: mkKey(),
+        text: launchedByDl()
+          ? "The Camouflage renderer ships with dl; updating dl updates it."
+          : "The Camouflage renderer ships with autopilot; updating autopilot updates it.",
+      },
     ]);
     return true;
   }
   void checkForUpdate(true).then((result) => {
-    if (result.hasUpdate) {
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: `update available: ${result.localVersion} → ${result.latestVersion}` },
-      ]);
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: "run:  npm i -g autopilot-ai@latest  then restart" },
-      ]);
-    } else {
-      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "no update available" }]);
-    }
+    for (const text of updateNotice(result, { explicit: true })) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
   });
   return true;
 };

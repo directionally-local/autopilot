@@ -74,7 +74,7 @@ describe("first run: one question", () => {
     assert.strictEqual(prompts[0]?.payload.default, undefined, "nothing is marked current before anything was chosen");
     assert.deepStrictEqual(
       firstRunChoices().map((c) => `${c.label} · ${c.description}`),
-      ["Free — sign in with GitHub · 50M tokens a week, no card", "Use my own API key · OpenRouter, Anthropic, OpenAI and more"],
+      ["Free — sign in with GitHub · 50M tokens a week, no credit card", "Use my own API key · OpenRouter, Anthropic, OpenAI and more"],
     );
     assert.doesNotMatch(JSON.stringify(prompts[0]), /billed/);
     view.dispose();
