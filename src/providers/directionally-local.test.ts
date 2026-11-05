@@ -232,7 +232,8 @@ describe("Directionally Local free tier", () => {
       await dispatchSlashCommand(ctx, "/model anthropic/claude-sonnet-5.5");
       assert.strictEqual(infos.length, 1);
       assert.match(infos[0]!, /^anthropic\/claude-sonnet-5\.5 isn't part of the Directionally Local free tier; it needs your own API key\./);
-      assert.deepStrictEqual(setup, { initial: "openrouter" });
+      assert.deepStrictEqual(setup, {}, "the whole provider list opens, nothing preselected");
+      assert.match(infos[0]!, /Pick a provider for your own key below \(or any time with \/provider\)/);
       assert.strictEqual(cfgChanged, false, "the model is not switched before a provider is connected");
       // The free model itself is fine.
       infos.length = 0;
