@@ -15,17 +15,27 @@
 </p>
 
 <p align="center">
-  <strong>A terminal coding agent that runs on your own provider key.</strong><br>
-  OpenRouter (400+ models, per-turn billed cost), OpenAI, DeepSeek, Kimi, Z.ai, local Ollama / LM Studio, or any OpenAI-compatible endpoint.
+  <strong>The open-source coding agent inside <a href="https://dl.new">dl</a>. It doesn't ask permission.</strong><br>
+  Free with 50M tokens a week of DeepSeek V4.1 Flash, no credit card. Or bring your own key: OpenRouter, Anthropic, OpenAI and 25+ more.
 </p>
 
+## Get it
+
+```sh
+curl -fsSL https://dl.new | sh
+```
+
+That installs **dl** ([Directionally Local](https://directionallylocal.com)'s installer), which installs and runs Autopilot. Under dl, Autopilot shows dl's name and version (`dl 0.15.0`, "Ask dl anything") and `dl --version` names both. dl keeps Autopilot on a version it has tested and updates them together, so use dl's update command, not npm, to update.
+
+Autopilot on its own, without dl: `npm i -g autopilot-ai` and run `autopilot`.
+
 <p align="center">
-  Part of <a href="https://directionallylocal.com">Directionally Local</a>, an open-source stack for running coding agents on your own hardware, alongside <a href="https://directionallylocal.com/hotcell/">Hotcell</a> and <a href="https://directionallylocal.com/serverless-objects/">Serverless Objects</a>. Product page: <a href="https://directionallylocal.com/autopilot/">directionallylocal.com/autopilot</a>. Start a coding agent on your computer at <a href="https://dl.new">dl.new</a>.
+  Part of <a href="https://directionallylocal.com">Directionally Local</a>, an open-source stack for running coding agents on your own hardware, alongside <a href="https://directionallylocal.com/hotcell/">Hotcell</a> and <a href="https://directionallylocal.com/serverless-objects/">Serverless Objects</a>. Product page: <a href="https://directionallylocal.com/autopilot/">directionallylocal.com/autopilot</a>. Get it at <a href="https://dl.new">dl.new</a>.
 </p>
 
 ## How it works
 
-autopilot sends every model call to **the provider you choose** using **your own key** — bring-your-own-key, nothing proxied, nothing marked up. On first run you pick a provider, connect it once (the key is checked before it's saved) and pick a model. That's the whole setup. [OpenRouter](https://openrouter.ai) is the recommended default; see [Providers](#providers) for the rest.
+On the free tier, model calls go through Directionally Local's free tier service to its model host; it keeps usage counts, never prompts or code. With **your own key**, autopilot sends every model call straight to **the provider you choose** — nothing proxied, nothing marked up. On first run you pick a provider, connect it once (the key is checked before it's saved) and pick a model. That's the whole setup. [OpenRouter](https://openrouter.ai) is the recommended default; see [Providers](#providers) for the rest.
 
 On OpenRouter you also get:
 
