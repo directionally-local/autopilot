@@ -1062,7 +1062,12 @@ export class View implements AppBridge {
       case "model":
         return want("model", async () => {
           const models = s.modelChoices ?? pickableModels();
-          const r = await this.select("Select a model", modelOptions(models, s.model), s.model, "Context · price per Mtok (input / output / cached) · type to search all models");
+          // On the free tier the list is its one model: say how to get others, so search isn't a dead end.
+          const freeOnly = models.length === 1 && models[0]!.id === DL_FREE_MODEL;
+          const subtitle = freeOnly
+            ? "The free tier has this one model. For any other, use your own key: /provider"
+            : "Context · price per Mtok (input / output / cached) · type to search all models";
+          const r = await this.select("Select a model", modelOptions(models, s.model), s.model, subtitle);
           a.pickModel(models.find((m) => m.id === r) ?? null);
         });
       case "provider": {
