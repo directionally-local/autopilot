@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.12.0](https://github.com/directionally-local/autopilot/compare/v3.11.0...v3.12.0) (2026-11-05)
+
+
+### Features
+
+* /feedback sends your message to the team by email, and replies come back to you ([#1166](https://github.com/directionally-local/autopilot/issues/1166)) ([096cc53](https://github.com/directionally-local/autopilot/commit/096cc53dc0b951cde7e58d43aabeda1ceac2e81e))
+
 ## [3.11.0](https://github.com/directionally-local/autopilot/compare/v3.10.1...v3.11.0) (2026-11-05)
 
 
