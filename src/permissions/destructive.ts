@@ -34,8 +34,6 @@ export interface Target {
   /** Plain words: "the database at DATABASE_URL (db.example.com/shop)". */
   label: string;
   production: boolean;
-  /** For a production-looking target: the name a person types to confirm. */
-  confirmName?: string;
 }
 
 /** What Autopilot saves before the action runs, so /undo can put it back. */
@@ -1224,11 +1222,11 @@ function dbTarget(t: DbTarget | null, sc: SimpleCommand, ctx: ClassifyContext, f
     const prodHost = host && PROD.test(host) ? host : null;
     const name = prodHost ?? envName;
     const label = `${t?.db ? `the database \`${basename(t.db)}\`` : "the database"} reached through \`${sc.via}\``;
-    return name ? { label: `${label}, which looks like production`, production: true, confirmName: name } : { label, production: false };
+    return name ? { label: `${label}, which looks like production`, production: true } : { label, production: false };
   }
   if (!t) {
     return envName
-      ? { label: `${fallbackLabel}, which looks like production (environment \`${envName}\`)`, production: true, confirmName: envName }
+      ? { label: `${fallbackLabel}, which looks like production (environment \`${envName}\`)`, production: true }
       : { label: fallbackLabel, production: false };
   }
   const where = `${t.host}${t.db ? `/${basename(t.db)}` : ""}`;
@@ -1238,7 +1236,6 @@ function dbTarget(t: DbTarget | null, sc: SimpleCommand, ctx: ClassifyContext, f
   return {
     label: production ? `${label}, which looks like production (${remote ? "not on this machine" : `environment \`${envName}\``})` : label,
     production,
-    ...(production ? { confirmName: remote ? (t.db ? basename(t.db) : t.host) : envName! } : {}),
   };
 }
 
@@ -1341,7 +1338,7 @@ function classifyOrm(sc: SimpleCommand, a: string[], ctx: ClassifyContext): Find
       const env = sc.env.RAILS_ENV ?? (ctx.env ?? process.env).RAILS_ENV;
       const e = rest.indexOf("-e");
       const railsEnv = e >= 0 ? rest[e + 1] : rest.find((x) => x.startsWith("RAILS_ENV="))?.slice(10) ?? env;
-      if (railsEnv && PROD.test(railsEnv)) target = { label: `the \`${railsEnv}\` database, which looks like production`, production: true, confirmName: railsEnv };
+      if (railsEnv && PROD.test(railsEnv)) target = { label: `the \`${railsEnv}\` database, which looks like production`, production: true };
     }
   } else if ((cmd === "manage.py" || ((cmd === "python" || cmd === "python3") && base(rest[0]) === "manage.py") || cmd === "django-admin")) {
     const args = cmd === "python" || cmd === "python3" ? rest.slice(1) : rest;
@@ -1358,7 +1355,7 @@ function classifyOrm(sc: SimpleCommand, a: string[], ctx: ClassifyContext): Find
   } else if (cmd === "supabase") {
     if (rest[0] === "db" && rest[1] === "reset") {
       loss = "resets the database, deleting all its data (supabase db reset)";
-      if (has("--linked") || rest.some((x) => x.startsWith("--db-url"))) target = { label: "the linked Supabase project, which may be production", production: true, confirmName: "linked" };
+      if (has("--linked") || rest.some((x) => x.startsWith("--db-url"))) target = { label: "the linked Supabase project, which may be production", production: true };
     }
   } else if (cmd === "diesel" || cmd === "sqlx") {
     if (rest[0] === "database" && (rest[1] === "reset" || rest[1] === "drop")) loss = `drops the database (${cmd} database ${rest[1]})`;
@@ -1397,7 +1394,7 @@ function kubeContext(sc: SimpleCommand, ctx: ClassifyContext): string | null {
 function namedTarget(kind: string, name: string | null, fallback: string): Target {
   if (!name) return { label: fallback, production: false };
   const production = PROD.test(name);
-  return { label: `${kind} \`${name}\`${production ? ", which looks like production" : ""}`, production, ...(production ? { confirmName: name } : {}) };
+  return { label: `${kind} \`${name}\`${production ? ", which looks like production" : ""}`, production };
 }
 
 function cloudFinding(sc: SimpleCommand, loss: string, target: Target): Finding {

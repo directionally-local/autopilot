@@ -1,12 +1,12 @@
 /**
  * Recovery points before destructive file and git actions (autopilot#1125).
  *
- * Before an approved recoverable or irreversible action runs, Autopilot
+ * Before a recoverable or irreversible action runs, Autopilot
  * saves what it would lose, in its own state directory (never inside the
  * project):
  *   - a copy of files about to be deleted or overwritten that git can't
  *     restore (untracked, ignored, or with uncommitted changes), up to a size
- *     limit; above it the prompt already said there is no copy;
+ *     limit; above it there is no copy;
  *   - for `git reset --hard`: the old commit, plus a copy of changed files;
  *   - for `git branch -D`: where each branch pointed;
  *   - for a force push or a deleted remote branch: the remote branch's old
