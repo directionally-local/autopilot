@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.10.0](https://github.com/directionally-local/autopilot/compare/v3.9.0...v3.10.0) (2026-11-05)
+
+
+### Features
+
+* name dl, not Autopilot, when dl launches it ([#1157](https://github.com/directionally-local/autopilot/issues/1157)) ([1b919e8](https://github.com/directionally-local/autopilot/commit/1b919e8a5002860a855cad0fd4be4be3147b5a11))
+
 ## [3.9.0](https://github.com/directionally-local/autopilot/compare/v3.8.0...v3.9.0) (2026-11-04)
 
 
