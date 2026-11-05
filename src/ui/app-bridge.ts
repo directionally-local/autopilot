@@ -30,6 +30,7 @@ import type { TurnPhase } from "./view-types.js";
 import type { IntentTier } from "./narrator.js";
 import type { QueuePlanChoice } from "./queue-plan.js";
 import type { DlScreen, DlScreenOutcome } from "../providers/dl-growth.js";
+import type { FeedbackLine, FeedbackRequest } from "../feedback.js";
 import type { GithubAccessOutcome, GithubAccessRequest } from "../github-access.js";
 
 /** Which dialog App currently wants open (the Camouflage view draws it). */
@@ -117,6 +118,8 @@ export interface AppSnapshot {
   starAsk?: string | null;
   /** A push or pull request is waiting on GitHub access (see github-access.ts). */
   githubAccess?: GithubAccessRequest | null;
+  /** `/feedback` is open: the message typed after the command, if any, and the active provider (see feedback.ts). */
+  feedback?: FeedbackRequest | null;
 }
 
 export interface AppActions {
@@ -163,6 +166,8 @@ export interface AppActions {
   starAskDone?: () => void;
   /** The GitHub access question was answered: the waiting push or pull request goes on. */
   githubAccessDone?: (outcome: GithubAccessOutcome) => void;
+  /** `/feedback` ended: the line to add to the transcript (sent, not sent, or why not). */
+  feedbackDone?: (line: FeedbackLine) => void;
   exit: () => void;
 }
 

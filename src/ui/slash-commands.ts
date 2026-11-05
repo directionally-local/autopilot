@@ -104,6 +104,7 @@ import type { TraceRecorder } from "../trace/recorder.js";
 import type { TurnRecord } from "./use-session-manager.js";
 import { launchedByDl, readEnv } from "../util/env.js";
 import { BUG_REPORT_EMAIL, BUG_REPORT_LINE, BUG_REPORT_URL } from "./bug-report.js";
+import type { FeedbackRequest } from "../feedback.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -199,6 +200,8 @@ export interface SlashContext {
   turnHistoryRef: React.MutableRefObject<TurnRecord[]>;
   /** Show a free-tier screen (/upgrade's Pro and top-up choice). */
   openDlScreen?: (screen: DlScreen) => void;
+  /** Open `/feedback`'s inputs (the view runs feedback.ts's flow). */
+  openFeedback?: (o: FeedbackRequest) => void;
 }
 
 type Handler = (ctx: SlashContext, rest: string[], arg: string) => boolean | Promise<boolean>;
@@ -2134,6 +2137,22 @@ const handleUndo: Handler = (ctx) => {
   return true;
 };
 
+/**
+ * `/feedback [text]`: the message (typed now or after the command) and an
+ * optional reply address go to the team by email. Only the typed message is
+ * sent, never the conversation (see feedback.ts).
+ */
+const handleFeedback: Handler = (ctx, rest) => {
+  if (!ctx.openFeedback) {
+    ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text: `/feedback isn't available here. Email ${BUG_REPORT_EMAIL} or open ${BUG_REPORT_URL}` }]);
+    return true;
+  }
+  const inline = rest.join(" ").trim();
+  const providerId = providerPresetOf(llmAuthFromConfig(ctx.cfg)).id;
+  ctx.openFeedback({ providerId, ...(inline ? { inline } : {}) });
+  return true;
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const handlers: Record<string, Handler> = {
@@ -2168,6 +2187,7 @@ const handlers: Record<string, Handler> = {
   "/init": handleInit,
   "/setup-import": handleSetupImport,
   "/update": handleUpdate,
+  "/feedback": handleFeedback,
   "/mcp": handleMcp,
   "/lsp": handleLsp,
   "/hooks": handleHooks,

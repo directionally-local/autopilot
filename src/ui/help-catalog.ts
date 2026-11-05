@@ -164,5 +164,6 @@ export const SINGLE_COMMANDS: CommandItem[] = [
   { command: "/reasoning", description: "toggle show/hide model reasoning" },
   { command: "/help", description: "show this menu" },
   { command: "/bug", description: "how to report a bug: GitHub issues or email" },
+  { command: "/feedback", description: "send feedback to the team by email; replies come back to you" },
   { command: "/exit", description: "exit Autopilot; typing exit on its own also works" },
 ];
