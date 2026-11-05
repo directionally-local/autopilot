@@ -520,6 +520,22 @@ export async function getCostReport(sessionId?: string): Promise<CostReport> {
   return { session, today: todayUsage, month: monthUsage, allTime };
 }
 
+/**
+ * All-time tokens used here, input + output (input includes cached input on
+ * every provider), from the same local files /cost's "All time" line reads.
+ * No network; 0 when there is no usage yet or the files can't be read.
+ */
+export async function allTimeTokens(): Promise<number> {
+  try {
+    const log = pruneUsageLog(await loadLog());
+    let total = 0;
+    for (const d of mergeDays(log.days, await loadHistory())) total += (d.promptTokens || 0) + (d.completionTokens || 0);
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
 /** Copy the displayed cost from an old session into a new session as a hidden
  *  baseline. Used by `/fresh` so the status-bar dollar amount stays continuous
  *  across session resets. The baseline is added to the session display only —

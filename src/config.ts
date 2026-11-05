@@ -211,7 +211,7 @@ export interface AutopilotConfig {
   prFooter?: boolean;
   /** Free tier: after the first opened PR or passing tests, one line with your invite link (shown once). Default: true. */
   inviteTip?: boolean;
-  /** After a win, once Autopilot was used on 3+ days: one line asking for a GitHub star (shown once). Default: true. */
+  /** After a win, once Autopilot was used on 3+ days or for 10M+ tokens in total (whichever first): one line asking for a GitHub star (shown once ever). Default: true. */
   starTip?: boolean;
   /** Directionally Local: an invite code to send with the next free-tier sign-in (dl writes it; cleared once signed in). */
   pendingReferral?: string;
