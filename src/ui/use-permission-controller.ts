@@ -15,6 +15,8 @@ const AUTO_DENY: PermissionDecisionResult = { decision: "deny", scope: "once" };
 export interface PendingPermission {
   tool: PermissionRequest["tool"];
   args: Record<string, unknown>;
+  /** Why a normally-quiet call needs a prompt (reads/writes a credentials location). */
+  sensitiveReason?: string;
   resolve: (decision: PermissionDecision) => void;
 }
 
@@ -128,7 +130,7 @@ export function usePermissionController(
         prompt: () =>
           new Promise<PermissionDecision>((resolve) => {
             resolveRef.current = resolve;
-            setPending({ tool: req.tool, args: req.args, resolve });
+            setPending({ tool: req.tool, args: req.args, ...(req.sensitiveReason ? { sensitiveReason: req.sensitiveReason } : {}), resolve });
           }),
       }),
     [],

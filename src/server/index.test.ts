@@ -24,6 +24,18 @@ describe("checkLegacyRequest", () => {
     assert.deepStrictEqual(checkLegacyRequest({ host: "box.lan:4096" }, { ...local, listenHost: "0.0.0.0" }), { ok: true });
   });
 
+  it("refuses DNS names that merely start with 127. (T1-01)", () => {
+    for (const host of ["127.0.0.1.nip.io", "127.attacker.com", "127.0.0.1.attacker.example", "127.0.0.256", "127.1"]) {
+      assert.equal(isLoopbackHost(host), false, host);
+      assert.equal(checkLegacyRequest({ host: `${host}:4096` }, local).ok, false, host);
+      // The same-origin branch must not let it through either.
+      assert.equal(checkLegacyRequest({ host: `${host}:4096`, origin: `http://${host}:4096` }, local).ok, false, host);
+    }
+    for (const host of ["127.0.0.1", "127.0.0.2", "127.255.255.254", "localhost", "LOCALHOST", "[::1]"]) {
+      assert.equal(isLoopbackHost(host), true, host);
+    }
+  });
+
   it("reflects only configured CORS origins", () => {
     const opts = { ...local, corsOrigins: ["https://app.example"] };
     assert.deepStrictEqual(checkLegacyRequest({ host: "127.0.0.1:4096", origin: "https://app.example" }, opts), { ok: true, allowOrigin: "https://app.example" });

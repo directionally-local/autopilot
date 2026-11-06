@@ -347,6 +347,13 @@ function App({
   const [, setCustomCommandsVersion] = useState(0);
 
   const cacheStableRef = useRef(initialCfg?.cacheStablePrompts !== false);
+  /**
+   * The previous turn's fire-and-forget housekeeping (save, compaction,
+   * auto-fresh). Compaction replaces messagesRef.current, so the next turn
+   * waits for it before it touches the history; otherwise the replacement
+   * lands under the running turn and its messages are dropped (T4-02).
+   */
+  const postTurnRef = useRef<Promise<void>>(Promise.resolve());
   const messagesRef = useRef<ChatMessage[]>(
     makePrefixMessages(
       cacheStableRef.current,
@@ -1370,6 +1377,10 @@ function App({
         return;
       }
 
+      // Let the previous turn's compaction finish before this turn reads or
+      // extends the history it may replace (T4-02).
+      await postTurnRef.current.catch(() => undefined);
+
       // A retry runs again on the history as it is: the user message is already there.
       if (!retry) messagesRef.current.push({ role: "user", content });
       lastTurnPromptRef.current = { text: trimmed, display };
@@ -1653,7 +1664,8 @@ function App({
             // Fire-and-forget all post-turn housekeeping so the UI returns to
             // idle immediately and the user can type the next message without
             // waiting for compaction, memory recall, or session persistence.
-            void (async () => {
+            // The next turn awaits postTurnRef before touching the history.
+            postTurnRef.current = (async () => {
               await saveSessionSafe();
 
               // If the turn was killed (preempted or aborted), skip expensive
@@ -1683,7 +1695,9 @@ function App({
                   `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
                 );
               }
-            })();
+            })().catch((e: unknown) => {
+              logger.warn("post-turn housekeeping failed", { error: (e as Error)?.message });
+            });
 
             cleanupTurn();
 
@@ -2249,7 +2263,7 @@ function App({
       codeMode,
       intentTier,
       tasks,
-      permission: perm ? { tool: perm.tool, args: perm.args } : null,
+      permission: perm ? { tool: perm.tool, args: perm.args, ...(perm.sensitiveReason ? { sensitiveReason: perm.sensitiveReason } : {}) } : null,
       modals: open,
       resumeSessions,
       checkpoints: checkpointSession ? { session: checkpointSession, list: checkpointList } : null,

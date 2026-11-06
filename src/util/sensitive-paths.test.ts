@@ -161,3 +161,42 @@ describe("browser_fetch", () => {
     assert.throws(() => assertWebUrl("not a url"), /absolute http/);
   });
 });
+
+describe("write and edit into credentials locations (T2-01)", () => {
+  it("flags creating or editing a credentials file with a 'writes' reason", async () => {
+    const { writeTool } = await import("../tools/write.js");
+    const { editTool } = await import("../tools/edit.js");
+    const ctx = { cwd: proj };
+    for (const p of [
+      join(home, ".ssh", "authorized_keys"),
+      join(home, ".ssh", "rc"),
+      join(home, ".git-credentials"),
+      join(home, ".npmrc"),
+      join(proj, ".env"),
+      join(proj, "notes.md"), // symlink to ~/.ssh/id_ed25519
+    ]) {
+      const w = await writeTool.permissionReason!({ path: p, content: "x" }, ctx);
+      assert.ok(w && w.startsWith("writes "), `write ${p}: ${w}`);
+      const e = await editTool.permissionReason!({ path: p, old_string: "a", new_string: "b" } as never, ctx);
+      assert.ok(e && e.startsWith("writes "), `edit ${p}: ${e}`);
+    }
+    assert.strictEqual(await writeTool.permissionReason!({ path: "README.md", content: "x" }, ctx), null);
+    assert.strictEqual(await editTool.permissionReason!({ path: "src/a.ts", old_string: "a", new_string: "b" } as never, ctx), null);
+  });
+
+  it("asks per target for a new ~/.ssh file, even after write was allowed for the session", async () => {
+    const { writeTool } = await import("../tools/write.js");
+    const exec = new ToolExecutor([writeTool]);
+    const asked: PermissionRequest[] = [];
+    const ask: PermissionAsker = async (req) => {
+      asked.push(req);
+      return req.sensitiveReason ? { decision: "deny", scope: "once" } : { decision: "allow", scope: "session" };
+    };
+    const run = (id: string, path: string) => exec.run({ id, name: "write", arguments: JSON.stringify({ path, content: "x" }) }, ask, { cwd: proj });
+    assert.strictEqual((await run("a", "out.txt")).ok, true);
+    const res = await run("b", join(home, ".ssh", "authorized_keys"));
+    assert.strictEqual(res.ok, false);
+    assert.equal(asked.length, 2);
+    assert.match(asked[1]!.sensitiveReason ?? "", /^writes credentials location/);
+  });
+});

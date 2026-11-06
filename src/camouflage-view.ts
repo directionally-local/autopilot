@@ -948,7 +948,8 @@ export class View implements AppBridge {
     }
     if (this.permission === s.permission.args) return;
     this.permission = s.permission.args;
-    const { tool, args } = s.permission;
+    const { tool, args, sensitiveReason } = s.permission;
+    const detail = permissionDetail(tool.name, args, sensitiveReason, process.stdout.columns);
     let render: { title: string; diff?: { path: string; before: string; after: string } } | undefined;
     try {
       render = tool.render?.(args);
@@ -961,10 +962,7 @@ export class View implements AppBridge {
         request_id: `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         tool: tool.name,
         action: render?.title ?? tool.name,
-        // A collapsed command is shown in full before the user approves it.
-        ...(typeof args.command === "string" && (tool.name === "bash" || tool.name === "job_start") && isCommandCollapsed(args.command)
-          ? { detail: args.command.trim() }
-          : {}),
+        ...(detail ? { detail } : {}),
         ...(render?.diff ? { diff: render.diff } : {}),
       })
       .then(async (answer) => {
@@ -2439,6 +2437,29 @@ function modalName(m: AppModal): string {
     changelogImage: "/changelog-image",
   };
   return names[m];
+}
+
+/**
+ * The detail row of a permission prompt. A shell command (bash, job_start)
+ * is shown in full whenever its row would cut it at this terminal's width,
+ * using the same width toolRow clips to (T2-06), and a call flagged by
+ * ToolSpec.permissionReason says why it needs approval (a read or write of a
+ * credentials location), so that prompt does not look like any other.
+ */
+export function permissionDetail(
+  toolName: string,
+  args: Record<string, unknown>,
+  sensitiveReason: string | undefined,
+  columns?: number,
+): string | undefined {
+  const lines: string[] = [];
+  if (sensitiveReason) lines.push(`⚠ This call ${sensitiveReason}.`);
+  if (typeof args.command === "string" && (toolName === "bash" || toolName === "job_start")) {
+    const label = toolName.charAt(0).toUpperCase() + toolName.slice(1);
+    const width = columns ? Math.max(20, Math.min(120, columns - label.length - 12)) : 120;
+    if (isCommandCollapsed(args.command, width)) lines.push(args.command.trim());
+  }
+  return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
 /**

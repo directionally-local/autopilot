@@ -1,5 +1,6 @@
-import { readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, mkdir, readdir, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { writeFileAtomic } from "./util/atomic-file.js";
 import type { ChatMessage } from "./agent/messages.js";
 import { repairDanglingToolCalls } from "./agent/messages.js";
 import type { SessionState, SerializedArtifact } from "./agent/session-state.js";
@@ -91,11 +92,45 @@ export function makeSessionId(firstPrompt: string): string {
   return `${ts}_${slug}`;
 }
 
+/** Session files hold conversation content: owner-only, like config.json. */
+const SESSION_FILE_MODE = 0o600;
+
+/** Per-file write queue: one save at a time for each session file. */
+const sessionWriteQueue = new Map<string, Promise<unknown>>();
+
+/**
+ * Run `fn` after every earlier queued write to `path` has settled. Several
+ * call sites save the same session fire-and-forget (post-turn housekeeping,
+ * queued prompts, compaction, checkpoints); serialising them here, plus an
+ * atomic temp-file-and-rename write, means a reader never sees a torn file
+ * and a later save is never overtaken by an earlier one (T4-01).
+ */
+function serializeSessionWrite<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(path);
+  const previous = sessionWriteQueue.get(key) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(fn);
+  const tail = run.catch(() => undefined);
+  sessionWriteQueue.set(key, tail);
+  void tail.then(() => {
+    if (sessionWriteQueue.get(key) === tail) sessionWriteQueue.delete(key);
+  });
+  return run;
+}
+
+function sessionFilePath(file: SessionFile): string {
+  return join(sessionsDir(), `${file.id}.json`);
+}
+
+async function writeSessionFile(path: string, json: string): Promise<void> {
+  await mkdir(sessionsDir(), { recursive: true });
+  await writeFileAtomic(path, json, SESSION_FILE_MODE);
+}
+
 export async function saveSession(file: SessionFile): Promise<string> {
-  const dir = sessionsDir();
-  await mkdir(dir, { recursive: true });
-  const path = join(dir, `${file.id}.json`);
-  await writeFile(path, JSON.stringify(file, null, 2), "utf8");
+  const path = sessionFilePath(file);
+  // Serialise now: the caller may keep mutating its arrays while we wait our turn.
+  const json = JSON.stringify(file, null, 2);
+  await serializeSessionWrite(path, () => writeSessionFile(path, json));
   return path;
 }
 
@@ -169,10 +204,14 @@ export async function addCheckpoint(
   filePath: string,
   checkpoint: Checkpoint,
 ): Promise<void> {
-  const file = await loadSession(filePath);
-  if (!file.checkpoints) file.checkpoints = [];
-  file.checkpoints.push(checkpoint);
-  await saveSession(file);
+  // Read-modify-write under the same queue as saveSession, so a concurrent
+  // save can neither tear the file nor drop this checkpoint.
+  await serializeSessionWrite(filePath, async () => {
+    const file = await loadSession(filePath);
+    if (!file.checkpoints) file.checkpoints = [];
+    file.checkpoints.push(checkpoint);
+    await writeSessionFile(sessionFilePath(file), JSON.stringify(file, null, 2));
+  });
 }
 
 /** Load a session and truncate to a specific checkpoint. */

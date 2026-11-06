@@ -65,6 +65,16 @@ export function readsCredentials(reason: string | null): string | null {
 }
 
 /**
+ * The same for a call that writes the path (write, edit). Creating or changing
+ * a file in a credentials location (~/.ssh/authorized_keys, ~/.ssh/rc,
+ * ~/.git-credentials, ~/.npmrc) can grant durable access, so it is approved
+ * per target with the reason shown, and hosts never auto-allow it.
+ */
+export function writesCredentials(reason: string | null): string | null {
+  return reason ? `writes ${reason}` : null;
+}
+
+/**
  * Why reading this absolute path needs the user's permission, or null when
  * it does not. Checks the path as given and with symlinks resolved.
  */

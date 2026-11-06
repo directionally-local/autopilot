@@ -80,7 +80,7 @@ export interface AppSnapshot {
   intentTier: IntentTier | null;
   tasks: Task[];
   /** A tool waiting for the user's permission. */
-  permission: { tool: PermissionRequest["tool"]; args: Record<string, unknown> } | null;
+  permission: { tool: PermissionRequest["tool"]; args: Record<string, unknown>; sensitiveReason?: string } | null;
   /** Open dialogs, in App's own terms. */
   modals: AppModal[];
   /** The models the "model" picker offers, when they aren't the local catalog's

@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert";
-import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage, ToolDef } from "../agent/messages.js";
@@ -137,6 +137,28 @@ describe("writeLlmDump", () => {
     const lines = readFileSync(join(sessionDir, "index.jsonl"), "utf8").trim().split("\n");
     assert.equal(lines.length, 2);
     assert.equal(readdirSync(sessionDir).filter((f) => f.endsWith(".json")).length, 2);
+  });
+
+  it("writes owner-only files with secrets redacted (T3-F1)", () => {
+    process.env.KIMIFLARE_DUMP_LLM = "1";
+    const record = sampleRecord();
+    record.meta.sessionId = "sess-secret";
+    record.request.messages = [
+      { role: "user", content: "my key is sk-or-v1-abcdef0123456789 and api_key=hunter2" },
+    ];
+    record.response.text = "Authorization: Bearer abc.def.ghi";
+    writeLlmDump(record);
+    const sessionDir = dumpDir("sess-secret");
+    const file = readdirSync(sessionDir).find((f) => f.endsWith(".json"))!;
+    const text = readFileSync(join(sessionDir, file), "utf8");
+    assert.ok(!text.includes("sk-or-v1-abcdef0123456789"), "OpenRouter key redacted");
+    assert.ok(!text.includes("hunter2"), "key=value redacted");
+    assert.ok(!text.includes("abc.def.ghi"), "bearer token redacted");
+    if (process.platform !== "win32") {
+      assert.equal(statSync(join(sessionDir, file)).mode & 0o777, 0o600);
+      assert.equal(statSync(join(sessionDir, "index.jsonl")).mode & 0o777, 0o600);
+      assert.equal(statSync(sessionDir).mode & 0o077, 0, "dump dir not readable by others");
+    }
   });
 
   it("writes nothing when disabled", () => {

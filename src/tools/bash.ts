@@ -127,11 +127,14 @@ export function isFileReadCommand(command: string): boolean {
   });
 }
 
-/** The bash row title: a leading `cd <dir> &&` dropped, a long script collapsed to its first line. */
+/**
+ * The bash row title: the command as it will run, a long script collapsed to
+ * its first line. A leading `cd <dir> &&` is kept: it decides what a relative
+ * operand refers to (`cd /tmp && rm -rf build`), and the permission prompt
+ * must show the text that executes (T2-06).
+ */
 export function formatBashTitle(raw: string, maxWidth = 120): string {
-  let cmd = (raw ?? "").trim();
-  const m = cmd.match(/^cd\s+([^\s&;]+)\s*(?:&&|;)\s*([\s\S]*)$/);
-  if (m) cmd = m[2]!.trim();
+  const cmd = (raw ?? "").trim();
   return `$ ${previewCommand(cmd, maxWidth - 2)}`;
 }
 

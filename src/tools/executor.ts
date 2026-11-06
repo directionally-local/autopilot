@@ -903,8 +903,10 @@ export class ToolExecutor {
 }
 
 export function sessionPermissionKey(toolName: string, args: Record<string, unknown>, cwd: string): string {
-  if (toolName === "bash" && typeof args.command === "string") {
-    return `bash:${args.command.trim()}`;
+  // A shell command is approved per command text: one "allow for session" on
+  // `npm test` must not approve any later command (T2-05 for job_start).
+  if ((toolName === "bash" || toolName === "job_start") && typeof args.command === "string") {
+    return `${toolName}:${args.command.trim()}`;
   }
   if ((toolName === "write" || toolName === "edit") && typeof args.path === "string" && args.path) {
     return `${toolName}:${resolvePath(cwd, args.path)}`;
