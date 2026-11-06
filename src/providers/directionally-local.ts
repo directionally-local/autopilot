@@ -1150,7 +1150,7 @@ export function dlStarterNotice(me: DlMe | null = lastKnownDlMe()): string {
   const contributions = t?.minContributions ?? 50;
   const tokens = me?.pools?.luna?.tokensPerWeek;
   const allowance = tokens ? `${formatTokens(tokens)} tokens a week` : "a small weekly allowance";
-  return `Your account is on Starter: DeepSeek only, ${allowance}. GPT-6 unlocks when your GitHub account is ${age}+ days old with ${repos} public repos or ${contributions} contributions this year (turn on "show private contributions" on GitHub to count private work), or with an invite code. Or bring your own key.`;
+  return `Your account is on Starter: DeepSeek only, ${allowance}. GPT-6 unlocks when your GitHub account is ${age}+ days old with ${repos} public repos or ${contributions} contributions this year (turn on "show private contributions" on GitHub to count private work). Got an invite code? Run /logout, sign in to Free again and enter it on the sign-in page. Or bring your own key.`;
 }
 
 let noticeShownFor: string | null = null;
