@@ -14,7 +14,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2621,7 +2621,52 @@ function gitBranch(cwd: string): string {
   }
 }
 
-/** Tracked and untracked-but-not-ignored files, for `@` mentions. */
+/** Folders never walked for `@` mentions: dependency trees, caches and system folders. */
+const MENTION_SKIP_DIRS = new Set([
+  "node_modules", "Library", "Caches", "Applications", "System", "Volumes", "private",
+  "dist", "build", "out", "target", "vendor", "__pycache__", "venv", ".venv", "Pods",
+  "DerivedData", "site-packages", "bower_components", "coverage", "tmp", "temp",
+]);
+/** The most files one walk returns, and how long it may take. */
+export const MENTION_MAX_FILES = 5000;
+export const MENTION_MAX_MS = 1000;
+
+/**
+ * A bounded walk of `cwd` for `@` mentions when git can't answer (not a repo, or no git):
+ * files only, skipping dot-folders and the big dependency and cache trees, at most
+ * `maxFiles` files and about `maxMs` milliseconds. Sorted, so the list is stable.
+ */
+export function walkFiles(cwd: string, options: { maxFiles?: number; maxMs?: number; now?: () => number } = {}): string[] {
+  const maxFiles = options.maxFiles ?? MENTION_MAX_FILES;
+  const maxMs = options.maxMs ?? MENTION_MAX_MS;
+  const now = options.now ?? Date.now;
+  const started = now();
+  const out: string[] = [];
+  const stack: string[] = [""];
+  while (stack.length > 0 && out.length < maxFiles) {
+    if (now() - started > maxMs) break;
+    const rel = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(join(cwd, rel), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (out.length >= maxFiles || now() - started > maxMs) break;
+      const child = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || MENTION_SKIP_DIRS.has(entry.name)) continue;
+        stack.push(child);
+      } else if (entry.isFile()) {
+        out.push(child);
+      }
+    }
+  }
+  return out;
+}
+
+/** Tracked and untracked-but-not-ignored files, for `@` mentions; a bounded walk outside a repo. */
 function listFiles(cwd: string): string[] {
   try {
     const out = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
@@ -2631,9 +2676,10 @@ function listFiles(cwd: string): string[] {
       maxBuffer: 16 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    return out.split("\n").filter(Boolean).slice(0, 5000);
+    return out.split("\n").filter(Boolean).slice(0, MENTION_MAX_FILES);
   } catch {
-    return [];
+    // Not a git repo (or no git): walk the folder instead, bounded, so `@` still lists files.
+    return walkFiles(cwd);
   }
 }
 

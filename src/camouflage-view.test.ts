@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View } from "./camouflage-view.js";
+import { helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View, walkFiles } from "./camouflage-view.js";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/view-types.js";
@@ -75,6 +75,29 @@ describe("listMentionDir", () => {
     assert.deepEqual((await listMentionDir(cwd, "..")).dir, "../");
     assert.deepEqual((await listMentionDir(cwd, "../ze")).entries[0], "../proj/");
     assert.deepEqual(await listMentionDir(cwd, "../nope/x"), { dir: "../nope/", entries: [] });
+  });
+});
+
+describe("walkFiles: @ mentions outside a git repo", () => {
+  it("walks a plain folder, skipping dot-folders and dependency trees", async () => {
+    const root = await mkdtemp(join(tmpdir(), "walk-"));
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "node_modules", "pkg"), { recursive: true });
+    await mkdir(join(root, ".git"));
+    await writeFile(join(root, "README.md"), "");
+    await writeFile(join(root, "src", "a.ts"), "");
+    await writeFile(join(root, "node_modules", "pkg", "index.js"), "");
+    await writeFile(join(root, ".git", "config"), "");
+    assert.deepEqual(walkFiles(root), ["README.md", "src/a.ts"]);
+  });
+
+  it("stops at the file cap and the time budget", async () => {
+    const root = await mkdtemp(join(tmpdir(), "walk-"));
+    for (let i = 0; i < 10; i++) await writeFile(join(root, `f${i}.txt`), "");
+    assert.equal(walkFiles(root, { maxFiles: 3 }).length, 3);
+    let t = 0;
+    const files = walkFiles(root, { maxMs: 15, now: () => (t += 10) });
+    assert.ok(files.length < 10, "the time budget stops the walk");
   });
 });
 
