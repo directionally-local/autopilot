@@ -5,6 +5,9 @@
 
 export const DL_FREE_DEFAULT_URL = "https://free.directionallylocal.com";
 
+/** The free tier's default model: GPT-6 Luna. Kept here so presets.ts can use it without a cycle. */
+export const DL_FREE_DEFAULT_MODEL = "gpt-6-luna";
+
 /** The service origin from AUTOPILOT_DL_FREE_URL or the default (no trailing slash, no /v1). */
 export function dlOrigin(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env.AUTOPILOT_DL_FREE_URL?.trim();

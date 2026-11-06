@@ -23,14 +23,35 @@ import { configPath, patchPersistedConfig, type AutopilotConfig } from "../confi
 import { getUserAgent } from "../util/version.js";
 import type { ProviderSettings } from "./resolve.js";
 import type { ModelEntry } from "../models/registry.js";
-import { dlOrigin } from "./dl-endpoint.js";
+import { DL_FREE_DEFAULT_MODEL, dlOrigin } from "./dl-endpoint.js";
 import { launchedByDl, type EnvLike } from "../util/env.js";
 
 export { DL_FREE_DEFAULT_URL, dlApiBase, dlOrigin } from "./dl-endpoint.js";
 
 export const DL_PROVIDER_ID = "directionally-local" as const;
-/** The only model the free tier serves (through OpenRouter, via the service). */
-export const DL_FREE_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+
+/** A model the free tier serves, and the weekly token pool it draws from. */
+export interface DlFreeModel {
+  id: string;
+  name: string;
+  /** GPT-6 Luna and DeepSeek share one pool; Sol and Astra have their own. */
+  pool: "luna" | "sol" | "astra";
+  contextWindow: number;
+  maxOutputTokens: number;
+  vision: boolean;
+  reasoning: boolean;
+}
+
+/** Every model the free tier serves. GPT-6 Luna is the default; DeepSeek is its fallback. */
+export const DL_FREE_MODELS: readonly DlFreeModel[] = [
+  { id: "gpt-6-luna", name: "GPT-6 Luna", pool: "luna", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", pool: "sol", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "gpt-6-astra", name: "GPT-6 Astra", pool: "astra", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", pool: "luna", contextWindow: 1_048_576, maxOutputTokens: 65_536, vision: false, reasoning: true },
+];
+
+/** The default free model: GPT-6 Luna. */
+export const DL_FREE_MODEL = DL_FREE_DEFAULT_MODEL;
 /** The weekly grant per person, for picker copy and as a fallback before /v1/me has been read. */
 export const DL_FREE_WEEKLY_TOKENS = 50_000_000;
 /** What each invited friend who becomes weekly active adds a week, for both people. */
@@ -63,16 +84,22 @@ export function formatTokens(n: number): string {
   return String(Math.round(n));
 }
 
-/** The free tier's only model, priced at $0 (it comes out of the weekly allowance). */
-export function dlFreeModelEntry(): ModelEntry {
+/** One free model as a catalog entry, priced at $0 (it comes out of the weekly allowance). */
+export function dlFreeModelEntry(id: string = DL_FREE_MODEL): ModelEntry {
+  const model = DL_FREE_MODELS.find((entry) => entry.id === id) ?? DL_FREE_MODELS[0]!;
   return {
-    id: DL_FREE_MODEL,
-    name: "DeepSeek V4.1 Flash (free)",
-    contextWindow: 1_048_576,
-    maxOutputTokens: 65_536,
+    id: model.id,
+    name: `${model.name} (free)`,
+    contextWindow: model.contextWindow,
+    maxOutputTokens: model.maxOutputTokens,
     pricing: { inputPerMtok: 0, outputPerMtok: 0 },
-    supports: { tools: true, reasoning: true, streaming: true, vision: false },
+    supports: { tools: true, reasoning: model.reasoning, streaming: true, vision: model.vision },
   };
+}
+
+/** Every free model as a catalog entry, for the picker and /model list. */
+export function dlFreeModelEntries(): ModelEntry[] {
+  return DL_FREE_MODELS.map((model) => dlFreeModelEntry(model.id));
 }
 
 /** Shown on the sign-in screen: what is collected in exchange for free tokens. */
@@ -86,7 +113,7 @@ export function dlNotFreeLine(what: string): string {
 
 /** The picker's one-line hint. */
 export function dlPickerHint(): string {
-  return `free — ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens/week, sign in with GitHub`;
+  return `free — GPT-6 Luna + DeepSeek, ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens/week, sign in with GitHub`;
 }
 
 /** The next Monday 00:00 UTC after `now`: when the service's weeks end. */
@@ -289,6 +316,29 @@ export function parseDlReferral(raw: unknown): DlReferral | undefined {
     bonusTokensPerWeek: Math.max(0, numOf(raw, "bonusTokensPerWeek", "bonus_tokens_per_week") ?? 0),
     ...(cap !== undefined && cap > 0 ? { bonusCapPerWeek: cap } : {}),
   };
+}
+
+/** The pools block of /v1/me, keeping only well-formed entries. Undefined when there are none. */
+export function parseDlPools(raw: unknown): Record<string, DlPool> | undefined {
+  if (!isRec(raw)) return undefined;
+  const out: Record<string, DlPool> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (!isRec(value)) continue;
+    const tokensPerWeek = numOf(value, "tokensPerWeek", "tokens_per_week");
+    const remaining = numOf(value, "remaining");
+    if (tokensPerWeek === undefined || remaining === undefined) continue;
+    const used = numOf(value, "usedThisWeek", "used_this_week") ?? Math.max(0, tokensPerWeek - remaining);
+    const resetsAt = strOf(value, "resetsAt", "resets_at");
+    const models = Array.isArray(value.models) ? value.models.filter((id): id is string => typeof id === "string") : [];
+    out[name] = {
+      tokensPerWeek,
+      usedThisWeek: used,
+      remaining,
+      ...(resetsAt ? { resetsAt } : {}),
+      models,
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** The queue block of /v1/me: null or missing means not queued. */
@@ -529,7 +579,7 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       return `Directionally Local is limiting how fast you send requests; try again${s ? ` in ${s} second${s === 1 ? "" : "s"}` : " shortly"}.`;
     }
     case "model_not_allowed":
-      return `The free tier only serves ${DL_FREE_MODEL}; pick it with /model.`;
+      return `The free tier serves ${DL_FREE_MODELS.map((model) => model.id).join(", ")}; pick one with /model.`;
     default:
       return undefined;
   }
@@ -843,10 +893,22 @@ export interface DlAllowance {
   spentUsdThisWeek?: number;
 }
 
+/** One weekly token pool: what a model tier has left this week. */
+export interface DlPool {
+  tokensPerWeek: number;
+  usedThisWeek: number;
+  remaining: number;
+  resetsAt?: string;
+  /** The model ids that draw from this pool. */
+  models: string[];
+}
+
 export interface DlMe {
   login: string;
   githubId?: number | string;
   allowance: DlAllowance;
+  /** Each model tier's weekly allowance, when the service sends it (older servers don't). */
+  pools?: Record<string, DlPool>;
   models?: string[];
   /** "pro" once paid; free when the service doesn't say (older servers). */
   plan?: DlPlan;
@@ -873,10 +935,12 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
   const topup = numOf(raw, "topupTokensLeft", "topup_tokens_left");
   const referral = parseDlReferral(raw.referral);
   const offers = parseDlOffers(raw.offers);
+  const pools = parseDlPools(raw.pools);
   return {
     ...(raw as unknown as DlMe),
     login: typeof raw.login === "string" ? raw.login : "",
     allowance,
+    ...(pools ? { pools } : {}),
     plan,
     topupTokensLeft: topup !== undefined ? Math.max(0, topup) : undefined,
     queue,
@@ -1016,6 +1080,29 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
   return dlInviteCanAdd(me) ? `${left} · /invite for more` : left;
 }
 
+/**
+ * "49.9M of 50M left this week" for one free model, from /v1/me's pools. Undefined when the
+ * service didn't send pools (an older server) or the model isn't one the free tier serves.
+ */
+export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnownDlMe()): string | undefined {
+  const model = DL_FREE_MODELS.find((entry) => entry.id === modelId);
+  const pool = model && me?.pools?.[model.pool];
+  if (!pool) return undefined;
+  return `${formatTokens(Math.max(0, pool.remaining))} of ${formatTokens(pool.tokensPerWeek)} left this week`;
+}
+
+/**
+ * The notice when GPT-6 Luna failed over to DeepSeek: short and honest, from the response's
+ * `x-dl-fallback` header. Undefined when nothing fell back.
+ */
+let fallbackShown = false;
+export function dlFallbackNotice(fallback: string | null | undefined): string | undefined {
+  if (!fallback || fallbackShown) return undefined;
+  fallbackShown = true;
+  const model = DL_FREE_MODELS.find((entry) => entry.id === fallback);
+  return `GPT-6 Luna didn't answer, so this turn ran on ${model?.name ?? fallback}.`;
+}
+
 let noticeShownFor: string | null = null;
 
 /**
@@ -1041,6 +1128,7 @@ export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: 
 /** Test hook: forget the shown notice and the cached weekly grant. */
 export function resetDlNoticeState(): void {
   noticeShownFor = null;
+  fallbackShown = false;
   lastMe = null;
   lastQuota = null;
   knownWeeklyTokens = undefined;

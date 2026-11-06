@@ -22,7 +22,7 @@ import { ANTHROPIC_VERSION, anthropicHeaders, parseAnthropicStream, toAnthropicR
 import { copilotRequestHeaders } from "../providers/copilot.js";
 import { chatgptAccessToken, chatgptSessionHeaders, NON_RETRYABLE_SHARING_CODES } from "../providers/chatgpt.js";
 import { modelRetryCount, modelRetryDelay, modelRetryLine, parseRetryAfter, retryAfterOf, shouldRetryModelCall } from "./model-retry.js";
-import { describeDlError, DL_BUSY_RETRY_AFTER_MS, dlRetryable, dlAccessToken, DlError, noteDlQuotaExceeded, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
+import { describeDlError, DL_BUSY_RETRY_AFTER_MS, dlFallbackNotice, dlRetryable, dlAccessToken, DlError, noteDlQuotaExceeded, parseDlError, quotaNoticeFromHeaders } from "../providers/directionally-local.js";
 import { toVertexAnthropicBody, vertexAccessToken, vertexTarget } from "../providers/vertex.js";
 import { bedrockAuth, bedrockHeaders, converseUrl, parseConverseStream, toConverseRequest } from "../providers/bedrock.js";
 
@@ -534,6 +534,9 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
     if (dlFree) {
       const notice = quotaNoticeFromHeaders(res.headers);
       if (notice) opts.onNotice?.(notice);
+      // OpenAI failed over to DeepSeek: say so once, plainly.
+      const fallback = dlFallbackNotice(res.headers.get("x-dl-fallback"));
+      if (fallback) opts.onNotice?.(fallback);
     }
 
     if (!res.body) {

@@ -283,7 +283,7 @@ export function leavingFreeTierLine(active: ProviderId | undefined, to: Provider
  * a browser really opened (`opened`); otherwise the link is for any device.
  */
 export function dlSignInLines(code?: DlDeviceCode, opened = false): string {
-  if (!code) return `Free: ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week on ${DL_FREE_MODEL}, no credit card. Sign in with GitHub to start.\n${DL_DISCLOSURE}`;
+  if (!code) return `Free: GPT-6 Luna + DeepSeek, ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card. Sign in with GitHub to start.\n${DL_DISCLOSURE}`;
   const where = opened
     ? `Opened your browser at ${code.verificationUriComplete} — sign in with GitHub and approve it`
     : `Open ${code.verificationUriComplete} in a browser on any device, sign in with GitHub and approve it`;
@@ -309,7 +309,7 @@ export function dlWaitingText(code: DlDeviceCode, opened = false): string {
 export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved.";
 
 /** The free tier's model and who serves it, under the first-run question (a plain fact, and their site). */
-export const DL_FREE_MODEL_LINE = "Free: DeepSeek V4.1 Flash on Luminal (luminal.com)";
+export const DL_FREE_MODEL_LINE = "Free: GPT-6 Luna on OpenAI, with DeepSeek on Luminal as the backup";
 
 /** The first-run question's answers. */
 export type FirstRunChoice = "free" | "own-key";
@@ -329,7 +329,7 @@ export const DL_FREE_PAUSED_LABEL = "Free — paused";
 export function firstRunChoices(status: DlFreeStatus = DL_STATUS_OPEN, timeZone?: string): Array<{ value: FirstRunChoice; label: string; description: string }> {
   const ownKey = { value: "own-key" as const, label: "Use my own API key", description: "OpenRouter, Anthropic, OpenAI and more" };
   if (status.free === "paused") return [ownKey, { value: "free", label: DL_FREE_PAUSED_LABEL, description: "not taking new sign-ins right now" }];
-  const description = status.free === "waitlist" ? dlWaitlistText(status, timeZone) : `${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card`;
+  const description = status.free === "waitlist" ? dlWaitlistText(status, timeZone) : `GPT-6 Luna + DeepSeek, ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card`;
   return [{ value: "free", label: "Free — sign in with GitHub", description }, ownKey];
 }
 
