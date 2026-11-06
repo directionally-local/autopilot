@@ -570,6 +570,23 @@ describe("Directionally Local free tier", () => {
       resetDlNoticeState();
       assert.ok(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"));
     });
+
+    it("says the Starter line once, from the service's thresholds, not the OpenAI notice", () => {
+      resetDlNoticeState();
+      const me = normalizeDlMe({
+        login: "starter",
+        level: "starter",
+        levelReason: "account_too_new",
+        thresholds: { minAccountAgeDays: 90, minPublicRepos: 3, minContributions: 50 },
+        allowance: { tokensPerWeek: 5_000_000, usedThisWeek: 0, remaining: 5_000_000, resetsAt: "2026-11-09T00:00:00.000Z" },
+        pools: { luna: { tokensPerWeek: 5_000_000, usedThisWeek: 0, remaining: 5_000_000, models: ["gpt-6-luna", "deepseek/deepseek-v4.1-flash-1017"] } },
+      })!;
+      const line = dlFallbackNotice("starter", me);
+      assert.match(line!, /Your account is on Starter: DeepSeek only, 5M tokens a week/);
+      assert.match(line!, /90\+ days old with 3 public repos or 50 contributions/);
+      assert.doesNotMatch(line!, /OpenAI didn't answer/);
+      assert.strictEqual(dlFallbackNotice("starter", me), undefined, "once per process");
+    });
   });
 
   describe("error messages", () => {

@@ -903,10 +903,23 @@ export interface DlPool {
   models: string[];
 }
 
+/** The thresholds a Full account must clear, as the service reports them. */
+export interface DlThresholds {
+  minAccountAgeDays: number;
+  minPublicRepos: number;
+  minContributions: number;
+}
+
 export interface DlMe {
   login: string;
   githubId?: number | string;
   allowance: DlAllowance;
+  /** "full" or "starter": what this account may use (older servers don't say). */
+  level?: "full" | "starter";
+  /** Why the level is what it is, when the service says. */
+  levelReason?: string | null;
+  /** The thresholds a Full account must clear, when the service says. */
+  thresholds?: DlThresholds;
   /** Each model tier's weekly allowance, when the service sends it (older servers don't). */
   pools?: Record<string, DlPool>;
   models?: string[];
@@ -918,6 +931,16 @@ export interface DlMe {
   queue?: DlQueue;
   referral?: DlReferral;
   offers?: DlOffers;
+}
+
+/** The thresholds block of /v1/me, keeping only well-formed numbers. */
+function parseDlThresholds(raw: unknown): DlThresholds | undefined {
+  if (!isRec(raw)) return undefined;
+  const age = raw.minAccountAgeDays;
+  const repos = raw.minPublicRepos;
+  const contributions = raw.minContributions;
+  if (typeof age !== "number" || typeof repos !== "number" || typeof contributions !== "number") return undefined;
+  return { minAccountAgeDays: age, minPublicRepos: repos, minContributions: contributions };
 }
 
 /**
@@ -936,10 +959,16 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
   const referral = parseDlReferral(raw.referral);
   const offers = parseDlOffers(raw.offers);
   const pools = parseDlPools(raw.pools);
+  const level = raw.level === "full" || raw.level === "starter" ? raw.level : undefined;
+  const levelReason = typeof raw.levelReason === "string" ? raw.levelReason : undefined;
+  const thresholds = parseDlThresholds(raw.thresholds);
   return {
     ...(raw as unknown as DlMe),
     login: typeof raw.login === "string" ? raw.login : "",
     allowance,
+    ...(level ? { level } : {}),
+    ...(levelReason !== undefined ? { levelReason } : {}),
+    ...(thresholds ? { thresholds } : {}),
     ...(pools ? { pools } : {}),
     plan,
     topupTokensLeft: topup !== undefined ? Math.max(0, topup) : undefined,
@@ -953,6 +982,11 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
 let lastMe: DlMe | null = null;
 export function lastKnownDlMe(): DlMe | null {
   return lastMe;
+}
+
+/** Test hook: pretend /v1/me said this. */
+export function setLastKnownDlMe(me: DlMe | null): void {
+  lastMe = me;
 }
 
 /** The weekly grant last read from /v1/me in this process (for the 80% notice). */
@@ -1096,11 +1130,27 @@ export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnow
  * `x-dl-fallback` header. Undefined when nothing fell back.
  */
 let fallbackShown = false;
-export function dlFallbackNotice(fallback: string | null | undefined): string | undefined {
+export function dlFallbackNotice(fallback: string | null | undefined, me: DlMe | null = lastKnownDlMe()): string | undefined {
   if (!fallback || fallbackShown) return undefined;
   fallbackShown = true;
+  // A Starter account asked for GPT-6 and DeepSeek served it: say why, once, honestly.
+  if (fallback === "starter") return dlStarterNotice(me);
   const model = DL_FREE_MODELS.find((entry) => entry.id === fallback);
   return `OpenAI didn't answer, so this turn ran on ${model?.name ?? fallback}.`;
+}
+
+/**
+ * The honest Starter line, once per process: what it gets, why, and the ways up. The thresholds
+ * and the allowance come from /v1/me, so the numbers are the service's, not hard-coded.
+ */
+export function dlStarterNotice(me: DlMe | null = lastKnownDlMe()): string {
+  const t = me?.thresholds;
+  const age = t?.minAccountAgeDays ?? 90;
+  const repos = t?.minPublicRepos ?? 3;
+  const contributions = t?.minContributions ?? 50;
+  const tokens = me?.pools?.luna?.tokensPerWeek;
+  const allowance = tokens ? `${formatTokens(tokens)} tokens a week` : "a small weekly allowance";
+  return `Your account is on Starter: DeepSeek only, ${allowance}. GPT-6 unlocks when your GitHub account is ${age}+ days old with ${repos} public repos or ${contributions} contributions this year (turn on "show private contributions" on GitHub to count private work), or with an invite code. Or bring your own key.`;
 }
 
 let noticeShownFor: string | null = null;

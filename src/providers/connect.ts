@@ -326,16 +326,18 @@ export const DL_FREE_PAUSED_LABEL = "Free — paused";
  * Free goes last (choosing it only says why: see `freeChoosable`), so own
  * key is the one selected.
  */
-export function firstRunChoices(status: DlFreeStatus = DL_STATUS_OPEN, timeZone?: string): Array<{ value: FirstRunChoice; label: string; description: string }> {
+export function firstRunChoices(status: DlFreeStatus = DL_STATUS_OPEN, timeZone?: string, starter = false): Array<{ value: FirstRunChoice; label: string; description: string }> {
   const ownKey = { value: "own-key" as const, label: "Use my own API key", description: "OpenRouter, Anthropic, OpenAI and more" };
   if (status.free === "paused") return [ownKey, { value: "free", label: DL_FREE_PAUSED_LABEL, description: "not taking new sign-ins right now" }];
-  const description = status.free === "waitlist" ? dlWaitlistText(status, timeZone) : `GPT-6 Luna + DeepSeek, ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card`;
+  const description = starter
+    ? "Starter: DeepSeek only, 5M tokens a week"
+    : status.free === "waitlist" ? dlWaitlistText(status, timeZone) : `GPT-6 Luna + DeepSeek, ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card`;
   return [{ value: "free", label: "Free — sign in with GitHub", description }, ownKey];
 }
 
 /** The first-run question's subtitle: the free model's line, or the service's word on a waitlist or pause. */
-export function firstRunSubtitle(status: DlFreeStatus, escape: string): string {
-  return `${statusMessage(status) ?? DL_FREE_MODEL_LINE} · ${escape}`;
+export function firstRunSubtitle(status: DlFreeStatus, escape: string, starter = false): string {
+  return `${statusMessage(status) ?? (starter ? "Free: Starter — DeepSeek only, 5M tokens a week" : DL_FREE_MODEL_LINE)} · ${escape}`;
 }
 
 /** The service's message while Free is on a waitlist or paused; undefined when open. */

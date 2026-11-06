@@ -94,6 +94,12 @@ describe("first-run choices under the free tier's status", () => {
     assert.strictEqual(firstRunSubtitle(waitlist, "Esc to quit"), `${waitlist.message} · Esc to quit`);
   });
 
+  it("starter: the Free row says DeepSeek only and the Starter allowance", () => {
+    const choices = firstRunChoices(DL_STATUS_OPEN, undefined, true);
+    assert.equal(choices[0]?.description, "Starter: DeepSeek only, 5M tokens a week");
+    assert.strictEqual(firstRunSubtitle(DL_STATUS_OPEN, "Esc to quit", true), "Free: Starter — DeepSeek only, 5M tokens a week · Esc to quit");
+  });
+
   it("paused: own key first (the default), Free last and not choosable, the subtitle is the service's message", () => {
     const choices = firstRunChoices(paused);
     assert.deepStrictEqual(choices.map((c) => c.value), ["own-key", "free"]);
