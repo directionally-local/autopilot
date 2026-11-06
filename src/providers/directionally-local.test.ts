@@ -565,7 +565,7 @@ describe("Directionally Local free tier", () => {
     it("says plainly when GPT-6 Luna fell back to DeepSeek, once", () => {
       resetDlNoticeState();
       assert.strictEqual(dlFallbackNotice(null), undefined);
-      assert.strictEqual(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"), "GPT-6 Luna didn't answer, so this turn ran on DeepSeek V4.1 Flash.");
+      assert.strictEqual(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"), "OpenAI didn't answer, so this turn ran on DeepSeek V4.1 Flash.");
       assert.strictEqual(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"), undefined, "once per process");
       resetDlNoticeState();
       assert.ok(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"));

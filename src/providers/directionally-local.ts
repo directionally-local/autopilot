@@ -1092,7 +1092,7 @@ export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnow
 }
 
 /**
- * The notice when GPT-6 Luna failed over to DeepSeek: short and honest, from the response's
+ * The notice when an OpenAI model failed over to DeepSeek: short and honest, from the response's
  * `x-dl-fallback` header. Undefined when nothing fell back.
  */
 let fallbackShown = false;
@@ -1100,7 +1100,7 @@ export function dlFallbackNotice(fallback: string | null | undefined): string | 
   if (!fallback || fallbackShown) return undefined;
   fallbackShown = true;
   const model = DL_FREE_MODELS.find((entry) => entry.id === fallback);
-  return `GPT-6 Luna didn't answer, so this turn ran on ${model?.name ?? fallback}.`;
+  return `OpenAI didn't answer, so this turn ran on ${model?.name ?? fallback}.`;
 }
 
 let noticeShownFor: string | null = null;
