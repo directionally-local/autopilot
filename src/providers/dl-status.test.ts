@@ -45,7 +45,14 @@ describe("free tier status", () => {
     assert.deepStrictEqual(await fetchDlStatus({ fetchImpl: (async () => json(paused, 503)) as unknown as typeof fetch, env }), DL_STATUS_OPEN);
     assert.deepStrictEqual(await fetchDlStatus({ fetchImpl: (async () => new Response("<html>")) as unknown as typeof fetch, env }), DL_STATUS_OPEN);
     const hanging = ((_u: string, init: RequestInit) =>
-      new Promise((_r, reject) => init.signal?.addEventListener("abort", () => reject(init.signal?.reason)))) as unknown as typeof fetch;
+      new Promise((_r, reject) => {
+        // Keep the event loop alive so the timeout can fire even when this is the only pending work.
+        const keepAlive = setTimeout(() => {}, 60_000);
+        init.signal?.addEventListener("abort", () => {
+          clearTimeout(keepAlive);
+          reject(init.signal?.reason);
+        });
+      })) as unknown as typeof fetch;
     const started = Date.now();
     assert.deepStrictEqual(await fetchDlStatus({ fetchImpl: hanging, env, timeoutMs: 50 }), DL_STATUS_OPEN);
     assert.ok(Date.now() - started < 1_000);
