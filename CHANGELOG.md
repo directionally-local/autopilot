@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.14.0](https://github.com/directionally-local/autopilot/compare/v3.13.0...v3.14.0) (2026-11-06)
+
+
+### Features
+
+* **free:** GPT-6 Luna is the default free model, with DeepSeek as the backup ([#1170](https://github.com/directionally-local/autopilot/issues/1170)) ([89aabef](https://github.com/directionally-local/autopilot/commit/89aabef82ee236bab91769a152a4af292a875b03))
+* **free:** the client explains Starter, and the pickers show it ([#1175](https://github.com/directionally-local/autopilot/issues/1175)) ([e0e2476](https://github.com/directionally-local/autopilot/commit/e0e247644cddcd6f2687cd6383649fbcf7552188))
+
+
+### Bug Fixes
+
+* **mentions:** @ file mentions work outside a git repo ([#1171](https://github.com/directionally-local/autopilot/issues/1171)) ([ae149f4](https://github.com/directionally-local/autopilot/commit/ae149f40f6697c4c112012d819943968e58ca151))
+
 ## [3.13.0](https://github.com/directionally-local/autopilot/compare/v3.12.0...v3.13.0) (2026-11-05)
 
 
