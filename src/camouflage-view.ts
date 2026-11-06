@@ -1474,6 +1474,7 @@ export class View implements AppBridge {
     // The renderer marks the default "✓ current", so there is one only when a provider is configured.
     const configured = o.firstRun ? undefined : o.cfg?.provider;
     const status = await this.freeTierStatus(o.cfg);
+    const starter = lastKnownDlMe()?.level === "starter";
     const chosen: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : "own-key") : undefined;
     // Paused, Free can't be chosen: it is never the default (own key comes first instead).
     const current = chosen === "free" && !freeChoosable(status) ? undefined : chosen;
@@ -1481,9 +1482,9 @@ export class View implements AppBridge {
     for (;;) {
       const choice = await this.select(
         FIRST_RUN_QUESTION,
-        firstRunChoices(status),
+        firstRunChoices(status, undefined, starter),
         current,
-        firstRunSubtitle(status, o.firstRun ? "Esc to quit" : "Esc to cancel"),
+        firstRunSubtitle(status, o.firstRun ? "Esc to quit" : "Esc to cancel", starter),
       );
       if (choice === null) return null;
       if (choice === "free" && !freeChoosable(status)) {
@@ -2364,13 +2365,18 @@ function pickableModels(): ModelEntry[] {
 export function modelOptions(models: ModelEntry[], current: string): PickOption[] {
   const featured = featuredModels(models);
   const featuredIds = new Set(featured.map((m) => m.id));
+  const me = activeProviderCatalog() === DL_PROVIDER_ID ? lastKnownDlMe() : null;
+  const starter = me?.level === "starter";
   const row = (m: ModelEntry, section: string): PickOption => {
     // On the free tier, each model's own weekly allowance is the useful third column.
-    const allowance = activeProviderCatalog() === DL_PROVIDER_ID ? dlModelAllowanceLine(m.id) : undefined;
+    const allowance = activeProviderCatalog() === DL_PROVIDER_ID ? dlModelAllowanceLine(m.id, me) : undefined;
+    // A Starter account gets DeepSeek only: say so on the GPT-6 rows, and leave DeepSeek active.
+    const locked = starter && m.id !== "deepseek/deepseek-v4.1-flash-1017";
     return {
       value: m.id,
       label: m.id,
       section,
+      ...(locked ? { description: "locked on Starter — DeepSeek only", state: "off" as const } : {}),
       columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing), ...(allowance ? [allowance] : [])],
       keywords: m.name ?? "",
     };

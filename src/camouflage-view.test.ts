@@ -7,7 +7,8 @@ import { helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, 
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/view-types.js";
-import { listModels } from "./models/registry.js";
+import { listModels, registerProviderModels } from "./models/registry.js";
+import { DL_PROVIDER_ID, dlFreeModelEntries, normalizeDlMe, setLastKnownDlMe } from "./providers/directionally-local.js";
 import { bashTool } from "./tools/bash.js";
 import { jobStartTool } from "./tools/jobs.js";
 
@@ -155,6 +156,32 @@ describe("modelOptions", () => {
     const sections = [...new Set(opts.map((o) => o.section))];
     assert.ok(sections.some((x) => x?.startsWith("Best & latest")));
     if (sections[0] === "Current") assert.equal(opts[0]!.value, current);
+  });
+
+  it("locks GPT-6 on Starter and leaves DeepSeek active, with the Starter allowance", () => {
+    const me = normalizeDlMe({
+      login: "starter",
+      level: "starter",
+      levelReason: "account_too_new",
+      thresholds: { minAccountAgeDays: 90, minPublicRepos: 3, minContributions: 50 },
+      allowance: { tokensPerWeek: 5_000_000, usedThisWeek: 0, remaining: 5_000_000, resetsAt: "2026-11-09T00:00:00.000Z" },
+      pools: { luna: { tokensPerWeek: 5_000_000, usedThisWeek: 0, remaining: 5_000_000, models: ["gpt-6-luna", "deepseek/deepseek-v4.1-flash-1017"] } },
+    })!;
+    setLastKnownDlMe(me);
+    const models = dlFreeModelEntries();
+    registerProviderModels(DL_PROVIDER_ID, models);
+    try {
+      const opts = modelOptions(models, "gpt-6-luna");
+      const luna = opts.find((o) => o.value === "gpt-6-luna")!;
+      assert.equal(luna.state, "off");
+      assert.match(luna.description ?? "", /locked on Starter — DeepSeek only/);
+      const deepseek = opts.find((o) => o.value === "deepseek/deepseek-v4.1-flash-1017")!;
+      assert.equal(deepseek.state, undefined);
+      assert.ok(deepseek.columns?.some((c) => /5M of 5M left this week/.test(c)));
+    } finally {
+      setLastKnownDlMe(null);
+      registerProviderModels("openrouter", []);
+    }
   });
 });
 
