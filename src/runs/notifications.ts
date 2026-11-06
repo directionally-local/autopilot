@@ -78,6 +78,31 @@ export function resendTransport(apiKey: string, opts: { fetchImpl?: typeof fetch
   };
 }
 
+/** Experimental Sendar transport. Recorded refusals are replayed by Sendar;
+ * never generate a fresh key or automatically retry a definitive refusal. */
+export function sendarTransport(apiKey: string, opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}): EmailTransport {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  return {
+    async send(message, signal) {
+      if (message.replyTo) throw new NotificationRejected("Sendar: reply-to decisions are unsupported by this adapter", false);
+      if (!/^[-A-Za-z0-9_:]{16,128}$/.test(message.idempotencyKey)) throw new NotificationRejected("Sendar: invalid idempotency key", false);
+      const res = await fetchImpl("https://sendar.app/api/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": message.idempotencyKey },
+        body: JSON.stringify({ from: message.from, to: message.to, subject: message.subject, text: message.text, trackOpens: false, trackClicks: false }),
+        signal: signal ?? AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+      });
+      // Never retain raw response text, which may contain credentials or content.
+      if (res.status === 409 || res.status >= 500) throw new Error(`Sendar ${res.status}: outcome uncertain; inspect history; keep the same key`);
+      if (!res.ok) throw new NotificationRejected(`Sendar ${res.status}: rejected; inspect configuration and history before a deliberate new attempt`, false);
+      let body: { status?: string; providerEmailId?: unknown };
+      try { body = await res.json(); } catch { throw new Error("Sendar: unreadable response; inspect history; keep the same key"); }
+      if (body.status !== "sent" || typeof body.providerEmailId !== "string" || !body.providerEmailId.trim()) throw new Error("Sendar: provider acceptance unconfirmed; inspect history; keep the same key");
+      return { messageId: body.providerEmailId };
+    },
+  };
+}
+
 export interface NotificationSettings {
   to: string[];
   from: string;
@@ -88,21 +113,25 @@ export interface NotificationSettings {
   decisionsReplyTo?: string;
 }
 
-/** Notification settings from config + env (RESEND_API_KEY, AUTOPILOT_NOTIFY_EMAIL_TO / _FROM), or null when off. */
+/** Notification settings from config + env; explicit provider selects its key. Null when off. */
 export function notificationSettingsFromConfig(
-  cfg: { runNotifications?: { email?: { to?: string | string[]; from?: string; events?: string[] } } } | null | undefined,
+  cfg: { runNotifications?: { email?: { to?: string | string[]; from?: string; events?: string[]; provider?: "resend" | "sendar" } } } | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): NotificationSettings | null {
   const email = cfg?.runNotifications?.email;
   const toRaw = env.AUTOPILOT_NOTIFY_EMAIL_TO ?? email?.to;
   const to = (Array.isArray(toRaw) ? toRaw : (toRaw ?? "").split(",")).map((s) => s.trim()).filter(Boolean);
-  const apiKey = env.RESEND_API_KEY?.trim();
+  const provider = env.AUTOPILOT_NOTIFY_EMAIL_PROVIDER ?? email?.provider ?? "resend";
+  if (provider !== "resend" && provider !== "sendar") return null;
+  const apiKey = (provider === "sendar" ? env.SENDAR_API_KEY : env.RESEND_API_KEY)?.trim();
+  const from = env.AUTOPILOT_NOTIFY_EMAIL_FROM ?? email?.from;
+  if (provider === "sendar" && !from?.trim()) return null;
   if (to.length === 0 || !apiKey) return null;
   return {
     to,
-    from: env.AUTOPILOT_NOTIFY_EMAIL_FROM ?? email?.from ?? "Autopilot <onboarding@resend.dev>",
+    from: from ?? "Autopilot <onboarding@resend.dev>",
     ...(email?.events ? { events: email.events } : {}),
-    transport: resendTransport(apiKey),
+    transport: provider === "sendar" ? sendarTransport(apiKey) : resendTransport(apiKey),
     ...(env.AUTOPILOT_DECISIONS_REPLY_TO?.trim() ? { decisionsReplyTo: env.AUTOPILOT_DECISIONS_REPLY_TO.trim() } : {}),
   };
 }

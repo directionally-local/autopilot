@@ -150,9 +150,9 @@ export interface AutopilotConfig {
   /** Attached images are downscaled to this long edge (px) and re-encoded
    *  before upload. 0 sends images unchanged. Default 1568. */
   imageMaxEdge?: number;
-  /** Email the operator about unattended runs (needs RESEND_API_KEY). Env:
+  /** Email the operator about unattended runs (Resend default; optional Sendar). Env:
    *  AUTOPILOT_NOTIFY_EMAIL_TO / AUTOPILOT_NOTIFY_EMAIL_FROM override. */
-  runNotifications?: { email?: { to?: string | string[]; from?: string; events?: string[] } };
+  runNotifications?: { email?: { to?: string | string[]; from?: string; events?: string[]; provider?: "resend" | "sendar" } };
   /** Cap on unattended runs doing work at once (`autopilot serve`). Default 4; env AUTOPILOT_MAX_CONCURRENT_RUNS. */
   maxConcurrentRuns?: number;
   /** JPEG quality (1–100) for re-encoded images. Default 75. */

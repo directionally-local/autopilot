@@ -10,6 +10,7 @@ import {
   NotificationRejected,
   redactForEmail,
   resendTransport,
+  sendarTransport,
   type EmailMessage,
   type EmailTransport,
   type NotificationSettings,
@@ -150,5 +151,71 @@ describe("run notifications", () => {
   it("redacts credential-looking strings", () => {
     assert.strictEqual(redactForEmail("use ghp_abcdefghijklmnopqrstu1234 now"), "use [redacted] now");
     assert.strictEqual(redactForEmail("password: hunter2"), "password=[redacted]");
+  });
+});
+
+// Sendar tests never use the network or a real API key.
+describe("Sendar adapter", () => {
+  const message: EmailMessage = { from: "bot@example.com", to: ["operator@example.net"], subject: "Run finished", text: "Status: completed", idempotencyKey: "ntf_1234567890123456" };
+  it("maps explicit recipients and records only a provider-accepted id", async () => {
+    let calls = 0;
+    const transport = sendarTransport("synthetic", { fetchImpl: (async (url, init) => {
+      calls++;
+      assert.strictEqual(url, "https://sendar.app/api/emails");
+      assert.strictEqual((init!.headers as Record<string, string>)["Idempotency-Key"], message.idempotencyKey);
+      assert.deepStrictEqual(JSON.parse(init!.body as string), {from: message.from, to: message.to, subject: message.subject, text: message.text, trackOpens: false, trackClicks: false});
+      return Response.json({id: 42, status: "sent", providerEmailId: "provider-42"}, {status: 201});
+    }) as typeof fetch });
+    assert.deepStrictEqual(await transport.send(message), {messageId: "provider-42"});
+    assert.strictEqual(calls, 1);
+  });
+  it("requires opt-in provider, recipient, key and verified sender; preserves Resend default", () => {
+    assert.strictEqual(notificationSettingsFromConfig(null, {SENDAR_API_KEY: "synthetic", AUTOPILOT_NOTIFY_EMAIL_TO: "operator@example.net"}), null);
+    const env = {SENDAR_API_KEY: "synthetic", AUTOPILOT_NOTIFY_EMAIL_PROVIDER: "sendar", AUTOPILOT_NOTIFY_EMAIL_TO: "operator@example.net"};
+    assert.strictEqual(notificationSettingsFromConfig(null, env), null);
+    assert.ok(notificationSettingsFromConfig(null, {...env, AUTOPILOT_NOTIFY_EMAIL_FROM: "bot@example.com"}));
+    assert.strictEqual(notificationSettingsFromConfig(null, {...env, AUTOPILOT_NOTIFY_EMAIL_FROM: "bot@example.com", AUTOPILOT_NOTIFY_EMAIL_TO: ""}), null);
+    assert.ok(notificationSettingsFromConfig(null, {RESEND_API_KEY: "synthetic", AUTOPILOT_NOTIFY_EMAIL_TO: "operator@example.net"}));
+  });
+  it("refuses unsupported reply-to before sending", async () => {
+    let calls = 0;
+    const transport = sendarTransport("synthetic", { fetchImpl: (async () => { calls++; throw Error("unexpected network"); }) as typeof fetch });
+    await assert.rejects(() => transport.send({...message, replyTo: "decisions@example.net"}), NotificationRejected);
+    await assert.rejects(() => transport.send({...message, idempotencyKey: "short"}), NotificationRejected);
+    assert.strictEqual(calls, 0);
+  });
+  it("keeps uncertain outcomes uncertain and refusals terminal without raw error leakage", async () => {
+    for (const status of [400, 401, 403, 429, 409, 500, 503]) {
+      let calls = 0;
+      const transport = sendarTransport("synthetic", {fetchImpl: (async () => {calls++; return new Response("SECRET", {status});}) as typeof fetch});
+      await assert.rejects(() => transport.send(message), (err: Error) => {
+        assert.doesNotMatch(err.message, /SECRET/);
+        assert.strictEqual(err instanceof NotificationRejected, status < 500 && status !== 409);
+        if (err instanceof NotificationRejected) assert.strictEqual(err.retryable, false);
+        return true;
+      });
+      assert.strictEqual(calls, 1);
+    }
+    for (const response of [Response.json({id: 42, status: "queued"}), Response.json({status: "sent"}), new Response("not-json")]) {
+      await assert.rejects(() => sendarTransport("synthetic", {fetchImpl: (async () => response) as typeof fetch}).send(message));
+    }
+  });
+  it("preserves signal and stable key across timeout recovery with fake transport", async () => {
+    const s = store();
+    const id = finishedRun(s);
+    const keys: string[] = [];
+    const transport = sendarTransport("synthetic", {fetchImpl: (async (_url, init) => {
+      keys.push((init!.headers as Record<string, string>)["Idempotency-Key"]!);
+      if (keys.length === 1) throw new Error("timeout");
+      return Response.json({status: "sent", providerEmailId: "provider-recovered"});
+    }) as typeof fetch});
+    await dispatchNotifications(s, settings(transport));
+    assert.strictEqual(s.listNotifications(id)[0]!.status, "uncertain");
+    await dispatchNotifications(s, settings(transport));
+    assert.strictEqual(s.listNotifications(id)[0]!.providerMessageId, "provider-recovered");
+    assert.strictEqual(keys[0], keys[1]);
+    s.close();
+    const signal = new AbortController().signal;
+    await sendarTransport("synthetic", {fetchImpl: (async (_url, init) => {assert.strictEqual(init!.signal, signal); return Response.json({status: "sent", providerEmailId: "p"});}) as typeof fetch}).send(message, signal);
   });
 });
