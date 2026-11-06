@@ -14,7 +14,7 @@
  * (https://models.dev/api.json) on 2026-10-20.
  */
 
-import { dlApiBase } from "./dl-endpoint.js";
+import { DL_FREE_DEFAULT_MODEL, dlApiBase } from "./dl-endpoint.js";
 
 export const PROVIDER_IDS = [
   "directionally-local",
@@ -171,8 +171,8 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     apiKeyEnv: ["AUTOPILOT_DL_FREE_TOKEN"],
     keyRequired: true,
     subscription: true,
-    defaultModel: "deepseek/deepseek-v4.1-flash-1017",
-    plumbingModel: "deepseek/deepseek-v4.1-flash-1017",
+    defaultModel: DL_FREE_DEFAULT_MODEL,
+    plumbingModel: DL_FREE_DEFAULT_MODEL,
     embedding: null,
     catalog: "directionally-local",
     // Forwarded to OpenRouter as-is: reasoning comes back the OpenRouter way.

@@ -28,10 +28,14 @@ import {
   formatLocalTime,
   localResetWeekday,
   nextWeekStart,
+  normalizeDlMe,
   parseDlError,
   DL_DISCLOSURE,
   DL_FREE_MODEL,
+  DL_FREE_MODELS,
   dlApiBase,
+  dlFallbackNotice,
+  dlModelAllowanceLine,
   dlNotFreeLine,
   dlPickerHint,
   dlSignIn,
@@ -167,12 +171,12 @@ describe("Directionally Local free tier", () => {
   });
 
   describe("preset", () => {
-    it("is OpenAI-compatible at AUTOPILOT_DL_FREE_URL + /v1 with one model and no pasted key", () => {
+    it("is OpenAI-compatible at AUTOPILOT_DL_FREE_URL + /v1 with the free models and no pasted key", () => {
       const p = getPreset("directionally-local");
       assert.strictEqual(p.name, "Directionally Local, free");
       assert.strictEqual(p.protocol ?? "openai-chat", "openai-chat");
-      assert.strictEqual(p.defaultModel, "deepseek/deepseek-v4.1-flash-1017");
-      assert.strictEqual(p.plumbingModel, "deepseek/deepseek-v4.1-flash-1017");
+      assert.strictEqual(p.defaultModel, "gpt-6-luna");
+      assert.strictEqual(p.plumbingModel, "gpt-6-luna");
       assert.strictEqual(p.catalog, "directionally-local");
       assert.strictEqual(p.keysUrl, undefined);
       assert.strictEqual(dlApiBase({ AUTOPILOT_DL_FREE_URL: "http://x:9/" }), "http://x:9/v1");
@@ -188,17 +192,18 @@ describe("Directionally Local free tier", () => {
 
     it("is first in the picker with the weekly allowance, and a sign-in (not a key) to connect", () => {
       assert.strictEqual(PROVIDER_CHOICES[0]?.id, "directionally-local");
-      assert.strictEqual(dlPickerHint(), "free — 50M tokens/week, sign in with GitHub");
+      assert.strictEqual(dlPickerHint(), "free — GPT-6 Luna + DeepSeek, 50M tokens/week, sign in with GitHub");
       const rows = providerRows(null, { env: {} });
       assert.strictEqual(rows[0]?.id, "directionally-local");
       assert.deepStrictEqual(planConnect("directionally-local", null, {}), { kind: "directionally-local" });
       assert.ok(HIDDEN_WITHOUT_GATEWAY.has("directionally-local"), "not offered with --state-file");
     });
 
-    it("lists only the free model", async () => {
+    it("lists every free model, all priced at zero", async () => {
       await ensureProviderCatalog("directionally-local", {}, (async () => { throw new Error("offline"); }) as unknown as typeof fetch);
-      assert.deepStrictEqual(listModels().map((m) => m.id), [DL_FREE_MODEL]);
-      assert.strictEqual(listModels()[0]?.pricing.inputPerMtok, 0);
+      assert.deepStrictEqual(listModels().map((m) => m.id), DL_FREE_MODELS.map((m) => m.id));
+      assert.strictEqual(listModels()[0]?.id, DL_FREE_MODEL);
+      for (const model of listModels()) assert.strictEqual(model.pricing.inputPerMtok, 0);
     });
 
     it("restores the free model when switching back to the free tier", async () => {
@@ -244,7 +249,7 @@ describe("Directionally Local free tier", () => {
     it("says what sign-in collects, and that cancelling leaves it unconnected", () => {
       const before = dlSignInLines().split("\n");
       assert.deepStrictEqual(before, [
-        "Free: 50M tokens a week on deepseek/deepseek-v4.1-flash-1017, no credit card. Sign in with GitHub to start.",
+        "Free: GPT-6 Luna + DeepSeek, 50M tokens a week, no credit card. Sign in with GitHub to start.",
         DL_DISCLOSURE,
       ]);
       const code = { deviceCode: "d", userCode: "ABCD-1234", verificationUri: "u", verificationUriComplete: "https://x/device?code=ABCD-1234", intervalSec: 5, expiresInSec: 600 };
@@ -538,6 +543,33 @@ describe("Directionally Local free tier", () => {
       assert.strictEqual(notices.length, 1);
       assert.match(notices[0]!, /^You've used 98% of this week's free Directionally Local tokens \(1M left/);
     });
+
+    it("shows each free model's own weekly allowance from /v1/me's pools", () => {
+      const me = normalizeDlMe({
+        login: "alice",
+        allowance: { tokensPerWeek: 50_000_000, usedThisWeek: 1_000_000, remaining: 49_000_000, resetsAt: "2026-11-09T00:00:00.000Z" },
+        pools: {
+          luna: { tokensPerWeek: 50_000_000, usedThisWeek: 1_000_000, remaining: 49_000_000, models: ["gpt-6-luna", "deepseek/deepseek-v4.1-flash-1017"] },
+          sol: { tokensPerWeek: 10_000_000, usedThisWeek: 0, remaining: 10_000_000, models: ["gpt-6.1-sol"] },
+          astra: { tokensPerWeek: 3_000_000, usedThisWeek: 3_000_000, remaining: 0, models: ["gpt-6-astra"] },
+        },
+      })!;
+      assert.strictEqual(dlModelAllowanceLine("gpt-6-luna", me), "49M of 50M left this week");
+      assert.strictEqual(dlModelAllowanceLine("deepseek/deepseek-v4.1-flash-1017", me), "49M of 50M left this week", "Luna and DeepSeek share one pool");
+      assert.strictEqual(dlModelAllowanceLine("gpt-6.1-sol", me), "10M of 10M left this week");
+      assert.strictEqual(dlModelAllowanceLine("gpt-6-astra", me), "0 of 3M left this week");
+      assert.strictEqual(dlModelAllowanceLine("openai/gpt-5", me), undefined, "not a free model");
+      assert.strictEqual(dlModelAllowanceLine("gpt-6-luna", null), undefined, "no account read yet");
+    });
+
+    it("says plainly when GPT-6 Luna fell back to DeepSeek, once", () => {
+      resetDlNoticeState();
+      assert.strictEqual(dlFallbackNotice(null), undefined);
+      assert.strictEqual(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"), "OpenAI didn't answer, so this turn ran on DeepSeek V4.1 Flash.");
+      assert.strictEqual(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"), undefined, "once per process");
+      resetDlNoticeState();
+      assert.ok(dlFallbackNotice("deepseek/deepseek-v4.1-flash-1017"));
+    });
   });
 
   describe("error messages", () => {
@@ -573,7 +605,7 @@ describe("Directionally Local free tier", () => {
       assert.match(describeDlError("not_invited")!, /^This GitHub account isn't on the free tier\. Your own key works now: \/provider$/);
       assert.match(describeDlError("suspended")!, /account is suspended.*Your own key works now: \/provider$/);
       assert.strictEqual(describeDlError("rate_limited", { retryAfter: 12 }), "Directionally Local is limiting how fast you send requests; try again in 12 seconds.");
-      assert.match(describeDlError("model_not_allowed")!, /only serves deepseek\/deepseek-v4\.1-flash-1017/);
+      assert.match(describeDlError("model_not_allowed")!, /serves gpt-6-luna, gpt-6\.1-sol, gpt-6-astra, deepseek\/deepseek-v4\.1-flash-1017/);
       for (const code of ["quota_exceeded", "service_paused", "suspended", "not_invited", "cohort_full", "account_too_new"]) {
         assert.doesNotMatch(describeDlError(code, tokyo)!, /\/model or|autopilot connect|UTC/, `${code}: the switch is /provider, times are local`);
       }
@@ -651,7 +683,7 @@ describe("Directionally Local free tier", () => {
       [503, { error: { code: "paused", resets_at: "2026-11-09T00:00:00.000Z" } }, /Free tokens are paused for everyone until \w{3} \d\d:\d\d\./, 1],
       [503, { error: { code: "global_weekly_budget_reached", reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z", pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone until \w{3} \d\d:\d\d\. Your own key works now: \/provider$/, 1],
       [503, { error: { code: "global_total_budget_reached", reason: "total_budget", resetsAt: null, pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone\. Your own key works now: \/provider$/, 1],
-      [400, { error: { code: "model_not_allowed" } }, /only serves deepseek\/deepseek-v4\.1-flash-1017/, 1],
+      [400, { error: { code: "model_not_allowed" } }, /serves gpt-6-luna, gpt-6\.1-sol, gpt-6-astra, deepseek\/deepseek-v4\.1-flash-1017/, 1],
     ];
     for (const [status, body, pattern, calls] of cases) {
       const code = (body as { error: { code: string } }).error.code;

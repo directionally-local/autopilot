@@ -30,7 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlCheckout, dlHeaderLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlCheckout, dlHeaderLine, dlModelAllowanceLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
@@ -69,7 +69,7 @@ import {
   type KeySource,
 } from "./providers/connect.js";
 import { OPENROUTER_KEYS_URL } from "./models/openrouter.js";
-import { featuredModels, listModels, type ModelEntry } from "./models/registry.js";
+import { activeProviderCatalog, featuredModels, listModels, type ModelEntry } from "./models/registry.js";
 import { formatContext, formatModelPrice } from "./ui/model-format.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 import { launchedByDl } from "./util/env.js";
@@ -2364,13 +2364,17 @@ function pickableModels(): ModelEntry[] {
 export function modelOptions(models: ModelEntry[], current: string): PickOption[] {
   const featured = featuredModels(models);
   const featuredIds = new Set(featured.map((m) => m.id));
-  const row = (m: ModelEntry, section: string): PickOption => ({
-    value: m.id,
-    label: m.id,
-    section,
-    columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing)],
-    keywords: m.name ?? "",
-  });
+  const row = (m: ModelEntry, section: string): PickOption => {
+    // On the free tier, each model's own weekly allowance is the useful third column.
+    const allowance = activeProviderCatalog() === DL_PROVIDER_ID ? dlModelAllowanceLine(m.id) : undefined;
+    return {
+      value: m.id,
+      label: m.id,
+      section,
+      columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing), ...(allowance ? [allowance] : [])],
+      keywords: m.name ?? "",
+    };
+  };
   const out: PickOption[] = [];
   const cur = models.find((m) => m.id === current);
   if (cur && !featuredIds.has(cur.id)) out.push(row(cur, "Current"));

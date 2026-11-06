@@ -287,9 +287,9 @@ export async function ensureProviderCatalog(
         .filter((m) => CHATGPT_MODELS.has(m.id))
         .map((m) => ({ ...m, pricing: { inputPerMtok: 0, outputPerMtok: 0 } }));
     } else if (preset.catalog === "directionally-local") {
-      // Free only: the one model the free tier serves, never anything else.
-      const { dlFreeModelEntry } = await import("../providers/directionally-local.js");
-      models = [dlFreeModelEntry()];
+      // Free only: the models the free tier serves, never anything else.
+      const { dlFreeModelEntries } = await import("../providers/directionally-local.js");
+      models = dlFreeModelEntries();
     } else if (preset.catalog === "ollama" && endpoint.baseUrl) {
       models = await discoverOllamaModels(endpoint.baseUrl, fetchImpl);
     } else if ((preset.catalog === "openai-models" || preset.catalog === "none") && endpoint.baseUrl) {
