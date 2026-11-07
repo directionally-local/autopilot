@@ -88,3 +88,23 @@ describe("dl server GitHub proxy", () => {
     }
   });
 });
+
+describe("proxy shutdown", () => {
+  // Regression: close() used to only stop accepting, so a socket held open by a cell
+  // kept the server (and the whole process, e.g. a test runner) alive indefinitely.
+  it("close() destroys held-open connections and releases the port", async () => {
+    const { connect } = await import("node:net");
+    const proxy = new DlGitHubProxy({ token: "t", resolveGrant: () => undefined });
+    const port = await proxy.listen(0, "127.0.0.1");
+
+    const socket = connect(port, "127.0.0.1");
+    await new Promise<void>((resolve) => socket.once("connect", resolve));
+    const socketClosed = new Promise<boolean>((resolve) => {
+      socket.once("close", (hadError) => resolve(hadError));
+    });
+
+    await proxy.close();
+    assert.equal(await socketClosed, false, "the held connection is destroyed cleanly");
+    await assert.rejects(fetch(`http://127.0.0.1:${port}/git/me/app.git/info/refs?service=git-upload-pack`), "the port is released");
+  });
+});
