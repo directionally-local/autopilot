@@ -6,6 +6,7 @@ import type { ChatMessage } from "./messages.js";
 import type { HooksManager } from "../hooks/manager.js";
 import type { ToolSpec } from "../tools/registry.js";
 import { secureSandboxUnavailableReason } from "../code-mode/index.js";
+import { _resetModelProfileOverridesForTests, configureModelProfiles } from "../models/profile.js";
 
 // These turns pass a session id; keep their JSONL transcripts out of the real sessions dir.
 process.env.KIMIFLARE_TRANSCRIPT = "0";
@@ -248,6 +249,55 @@ describe("runAgentTurn guardrails (unattended)", () => {
     );
     assert.strictEqual(opts.messages.at(-1)!.content, "done, different approach");
     assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("honors a model profile's loop threshold (#999)", async () => {
+    // loopThreshold 4: the 5th identical call is blocked, so four identical
+    // calls in a row all execute where the default (2) blocks the 3rd.
+    configureModelProfiles([{ match: "test/model", loopThreshold: 4 }]);
+    try {
+      const model = scriptModel([SAME, SAME, SAME, SAME, { text: "done" }]);
+      const { executor, runs } = fakeExecutor();
+      const events: GuardrailEvent[] = [];
+      const opts = baseOpts(executor, events);
+
+      await runAgentTurn(opts);
+
+      assert.deepStrictEqual(events, []);
+      assert.strictEqual(runs.length, 4);
+      assert.strictEqual(model.requests, 5);
+      assert.strictEqual(opts.messages.at(-1)!.content, "done");
+      assertNoDanglingToolCalls(opts.messages);
+    } finally {
+      _resetModelProfileOverridesForTests();
+    }
+  });
+
+  it("honors a model profile's per-turn web-fetch budget (#999)", async () => {
+    configureModelProfiles([{ match: "test/model", webFetchPerTurn: 2 }]);
+    try {
+      const model = scriptModel([
+        { tool: "web_fetch", args: { url: "https://example.com/a" } },
+        { tool: "web_fetch", args: { url: "https://example.com/b" } },
+        { tool: "web_fetch", args: { url: "https://example.com/c" } },
+        { text: "done" },
+      ]);
+      const { executor, runs } = fakeExecutor();
+      const events: GuardrailEvent[] = [];
+      const opts = baseOpts(executor, events, { tools: [WEB_FETCH_TOOL] });
+
+      await runAgentTurn(opts);
+
+      assert.strictEqual(runs.length, 2);
+      assert.ok(
+        opts.messages.some(
+          (m) => m.role === "tool" && String(m.content).includes("already made 2 web requests this turn"),
+        ),
+      );
+      assertNoDanglingToolCalls(opts.messages);
+    } finally {
+      _resetModelProfileOverridesForTests();
+    }
   });
 
   it("blocks a repeat of a call that already failed on its arguments", async () => {

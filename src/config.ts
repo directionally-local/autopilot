@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { isProviderId, PROVIDER_PRESETS, type ProviderId } from "./providers/presets.js";
 import { isProviderUsable, noteActiveProvider, resolveActiveProvider, resolveProviderId, type ProviderSettings } from "./providers/resolve.js";
 import { migrateLegacyModelId } from "./models/registry.js";
+import { configureModelProfiles, type ModelProfileOverride } from "./models/profile.js";
 import { DEFAULT_AUTO_COMPACT_CAP_TOKENS } from "./agent/context-budget.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
@@ -142,6 +143,16 @@ export interface AutopilotConfig {
    * drops below ~95%. See src/intent/model-routing.ts.
    */
   modelRouting?: ModelRoutingConfig;
+  /**
+   * Model behavior profile overrides (#999). Built-in profiles (see
+   * src/models/profile.ts) match a model family no matter which provider
+   * serves it; entries here extend or override them field-by-field — tune
+   * one knob without re-declaring the rest, or add a profile for a family
+   * the harness does not know yet. Each entry matches by a case-insensitive
+   * substring, or a `/regex/` literal, against the model id:
+   * `[{ "match": "qwen3.6", "promptAddendum": "…", "maxToolContentChars": 24000 }]`.
+   */
+  modelProfiles?: ModelProfileOverride[];
   /**
    * Feature flag for the plan / edit / auto permission modes. Off by default:
    * every session runs in auto (tools run without per-call prompts) and the
@@ -548,7 +559,12 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     postEditDiagnostics: readBooleanEnv("POST_EDIT_DIAGNOSTICS") ?? persisted.postEditDiagnostics ?? true,
     postEditDiagnosticsWarnings: readBooleanEnv("POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,
     trace: resolveTraceConfig(persisted.trace),
+    modelProfiles: persisted.modelProfiles,
   };
+
+  // Model profiles (#999): config overrides replace the registry on every
+  // load, so a `/settings`-triggered reload picks up edited rules.
+  configureModelProfiles(cfg.modelProfiles);
 
   // One-time cleanup of a Cloudflare-era config file: rewrite it without the
   // retired fields (OAuth session, gateway, unified billing, BYOK keys for

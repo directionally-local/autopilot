@@ -63,8 +63,9 @@ export function toolOutputCapForContextWindow(contextWindow: number): number {
   return Math.min(MAX_CONTEXT_OUTPUT_CHARS, Math.max(MIN_CONTEXT_OUTPUT_CHARS, Math.floor(contextWindow * 0.04)));
 }
 
-export function reducerConfigForContextWindow(contextWindow: number): ReducerConfig {
-  const maxOutputChars = toolOutputCapForContextWindow(contextWindow);
+/** Model profiles (#999) can pin the cap instead of deriving it from the window. */
+export function reducerConfigForContextWindow(contextWindow: number, maxOutputCharsOverride?: number): ReducerConfig {
+  const maxOutputChars = maxOutputCharsOverride ?? toolOutputCapForContextWindow(contextWindow);
   return {
     ...DEFAULT_REDUCER_CONFIG,
     read: {
