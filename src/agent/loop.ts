@@ -17,18 +17,17 @@ import type { Task, PlanOption, RunWaitRequest } from "../tools/registry.js";
 import type { MemoryManager } from "../memory/manager.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { HybridResult } from "../memory/schema.js";
-import { hasRecalledMemory, injectRecalledMemoryOnce } from "../memory/recall-inject.js";
-import { logTurnDebug, logTurnOutcome, analyzePrompt, type MemoryRecallDebug, type TurnOutcome } from "../cost-debug.js";
+import { hasRecalledMemory } from "../memory/recall-inject.js";
+import { logTurnDebug, logTurnOutcome, analyzePrompt, type TurnOutcome } from "../cost-debug.js";
 import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extractors.js";
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
 import type { SandboxReadCursor } from "../code-mode/index.js";
 import { estimatePromptTokens } from "./artifact-compaction.js";
 import { logger } from "../util/logger.js";
-import { selectSkills } from "../skills/router.js";
+import { prepareTurn } from "./pre-turn.js";
 import type { SemanticSkillRoutingResult } from "../skills/types.js";
 import type { SqliteDatabase } from "../util/sqlite.js";
-import { buildSystemPrompt, buildSessionPrefix } from "./system-prompt.js";
 import { getModelOrInfer } from "../models/registry.js";
 import { modelProfileFor } from "../models/profile.js";
 import { toolOutputCapForContextWindow } from "../tools/reducer.js";
@@ -385,32 +384,6 @@ export function lastAssistantMessage(messages: readonly ChatMessage[]): { last_a
   return {};
 }
 
-function extractLastUserText(messages: ChatMessage[]): string {
-  const lastUser = [...messages].reverse().find((m) => m.role === "user");
-  if (!lastUser) return "";
-  if (typeof lastUser.content === "string") return lastUser.content;
-  if (Array.isArray(lastUser.content)) {
-    return lastUser.content
-      .filter((p): p is { type: "text"; text: string } => p.type === "text")
-      .map((p) => p.text)
-      .join(" ");
-  }
-  return "";
-}
-
-function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      if (signal.aborted) {
-        reject(new DOMException("aborted", "AbortError"));
-      } else {
-        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-      }
-    }),
-  ]);
-}
-
 /** Per-turn trace bookkeeping shared by the loop body and the `turn_end` emit. */
 interface TurnTrace {
   trace: TraceRecorder;
@@ -609,12 +582,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     }
   };
 
-  // --- Pre-turn async work (memory recall + skill routing, in parallel) ---
-  const preTurnStart = performance.now();
-  let memoryRecalledCount = 0;
-  let skillResult: SemanticSkillRoutingResult | undefined;
-
-  const lastUserPrompt = extractLastUserText(opts.messages);
+  // Pre-turn phase (#951): memory recall, skill routing and the delegation
+  // directive live in pre-turn.ts, so every host gets them identically.
   // Anchor for the transient per-turn directive (see withTurnDirective).
   const turnUserMessage = [...opts.messages].reverse().find((m) => m.role === "user");
   // Claude Code-style JSONL transcript beside the session file (#892): what
@@ -624,136 +593,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   if (transcript && turnUserMessage && opts.messages.lastIndexOf(turnUserMessage) > opts.messages.findLastIndex((m) => m.role === "assistant")) {
     transcript.appendUser(turnUserMessage);
   }
+  const preTurn = await prepareTurn(opts);
+  const { lastUserPrompt, delegationDirective, skillResult, memoryRecallDebug, memoryRecalledCount, preTurnMs } = preTurn;
   const userPromptPreview = lastUserPrompt.slice(0, 200);
-
-  // Light + trivially short prompts skip skill routing entirely. These almost
-  // never benefit from injected skills and the embeddings round-trip dominates
-  // their wall-clock time. Threshold is conservative — anything substantive
-  // crosses 40 chars quickly.
-  const skipSkillRouting =
-    opts.intentClassification?.tier === "light" &&
-    lastUserPrompt.length < 40;
-
-  // Session-start recall is a ONE-SHOT: the supervisor reuses the same recall
-  // promise across every runAgentTurn invocation, so without this guard we
-  // re-synthesize (a byte-different paraphrase) and re-splice a recall block on
-  // every turn, stacking duplicates at the front of the array and busting the
-  // prompt-prefix cache. Skip entirely once a block is already present.
-  //
-  // `memoryRecallDebug` records the gate decision for cost-debug.jsonl —
-  // "memory never fires" was undebuggable when only a boolean was logged.
-  const memoryRecallDebug: MemoryRecallDebug = { attempted: false, candidates: 0, injected: false };
-  if (!opts.sessionStartRecall || !opts.memoryManager) memoryRecallDebug.reason = "disabled";
-  else if (hasRecalledMemory(opts.messages)) memoryRecallDebug.reason = "already-present";
-  const recallPromise: Promise<{ text: string; count: number } | null> =
-    opts.sessionStartRecall && opts.memoryManager && !hasRecalledMemory(opts.messages)
-      ? (async () => {
-          memoryRecallDebug.attempted = true;
-          const results = await opts.sessionStartRecall!(lastUserPrompt || opts.cwd);
-          memoryRecallDebug.candidates = results.length;
-          if (results.length === 0 || !opts.memoryManager) {
-            memoryRecallDebug.reason = "no-results";
-            return null;
-          }
-          const text = await opts.memoryManager.synthesizeRecalled(results, opts.signal);
-          if (!text) {
-            memoryRecallDebug.reason = "synthesis-empty";
-            return null;
-          }
-          return { text, count: results.length };
-        })()
-      : Promise.resolve(null);
-
-  const skillsPromise: Promise<SemanticSkillRoutingResult | undefined> =
-    opts.skillsDb && opts.skillRoutingConfig && opts.intentClassification && lastUserPrompt && !skipSkillRouting
-      ? selectSkills(
-          {
-            prompt: lastUserPrompt,
-            tier: opts.intentClassification.tier,
-            maxSkillTokens: opts.skillRoutingConfig.maxSkillTokens ?? 250_000 - 10_000,
-          },
-          {
-            db: opts.skillsDb,
-            ...(opts.skillRoutingConfig.embeddingAuth ?? llmAuthOf(opts)),
-            embeddingModel: opts.skillRoutingConfig.embeddingModel,
-          },
-        )
-      : Promise.resolve(undefined);
-
-  const [recallSettled, skillsSettled, directiveSettled] = await Promise.allSettled([
-    raceWithSignal(recallPromise, opts.signal),
-    raceWithSignal(skillsPromise, opts.signal),
-    raceWithSignal(Promise.resolve(opts.delegationDirective), opts.signal),
-  ]);
-  const delegationDirective = directiveSettled.status === "fulfilled" ? directiveSettled.value : undefined;
-
-  // Propagate abort; swallow other failures (all paths are non-fatal).
-  for (const settled of [recallSettled, skillsSettled, directiveSettled]) {
-    if (
-      settled.status === "rejected" &&
-      settled.reason instanceof DOMException &&
-      settled.reason.name === "AbortError"
-    ) {
-      throw settled.reason;
-    }
-  }
-
-  if (recallSettled.status === "fulfilled" && recallSettled.value) {
-    const { text, count } = recallSettled.value;
-    if (injectRecalledMemoryOnce(opts.messages, text)) {
-      memoryRecalledCount = count;
-      memoryRecallDebug.injected = true;
-      delete memoryRecallDebug.reason;
-      opts.callbacks.onMemoryRecalled?.(count);
-    }
-  } else if (recallSettled.status === "rejected") {
-    // Abort rejections rethrow above; only genuine recall errors land here.
-    memoryRecallDebug.reason = "error";
-  }
-
-  if (skillsSettled.status === "fulfilled" && skillsSettled.value) {
-    skillResult = skillsSettled.value;
-    opts.callbacks.onSkillsSelected?.(skillResult);
-
-    const allTools = opts.tools;
-    if (opts.cacheStable) {
-      opts.messages[1] = {
-        role: "system",
-        content: buildSessionPrefix({
-          cwd: opts.cwd,
-          tools: allTools,
-          model: opts.model,
-          mode: opts.mode,
-          skillContext: skillResult.skillContext,
-          preferPullRequests: opts.preferPullRequests,
-        }),
-      };
-    } else {
-      opts.messages[0] = {
-        role: "system",
-        content: buildSystemPrompt({
-          cwd: opts.cwd,
-          tools: allTools,
-          model: opts.model,
-          mode: opts.mode,
-          skillContext: skillResult.skillContext,
-          preferPullRequests: opts.preferPullRequests,
-        }),
-      };
-    }
-  }
-
-  if (opts.signal.aborted) {
-    throw new DOMException("aborted", "AbortError");
-  }
-
-  const preTurnMs = Math.round(performance.now() - preTurnStart);
-
-  opts.callbacks.onMetaBanner?.({
-    intentTier: opts.intentClassification?.tier ?? "medium",
-    skillsActive: skillResult?.sectionCount ?? 0,
-    memoryRecalled: memoryRecalledCount > 0,
-  });
 
   let toolDefs: ReturnType<typeof toOpenAIToolDefs>;
   let codeModeApiString = "";
