@@ -161,6 +161,8 @@ async function runWorker(
         status,
         durationMs: Date.now() - startedAt,
         costUsd: extra.costUsd ?? 0,
+        workerId: handle.id,
+        taskPreview: args.mission.slice(0, 120),
         ...(failureReason(extra.error) ? { reason: failureReason(extra.error) } : {}),
         ...(extra.localChanges ? { localChanges: extra.localChanges } : {}),
       });

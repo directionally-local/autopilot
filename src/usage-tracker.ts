@@ -8,6 +8,7 @@ import type { ProviderPreset } from "./providers/presets.js";
 import { calculateCost } from "./pricing.js";
 import { fetchWithNetworkRetry, openRouterHeaders, openRouterUrl } from "./models/openrouter.js";
 import { RETENTION } from "./storage-limits.js";
+import { logProviderResolution } from "./cost-debug.js";
 import { recoverJsonPrefix, withFileLock, writeFileAtomic } from "./util/atomic-file.js";
 import { dataPath } from "./util/app-dirs.js";
 
@@ -346,6 +347,14 @@ export async function recordUsage(
         tokensIn: usage.prompt_tokens,
         tokensOut: usage.completion_tokens,
       });
+      if (lookup?.meta.provider && generationId) {
+        void logProviderResolution({
+          sessionId,
+          generationId,
+          provider: lookup.meta.provider,
+          costUsd: inlineCost,
+        });
+      }
     }
 
     await saveLog(log);
@@ -422,6 +431,18 @@ export async function reconcileTurnCost(
 
     if (patched) {
       usageEvents.emit("update", sessionId);
+      // Direct provider attribution for cost-debug.jsonl (trace analysis
+      // item 8): joins to the per-step rows via generationId, no API
+      // sampling needed to answer "which upstream was slow?".
+      if (confirmed.provider && confirmed.logId) {
+        void logProviderResolution({
+          sessionId,
+          generationId: confirmed.logId,
+          provider: confirmed.provider,
+          costUsd: confirmed.cost,
+          ...(confirmed.duration !== undefined ? { latencyMs: confirmed.duration } : {}),
+        });
+      }
     }
     return;
   }

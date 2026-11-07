@@ -26,6 +26,11 @@ export type SubagentEvent =
       /** Short failure category, never raw output. */
       reason?: string;
       localChanges?: number;
+      /** Background worker id, when this ran as a background subagent. */
+      workerId?: string;
+      /** First 120 chars of the mission — enough to label what subagents get
+       *  asked to do (the Nov-2026 trace analysis found no task recorded). */
+      taskPreview?: string;
     };
 
 export function subagentStatsPath(): string {

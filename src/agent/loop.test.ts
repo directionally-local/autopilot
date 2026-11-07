@@ -1,5 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { dataPath } from "../util/app-dirs.js";
 import { runAgentTurn } from "./loop.js";
 import { ToolExecutor as RealToolExecutor, type ToolExecutor, type PermissionRequest } from "../tools/executor.js";
 import type { ChatMessage } from "./messages.js";
@@ -1152,5 +1154,51 @@ describe("runAgentTurn", () => {
     assert.equal(bodies.length, 2);
     assert.ok(!bodies[0]!.messages.some((m) => String(m.content).includes("only bookkeeping")));
     assert.ok(bodies[1]!.messages.some((m) => String(m.content).includes("only bookkeeping (tasks_set)")));
+  });
+
+  it("labels a finished turn with a completed outcome row and requestId join keys", async () => {
+    const sessionId = `outcome-test-${Date.now()}`;
+    const encoder = new TextEncoder();
+    globalThis.fetch = async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] })}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = { list: () => [], run: async () => ({ tool_call_id: "x", name: "x", content: "ok", ok: true }) } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      executor,
+      cwd: "/tmp",
+      sessionId,
+      signal: new AbortController().signal,
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    // logTurnDebug / logTurnOutcome are fire-and-forget: poll until the
+    // append lands (or fail after a generous window).
+    const deadline = Date.now() + 2000;
+    let rows: Array<Record<string, unknown>> = [];
+    while (Date.now() < deadline) {
+      rows = readFileSync(dataPath("cost-debug.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((r) => r.sessionId === sessionId);
+      if (rows.some((r) => r.kind === "turn-outcome")) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const outcome = rows.find((r) => r.kind === "turn-outcome");
+    assert.ok(outcome, "a turn-outcome row was written");
+    assert.equal(outcome!.outcome, "completed");
+    assert.equal(typeof outcome!.durationMs, "number");
   });
 });
