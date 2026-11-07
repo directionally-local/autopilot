@@ -10,8 +10,11 @@ import { dataPath } from "../util/app-dirs.js";
  */
 
 export type SubagentEvent =
-  /** One user turn: was the subagent tool offered, and what did policy say? */
-  | { kind: "turn"; ts: number; sessionId: string; offered: boolean; guidance: string }
+  /** One user turn: was the subagent tool offered, and what did policy say?
+   *  `reason`/`tier`/`policy` explain WHY the gate resolved the way it did
+   *  (e.g. "no parallel-work signal", "routine or sequential task",
+   *  "Hotcell is not ready") — `guidance: "none"` alone never could. */
+  | { kind: "turn"; ts: number; sessionId: string; offered: boolean; guidance: string; reason?: string; tier?: string; policy?: string }
   /** One subagent finished (in any state). */
   | {
       kind: "subagent";

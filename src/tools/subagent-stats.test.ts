@@ -1,6 +1,6 @@
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { failureReason, formatSubagentStats, readSubagentStats, recordSubagentEvent, subagentStatsPath } from "./subagent-stats.js";
@@ -55,6 +55,29 @@ describe("subagent stats", () => {
     const text = formatSubagentStats(stats);
     assert.match(text, /sessions: 3 · offered subagents in 2 · used them in 2 \(67%\)/);
     assert.match(text, /completed 2 \(67%\) · failed: repository 1/);
+  });
+
+  it("turn events persist the gate decision (reason/tier/policy) for why-didn't-it-fire debugging (#1193)", async () => {
+    const now = Date.now();
+    await recordSubagentEvent({
+      kind: "turn",
+      ts: now,
+      sessionId: "s1",
+      offered: false,
+      guidance: "none",
+      reason: "no parallel-work signal",
+      tier: "medium",
+      policy: "auto",
+    });
+    const raw = await readFile(subagentStatsPath(), "utf8");
+    const row = JSON.parse(raw.trim());
+    assert.equal(row.reason, "no parallel-work signal");
+    assert.equal(row.tier, "medium");
+    assert.equal(row.policy, "auto");
+    // ...and aggregation still counts it.
+    const stats = await readSubagentStats(7, now);
+    assert.equal(stats.turns, 1);
+    assert.equal(stats.turnsOffered, 0);
   });
 
   it("maps errors to content-free reasons", () => {

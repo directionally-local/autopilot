@@ -37,6 +37,7 @@ import { retrieveMemories } from "./retrieval.js";
 import { runCleanup, shouldCleanup } from "./cleanup.js";
 import { redactSecrets } from "./redact.js";
 import { resolveRepoRoot } from "./repo-root.js";
+import { logger } from "../util/logger.js";
 import {
   buildDoctorReport,
   detectMigrationCandidates,
@@ -242,10 +243,16 @@ export class MemoryManager {
     if (!this.db) {
       this.db = openMemoryDb(this.opts.dbPath);
       // Session end (exit or /clear) is a flush point for buffered edit events.
+      // Failures are logged, never thrown — but NEVER silently: dropped edits
+      // are exactly the "memory learned nothing" failure mode.
       this.offSessionEnd = observeSessionEnd((sessionId) =>
         this.flushSessionEdits(sessionId).then(
-          () => undefined,
-          () => undefined,
+          (stored) => {
+            if (stored > 0) logger.debug("memory:session_flush", { sessionId, stored });
+          },
+          (err) => {
+            logger.warn("memory:flush_error", { sessionId, error: err instanceof Error ? err.message : String(err) });
+          },
         ),
       );
     }
@@ -328,8 +335,11 @@ export class MemoryManager {
     let memories: SessionEditMemory[];
     try {
       memories = await this.synthesizeSessionEdits(edits, signal);
-    } catch {
-      // Keep the batch for the next flush (compaction or session end).
+    } catch (err) {
+      // Keep the batch for the next flush (compaction or session end) — but
+      // log it: an always-failing synthesis is otherwise indistinguishable
+      // from "nothing to learn".
+      logger.warn("memory:flush_synthesis_error", { sessionId, error: err instanceof Error ? err.message : String(err) });
       const newer = this.pendingEdits.get(sessionId);
       this.pendingEdits.set(sessionId, newer ? [...edits, ...newer] : edits);
       return 0;
