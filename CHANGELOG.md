@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.15.0](https://github.com/directionally-local/autopilot/compare/v3.14.1...v3.15.0) (2026-11-07)
+
+
+### Features
+
+* the stall guardrail ends runaway turns that make no file progress ([#1182](https://github.com/directionally-local/autopilot/issues/1182)) ([3914677](https://github.com/directionally-local/autopilot/commit/3914677af9c6e762f08382e423f65e243d23c604))
+
 ## [3.14.1](https://github.com/directionally-local/autopilot/compare/v3.14.0...v3.14.1) (2026-11-07)
 
 
