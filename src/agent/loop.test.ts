@@ -2,7 +2,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { dataPath } from "../util/app-dirs.js";
-import { runAgentTurn } from "./loop.js";
+import { runAgentTurn, BOOKKEEPING_RESULT_NOTE } from "./loop.js";
 import { ToolExecutor as RealToolExecutor, type ToolExecutor, type PermissionRequest } from "../tools/executor.js";
 import type { ChatMessage } from "./messages.js";
 import type { RunWaitRequest, ToolSpec } from "../tools/registry.js";
@@ -1154,6 +1154,195 @@ describe("runAgentTurn", () => {
     assert.equal(bodies.length, 2);
     assert.ok(!bodies[0]!.messages.some((m) => String(m.content).includes("only bookkeeping")));
     assert.ok(bodies[1]!.messages.some((m) => String(m.content).includes("only bookkeeping (tasks_set)")));
+  });
+
+  it("annotates bookkeeping tool results once the reminder budget is exhausted", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "do the thing" },
+    ];
+    const tool: ToolSpec = {
+      name: "tasks_set",
+      description: "Set the plan",
+      parameters: { type: "object", properties: { tasks: { type: "array" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    const bodies: Array<{ messages: ChatMessage[] }> = [];
+    let fetchCount = 0;
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as { messages: ChatMessage[] });
+      const encoder = new TextEncoder();
+      const last = fetchCount++ === 3;
+      const events = last
+        ? [{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }]
+        : [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: `call-${fetchCount}`, type: "function", function: { name: "tasks_set", arguments: JSON.stringify({ tasks: [{ id: "1", title: "write the fix", status: "in_progress" }] }) } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string }) => ({ tool_call_id: call.id, name: call.name, content: "ok", ok: true }),
+    } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      intentClassification: { intent: "small_edit", rawScore: 0.5, tier: "medium", confidence: 0.5 },
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    assert.equal(bodies.length, 4);
+    // The transient reminder (steps 1 and 2) stays in the request while
+    // bookkeeping-only steps continue; once the budget is exhausted the note
+    // also lands on the bookkeeping tool result itself, visible in step 4.
+    assert.ok(!bodies[0]!.messages.some((m) => String(m.content).includes("only bookkeeping")));
+    const reminderCount = bodies.filter((b) => b.messages.some((m) => String(m.content).includes("only bookkeeping ("))).length;
+    assert.equal(reminderCount, 3);
+    assert.ok(!bodies[2]!.messages.some((m) => String(m.content).includes(BOOKKEEPING_RESULT_NOTE)));
+    assert.ok(bodies[3]!.messages.some((m) => m.role === "tool" && String(m.content).includes(BOOKKEEPING_RESULT_NOTE)));
+  });
+
+  it("auto-finalizes the checklist when the turn ends with no pending tasks", async () => {
+    const initialTasks = [
+      { id: "1", title: "first", status: "completed" },
+      { id: "2", title: "second", status: "in_progress" },
+    ];
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "do the thing" },
+    ];
+    const tool: ToolSpec = {
+      name: "tasks_set",
+      description: "Set the plan",
+      parameters: { type: "object", properties: { tasks: { type: "array" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    let fetchCount = 0;
+    globalThis.fetch = async (_url, init) => {
+      void init;
+      const encoder = new TextEncoder();
+      const first = fetchCount++ === 0;
+      const events = first
+        ? [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "tasks_set", arguments: JSON.stringify({ tasks: initialTasks }) } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ]
+        : [{ choices: [{ delta: { content: "Both done." }, finish_reason: "stop" }] }];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string; arguments: string }, _ask: unknown, ctx: { onTasks?: (tasks: never[]) => void }) => {
+        if (call.name === "tasks_set") ctx.onTasks?.(JSON.parse(call.arguments).tasks);
+        return { tool_call_id: call.id, name: call.name, content: "ok", ok: true };
+      },
+    } as unknown as ToolExecutor;
+    const taskUpdates: Array<Array<{ status: string }>> = [];
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      intentClassification: { intent: "small_edit", rawScore: 0.5, tier: "medium", confidence: 0.5 },
+      callbacks: { askPermission: async () => "allow", onTasks: (tasks) => taskUpdates.push(tasks) },
+    });
+
+    assert.equal(fetchCount, 2);
+    const finalUpdate = taskUpdates.at(-1);
+    assert.ok(finalUpdate);
+    assert.ok(finalUpdate.every((t) => t.status === "completed"));
+  });
+
+  it("leaves the checklist alone when the turn ends with pending tasks", async () => {
+    const initialTasks = [
+      { id: "1", title: "first", status: "completed" },
+      { id: "2", title: "second", status: "in_progress" },
+      { id: "3", title: "third", status: "pending" },
+    ];
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "do the thing" },
+    ];
+    const tool: ToolSpec = {
+      name: "tasks_set",
+      description: "Set the plan",
+      parameters: { type: "object", properties: { tasks: { type: "array" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    let fetchCount = 0;
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder();
+      const first = fetchCount++ === 0;
+      const events = first
+        ? [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "tasks_set", arguments: JSON.stringify({ tasks: initialTasks }) } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ]
+        : [{ choices: [{ delta: { content: "Paused — which file should I use?" }, finish_reason: "stop" }] }];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string; arguments: string }, _ask: unknown, ctx: { onTasks?: (tasks: never[]) => void }) => {
+        if (call.name === "tasks_set") ctx.onTasks?.(JSON.parse(call.arguments).tasks);
+        return { tool_call_id: call.id, name: call.name, content: "ok", ok: true };
+      },
+    } as unknown as ToolExecutor;
+    const taskUpdates: Array<Array<{ status: string }>> = [];
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      intentClassification: { intent: "small_edit", rawScore: 0.5, tier: "medium", confidence: 0.5 },
+      callbacks: { askPermission: async () => "allow", onTasks: (tasks) => taskUpdates.push(tasks) },
+    });
+
+    assert.equal(fetchCount, 2);
+    assert.equal(taskUpdates.length, 1); // only the model's own tasks_set — nothing auto-completed
+    assert.deepEqual(
+      taskUpdates[0]!.map((t) => t.status),
+      ["completed", "in_progress", "pending"],
+    );
   });
 
   it("labels a finished turn with a completed outcome row and requestId join keys", async () => {
