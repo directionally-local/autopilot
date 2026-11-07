@@ -54,9 +54,21 @@ export class DlGitHubProxy {
     return typeof address === "object" && address ? address.port : port;
   }
 
-  close(): void {
-    this.server?.close();
+  /**
+   * Stop listening and destroy every open connection. `server.close()` alone waits
+   * for keep-alive/idle sockets, so a cell holding a connection open (or a
+   * half-finished forward) would keep the event loop — and the process — alive
+   * indefinitely. Resolves once the port is actually released.
+   */
+  close(): Promise<void> {
+    const server = this.server;
     this.server = undefined;
+    if (!server) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+      server.closeIdleConnections();
+    });
   }
 
   handle(req: IncomingMessage, res: ServerResponse, pathOverride?: string): void {

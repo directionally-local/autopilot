@@ -527,7 +527,7 @@ export class DlApi {
     this.store = undefined;
     this.memory?.close();
     this.memory = undefined;
-    this.githubProxy?.close();
+    void this.githubProxy?.close();
     this.githubProxy = undefined;
     this.push?.close();
     this.push = undefined;
