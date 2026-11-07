@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createsGhPr, prFooterEnabled, wrapGhPrCreate } from "../util/pr-footer.js";
 import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
@@ -492,6 +492,29 @@ export function injectCoauthor(
   };
 }
 
+/**
+ * Kill a spawned command and every process it started.
+ *
+ * On POSIX the child is spawned detached, so it leads its own process group
+ * and `kill(-pid)` reaches grandchildren too. Plain `child.kill()` only
+ * signals the shell; its children are re-parented and keep running after a
+ * timeout or abort (observed: orphaned `grep`/`tsx --test` processes alive
+ * 13–65 minutes later, and the agent wrongly concluding the work stopped).
+ * Windows has no process groups; fall back to killing just the child.
+ */
+function killProcessTree(child: ChildProcess): void {
+  if (process.platform === "win32" || child.pid === undefined) {
+    child.kill("SIGKILL");
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    // Group is already gone (e.g. everything exited); kill the child directly.
+    child.kill("SIGKILL");
+  }
+}
+
 async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
   const timeout = Math.min(Math.max(1000, args.timeout_ms ?? DEFAULT_TIMEOUT), MAX_TIMEOUT);
 
@@ -514,6 +537,9 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
     logger.debug("bash:spawn", { command: args.command.slice(0, 200), cwd: ctx.cwd, shell });
     const child = spawn(shell, [...shellArgs, command], {
       cwd: ctx.cwd,
+      // Own process group on POSIX so killProcessTree can SIGKILL the whole
+      // tree (shell, children, grandchildren) on timeout or abort.
+      detached: process.platform !== "win32",
       env: {
         ...process.env,
         ...coauthorEnv,
@@ -531,14 +557,14 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
 
     const timer = setTimeout(() => {
       killedByTimeout = true;
-      logger.warn("bash:kill_timeout", { command: args.command.slice(0, 200) });
-      child.kill("SIGKILL");
+      logger.warn("bash:kill_timeout", { command: args.command.slice(0, 200), pid: child.pid });
+      killProcessTree(child);
     }, timeout);
 
     const onAbort = () => {
       killedByAbort = true;
       logger.warn("bash:kill_abort", { command: args.command.slice(0, 200), pid: child.pid });
-      child.kill("SIGKILL");
+      killProcessTree(child);
     };
     ctx.signal?.addEventListener("abort", onAbort, { once: true });
 
