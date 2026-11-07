@@ -78,12 +78,14 @@ These processes were idle when I looked, so they weren't using CPU at that momen
 
 Ordered by speedup per unit of effort.
 
-> **Status as of main @ 25a6f4c (2026-11-07):**
+> **Status as of main @ 5f4215b (2026-11-07):**
 > - ✅ **#4 (cap the context) — DONE & MERGED.** `autoCompactCapTokens` now defaults to 150k (#1177). Set it to `0` to opt out.
 > - ✅ **#1 (kill process group on timeout) — DONE & MERGED.** #1179 (`fix: bash timeouts and aborts kill the whole process tree`, 25a6f4c): commands run in their own POSIX process group and timeout/abort SIGKILLs the whole group.
 > - ⬆️ **#2 partially done:** the global test script runs with `--test-timeout=120000` and `--test-force-exit` (package.json), but `src/server/routes-github-proxy.test.ts` can still hang individually and the underlying hang is not fixed.
 > - ❌ #3 (pin faster upstream) — user-config item, unchanged; no code change.
 > - ❌ #5 (background CI waits), #6 (fewer/larger steps), #7 (home-dir sweep guard), #8 (log upstream `provider_name` in cost-debug.jsonl) — NOT done.
+>
+> Cross-reference: the sibling trace analysis lives at `docs/harness-trace-analysis-2026-11.md`. Its former top un-fixed item — an **adaptive loop-depth guardrail** — is now **DONE & MERGED** as #1182 (`feat: the stall guardrail ends runaway turns that make no file progress`, 3914677): after 50 tool iterations with no file-changing progress (`stallIterations`, 0 disables) the loop warns the model once, grants one more window, then ends the turn with a tool-free summary.
 
 1. **Kill the whole process group on timeout or abort** (`src/tools/bash.ts`). Spawn with `detached: true` and call `process.kill(-child.pid, "SIGKILL")`, falling back to `child.kill` on Windows. Add a test that a background child like `sleep 1000 &` is gone after a timeout. This is a correctness fix, and it stops leftover processes from slowing later commands.
 2. **Find and fix the hanging test** in `src/server/routes-github-proxy.test.ts` in `starter-client`/autopilot, and run test suites with a per-test timeout such as `--test-timeout=60000`. A hung suite then fails in a minute instead of using up the whole 10-minute bash limit.
