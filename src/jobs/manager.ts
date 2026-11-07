@@ -34,6 +34,8 @@ export interface StartJobOptions {
   timeoutMs?: number;
   idempotencyKey?: string;
   sessionId?: string;
+  /** Extra environment variables merged over the parent process env. */
+  env?: Record<string, string>;
 }
 
 export interface JobLogResult {
@@ -84,7 +86,7 @@ const stderrFd = openSync(spec.stderrPath, 'a', 0o600);
 try {
   child = spawn(spec.shell, [...spec.shellArgs, spec.command], {
     cwd: spec.cwd,
-    env: process.env,
+    env: { ...process.env, ...(spec.env ?? {}) },
     stdio: ['ignore', stdoutFd, stderrFd],
   });
 } catch (error) {
@@ -230,6 +232,7 @@ export class JobManager {
       shell: options.shell,
       shellArgs: options.shellArgs,
       timeoutMs: options.timeoutMs ?? null,
+      env: options.env ?? null,
       ...paths,
     });
     const child = spawn(process.execPath, ["--input-type=module", "-e", JOB_WRAPPER, spec], {

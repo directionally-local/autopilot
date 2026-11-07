@@ -476,3 +476,104 @@ describe("guardSweep", () => {
     assert.match(content, /Blocked/);
   });
 });
+
+describe("bash foreground→background handoff (#1101)", { concurrency: 1 }, () => {
+  const isWindows = process.platform === "win32";
+  let dir: string;
+  let dbPath: string;
+  let savedBudget: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "bash-handoff-"));
+    dbPath = join(dir, "state", "jobs.db");
+    savedBudget = process.env.AUTOPILOT_BASH_FOREGROUND_MS;
+  });
+  afterEach(() => {
+    if (savedBudget === undefined) delete process.env.AUTOPILOT_BASH_FOREGROUND_MS;
+    else process.env.AUTOPILOT_BASH_FOREGROUND_MS = savedBudget;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const ctx = (): ToolContext => ({ cwd: dir, jobsDbPath: dbPath, sessionId: "handoff-test" } as ToolContext);
+
+  it("foregroundBudgetMs parses the env override", async () => {
+    const { foregroundBudgetMs } = await import("./bash.js");
+    assert.strictEqual(foregroundBudgetMs({}), 30_000);
+    assert.strictEqual(foregroundBudgetMs({ AUTOPILOT_BASH_FOREGROUND_MS: "0" }), 0);
+    assert.strictEqual(foregroundBudgetMs({ AUTOPILOT_BASH_FOREGROUND_MS: "5000" }), 5000);
+    assert.strictEqual(foregroundBudgetMs({ AUTOPILOT_BASH_FOREGROUND_MS: "nonsense" }), 30_000);
+  });
+
+  it("returns a fast command like the direct path", { skip: isWindows }, async () => {
+    process.env.AUTOPILOT_BASH_FOREGROUND_MS = "10000";
+    const out = await bashTool.run({ command: "echo quick-done" }, ctx());
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /exit=0/);
+    assert.match(content, /quick-done/);
+    assert.doesNotMatch(content, /moved to background/);
+  });
+
+  it("moves a slow command to a durable job and delivers its completion", { skip: isWindows }, async () => {
+    process.env.AUTOPILOT_BASH_FOREGROUND_MS = "400";
+    const out = await bashTool.run({ command: "sleep 1; echo late-output" }, ctx());
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /moved to background after 400ms/);
+    const jobId = (out as { meta?: { jobId?: string } }).meta?.jobId;
+    assert.ok(jobId, "handoff result should carry the job id");
+    assert.match(content, new RegExp(jobId!));
+
+    const { drainFinishedHandoffs, renderHandoffCompletion, untrackSession } = await import("../jobs/handoff.js");
+    try {
+      const deadline = Date.now() + 8000;
+      let drained: import("../jobs/manager.js").JobRecord[] = [];
+      while (Date.now() < deadline && drained.length === 0) {
+        await delay(150);
+        drained = drainFinishedHandoffs("handoff-test", dbPath);
+      }
+      assert.strictEqual(drained.length, 1, "the handed-off job should be drained exactly once");
+      assert.strictEqual(drained[0]!.status, "completed");
+      const notice = renderHandoffCompletion(drained[0]!, dbPath);
+      assert.match(notice, /late-output/);
+    } finally {
+      untrackSession("handoff-test");
+    }
+  });
+
+  it("keeps kill-at-timeout when the timeout is shorter than the budget", { skip: isWindows }, async () => {
+    process.env.AUTOPILOT_BASH_FOREGROUND_MS = "60000";
+    const out = await bashTool.run({ command: "sleep 10", timeout_ms: 1000 }, ctx());
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /timed out after 1000ms/);
+    assert.doesNotMatch(content, /moved to background/);
+  });
+
+  it("0 disables the handoff path entirely", { skip: isWindows }, async () => {
+    process.env.AUTOPILOT_BASH_FOREGROUND_MS = "0";
+    const out = await bashTool.run({ command: "sleep 10", timeout_ms: 1000 }, ctx());
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /timed out after 1000ms/);
+  });
+
+  it("an explicit timeout_ms stays the kill deadline of the backgrounded job", { skip: isWindows }, async () => {
+    process.env.AUTOPILOT_BASH_FOREGROUND_MS = "300";
+    const out = await bashTool.run({ command: "sleep 30", timeout_ms: 1200 }, ctx());
+    const { untrackSession } = await import("../jobs/handoff.js");
+    untrackSession("handoff-test");
+    const jobId = (out as { meta?: { jobId?: string } }).meta?.jobId;
+    assert.ok(jobId);
+    const { JobManager } = await import("../jobs/manager.js");
+    const jobs = new JobManager(dbPath);
+    try {
+      const deadline = Date.now() + 8000;
+      let status: string | undefined;
+      while (Date.now() < deadline) {
+        status = jobs.get(jobId!)?.status;
+        if (status === "timed_out") break;
+        await delay(150);
+      }
+      assert.strictEqual(status, "timed_out");
+    } finally {
+      jobs.close();
+    }
+  });
+});
