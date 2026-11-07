@@ -419,6 +419,10 @@ describe("dl server Hotcell runtime", () => {
     assert.ok(state, "The runtime should provision one cell for this API conversation");
     assert.deepEqual(state.sessions, [sessionId]);
     assert.ok(state.commands?.some((command) => command.includes("me/app") && command.includes("dl/12345678")));
+    assert.ok(
+      state.commands?.some((command) => /npm install .*--ignore-scripts/.test(command)),
+      "the runtime install skips lifecycle scripts",
+    );
     assert.equal(state.prompts.length, 1);
     assert.ok(state.prompts[0]?.message.includes("GitHub repository me/app"));
     assert.ok(state.prompts[0]?.message.endsWith("make a small change"));
