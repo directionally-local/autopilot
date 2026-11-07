@@ -39,6 +39,7 @@ import type { SubagentPolicy } from "../intent/subagent-policy.js";
 import type { DailyUsage } from "../usage-tracker.js";
 import { projectOf } from "../permissions/guardrails.js";
 import { undoLatest } from "../permissions/recovery.js";
+import { buildAudit } from "../permissions/audit.js";
 import {
   carryOverSessionBaseline,
   formatCostReport,
@@ -2138,6 +2139,22 @@ const handleUndo: Handler = (ctx) => {
 };
 
 /**
+ * `/audit`: what the agent could destroy from here, and what saves you
+ * (#1125). Read-only: allowed destructive actions, reachable databases and
+ * cloud accounts (names and hosts only), recovery that exists, and suggested
+ * rules. Nothing is applied; nothing is sent anywhere.
+ */
+const handleAudit: Handler = (ctx) => {
+  const text = buildAudit({
+    cwd: process.cwd(),
+    permissions: ctx.cfg?.permissions,
+    mcpServers: ctx.cfg?.mcpServers,
+  });
+  ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
+  return true;
+};
+
+/**
  * `/feedback [text]`: the message (typed now or after the command) and an
  * optional reply address go to the team by email. Only the typed message is
  * sent, never the conversation (see feedback.ts).
@@ -2181,6 +2198,7 @@ const handlers: Record<string, Handler> = {
   "/resume": handleResume,
   "/checkpoint": handleCheckpoint,
   "/undo": handleUndo,
+  "/audit": handleAudit,
   "/compact": handleCompact,
   "/good": handleGood,
   "/bad": handleBad,
