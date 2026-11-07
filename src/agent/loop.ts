@@ -188,6 +188,9 @@ export interface AgentTurnOpts extends LlmAuth {
   preferPullRequests?: boolean;
   /** Re-inject the live `tasks_set` plan on every request (#950). Default: true. */
   planReminder?: boolean;
+  /** Remind the model when a whole step went to bookkeeping alone (tasks_set /
+   *  memory writes): fold those into the next substantive call. Default: true. */
+  bookkeepingReminder?: boolean;
   /** Host language server manager, forwarded to tools for post-edit diagnostics. */
   lspManager?: LspManager;
   /** When false, edit/write results omit the post-edit diagnostics block. */
@@ -250,7 +253,9 @@ export type GuardrailEvent =
   /** The turn was about to end unfinished; the agent was told to continue. */
   | { kind: "completion_nudge"; message: string; probability: number }
   /** A PR was opened this turn but its CI was never verified; the agent was told to check it. */
-  | { kind: "pr_ci_nudge"; message: string };
+  | { kind: "pr_ci_nudge"; message: string }
+  /** A step contained only bookkeeping tools; the agent was told to batch them with real work. */
+  | { kind: "bookkeeping_nudge"; message: string };
 
 /** Automatic loop recoveries granted per turn before the turn is wrapped up. */
 export const MAX_LOOP_RECOVERIES = 1;
@@ -266,6 +271,12 @@ export const MAX_READ_PAGES = 3;
 export const MAX_STALL_ITERATIONS = 50;
 /** Warning windows granted before a stalled turn is finalized with a summary. */
 export const MAX_STALL_WARNINGS = 1;
+
+/** Bookkeeping-only reminders per turn. Trace analysis
+ *  (autopilot-slow-session-2026-11-06.md, recommendation 6) found steps whose
+ *  only effect was a lone `tasks_set` — each still pays full TTFT on the
+ *  whole context. Two reminders nudge batching without nagging. */
+export const MAX_BOOKKEEPING_NUDGES = 2;
 
 export class BudgetExhaustedError extends Error {
   constructor(message = "Cumulative input token budget exhausted") {
@@ -892,7 +903,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   /** #950: verification runs since the last edit, and the one-time nudge. */
   let verificationRunsSinceLastEdit = 0;
   let verificationReminder: string | undefined;
+  /** Bookkeeping-only steps seen this turn, and the transient reminder. */
+  let bookkeepingNudges = 0;
+  let bookkeepingReminder: string | undefined;
   const MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
+  /** Tools that update harness state but produce no substantive work. A step
+   *  made of only these burned a full model request on bookkeeping alone. */
+  const BOOKKEEPING_TOOLS = new Set(["tasks_set", "memory_remember", "memory_forget"]);
   const AUTO_ADVANCE_THRESHOLD = 3;
   /** #950: verification runs after the last edit before the soft nudge. */
   const VERIFICATION_REMINDER_THRESHOLD = 3;
@@ -1079,7 +1096,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         opts.planReminder !== false && opts.intentClassification?.tier !== "light"
           ? buildPlanReminder(currentTasks)
           : undefined;
-      const reminders = [planReminder, verificationReminder].filter(Boolean).join("\n");
+      const reminders = [planReminder, verificationReminder, bookkeepingReminder].filter(Boolean).join("\n");
       return withPlanReminder(withDirective, reminders || undefined);
     };
 
@@ -1989,6 +2006,27 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     appendPendingInput();
 
     if (iterationMadeProgress) lastProgressIter = totalIter;
+
+    // Batching guardrail: a step whose only tool calls were bookkeeping
+    // (tasks_set / memory writes) spent a full model round trip — TTFT on the
+    // whole context — on no substantive work. Remind the model to fold
+    // bookkeeping into the next substantive call's response. The reminder is
+    // transient (request-only) and clears as soon as a real tool runs.
+    if (toolCalls.length > 0 && toolCalls.every((tc) => BOOKKEEPING_TOOLS.has(tc.function.name))) {
+      if (opts.bookkeepingReminder !== false && bookkeepingNudges < MAX_BOOKKEEPING_NUDGES) {
+        bookkeepingNudges++;
+        const names = [...new Set(toolCalls.map((tc) => tc.function.name))].join(", ");
+        bookkeepingReminder =
+          `<system-reminder>\nYour last step contained only bookkeeping (${names}) — a full model request spent on no substantive work. ` +
+          `Fold bookkeeping updates into the same response as your next substantive tool call instead of giving them their own step.\n</system-reminder>`;
+        notifyGuardrail({
+          kind: "bookkeeping_nudge",
+          message: `Bookkeeping-only step (${names}) — reminded the agent to batch bookkeeping with substantive calls.`,
+        });
+      }
+    } else if (bookkeepingReminder !== undefined && toolCalls.some((tc) => !BOOKKEEPING_TOOLS.has(tc.function.name))) {
+      bookkeepingReminder = undefined;
+    }
 
     // Allow external compaction / state management between iterations
     if (opts.onIterationEnd) {

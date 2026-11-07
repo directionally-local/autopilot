@@ -190,7 +190,9 @@ export type GuardrailKind =
   /** A PR was opened this turn but its CI was never verified. */
   | "pr_ci_nudge"
   /** The turn went many tool iterations without changing any file. */
-  | "loop_stall";
+  | "loop_stall"
+  /** A step contained only bookkeeping tools; the agent was told to batch them. */
+  | "bookkeeping_nudge";
 
 export interface GuardrailPayload {
   kind: GuardrailKind;
