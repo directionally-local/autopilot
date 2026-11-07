@@ -92,7 +92,7 @@ import { buildTour, resolveTourInput, tourAtSessionStart } from "./ui/project-to
 import { tourAskModel } from "./ui/project-tour-model.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
-import { compactAfterTurn, compactMidTurn, type AutoCompactionDeps } from "./agent/auto-compaction.js";
+import { compactAfterTurn, compactMidTurn, compactOnIdleReturn, type AutoCompactionDeps } from "./agent/auto-compaction.js";
 import { prepareAutoFresh } from "./agent/auto-fresh.js";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents } from "./ui/turn-callbacks.js";
 import { buildPromptContent, expandCustomCommand, turnReasoningEffort } from "./ui/prepare-prompt.js";
@@ -290,6 +290,8 @@ function App({
   // prompt to retry once Pro or a top-up is bought, and the error line Esc shows.
   const [dlScreen, setDlScreen] = useState<DlScreen | null>(null);
   const lastTurnPromptRef = useRef<{ text: string; display: string } | null>(null);
+  /** Wall-clock end of the last turn — the idle gap before the next turn. */
+  const lastTurnEndAtRef = useRef<number | null>(null);
   const dlScreenErrorRef = useRef<string | null>(null);
   // After a win, one tip a session at most: the free tier's invite tip or the
   // GitHub star ask, never both in the same session.
@@ -1485,6 +1487,7 @@ function App({
 
       const cleanupTurn = () => {
         logger.info("cleanupTurn");
+        lastTurnEndAtRef.current = Date.now();
         setCodeMode(false);
         const asstId = activeAsstIdRef.current;
         if (asstId !== null) updateAssistant(asstId, () => ({ streaming: false }));
@@ -1579,6 +1582,25 @@ function App({
           turnId,
         );
       }
+
+      // Idle-return compaction (#1184 follow-up): after a gap long enough
+      // that the provider's prompt cache expired, the first request re-reads
+      // the whole prompt at full price regardless — compact first so every
+      // later step this turn runs on the smaller prompt.
+      const idleGapMs = lastTurnEndAtRef.current === null ? 0 : Date.now() - lastTurnEndAtRef.current;
+      await compactOnIdleReturn(
+        {
+          getMessages: () => messagesRef.current,
+          setMessages: (messages) => {
+            messagesRef.current = messages;
+          },
+          estimateTokens: estimatePromptTokens,
+          idleGapMs,
+          minGapMs: (cfg.idleCompactGapMinutes ?? 10) * 60_000,
+          signal: turnScope.signal,
+        },
+        autoCompactionDeps(turnId),
+      );
 
       supervisorRef.current.startTurn(
         assembleTurn({ cfg, policy, host: {

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { compactAfterTurn, compactConversation, compactMidTurn, type AutoCompactionDeps } from "./auto-compaction.js";
+import { compactAfterTurn, compactConversation, compactMidTurn, compactOnIdleReturn, type AutoCompactionDeps } from "./auto-compaction.js";
 import { prepareAutoFresh, preFreshCheckpoint } from "./auto-fresh.js";
 import { ArtifactStore, emptySessionState, type SessionState } from "./session-state.js";
 import type { ChatMessage } from "./messages.js";
@@ -170,5 +170,58 @@ describe("auto-fresh", () => {
     assert.strictEqual(preFreshCheckpoint({ ...base, messages: [] }), null);
     assert.ok(preFreshCheckpoint({ ...base, messages: history(1) })?.sessionState);
     assert.strictEqual(preFreshCheckpoint({ ...base, compiledContext: false, messages: history(1) })?.sessionState, undefined);
+  });
+});
+
+describe("compactOnIdleReturn", () => {
+  const input = (messages: ChatMessage[], over: Partial<Parameters<typeof compactOnIdleReturn>[0]> = {}) => ({
+    getMessages: () => messages,
+    setMessages: (m: ChatMessage[]) => {
+      messages.splice(0, messages.length, ...m);
+    },
+    estimateTokens: () => 100_000,
+    idleGapMs: 15 * 60_000,
+    minGapMs: 10 * 60_000,
+    ...over,
+  });
+
+  it("compacts when the gap exceeded the cache TTL and the prompt is large", async () => {
+    const h = harness();
+    const messages = history(10);
+    const tokensAfter = await compactOnIdleReturn(input(messages), h.deps);
+    assert.ok(tokensAfter !== null);
+    assert.ok(messages.length < history(10).length);
+    assert.strictEqual(h.calls.preCompact, 1);
+    assert.match(h.notices.at(-1)![1], /compacted after 15 min idle/);
+  });
+
+  it("does nothing when disabled, the gap is short, or the prompt is small", async () => {
+    for (const over of [
+      { minGapMs: 0 },
+      { idleGapMs: 5 * 60_000 },
+      { estimateTokens: () => 1_000 },
+    ] as const) {
+      const h = harness();
+      const messages = history(10);
+      const result = await compactOnIdleReturn(input(messages, over), h.deps);
+      assert.strictEqual(result, null);
+      assert.strictEqual(messages.length, history(10).length);
+      assert.strictEqual(h.calls.preCompact, 0);
+      assert.strictEqual(h.calls.saves, 0);
+    }
+  });
+
+  it("a failing compaction leaves the messages unchanged and does not throw", async () => {
+    const h = harness({
+      compiledContext: false,
+      summarize: async () => {
+        throw new Error("boom");
+      },
+    });
+    const messages = history(10);
+    const result = await compactOnIdleReturn(input(messages), h.deps);
+    assert.strictEqual(result, null);
+    assert.strictEqual(messages.length, history(10).length);
+    assert.match(h.notices.at(-1)![1], /^idle-return compaction failed: boom$/);
   });
 });
