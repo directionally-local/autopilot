@@ -105,6 +105,20 @@ describe("reduceToolOutput — grep", () => {
     assert.ok(!result.content.includes("x".repeat(DEFAULT_REDUCER_CONFIG.grep.maxLineLength + 1)));
   });
 
+  it("enforces maxOutputChars on the grouped match list", () => {
+    const store = new ToolArtifactStore();
+    const lines: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      for (let j = 0; j < 3; j++) {
+        lines.push(`src/some/deeply/nested/path/file-${i}.ts:${j + 1}:const value${j} = computeSomething(${j});`);
+      }
+    }
+    const raw = lines.join("\n");
+    const result = reduceToolOutput("grep", raw, {}, store, DEFAULT_REDUCER_CONFIG);
+    assert.ok(result.content.length <= DEFAULT_REDUCER_CONFIG.grep.maxOutputChars + 200);
+    assert.ok(result.content.includes("output reduced"));
+  });
+
   it("expansion restores full raw content", () => {
     const store = new ToolArtifactStore();
     const raw = "line1\nline2\nline3\nline4\nline5";
@@ -185,9 +199,9 @@ describe("reduceToolOutput — read", () => {
 
   it("scales read output caps with model context windows", () => {
     assert.strictEqual(toolOutputCapForContextWindow(32_000), 4_000);
-    assert.strictEqual(toolOutputCapForContextWindow(128_000), 7_680);
-    assert.strictEqual(toolOutputCapForContextWindow(1_000_000), 60_000);
-    assert.strictEqual(reducerConfigForContextWindow(1_000_000).read.maxOutputChars, 60_000);
+    assert.strictEqual(toolOutputCapForContextWindow(128_000), 5_120);
+    assert.strictEqual(toolOutputCapForContextWindow(1_000_000), 40_000);
+    assert.strictEqual(reducerConfigForContextWindow(1_000_000).read.maxOutputChars, 40_000);
     assert.strictEqual(toolOutputCapForContextWindow(Number.NaN), DEFAULT_REDUCER_CONFIG.defaultMaxChars);
   });
 
@@ -272,6 +286,24 @@ describe("reduceToolOutput — bash", () => {
     assert.ok(result.content.includes("at frame0"));
     assert.ok(result.content.includes("error block"));
     assert.ok(result.content.includes("output reduced"));
+  });
+
+  it("reduces few-line outputs that exceed the char cap", () => {
+    const store = new ToolArtifactStore();
+    // 10 short lines, but ~6k chars total: passes the line count, blows the char budget.
+    const raw = ["exit=0", "--- stdout ---", ...Array.from({ length: 10 }, (_, i) => `row ${i}: ` + "x".repeat(550))].join("\n");
+    const result = reduceToolOutput("bash", raw, {}, store, DEFAULT_REDUCER_CONFIG);
+    assert.ok(result.content.includes("output reduced"));
+    assert.ok(result.reducedBytes < result.rawBytes);
+  });
+
+  it("truncates individual lines longer than maxLineLength", () => {
+    const store = new ToolArtifactStore();
+    const raw = ["exit=0", "--- stdout ---", "y".repeat(DEFAULT_REDUCER_CONFIG.bash.maxLineLength + 500)].join("\n");
+    const result = reduceToolOutput("bash", raw, {}, store, DEFAULT_REDUCER_CONFIG);
+    assert.ok(result.content.includes("output reduced"));
+    const longest = Math.max(...result.content.split("\n").map((l) => l.length));
+    assert.ok(longest <= DEFAULT_REDUCER_CONFIG.bash.maxLineLength + 100, `longest line ${longest}`);
   });
 });
 
