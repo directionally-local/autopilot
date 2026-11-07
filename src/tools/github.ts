@@ -3,6 +3,8 @@ import { hasPrFooter, prFooterEnabled, withPrFooter } from "../util/pr-footer.js
 import { promisify } from "node:util";
 import type { ToolSpec, ToolContext, ToolOutput } from "./registry.js";
 import { getUserAgent } from "../util/version.js";
+import { JobManager } from "../jobs/manager.js";
+import { getShellCommand } from "./bash.js";
 
 const execFile = promisify(execFileCallback);
 const GITHUB_API_BASE = "https://api.github.com";
@@ -558,7 +560,7 @@ export const githubCreatePrTool: ToolSpec<CreatePrArgs> = {
       `State: ${pr.state}${pr.draft ? " (draft)" : ""}`,
       ...(branchLine ? [branchLine] : []),
       "",
-      "Next: call github_pr_checks with wait_seconds (e.g. 300) to wait for CI. Fix any failing checks, " +
+      "Next: call github_pr_checks with wait_seconds (e.g. 300) to watch CI — that returns immediately with a background watch job, so it does not block you. Fix any failing checks, " +
         "push, and re-check; mark the PR ready with github_update_pr (draft: false) only once every check is green.",
     ].join("\n");
 
@@ -707,7 +709,70 @@ async function fetchPrChecks(owner: string, repo: string, number: number, token?
   };
 }
 
-function formatChecksReport(s: PrChecksSnapshot, waitedMs: number, waitSeconds: number): string {
+// ─── background CI watch jobs ────────────────────────────────────────────────
+
+type CiWatchResult =
+  | { kind: "watching"; jobId: string }
+  | { kind: "finished" }
+  | { kind: "unavailable" };
+
+type CiWatchStarter = (
+  args: { owner: string; repo: string; number: number },
+  snapshot: PrChecksSnapshot,
+  pollSeconds: number,
+  waitSeconds: number,
+  ctx: ToolContext,
+) => Promise<CiWatchResult>;
+
+const SAFE_REPO_PART = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * Start (or reuse) a durable managed job that runs `gh pr checks --watch`, so
+ * waiting for CI does not block the turn. Returns "unavailable" when managed
+ * jobs cannot run here (Windows, no gh CLI), in which case the caller falls
+ * back to blocking polls.
+ */
+const defaultCiWatchStarter: CiWatchStarter = async (args, snapshot, pollSeconds, waitSeconds, ctx) => {
+  if (process.platform === "win32") return { kind: "unavailable" };
+  if (!SAFE_REPO_PART.test(args.owner) || !SAFE_REPO_PART.test(args.repo)) return { kind: "unavailable" };
+  try {
+    await execFile("gh", ["--version"], { timeout: 5_000 });
+  } catch {
+    return { kind: "unavailable" };
+  }
+  try {
+    const { shell, args: shellArgs } = getShellCommand(ctx.shell);
+    const jobs = new JobManager(ctx.jobsDbPath);
+    try {
+      const record = jobs.start({
+        command: `gh pr checks ${args.number} --repo '${args.owner}/${args.repo}' --watch --interval ${pollSeconds}`,
+        cwd: ctx.cwd,
+        shell,
+        shellArgs,
+        timeoutMs: waitSeconds * 1000,
+        // Same PR head → same job, so re-invocations never duplicate watchers.
+        idempotencyKey: `ci-watch:${args.owner}/${args.repo}#${args.number}@${snapshot.sha.slice(0, 12)}`,
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      });
+      return record.status === "starting" || record.status === "running"
+        ? { kind: "watching", jobId: record.id }
+        : { kind: "finished" };
+    } finally {
+      jobs.close();
+    }
+  } catch {
+    return { kind: "unavailable" };
+  }
+};
+
+let ciWatchStarter: CiWatchStarter = defaultCiWatchStarter;
+
+/** Test hook: swap the CI-watch starter, e.g. to force the blocking fallback. */
+export function setCiWatchStarterForTests(starter: CiWatchStarter | null): void {
+  ciWatchStarter = starter ?? defaultCiWatchStarter;
+}
+
+function formatChecksReport(s: PrChecksSnapshot, waitedMs: number, waitSeconds: number, watch?: { jobId: string; unattended: boolean }): string {
   const counts = s.total === 0
     ? "no checks reported"
     : `${s.failing.length} failing, ${s.pending.length} pending, ${s.passing.length} passed`;
@@ -738,9 +803,21 @@ function formatChecksReport(s: PrChecksSnapshot, waitedMs: number, waitSeconds: 
         "Do not mark the PR ready while any check fails.",
     );
   } else if (s.pending.length > 0) {
-    lines.push(
-      `Next: checks are still running. Call github_pr_checks again with wait_seconds: ${Math.max(60, waitSeconds || 300)} to keep waiting.`,
-    );
+    if (watch) {
+      lines.push(
+        `Next: checks are still running, but you are not blocked on them — background watch job ${watch.jobId} ` +
+          `(gh pr checks ${s.number} --watch, up to ${waitSeconds}s) will finish on its own. ` +
+          (watch.unattended
+            ? `End this turn now: call wait_for with job_id "${watch.jobId}" to yield until the supervisor re-checks it. ` +
+              "Once the job completes, call github_pr_checks again (no wait_seconds needed) for the final report."
+            : `Continue with other work or answer the user. To check back later, call github_pr_checks again ` +
+              `(a snapshot is enough) or job_status with job_id "${watch.jobId}".`),
+      );
+    } else {
+      lines.push(
+        `Next: checks are still running. Call github_pr_checks again with wait_seconds: ${Math.max(60, waitSeconds || 300)} to keep waiting.`,
+      );
+    }
   } else if (s.total === 0) {
     lines.push(
       "Next: no CI checks have reported for this commit yet. If the repository runs CI, " +
@@ -768,7 +845,9 @@ export const githubPrChecksTool: ToolSpec<PrChecksArgs> = {
   name: "github_pr_checks",
   description:
     "Check the CI status of a pull request: failing, pending, and passing checks for its head commit. " +
-    "Set wait_seconds to poll until the checks finish (CI often takes several minutes), up to 600 seconds. " +
+    "Set wait_seconds to wait for the checks (CI often takes several minutes), up to 600 seconds: this starts a " +
+    "durable background watch job and returns immediately — keep working, or yield with wait_for in an unattended " +
+    "run — instead of blocking. It only polls in-line when background jobs are unavailable (e.g. Windows). " +
     "Call this after github_create_pr and after every push; fix failing checks before marking the PR ready.",
   parameters: {
     type: "object",
@@ -780,7 +859,7 @@ export const githubPrChecksTool: ToolSpec<PrChecksArgs> = {
         type: "integer",
         minimum: 0,
         maximum: MAX_CHECK_WAIT_SECONDS,
-        description: "Poll until checks finish, up to 600 seconds. Default: 0 (single snapshot).",
+        description: "Wait for checks to finish, up to 600 seconds, via a non-blocking background watch job. Default: 0 (single snapshot).",
       },
       poll_interval_seconds: {
         type: "integer",
@@ -798,10 +877,26 @@ export const githubPrChecksTool: ToolSpec<PrChecksArgs> = {
     const token = getToken(ctx);
     const waitSeconds = clamp(args.wait_seconds ?? 0, 0, MAX_CHECK_WAIT_SECONDS);
     const pollSeconds = clamp(args.poll_interval_seconds ?? DEFAULT_CHECK_POLL_SECONDS, 1, 60);
-    const deadline = Date.now() + waitSeconds * 1000;
 
     let snapshot = await fetchPrChecks(args.owner, args.repo, args.number, token);
     let waitedMs = 0;
+
+    // Prefer not to block the turn on CI: hand the wait to a durable watch job.
+    if (waitSeconds > 0 && (snapshot.pending.length > 0 || snapshot.total === 0)) {
+      const watch = await ciWatchStarter(args, snapshot, pollSeconds, waitSeconds, ctx);
+      if (watch.kind === "watching") {
+        return makeOutput(
+          formatChecksReport(snapshot, 0, waitSeconds, { jobId: watch.jobId, unattended: Boolean(ctx.runId) }),
+        );
+      }
+      if (watch.kind === "finished") {
+        // A watch started earlier for this head finished; take the final snapshot.
+        snapshot = await fetchPrChecks(args.owner, args.repo, args.number, token);
+      }
+    }
+
+    // Fallback: blocking polls (Windows, no gh CLI, or watch job start failed).
+    const deadline = Date.now() + waitSeconds * 1000;
     while (
       waitSeconds > 0 &&
       (snapshot.pending.length > 0 || snapshot.total === 0) &&

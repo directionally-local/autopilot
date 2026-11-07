@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { githubReadPrTool, githubReadIssueTool, githubReadCodeTool, githubCreatePrTool, githubPrChecksTool, githubUpdatePrTool, githubFetch } from "./github.js";
+import { githubReadPrTool, githubReadIssueTool, githubReadCodeTool, githubCreatePrTool, githubPrChecksTool, githubUpdatePrTool, githubFetch, setCiWatchStarterForTests } from "./github.js";
 import type { ToolOutput } from "./registry.js";
 
 describe("GitHub CLI fallback", () => {
@@ -251,6 +251,12 @@ describe("github_pr_checks", () => {
     base: { ref: "main" },
   };
 
+  function pendingChecks() {
+    return mockChecks({
+      checkRuns: () => ({ check_runs: [{ name: "test", status: "in_progress", conclusion: null }] }),
+    });
+  }
+
   function mockChecks(handlers: { checkRuns: () => unknown; statuses?: () => unknown }) {
     return async (input: RequestInfo | URL) => {
       const url = input.toString();
@@ -283,6 +289,68 @@ describe("github_pr_checks", () => {
     }
   });
 
+  it("starts a background watch job instead of blocking when checks are pending", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = pendingChecks();
+    setCiWatchStarterForTests(async () => ({ kind: "watching", jobId: "job-123" }));
+    try {
+      const started = Date.now();
+      const result = (await githubPrChecksTool.run(
+        { owner: "owner", repo: "repo", number: 42, wait_seconds: 300 },
+        { cwd: "/tmp" },
+      )) as ToolOutput;
+      assert.ok(Date.now() - started < 5_000, "returns immediately instead of blocking");
+      assert.match(result.content, /1 pending/);
+      assert.match(result.content, /background watch job job-123/);
+      assert.match(result.content, /Continue with other work/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setCiWatchStarterForTests(null);
+    }
+  });
+
+  it("points unattended runs at wait_for when a watch job is running", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = pendingChecks();
+    setCiWatchStarterForTests(async () => ({ kind: "watching", jobId: "job-9" }));
+    try {
+      const result = (await githubPrChecksTool.run(
+        { owner: "owner", repo: "repo", number: 42, wait_seconds: 300 },
+        { cwd: "/tmp", runId: "run-1" },
+      )) as ToolOutput;
+      assert.match(result.content, /wait_for with job_id "job-9"/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setCiWatchStarterForTests(null);
+    }
+  });
+
+  it("takes a final snapshot when the idempotent watch job already finished", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = mockChecks({
+      checkRuns: () => {
+        calls++;
+        return calls === 1
+          ? { check_runs: [{ name: "test", status: "in_progress", conclusion: null }] }
+          : { check_runs: [{ name: "test", status: "completed", conclusion: "success" }] };
+      },
+    });
+    setCiWatchStarterForTests(async () => ({ kind: "finished" }));
+    try {
+      const result = (await githubPrChecksTool.run(
+        { owner: "owner", repo: "repo", number: 42, wait_seconds: 300 },
+        { cwd: "/tmp" },
+      )) as ToolOutput;
+      assert.ok(calls >= 2);
+      assert.match(result.content, /All checks passed/);
+      assert.doesNotMatch(result.content, /background watch job/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setCiWatchStarterForTests(null);
+    }
+  });
+
   it("polls until the checks finish when wait_seconds is set", async () => {
     const originalFetch = globalThis.fetch;
     let calls = 0;
@@ -294,6 +362,8 @@ describe("github_pr_checks", () => {
           : { check_runs: [{ name: "test", status: "completed", conclusion: "success" }] };
       },
     });
+    // Force the blocking fallback so this test never spawns a real watch job.
+    setCiWatchStarterForTests(async () => ({ kind: "unavailable" }));
     try {
       const result = (await githubPrChecksTool.run(
         { owner: "owner", repo: "repo", number: 42, wait_seconds: 2, poll_interval_seconds: 1 },
@@ -304,6 +374,7 @@ describe("github_pr_checks", () => {
       assert.match(result.content, /Waited 1s/);
     } finally {
       globalThis.fetch = originalFetch;
+      setCiWatchStarterForTests(null);
     }
   });
 });

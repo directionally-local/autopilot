@@ -114,7 +114,8 @@ export function prCiNudge(messages: ChatMessage[], turnUser: ChatMessage | undef
   if (created.length === 0) return null;
   const prs = created.join(", ");
   const waitHint =
-    "Call github_pr_checks with wait_seconds: 300 to wait for the checks, fix any failure, push, and re-check. " +
+    "Call github_pr_checks with wait_seconds: 300 — it starts a background watch job and returns immediately, " +
+    "so it will not block you. Fix any failure, push, and re-check. " +
     "Mark the PR ready with github_update_pr (draft: false) only once every check is green.";
 
   if (lastChecks === null) {
@@ -128,7 +129,7 @@ export function prCiNudge(messages: ChatMessage[], turnUser: ChatMessage | undef
     return `CI for ${prs} was still running when you stopped (${pending[1]} pending). ${waitHint}`;
   }
   if (/CI: no checks reported/.test(lastChecks)) {
-    return `No CI checks had reported for ${prs} when you stopped. Call github_pr_checks again with wait_seconds: 300 to wait for them; if the repository has no CI, mark the PR ready with github_update_pr (draft: false).`;
+    return `No CI checks had reported for ${prs} when you stopped. Call github_pr_checks again with wait_seconds: 300 to watch for them (non-blocking); if the repository has no CI, mark the PR ready with github_update_pr (draft: false).`;
   }
   return null;
 }
