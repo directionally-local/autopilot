@@ -5,7 +5,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashTool, buildCoauthorTrailer, getShellCommand, guardGitCommit, guardGitPush, injectCoauthor, isFileReadCommand, parsePushTarget } from "./bash.js";
+import { bashTool, buildCoauthorTrailer, getShellCommand, guardGitCommit, guardGitPush, guardSweep, injectCoauthor, isFileReadCommand, parsePushTarget } from "./bash.js";
 import type { ToolContext } from "./registry.js";
 
 describe("isFileReadCommand", () => {
@@ -402,5 +402,77 @@ describe("process tree kill", { skip: process.platform === "win32" }, () => {
     assert.match(content, /aborted/, content);
     await delay(4000);
     assert.equal(existsSync(marker), false, "orphaned child survived the abort");
+  });
+});
+
+describe("guardSweep", () => {
+  it("blocks recursive grep on the bare home directory", () => {
+    const result = guardSweep("grep -rln some-token ~");
+    assert.ok(result);
+    assert.match(result!.content, /Blocked/);
+    assert.match(result!.content, /AUTOPILOT_ALLOW_HOME_SWEEP/);
+  });
+
+  it("blocks grep with long --recursive flag and $HOME", () => {
+    assert.ok(guardSweep("grep --recursive pattern $HOME"));
+  });
+
+  it("blocks ripgrep on home even when piped to head", () => {
+    assert.ok(guardSweep("rg secret ~ | head -20"));
+  });
+
+  it("blocks find over home; -maxdepth 4 is not shallow enough (measured timeout)", () => {
+    assert.ok(guardSweep("find ~ -maxdepth 4 -name '*.json'"));
+  });
+
+  it("blocks a search of the filesystem root", () => {
+    assert.ok(guardSweep("grep -rn pattern /"));
+  });
+
+  it("blocks a recursive search after cd-ing into home", () => {
+    assert.ok(guardSweep("cd ~ && grep -rn pattern ."));
+  });
+
+  it("allows a shallow find over home", () => {
+    assert.strictEqual(guardSweep("find ~ -maxdepth 2 -name '.git'"), undefined);
+  });
+
+  it("allows recursive search of a specific subdirectory of home", () => {
+    assert.strictEqual(guardSweep("grep -rn pattern ~/.config/autopilot"), undefined);
+  });
+
+  it("allows recursive search of the project and the working directory", () => {
+    assert.strictEqual(guardSweep("grep -rn pattern ."), undefined);
+    assert.strictEqual(guardSweep("rg pattern src/"), undefined);
+    assert.strictEqual(guardSweep("find . -name '*.ts'"), undefined);
+  });
+
+  it("allows non-recursive grep, even on a home-relative file", () => {
+    assert.strictEqual(guardSweep("grep pattern ~/.zshrc"), undefined);
+  });
+
+  it("allows unrelated commands that mention home", () => {
+    assert.strictEqual(guardSweep("cat ~/.config/autopilot/config.json"), undefined);
+    assert.strictEqual(guardSweep("ls ~"), undefined);
+    assert.strictEqual(guardSweep("echo $HOME"), undefined);
+  });
+
+  it("does not treat an option value that is `~` as a search target", () => {
+    assert.strictEqual(guardSweep("grep -rn -e '~' src/"), undefined);
+  });
+
+  it("can be disabled with AUTOPILOT_ALLOW_HOME_SWEEP=1", () => {
+    process.env.AUTOPILOT_ALLOW_HOME_SWEEP = "1";
+    try {
+      assert.strictEqual(guardSweep("grep -rln token ~"), undefined);
+    } finally {
+      delete process.env.AUTOPILOT_ALLOW_HOME_SWEEP;
+    }
+  });
+
+  it("the bash tool refuses a home sweep before spawning", async () => {
+    const out = await bashTool.run({ command: "grep -rln token ~" }, { cwd: "." } as ToolContext);
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /Blocked/);
   });
 });

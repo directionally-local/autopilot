@@ -223,6 +223,120 @@ export async function guardGitCommit(command: string, ctx: ToolContext): Promise
   return makeErrorOutput(msg);
 }
 
+/** Search tools that recurse when asked. find/fd recurse by default.
+ *  grep/egrep/fgrep recurse with -r/-R; rg/ag/ack recurse by default. */
+const RECURSIVE_BY_DEFAULT = new Set(["find", "fd", "rg", "ag", "ack"]);
+const GREP_FAMILY = new Set(["grep", "egrep", "fgrep"]);
+
+/** True for a token that targets the bare home directory or filesystem root
+ *  (`~`, `~/`, `$HOME`, `${HOME}`, `/`). A subdirectory like `~/.config` is
+ *  specific enough to search safely and does not match. */
+function isBareHomeOrRoot(token: string): boolean {
+  const t = token.replace(/^["']|["']$/g, "");
+  return t === "~" || t === "~/" || t === "$HOME" || t === "${HOME}" || t === "/";
+}
+
+/**
+ * Block commands that recursively search the entire home directory or the
+ * filesystem root (`grep -rln … ~`, `rg … ~`, `find ~ …`, `cd ~ && grep -r .`).
+ * Those sweeps routinely run until the bash timeout — 3 of the 3 commands
+ * killed in one measured day were home-dir sweeps, each burning a full
+ * timeout plus the model's retry and re-reasoning — and, before timeouts
+ * killed the process group, left orphaned processes behind. Returns a blocked
+ * ToolOutput with guidance; returns undefined when the command is safe.
+ * Escape hatch: AUTOPILOT_ALLOW_HOME_SWEEP=1.
+ */
+export function guardSweep(command: string): ToolOutput | undefined {
+  if (readEnv("ALLOW_HOME_SWEEP") === "1") return undefined;
+
+  // Split on every connective, pipes included: `grep -r foo ~ | head` still
+  // sweeps the home directory even though `head` trims the output.
+  const segments = command.split(/&&|\|\||;|\|\n?|\n/).map((s) => s.trim()).filter(Boolean);
+
+  let inHomeOrRoot = false; // an earlier `cd ~` / `cd /` makes `.` a sweep target
+  for (const segment of segments) {
+    const tokens = segment.split(/\s+/);
+    let i = 0;
+    // Skip leading env assignments and command wrappers: `FOO=1 sudo grep …`
+    while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!) || tokens[i] === "sudo" || tokens[i] === "env" || tokens[i] === "command")) i++;
+    if (i >= tokens.length) continue;
+    const cmd = tokens[i]!.replace(/^["']|["']$/g, "").split("/").pop()!;
+    const rest = tokens.slice(i + 1);
+
+    if ((cmd === "cd" || cmd === "pushd") && rest[0] !== undefined && isBareHomeOrRoot(rest[0])) {
+      inHomeOrRoot = true;
+      continue;
+    }
+
+    const isSearch = RECURSIVE_BY_DEFAULT.has(cmd) || GREP_FAMILY.has(cmd);
+    if (!isSearch) continue;
+
+    let recursive = RECURSIVE_BY_DEFAULT.has(cmd);
+    let maxDepth: number | undefined;
+    const positionals: string[] = [];
+    for (let j = 0; j < rest.length; j++) {
+      let tok = rest[j]!;
+      const unquoted = tok.replace(/^["']|["']$/g, "");
+      if (tok === "--") {
+        positionals.push(...rest.slice(j + 1));
+        break;
+      }
+      if (unquoted === "-maxdepth" || unquoted.startsWith("--maxdepth") || unquoted.startsWith("--max-depth")) {
+        const value = unquoted.includes("=") ? unquoted.split("=")[1] : rest[j + 1];
+        const n = value !== undefined ? Number.parseInt(value.replace(/^["']|["']$/g, ""), 10) : NaN;
+        if (Number.isFinite(n)) maxDepth = n;
+        if (!unquoted.includes("=") && value !== undefined) j++;
+        continue;
+      }
+      if (tok.startsWith("-") && tok !== "-") {
+        // -r, -R, -rln, --recursive, --dereference-recursive make grep recursive.
+        if (GREP_FAMILY.has(cmd)) {
+          if (tok.startsWith("--")) {
+            if (/^--(recursive|dereference-recursive)$/.test(tok)) recursive = true;
+          } else if (/[rR]/.test(tok.slice(1))) recursive = true;
+        }
+        // Options that consume the next token as a value: skip it so a value
+        // that happens to be `~` is not mistaken for a search target.
+        if (/^-[efmABCgtjd]$/.test(tok) || /^--(include|exclude|glob|type|max-count|after-context|before-context|context|file|threads|max-count)$/.test(tok)) {
+          j++;
+        }
+        continue;
+      }
+      // Command substitutions, assignments and redirection targets are not paths.
+      if (/^[A-Za-z_][A-Za-z0-9_]*=|^[0-9]*>[&]?/.test(tok)) continue;
+      positionals.push(tok);
+    }
+
+    if (!recursive) continue;
+
+    // find with a shallow explicit depth is cheap and often deliberate; every
+    // other bare home/root search (including find without it — measured:
+    // `find ~ -maxdepth 4` still burned a full timeout) is blocked.
+    const shallowFind = (cmd === "find" || cmd === "fd") && maxDepth !== undefined && maxDepth <= 3;
+    if (shallowFind) continue;
+
+    // For find the first positional is the root; for grep/rg any positional
+    // may be a path (the pattern is usually the first). A bare-home token
+    // anywhere in the positionals, or a `.`-targeted search after `cd ~`,
+    // means a full sweep.
+    const sweepToken = positionals.find((t) => isBareHomeOrRoot(t));
+    const dotSweep = inHomeOrRoot && (positionals.length === 0 || positionals.some((t) => t.replace(/^["']|["']$/g, "") === "." || t.replace(/^["']|["']$/g, "") === "./"));
+    if (!sweepToken && !dotSweep) continue;
+
+    const where = sweepToken && sweepToken.replace(/^["']|["']$/g, "") === "/" ? "the filesystem root (/)" : "your entire home directory";
+    const msg =
+      `Blocked: \`${segment}\` recursively searches ${where}. ` +
+      `Whole-home sweeps routinely run for minutes until the bash timeout.\n` +
+      `Instead: use the grep tool with a specific path (the project root, ~/.config, …), ` +
+      `or target a subdirectory (e.g. \`grep -rn PATTERN ~/projects\`). ` +
+      (cmd === "find" || cmd === "fd" ? `A shallow \`-maxdepth 3\` or less is allowed. ` : ``) +
+      `To override this guard, run with \`AUTOPILOT_ALLOW_HOME_SWEEP=1\`.`;
+    return makeErrorOutput(msg);
+  }
+
+  return undefined;
+}
+
 /** Commit-creating or history-rewriting git verbs, including `git -C dir <verb>`. */
 const COMMIT_VERBS = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+(commit|merge|rebase|cherry-pick|revert)\b/;
 const HARD_RESET = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+reset\b[^&;|]*\s--hard\b/;
@@ -526,6 +640,9 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
 
   const commitGuard = await guardGitCommit(args.command, ctx);
   if (commitGuard) return commitGuard;
+
+  const sweepGuard = guardSweep(args.command);
+  if (sweepGuard) return sweepGuard;
 
   const { shell, args: shellArgs, isPosix } = getShellCommand(ctx.shell);
   // `gh pr create`: the PR it opens ends with "Opened with dl" (unless turned off).
