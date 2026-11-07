@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ToolSpec } from "./registry.js";
 import { resolvePath, collapsePath } from "../util/paths.js";
+import { sensitivePathReason, writesCredentials } from "../util/sensitive-paths.js";
 import { withFileLock } from "../util/file-lock.js";
 import { writeFileVerified } from "../util/safe-write.js";
 import { lockKeyFor } from "../util/file-lock.js";
@@ -26,6 +27,11 @@ export const writeTool: ToolSpec<Args> = {
     additionalProperties: false,
   },
   needsPermission: true,
+  // A write into a credentials location is flagged, like a read of one (T2-01).
+  permissionReason: (args, ctx) =>
+    typeof args.path === "string" && args.path
+      ? writesCredentials(sensitivePathReason(resolvePath(ctx.cwd, args.path)))
+      : null,
   render: (args) => ({
     title: `write ${collapsePath(String(args.path ?? ""), process.cwd())} (${String(args.content ?? "").length} chars)`,
     diff: { path: String(args.path ?? ""), before: "", after: String(args.content ?? "") },

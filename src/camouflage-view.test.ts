@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, toolSummary, validateCommandName, View, walkFiles } from "./camouflage-view.js";
+import { helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, permissionDetail, toolSummary, validateCommandName, View, walkFiles } from "./camouflage-view.js";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/view-types.js";
@@ -362,6 +362,39 @@ describe("Camouflage permission: deny with feedback", () => {
     await settle();
     assert.strictEqual(short.prompts[0]?.payload.detail, undefined);
     short.view.dispose();
+  });
+
+  it("keeps a leading cd in the prompt title, so the approved text is the text that runs (T2-06)", async () => {
+    const { view, prompts } = await fakeView({ permission: [{ choice: "allow_once" }] });
+    view.sync(baseSnapshot({ permission: { tool: bashTool as never, args: { command: "cd /tmp && rm -rf build" } } }));
+    await settle();
+    assert.strictEqual(prompts[0]?.payload.action, "$ cd /tmp && rm -rf build");
+    view.dispose();
+  });
+
+  it("shows the reason a credentials write needs approval", async () => {
+    const { view, prompts } = await fakeView({ permission: [{ choice: "allow_once" }] });
+    view.sync(baseSnapshot({ permission: { tool: bashTool as never, args: { command: "true" }, sensitiveReason: "writes credentials location /h/.ssh" } }));
+    await settle();
+    assert.strictEqual(prompts[0]?.payload.detail, "⚠ This call writes credentials location /h/.ssh.");
+    view.dispose();
+  });
+});
+
+describe("permissionDetail", () => {
+  it("shows the full command whenever the row would cut it at this width (T2-06)", () => {
+    const command = `echo ${"x".repeat(73)}`; // 78 chars: fits 120, not an 80-column row
+    assert.strictEqual(permissionDetail("bash", { command }, undefined, 80), command);
+    assert.strictEqual(permissionDetail("bash", { command }, undefined, 200), undefined);
+    assert.strictEqual(permissionDetail("job_start", { command }, undefined, 80), command);
+    assert.strictEqual(permissionDetail("read", { path: "a" }, undefined, 80), undefined);
+  });
+
+  it("puts the credentials reason first, then the command", () => {
+    assert.strictEqual(
+      permissionDetail("bash", { command: "a\nb" }, "reads an SSH private key", 80),
+      "⚠ This call reads an SSH private key.\na\nb",
+    );
   });
 });
 

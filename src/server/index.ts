@@ -7,6 +7,7 @@
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { isIPv4 } from "node:net";
 import { URL } from "node:url";
 import type { AutopilotConfig } from "../config.js";
 import { logger } from "../util/logger.js";
@@ -131,9 +132,15 @@ export async function startServer(opts: ServerOpts): Promise<Server> {
 
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
+/**
+ * True for a loopback name or a literal IPv4 address in 127.0.0.0/8. A
+ * hostname that merely starts with "127." (127.0.0.1.nip.io, 127.attacker.com)
+ * is a DNS name an attacker controls, so it is not loopback: accepting it would
+ * let DNS rebinding through the Host check below (T1-01).
+ */
 export function isLoopbackHost(host: string): boolean {
   const h = host.toLowerCase();
-  return LOOPBACK_NAMES.has(h) || h.startsWith("127.");
+  return LOOPBACK_NAMES.has(h) || (isIPv4(h) && h.startsWith("127."));
 }
 
 function parseOrigins(value: string | undefined): string[] {

@@ -7,11 +7,13 @@ import { randomUUID } from "node:crypto";
  * file, then rename it over the target. rename() is atomic on the same
  * filesystem, so a concurrent reader gets either the old or the new contents.
  */
-export async function writeFileAtomic(path: string, data: string): Promise<void> {
+export async function writeFileAtomic(path: string, data: string, mode?: number): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   try {
-    await writeFile(tmp, data, "utf8");
+    // `mode` applies to the temp file at creation, so the target never exists
+    // with wider permissions, even for a moment.
+    await writeFile(tmp, data, mode === undefined ? "utf8" : { encoding: "utf8", mode });
     await rename(tmp, path);
   } catch (err) {
     await rm(tmp, { force: true }).catch(() => undefined);

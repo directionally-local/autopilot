@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { ToolSpec } from "./registry.js";
 import { resolvePath, collapsePath } from "../util/paths.js";
+import { sensitivePathReason, writesCredentials } from "../util/sensitive-paths.js";
 import { withFileLock } from "../util/file-lock.js";
 import { writeFileVerified } from "../util/safe-write.js";
 import { lockKeyFor } from "../util/file-lock.js";
@@ -128,6 +129,11 @@ export const editTool: ToolSpec<Args> = {
     additionalProperties: false,
   },
   needsPermission: true,
+  // A write into a credentials location is flagged, like a read of one (T2-01).
+  permissionReason: (args, ctx) =>
+    typeof args.path === "string" && args.path
+      ? writesCredentials(sensitivePathReason(resolvePath(ctx.cwd, args.path)))
+      : null,
   render: (args) => {
     const pairs = editPairs(args);
     const multi = pairs.length > 1;

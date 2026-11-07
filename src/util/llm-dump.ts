@@ -1,9 +1,10 @@
 import { join } from "node:path";
-import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, writeFileSync, chmodSync } from "node:fs";
 import type { ChatMessage, ReasoningDetail, ToolDef, Usage } from "../agent/messages.js";
 import { approxTokens } from "../agent/artifact-compaction.js";
 import { readEnv } from "./env.js";
 import { configPath } from "./app-dirs.js";
+import { redactDeep } from "../trace/redact.js";
 
 /**
  * Debug-only recorder for the *complete* payload Autopilot sends to the LLM,
@@ -179,23 +180,29 @@ export function writeLlmDump(record: LlmDumpRecord): void {
   if (!isLlmDumpEnabled()) return;
   try {
     const dir = dumpDir(record.meta.sessionId);
-    mkdirSync(dir, { recursive: true });
+    // Dumps hold full prompts and file contents: owner-only directory and
+    // files, and the same secret redaction traces get (T3-F1).
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const safe = redactDeep(record);
 
     const tsPart = safeSegment(record.meta.ts);
     const turnPart = safeSegment(record.meta.turnId ?? "noturn");
     const reqPart = safeSegment(record.meta.requestId);
     const file = join(dir, `${tsPart}-${turnPart}-${reqPart}.json`);
-    writeFileSync(file, JSON.stringify(record, null, 2));
+    writeFileSync(file, JSON.stringify(safe, null, 2), { mode: 0o600 });
+    chmodSync(file, 0o600);
 
     const summary = {
-      ...record.meta,
-      ...record.breakdown,
+      ...safe.meta,
+      ...safe.breakdown,
       perMessage: undefined, // keep the index line thin
-      finishReason: record.response.finishReason,
-      usage: record.response.usage,
+      finishReason: safe.response.finishReason,
+      usage: safe.response.usage,
       file,
     };
-    appendFileSync(join(dir, "index.jsonl"), JSON.stringify(summary) + "\n");
+    const index = join(dir, "index.jsonl");
+    appendFileSync(index, JSON.stringify(summary) + "\n", { mode: 0o600 });
+    chmodSync(index, 0o600);
   } catch {
     // best-effort: never disrupt the agent loop
   }
