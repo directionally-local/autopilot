@@ -104,6 +104,11 @@ export interface ToolOutputMeta {
   /** bash: the raw streams, kept apart for PostToolUse hooks (not traced). */
   stdout?: string;
   stderr?: string;
+  /** bash: true when the command outlived the foreground budget and now runs
+   *  as a durable background job (#1101). */
+  backgrounded?: boolean;
+  /** bash/job handoff: the managed job id carrying the command. */
+  jobId?: string;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

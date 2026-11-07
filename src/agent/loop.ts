@@ -7,6 +7,7 @@ import { pickLlmAuth, type LlmAuth } from "./llm-auth.js";
 import { resetSessionToolState, sessionToolState } from "./session-tool-state.js";
 import { workerRegistry } from "../tools/worker-registry.js";
 import { finishedReport } from "../tools/workers.js";
+import { drainFinishedHandoffs, renderHandoffCompletion } from "../jobs/handoff.js";
 import { toOpenAIToolDefs, type ToolSpec } from "../tools/registry.js";
 import { applyToolProfile } from "../tools/tool-profile.js";
 import type { ToolExecutor, PermissionAsker, ToolResult } from "../tools/executor.js";
@@ -122,6 +123,9 @@ export interface AgentTurnOpts extends LlmAuth {
   runId?: string;
   /** Optional override for the durable run/event/timer database. */
   runsDbPath?: string;
+  /** Optional override for the durable jobs database (backgrounded bash
+   *  commands, #1101). Defaults to the standard state-dir location. */
+  jobsDbPath?: string;
   githubToken?: string;
   /** Drop image_url parts from user messages older than this many turns. */
   keepLastImageTurns?: number;
@@ -923,12 +927,17 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // Background subagents that finished (during this turn or since the last
   // one) are delivered like steering input: at the next tool boundary, or
   // before the final answer ends the turn — no polling.
-  const drainBackgroundResults = (): ChatMessage[] =>
-    workerRegistry.takeUndelivered(opts.sessionId).map((w) => {
-      const notice: ChatMessage = { role: "user", content: `[Automatic notice — not typed by the user] ${finishedReport(w)}` };
-      transcript?.appendUser(notice, { meta: true });
-      return notice;
-    });
+  const drainBackgroundResults = (): ChatMessage[] => {
+    const notices: ChatMessage[] = workerRegistry.takeUndelivered(opts.sessionId)
+      .map((w) => ({ role: "user", content: `[Automatic notice — not typed by the user] ${finishedReport(w)}` }) as ChatMessage);
+    // Foreground bash commands handed off to background jobs (#1101) finish
+    // while the agent does other work; deliver their outcome the same way.
+    for (const record of drainFinishedHandoffs(opts.sessionId, opts.jobsDbPath)) {
+      notices.push({ role: "user", content: `[Automatic notice — not typed by the user] ${renderHandoffCompletion(record, opts.jobsDbPath)}` });
+    }
+    for (const notice of notices) transcript?.appendUser(notice, { meta: true });
+    return notices;
+  };
   const appendPendingInput = (): number => {
     const typed = opts.drainPendingInput?.() ?? [];
     for (const msg of typed) if (msg.role === "user") transcript?.appendUser(msg);
@@ -1635,6 +1644,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           runId: opts.runId,
           onRunBudgetExceeded: opts.callbacks.onRunBudgetExceeded,
           runsDbPath: opts.runsDbPath,
+          jobsDbPath: opts.jobsDbPath,
         },
         opts.onFileChange,
         readRepeat > 0 ? { readRepeat } : undefined,

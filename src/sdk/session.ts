@@ -24,6 +24,7 @@ import type { OpenRouterProviderPrefs } from "../agent/client.js";
 import { activeOpenRouterKey, embeddingAuthFromConfig, llmAuthFromConfig, providerIdOf } from "../agent/llm-auth.js";
 import { assembleTurn, lastUserText, resolveTurnPolicy } from "../agent/session-core.js";
 import { workerRegistry } from "../tools/worker-registry.js";
+import { untrackSession } from "../jobs/handoff.js";
 import { ensureCatalogForProvider } from "../models/catalog.js";
 import { logger } from "../util/logger.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
@@ -532,6 +533,7 @@ class InternalSession implements AutopilotSession {
     this.unsubscribeHookFailures();
     for (const w of workerRegistry.list()) if (w.background && w.sessionId === this.sessionId) workerRegistry.cancel(w.id);
     workerRegistry.clearFinished(this.sessionId);
+    untrackSession(this.sessionId);
     if (this.trace.enabled) {
       this.trace.emit(
         "session_end",

@@ -8,6 +8,8 @@ import { previewCommand } from "../util/command-preview.js";
 import { getUserAgent } from "../util/version.js";
 import { interactiveCommandHint, userShellCommandsEnabled } from "../agent/user-shell.js";
 import { readEnv } from "../util/env.js";
+import { JobManager, type JobRecord } from "../jobs/manager.js";
+import { trackHandedOffJob } from "../jobs/handoff.js";
 
 interface Args {
   command: string;
@@ -16,6 +18,24 @@ interface Args {
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_TIMEOUT = 600_000;
+
+/**
+ * How long a foreground command may run before it is handed off to a durable
+ * background job (#1101). Override with AUTOPILOT_BASH_FOREGROUND_MS; 0 turns
+ * handoff off (commands are killed at `timeout_ms`, the pre-#1101 behavior).
+ */
+const DEFAULT_FOREGROUND_BUDGET_MS = 30_000;
+/** Kill cap for a handed-off job when the call did not set an explicit
+timeout. An explicit `timeout_ms` stays the kill deadline. */
+const DEFAULT_BACKGROUND_JOB_TIMEOUT_MS = 30 * 60_000;
+
+export function foregroundBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = readEnv("BASH_FOREGROUND_MS", env);
+  if (raw === undefined) return DEFAULT_FOREGROUND_BUDGET_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_FOREGROUND_BUDGET_MS;
+  return Math.min(parsed, 7 * 24 * 60 * 60 * 1000);
+}
 
 export interface ShellCommand {
   shell: string;
@@ -78,7 +98,7 @@ export function getShellCommand(override?: string): ShellCommand {
 export const bashTool: ToolSpec<Args> = {
   name: "bash",
   description:
-    "Run a shell command. On Unix the default shell is bash; on Windows it falls back to cmd.exe. Prompts the user for permission before executing. stdout and stderr are captured and combined. Large outputs are reduced to a compact summary by default; use expand_artifact to retrieve the full log.",
+    "Run a shell command. On Unix the default shell is bash; on Windows it falls back to cmd.exe. Prompts the user for permission before executing. stdout and stderr are captured and combined. Large outputs are reduced to a compact summary by default; use expand_artifact to retrieve the full log. A command that keeps running past the foreground budget (default 30s) is moved to a durable background job automatically, and its completion is delivered to you — keep working or use job_logs to check progress instead of retrying it.",
   parameters: {
     type: "object",
     properties: {
@@ -653,6 +673,15 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
     ? injectCoauthor(footer.command, ctx.coauthor)
     : { command: args.command, env: {} };
 
+  // #1101: on POSIX, commands that outlive the foreground budget move to a
+  // durable background job instead of being killed, and their completion is
+  // delivered at a later tool boundary. A timeout shorter than the budget
+  // keeps the old kill-at-timeout behavior.
+  const budget = foregroundBudgetMs();
+  if (isPosix && budget > 0 && timeout > budget) {
+    return runBashWithHandoff({ args, ctx, command, env: { ...coauthorEnv, ...footer.env }, shell, shellArgs, timeout, budget });
+  }
+
   return new Promise<ToolOutput>((resolve, reject) => {
     logger.debug("bash:spawn", { command: args.command.slice(0, 200), cwd: ctx.cwd, shell });
     const child = spawn(shell, [...shellArgs, command], {
@@ -741,4 +770,146 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
       });
     });
   });
+}
+
+interface HandoffOptions {
+  args: Args;
+  ctx: ToolContext;
+  command: string;
+  env: Record<string, string>;
+  shell: string;
+  shellArgs: string[];
+  timeout: number;
+  budget: number;
+}
+
+const FINISHED_JOB_STATUSES = new Set(["completed", "failed", "timed_out", "cancelled", "unknown"]);
+
+function readJobStream(jobs: JobManager, id: string, stream: "stdout" | "stderr"): { content: string; truncated: boolean } {
+  try {
+    const log = jobs.logs(id, stream, { tail: 1000 });
+    return { content: log.content, truncated: log.truncated };
+  } catch {
+    return { content: "", truncated: false };
+  }
+}
+
+/**
+ * Run the command as a durable managed job from the start, waiting up to
+ * `budget` ms for it to finish. A fast command returns exactly like the
+ * direct path; a slow one is handed off: the tool returns immediately, the
+ * job keeps running under its kill cap, and the agent loop delivers the
+ * completion notice at a later tool boundary (#1101).
+ */
+async function runBashWithHandoff(opts: HandoffOptions): Promise<ToolOutput> {
+  const { args, ctx, command, env, shell, shellArgs, timeout, budget } = opts;
+  const explicitTimeout = args.timeout_ms !== undefined;
+  const jobs = new JobManager(ctx.jobsDbPath);
+  try {
+    const record = jobs.start({
+      command,
+      cwd: ctx.cwd,
+      shell,
+      shellArgs,
+      // An explicit timeout_ms stays the kill deadline; otherwise a handed-off
+      // command gets a generous 30-minute cap instead of the foreground default.
+      timeoutMs: explicitTimeout ? timeout : Math.max(timeout, DEFAULT_BACKGROUND_JOB_TIMEOUT_MS),
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      env: { GIT_EDITOR: "true", ...env },
+    });
+
+    const deadline = Date.now() + budget;
+    let aborted = false;
+    const onAbort = (): void => {
+      aborted = true;
+    };
+    ctx.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      let current: JobRecord | undefined = record;
+      while (Date.now() < deadline && !aborted) {
+        if (current && FINISHED_JOB_STATUSES.has(current.status)) break;
+        await new Promise((r) => setTimeout(r, 200));
+        current = jobs.get(record.id);
+      }
+      current = jobs.get(record.id);
+
+      if (aborted) {
+        try { jobs.cancel(record.id); } catch { /* best effort */ }
+        const stdout = readJobStream(jobs, record.id, "stdout").content;
+        const stderr = readJobStream(jobs, record.id, "stderr").content;
+        const parts = ["(aborted — job cancelled)"];
+        if (stdout) parts.push(`--- stdout ---\n${stdout.trimEnd()}`);
+        if (stderr) parts.push(`--- stderr ---\n${stderr.trimEnd()}`);
+        if (!stdout && !stderr) parts.push("(no output)");
+        const raw = parts.join("\n");
+        return {
+          content: raw,
+          rawBytes: Buffer.byteLength(raw, "utf8"),
+          reducedBytes: Buffer.byteLength(raw, "utf8"),
+          meta: { aborted: true, stdout, stderr, jobId: record.id },
+        };
+      }
+
+      if (current && FINISHED_JOB_STATUSES.has(current.status)) {
+        const stdoutLog = readJobStream(jobs, record.id, "stdout");
+        const stderrLog = readJobStream(jobs, record.id, "stderr");
+        const header = current.status === "timed_out"
+          ? `(timed out after ${explicitTimeout ? timeout : DEFAULT_BACKGROUND_JOB_TIMEOUT_MS}ms)`
+          : `exit=${current.exitCode ?? "?"}`;
+        const parts: string[] = [header];
+        if (stdoutLog.content) parts.push(`--- stdout ---\n${stdoutLog.content.trimEnd()}${stdoutLog.truncated ? "\n[… earlier stdout available via job_logs " + record.id + "]" : ""}`);
+        if (stderrLog.content) parts.push(`--- stderr ---\n${stderrLog.content.trimEnd()}${stderrLog.truncated ? "\n[… earlier stderr available via job_logs " + record.id + "]" : ""}`);
+        if (!stdoutLog.content && !stderrLog.content) parts.push("(no output)");
+        if (userShellCommandsEnabled()) {
+          const hint = interactiveCommandHint({
+            command: args.command,
+            exitCode: current.exitCode,
+            timedOut: current.status === "timed_out",
+            output: `${stdoutLog.content}\n${stderrLog.content}`,
+          });
+          if (hint) parts.push(hint);
+        }
+        const raw = parts.join("\n");
+        return {
+          content: raw,
+          rawBytes: Buffer.byteLength(raw, "utf8"),
+          reducedBytes: Buffer.byteLength(raw, "utf8"),
+          meta: {
+            exitCode: current.exitCode,
+            timedOut: current.status === "timed_out",
+            aborted: false,
+            jobId: record.id,
+            stdout: stdoutLog.content,
+            stderr: stderrLog.content,
+          },
+        };
+      }
+
+      // Handoff: still running after the foreground budget.
+      trackHandedOffJob(ctx.sessionId, record.id);
+      logger.debug("bash:handoff", { command: args.command.slice(0, 200), jobId: record.id, budget });
+      const stdoutLog = readJobStream(jobs, record.id, "stdout");
+      const stderrLog = readJobStream(jobs, record.id, "stderr");
+      const capMs = explicitTimeout ? timeout : Math.max(timeout, DEFAULT_BACKGROUND_JOB_TIMEOUT_MS);
+      const parts: string[] = [
+        `(moved to background after ${budget}ms — still running as job ${record.id})`,
+        `The command keeps running as a durable background job with a ${capMs}ms kill cap. ` +
+          `Its completion (or failure) will be delivered to you automatically at a later tool boundary — keep working, and do not poll job_status in a tight loop. ` +
+          `Use job_logs with job_id=${record.id} to check progress, or job_cancel to stop it.`,
+      ];
+      if (stdoutLog.content) parts.push(`--- stdout so far ---\n${stdoutLog.content.trimEnd()}`);
+      if (stderrLog.content) parts.push(`--- stderr so far ---\n${stderrLog.content.trimEnd()}`);
+      const raw = parts.join("\n");
+      return {
+        content: raw,
+        rawBytes: Buffer.byteLength(raw, "utf8"),
+        reducedBytes: Buffer.byteLength(raw, "utf8"),
+        meta: { backgrounded: true, jobId: record.id, stdout: stdoutLog.content, stderr: stderrLog.content },
+      };
+    } finally {
+      ctx.signal?.removeEventListener("abort", onAbort);
+    }
+  } finally {
+    jobs.close();
+  }
 }
