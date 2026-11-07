@@ -261,6 +261,10 @@ export interface AutopilotConfig {
    *  (150k): very large context windows otherwise rarely compact, which
    *  inflates prompt size and time-to-first-token. 0 = no cap. */
   autoCompactCapTokens?: number;
+  /** Idle gap (minutes) after which the provider's prompt cache is presumed
+   *  expired, so the next turn compacts before re-reading the full prompt at
+   *  full price. Default: 10. 0 disables idle-return compaction. */
+  idleCompactGapMinutes?: number;
   /** Estimated in-memory token threshold to trigger auto-fresh when compaction cannot reduce below this. Default: 2_000_000. */
   autoFreshTokenThreshold?: number;
   /** Permission rules for headless/CI mode. Keys are tool names (e.g. "bash", "write").
@@ -540,6 +544,7 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     autoFreshEnabled: persisted.autoFreshEnabled,
     autoCompactTokenThreshold: persisted.autoCompactTokenThreshold,
     autoCompactCapTokens: readNumberEnv("AUTO_COMPACT_CAP_TOKENS") ?? persisted.autoCompactCapTokens ?? DEFAULT_AUTO_COMPACT_CAP_TOKENS,
+    idleCompactGapMinutes: readNumberEnv("IDLE_COMPACT_GAP_MINUTES") ?? persisted.idleCompactGapMinutes ?? 10,
     autoFreshTokenThreshold: persisted.autoFreshTokenThreshold,
     permissions: persisted.permissions,
     preferPullRequests: readBooleanEnv("PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,

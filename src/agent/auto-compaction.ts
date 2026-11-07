@@ -187,3 +187,47 @@ export async function compactAfterTurn(input: PostTurnCompactionInput, deps: Aut
   }
   return null;
 }
+
+/** Below this, compacting on idle return saves less than the rewrite costs. */
+export const IDLE_COMPACT_MIN_TOKENS = 40_000;
+
+export interface IdleReturnCompactionInput {
+  getMessages(): ChatMessage[];
+  setMessages(messages: ChatMessage[]): void;
+  estimateTokens(messages: ChatMessage[]): number;
+  /** Milliseconds since the previous turn ended (the user was idle). */
+  idleGapMs: number;
+  /** Gap at or above which the provider's prompt cache is presumed cold. 0 disables. */
+  minGapMs: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Before a turn that follows a long idle gap: if the prompt cache has
+ * expired (provider TTLs are minutes), the next request re-reads the whole
+ * prompt at full price regardless — the ideal moment to compact, since the
+ * rewrite costs nothing extra and every later step runs on a smaller prompt.
+ * Returns the token estimate after compaction, or null when no pass ran.
+ * Never throws: failures leave the messages unchanged.
+ */
+export async function compactOnIdleReturn(input: IdleReturnCompactionInput, deps: AutoCompactionDeps): Promise<number | null> {
+  if (!input.minGapMs || input.minGapMs <= 0) return null;
+  if (input.signal?.aborted) return null;
+  if (input.idleGapMs < input.minGapMs) return null;
+  const tokensBefore = input.estimateTokens(input.getMessages());
+  if (tokensBefore < IDLE_COMPACT_MIN_TOKENS) return null;
+  deps.firePreCompact?.(input.signal);
+  try {
+    const pass = await compactConversation(input.getMessages(), deps, { signal: input.signal });
+    if (!pass.compacted) return null;
+    input.setMessages(pass.messages);
+    await recallAfterCompaction(pass.messages, deps, input.signal);
+    deps.notify("info", `compacted after ${Math.round(input.idleGapMs / 60_000)} min idle — the prompt cache had expired, so the re-read was full price anyway`);
+    return input.estimateTokens(pass.messages);
+  } catch (err) {
+    if ((err as Error).name !== "AbortError") {
+      deps.notify("info", `idle-return compaction failed: ${(err as Error).message ?? String(err)}`);
+    }
+    return null;
+  }
+}
