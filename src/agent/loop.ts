@@ -137,6 +137,10 @@ export interface AgentTurnOpts extends LlmAuth {
    *  runaway turn stays bounded. When reached, the model is asked for a final
    *  tool-free summary and the turn ends. Default: 5 × `maxToolIterations`. */
   maxTotalToolIterations?: number;
+  /** Tool iterations without a successful file change before the stall
+   *  guardrail warns once, then ends the turn. Default MAX_STALL_ITERATIONS
+   *  (50). Set to 0 to disable. */
+  stallIterations?: number;
   /** Cumulative prompt token budget. When exceeded, a final synthesis turn is run and then BudgetExhaustedError is thrown. */
   maxInputTokens?: number;
   /** Intent classification result for this turn, for telemetry. */
@@ -234,6 +238,11 @@ export type GuardrailEvent =
   | { kind: "limit_stopped"; message: string; totalIterations: number }
   /** `maxTotalToolIterations` was reached; the turn ends with a summary. */
   | { kind: "limit_ceiling"; message: string; totalIterations: number }
+  /** The turn went many tool iterations without changing any file: a runaway
+   *  loop. On the first trip (`final: false`) the model is warned and gets one
+   *  more window; when the window also stalls (`final: true`) the turn ends
+   *  with a summary. */
+  | { kind: "loop_stall"; message: string; iterationsWithoutProgress: number; final: boolean }
   /** The turn was about to end unfinished; the agent was told to continue. */
   | { kind: "completion_nudge"; message: string; probability: number }
   /** A PR was opened this turn but its CI was never verified; the agent was told to check it. */
@@ -244,6 +253,15 @@ export const MAX_LOOP_RECOVERIES = 1;
 
 /** Pages served for a repeated full-file read before the loop guardrail blocks it. */
 export const MAX_READ_PAGES = 3;
+
+/** Tool iterations without a successful file change before the stall guardrail
+ *  acts. Trace analysis (docs/harness-trace-analysis-2026-11.md) showed turns
+ *  running 100+ tool calls / hours of wall time with no progress, each
+ *  iteration paying full TTFT on a huge context. 50 stalls a runaway turn well
+ *  before the hard ceiling (5 × maxToolIterations). */
+export const MAX_STALL_ITERATIONS = 50;
+/** Warning windows granted before a stalled turn is finalized with a summary. */
+export const MAX_STALL_WARNINGS = 1;
 
 export class BudgetExhaustedError extends Error {
   constructor(message = "Cumulative input token budget exhausted") {
@@ -826,7 +844,22 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   let prCiNudges = 0;
   // Set when a guardrail decides the turn must end: the next request is a
   // final, tool-free summary and the turn finishes after it.
-  let finalizeReason: "loop" | "limit_ceiling" | null = null;
+  let finalizeReason: "loop" | "limit_ceiling" | "loop_stall" | null = null;
+
+  // Stall guardrail: totalIter value of the last iteration that changed a
+  // file (successful write/edit), plus warning windows already granted. A
+  // turn that goes `stallIterations` tool calls with no file change is a
+  // runaway loop; it gets one warning window, then a final summary.
+  const stallIterations = Math.max(
+    0,
+    Math.floor(
+      opts.stallIterations !== undefined && Number.isFinite(opts.stallIterations)
+        ? opts.stallIterations
+        : MAX_STALL_ITERATIONS,
+    ),
+  );
+  let lastProgressIter = 0;
+  let stallWarnings = 0;
 
   // Task auto-advance heuristic: track tasks state and mutating tools since
   // the last tasks_set so we can nudge the UI forward when the model forgets.
@@ -891,6 +924,48 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         message: `Tool-iteration ceiling (${hardCeiling}) reached — wrapping up the turn with a summary.`,
         totalIterations: totalIter,
       });
+    } else if (
+      finalizeReason === null &&
+      stallIterations > 0 &&
+      totalIter - lastProgressIter >= stallIterations
+    ) {
+      const stalledFor = totalIter - lastProgressIter;
+      if (stallWarnings < MAX_STALL_WARNINGS) {
+        stallWarnings++;
+        // Grant one more window: the model may be mid-investigation. Only a
+        // stall that survives it finalizes the turn.
+        lastProgressIter = totalIter;
+        opts.messages.push({
+          role: "system",
+          content:
+            `You have made ${stalledFor} consecutive tool calls without changing any files. ` +
+            "If you are stuck on the same sub-problem, stop retrying and either change approach, " +
+            "ask the user, or state what you need. If the task is actually finished or blocked on " +
+            "external input, end your turn now. If this run keeps making no file progress, " +
+            "it will be ended automatically with a summary.",
+        });
+        notifyGuardrail({
+          kind: "loop_stall",
+          message: `No file changes in ${stalledFor} tool iterations — warned the agent to change approach or wrap up.`,
+          iterationsWithoutProgress: stalledFor,
+          final: false,
+        });
+      } else {
+        finalizeReason = "loop_stall";
+        opts.messages.push({
+          role: "system",
+          content:
+            `The turn has run ${stalledFor} more tool iterations without any file changes despite the earlier warning. ` +
+            "Do not call any more tools. Summarize what you found, what is blocking progress, " +
+            "and the concrete next step needed.",
+        });
+        notifyGuardrail({
+          kind: "loop_stall",
+          message: `Still no file changes after the stall warning — ending the turn with a summary (${stalledFor} iterations without progress).`,
+          iterationsWithoutProgress: stalledFor,
+          final: true,
+        });
+      }
     } else if (finalizeReason === null && iter >= max) {
       if (limitBehavior === "continue") {
         opts.messages.push({
@@ -925,6 +1000,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     const previousMessages = opts.messages.slice();
     const toolCalls: ToolCall[] = [];
     const toolResults: ToolResult[] = [];
+    /** Set when any tool call this iteration successfully changes a file —
+     *  the stall guardrail's progress signal. */
+    let iterationMadeProgress = false;
     let content = "";
     let reasoning = "";
     let responseMeta: ResponseMeta | undefined;
@@ -1197,7 +1275,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         assistantMsg.content =
           finalizeReason === "loop"
             ? "Stopped: I kept repeating blocked tool calls and could not make further progress on this task."
-            : `Stopped: reached the ${hardCeiling}-iteration safety ceiling for this turn before finishing.`;
+            : finalizeReason === "loop_stall"
+              ? "Stopped: the turn ran many tool calls without changing any files, so it was ended to avoid a runaway loop."
+              : `Stopped: reached the ${hardCeiling}-iteration safety ceiling for this turn before finishing.`;
       }
     }
     opts.messages.push(assistantMsg);
@@ -1725,6 +1805,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         // edit, and that re-read has to be served rather than blocked as a
         // repeat of the reads that preceded the change.
         if (result.ok && (tc.function.name === "edit" || tc.function.name === "write")) {
+          iterationMadeProgress = true;
           const touched = parseArgsObject(tc.function.arguments).path;
           if (typeof touched === "string") readPages.delete(touched);
         }
@@ -1875,6 +1956,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
 
     // Mid-turn user input (steering) lands at the tool boundary.
     appendPendingInput();
+
+    if (iterationMadeProgress) lastProgressIter = totalIter;
 
     // Allow external compaction / state management between iterations
     if (opts.onIterationEnd) {

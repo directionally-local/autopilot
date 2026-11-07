@@ -622,3 +622,102 @@ describe("runAgentTurn guardrails (unattended)", () => {
     assert.strictEqual(stopFired(), 0);
   });
 });
+
+describe("stall guardrail (loop-depth with no file progress)", () => {
+  // Distinct args per call: identical repeats would trip the loop-repeat
+  // guardrail instead, which is a different mechanism.
+  const probe = (n: number) => ({ tool: "probe", args: { q: `q${n}` } });
+  const WRITE_TOOL: ToolSpec = {
+    name: "write",
+    description: "Write a file.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, content: { type: "string" } },
+      required: ["path", "content"],
+    },
+    needsPermission: false,
+    run: async () => "ok",
+  };
+  const withWrite = (o: AgentTurnOpts): AgentTurnOpts => ({ ...o, tools: [PROBE_TOOL, WRITE_TOOL] });
+
+  it("warns once, grants one window, then finalizes a stalled turn with a summary", async () => {
+    // stallIterations=3: warn when iteration 4 starts (3 without progress),
+    // finalize when iteration 7 starts (3 more), then one tool-free summary.
+    scriptModel([probe(1), probe(2), probe(3), probe(4), probe(5), probe(6), { text: "Summary: no files changed, blocked on X." }]);
+    const { executor } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { stallIterations: 3 });
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(
+      events.map((e) => e.kind),
+      ["loop_stall", "loop_stall"],
+    );
+    const [warning, fin] = events as Extract<GuardrailEvent, { kind: "loop_stall" }>[];
+    assert.strictEqual(warning!.final, false);
+    assert.strictEqual(warning!.iterationsWithoutProgress, 3);
+    assert.strictEqual(fin!.final, true);
+    assert.ok(fin!.iterationsWithoutProgress >= 3);
+    assertNoDanglingToolCalls(opts.messages);
+    const lastSystemMessages = opts.messages.filter((m) => m.role === "system").map((m) => String(m.content));
+    assert.ok(
+      lastSystemMessages.some((c) => /without changing any files/.test(c)),
+      "warning message should reach the model",
+    );
+  });
+
+  it("a successful write resets the stall window", async () => {
+    // probe, probe, write (progress), probe x3 → only a warning, then text.
+    scriptModel([
+      probe(1),
+      probe(2),
+      { tool: "write", args: { path: "src/out.ts", content: "export {};\n" } },
+      probe(3),
+      probe(4),
+      probe(5),
+      probe(6),
+      { text: "done" },
+    ]);
+    const { executor } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = withWrite(baseOpts(executor, events, { stallIterations: 3 }));
+
+    await runAgentTurn(opts);
+
+    // Window resets at the write (iteration 3); the next stall check fires one
+    // warning after iterations 4–6, and the turn ends normally on the text step.
+    assert.deepStrictEqual(
+      events.map((e) => e.kind),
+      ["loop_stall"],
+    );
+    assert.strictEqual((events[0] as Extract<GuardrailEvent, { kind: "loop_stall" }>).final, false);
+  });
+
+  it("never fires when iterations keep making file progress", async () => {
+    scriptModel([
+      { tool: "write", args: { path: "a.ts", content: "export {};\n" } },
+      { tool: "write", args: { path: "b.ts", content: "export {};\n" } },
+      { tool: "write", args: { path: "c.ts", content: "export {};\n" } },
+      { tool: "write", args: { path: "d.ts", content: "export {};\n" } },
+      { text: "done" },
+    ]);
+    const { executor } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = withWrite(baseOpts(executor, events, { stallIterations: 3 }));
+
+    await runAgentTurn(opts);
+
+    assert.deepStrictEqual(events, []);
+  });
+
+  it("is disabled with stallIterations: 0", async () => {
+    scriptModel([probe(1), probe(2), probe(3), probe(4), probe(5), { text: "done" }]);
+    const { executor } = fakeExecutor();
+    const events: GuardrailEvent[] = [];
+    const opts = baseOpts(executor, events, { stallIterations: 0 });
+
+    await runAgentTurn(opts);
+    assert.deepStrictEqual(events, []);
+  });
+});

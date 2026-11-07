@@ -188,7 +188,9 @@ export type GuardrailKind =
   /** `maxToolIterations` reached with `toolLimitBehavior: "stop"`. */
   | "limit_stopped"
   /** A PR was opened this turn but its CI was never verified. */
-  | "pr_ci_nudge";
+  | "pr_ci_nudge"
+  /** The turn went many tool iterations without changing any file. */
+  | "loop_stall";
 
 export interface GuardrailPayload {
   kind: GuardrailKind;
