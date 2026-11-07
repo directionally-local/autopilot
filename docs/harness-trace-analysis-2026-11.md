@@ -114,7 +114,7 @@ Overall reliability is good: 821/828 stream_end, 4 retries recovered. The waste 
 
 Any learned policy can be validated with the existing `autopilot eval run / eval compare` harness (paired McNemar on autopilot-bench).
 
-## 7. Status vs main (verified as of 62adcdb, 2026-11-07 — #1192 memory/subagent gate logging, item 2 below)
+## 7. Status vs main (verified as of 279618d, 2026-11-08 — #1194 bookkeeping batching nudge, last row below)
 
 Prioritized recommendations from both this report and the sibling incident report (`../autopilot-slow-session-2026-11-06.md`):
 
@@ -132,7 +132,7 @@ Prioritized recommendations from both this report and the sibling incident repor
 | 7 | Turn on KIMIFLARE_TRACE=1 locally | ❌ User-config item |
 | 8 | Log upstream `provider_name` in cost-debug.jsonl (from OpenRouter `/api/v1/generation`) | ✅ **Join key shipped** — cost-debug.jsonl entries now carry `generationId`, which joins to usage.json's `gatewayLogs[].provider` (provider_name has been recorded there all along). A direct `provider` field on the entry is still open |
 | — | Background CI waits instead of blocking `github_pr_checks` | ✅ **Done & merged** — #1188 (b663366): with `wait_seconds` set and checks still pending, the tool starts/reuses a durable managed job running `gh pr checks --watch` and returns immediately; unattended runs yield with `wait_for`, interactive sessions keep working. Falls back to in-line polling on Windows / missing gh |
-| — | Fewer/larger steps (batch reads/edits, merge tasks_set into next call) | ❌ Not done |
+| — | Fewer/larger steps (batch reads/edits, merge tasks_set into next call) | ⚠️ **Partial** — #1194 (0046c75): a bookkeeping-only step (lone `tasks_set`/`memory_*`) now triggers a transient batching reminder in the next request (≤2 per turn, cache-prefix-safe, opt out with `bookkeepingReminder: false`). Still open: encouraging batched reads/edits and harness-side merging of `tasks_set` into the next call |
 | — | Pin faster upstream (openrouterProvider.order) | ❌ User-config item, deliberately not a code default (sticky-routing trade-off documented in `src/agent/client.ts`) |
 
 ## Methodology
