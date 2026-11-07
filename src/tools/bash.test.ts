@@ -1,4 +1,5 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert";
 import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -362,5 +363,44 @@ describe("co-author trailer injection", { skip: process.platform === "win32" }, 
     assert.match(message, /Co-authored-by: Pair <pair@example.com>/);
     const after = readdirSync(tmpdir()).filter((f) => f.startsWith("kf-coauthor-")).length;
     assert.ok(after <= before, "temp message file removed");
+  });
+});
+
+describe("process tree kill", { skip: process.platform === "win32" }, () => {
+  let dir: string;
+  let marker: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "bash-kill-"));
+    marker = join(dir, "orphan-survived");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The marker is only written if the backgrounded subshell outlives the
+  // kill: with a working process-tree kill it never appears.
+  const orphanCommand = () => `(sleep 3; touch "${marker.replace(/"/g, '\\"')}") & sleep 300`;
+
+  it("kills backgrounded children on timeout", async () => {
+    const ctx = { cwd: dir, signal: new AbortController().signal } as unknown as ToolContext;
+    const out = await bashTool.run({ command: orphanCommand(), timeout_ms: 1000 }, ctx);
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /timed out/, content);
+    await delay(4000);
+    assert.equal(existsSync(marker), false, "orphaned child survived the timeout");
+  });
+
+  it("kills backgrounded children on abort", async () => {
+    const controller = new AbortController();
+    const ctx = { cwd: dir, signal: controller.signal } as unknown as ToolContext;
+    const promise = bashTool.run({ command: orphanCommand(), timeout_ms: 60_000 }, ctx);
+    setTimeout(() => controller.abort(), 500);
+    const out = await promise;
+    const content = typeof out === "string" ? out : out.content;
+    assert.match(content, /aborted/, content);
+    await delay(4000);
+    assert.equal(existsSync(marker), false, "orphaned child survived the abort");
   });
 });
