@@ -17,7 +17,7 @@ import type { MemoryManager } from "../memory/manager.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { HybridResult } from "../memory/schema.js";
 import { hasRecalledMemory, injectRecalledMemoryOnce } from "../memory/recall-inject.js";
-import { logTurnDebug, analyzePrompt, type MemoryRecallDebug } from "../cost-debug.js";
+import { logTurnDebug, logTurnOutcome, analyzePrompt, type MemoryRecallDebug, type TurnOutcome } from "../cost-debug.js";
 import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extractors.js";
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
@@ -939,6 +939,29 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // Results that arrived between turns go in before this turn's first request.
   for (const msg of drainBackgroundResults()) opts.messages.push(msg);
 
+  // Telemetry labels (trace analysis Nov 2026, item 1): requestIds join the
+  // cost-debug rows to the request log, and exactly one outcome row per turn
+  // records how the turn ended.
+  const turnRequestIds: string[] = [];
+  let outcomeRecorded = false;
+  const recordOutcome = (outcome: TurnOutcome, detail?: string): void => {
+    if (outcomeRecorded || !opts.sessionId) return;
+    outcomeRecorded = true;
+    void logTurnOutcome({
+      sessionId: opts.sessionId,
+      turn,
+      outcome,
+      ...(detail ? { detail } : {}),
+      durationMs: Math.round(performance.now() - turnStart),
+    });
+  };
+  // User stops arrive as an abort wherever the loop happens to be.
+  const onAbortOutcome = (): void => recordOutcome("aborted");
+  opts.signal.addEventListener("abort", onAbortOutcome, { once: true });
+
+  try {
+  // (The body of this loop predates the try/catch and keeps its indentation;
+  //  the wrapper exists only to label abnormal exits in logTurnOutcome.)
   while (true) {
     // Budget enforcement: before starting a new turn, if we've already hit the
     // limit, run one final synthesis turn and then signal budget exhaustion.
@@ -1028,6 +1051,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           totalIterations: totalIter,
         });
         tr.endReason = "guardrail";
+        recordOutcome("guardrail", "limit");
         await fireStopHook();
         return;
       } else {
@@ -1161,12 +1185,17 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     const usageBeforeCall: Usage | null = lastUsage;
     const toolsUsedBeforeCall = tr.toolsUsed.length;
     for (let retries = 0; ; retries++) {
+      // Generate the id here so the cost-debug rows can join to the request
+      // log's TTFT/stream events (keyed by this requestId), retries included.
+      const requestId = crypto.randomUUID();
+      turnRequestIds.push(requestId);
       try {
         const events = runKimi({
           onLargeBody: (warning) => opts.callbacks.onWarning?.(warning),
           onNotice: (message) => opts.callbacks.onInfo?.(message),
           ...llmAuthOf(opts),
           model: opts.model,
+          requestId,
           messages: apiMessages,
           tools: toolDefs,
           signal: opts.signal,
@@ -1333,6 +1362,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     if (finalizeReason !== null) {
       tr.endReason = "guardrail";
       logger.info("turn:finalized", { sessionId: opts.sessionId, reason: finalizeReason, totalIter });
+      recordOutcome(budgetExhausted ? "budget_exhausted" : "guardrail", finalizeReason);
       if (budgetExhausted) throw new BudgetExhaustedError();
       await fireStopHook();
       if (finalizeReason === "loop" && loopWasThrashing) throw new AgentLoopError();
@@ -1363,6 +1393,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           ...(opts.routedFromModel
             ? { modelRouting: { from: opts.routedFromModel, to: opts.model, tier: opts.intentClassification?.tier ?? "medium" } }
             : {}),
+          requestIds: [...turnRequestIds],
         });
       }
       if (budgetExhausted) {
@@ -1412,6 +1443,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         }
       }
       logger.info("turn:complete", { sessionId: opts.sessionId, durationMs: Math.round(performance.now() - turnStart) });
+      recordOutcome("completed");
       await fireStopHook();
       return;
     }
@@ -2057,6 +2089,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         ...(opts.routedFromModel
           ? { modelRouting: { from: opts.routedFromModel, to: opts.model, tier: opts.intentClassification?.tier ?? "medium" } }
           : {}),
+        requestIds: [...turnRequestIds],
       });
     }
 
@@ -2098,6 +2131,19 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       });
       continue;
     }
+  }
+  } catch (err) {
+    // Aborts already recorded via the signal listener; AgentLoopError follows a
+    // guardrail outcome that was recorded before the throw.
+    if (err instanceof BudgetExhaustedError) recordOutcome("budget_exhausted");
+    else if (err instanceof DOMException && err.name === "AbortError") recordOutcome("aborted");
+    else if (!(err instanceof AgentLoopError)) recordOutcome("error", err instanceof Error ? err.name : typeof err);
+    throw err;
+  } finally {
+    opts.signal.removeEventListener("abort", onAbortOutcome);
+    // A turn that left the loop without any recorded outcome shouldn't happen,
+    // but a missing label is worse than a vague one.
+    recordOutcome("error", "unlabeled_exit");
   }
 }
 

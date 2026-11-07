@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { comparePromptPrefixes, logTurnDebug, type TurnDebugContext } from "./cost-debug.js";
+import { comparePromptPrefixes, logTurnDebug, logTurnOutcome, logProviderResolution, type TurnDebugContext } from "./cost-debug.js";
 import type { ChatMessage } from "./agent/messages.js";
 
 describe("comparePromptPrefixes", () => {
@@ -100,4 +100,60 @@ describe("logTurnDebug", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+describe("turn outcome and provider resolution labels", () => {
+  function withDataHome(run: (root: string) => Promise<void>): Promise<void> {
+    const root = mkdtempSync(join(tmpdir(), "cost-debug-"));
+    const prev = process.env.XDG_DATA_HOME;
+    process.env.XDG_DATA_HOME = root;
+    return run(root).finally(() => {
+      if (prev === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = prev;
+      rmSync(root, { recursive: true, force: true });
+    });
+  }
+
+  const readEntries = (root: string): Record<string, unknown>[] =>
+    readFileSync(join(root, "autopilot", "cost-debug.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  it("logTurnOutcome writes the once-per-turn outcome label", () =>
+    withDataHome(async (root) => {
+      await logTurnOutcome({ sessionId: "s1", turn: 3, outcome: "completed", durationMs: 1234 });
+      await logTurnOutcome({ sessionId: "s1", turn: 4, outcome: "guardrail", detail: "loop_stall" });
+      const [completed, guardrail] = readEntries(root);
+      assert.equal(completed!.kind, "turn-outcome");
+      assert.equal(completed!.outcome, "completed");
+      assert.equal(completed!.durationMs, 1234);
+      assert.equal(guardrail!.outcome, "guardrail");
+      assert.equal(guardrail!.outcomeDetail, "loop_stall");
+    }));
+
+  it("logProviderResolution writes a generationId-joined provider row", () =>
+    withDataHome(async (root) => {
+      await logProviderResolution({ sessionId: "s1", generationId: "gen-123", provider: "PrimeIntellect", costUsd: 0.012, latencyMs: 4200 });
+      const [row] = readEntries(root);
+      assert.equal(row!.kind, "provider-resolution");
+      assert.equal(row!.generationId, "gen-123");
+      assert.equal(row!.provider, "PrimeIntellect");
+      assert.equal(row!.costUsd, 0.012);
+      assert.equal(row!.latencyMs, 4200);
+    }));
+
+  it("logTurnDebug carries requestIds so rows join to the request log", () =>
+    withDataHome(async (root) => {
+      await logTurnDebug({
+        sessionId: "s1",
+        turn: 1,
+        messages: [{ role: "user", content: "hi" }],
+        toolResults: [],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        requestIds: ["req-a", "req-b"],
+      });
+      const [row] = readEntries(root);
+      assert.deepEqual(row!.requestIds, ["req-a", "req-b"]);
+    }));
 });

@@ -49,11 +49,27 @@ export interface IntentClassification {
   confidence: number;
 }
 
+/** How a user turn ended — the training label the trace analysis (Nov 2026,
+ *  docs/harness-trace-analysis-2026-11.md item 1) found missing. Emitted once
+ *  per turn as a `kind: "turn-outcome"` entry. */
+export type TurnOutcome = "completed" | "guardrail" | "aborted" | "budget_exhausted" | "error";
+
 export interface CostDebugEntry {
   v: number;
   ts: string;
   sessionId: string;
+  /** Entry shape: per-step rows (default, unset), the once-per-turn outcome
+   *  label, or an async provider-resolution keyed by generationId. */
+  kind?: "turn-outcome" | "provider-resolution";
   turn?: number;
+  /** Present on kind "turn-outcome": how the turn ended. */
+  outcome?: TurnOutcome;
+  /** Short machine-readable detail, e.g. the finalize reason or error class. */
+  outcomeDetail?: string;
+  /** Present on kind "provider-resolution": the upstream OpenRouter routed to. */
+  provider?: string;
+  costUsd?: number;
+  latencyMs?: number;
   usage: Usage;
   promptSections: PromptSection[];
   promptTotalChars: number;
@@ -92,6 +108,10 @@ export interface CostDebugEntry {
   /** Present when intent-based model routing (config `modelRouting`) sent
    *  this turn to a different model than the session default. */
   modelRouting?: { from: string; to: string; tier: string };
+  /** Harness-side request ids of every API attempt in this turn so far —
+   *  join key to the request log (`~/.config/autopilot/logs/*.jsonl`), which
+   *  keys its TTFT/stream events by requestId. */
+  requestIds?: string[];
 }
 
 /** The session-start recall gate, per turn (#1193): why memory was or wasn't injected. */
@@ -203,6 +223,7 @@ export interface TurnDebugContext {
   model?: string;
   generationId?: string;
   modelRouting?: { from: string; to: string; tier: string };
+  requestIds?: string[];
 }
 
 /** Serialize the prompt prefix (all leading system messages) for comparison. */
@@ -295,6 +316,75 @@ export async function logTurnDebug(ctx: TurnDebugContext): Promise<void> {
   }
 }
 
+/** Append the once-per-turn outcome label. Best-effort like logTurnDebug:
+ *  callers fire it without awaiting, so it must never reject. */
+export async function logTurnOutcome(args: {
+  sessionId: string;
+  turn?: number;
+  outcome: TurnOutcome;
+  detail?: string;
+  durationMs?: number;
+}): Promise<void> {
+  try {
+    await logCostDebug({
+      v: LOG_VERSION,
+      ts: now(),
+      kind: "turn-outcome",
+      sessionId: args.sessionId,
+      ...(args.turn !== undefined ? { turn: args.turn } : {}),
+      outcome: args.outcome,
+      ...(args.detail ? { outcomeDetail: args.detail } : {}),
+      ...(args.durationMs !== undefined ? { durationMs: args.durationMs } : {}),
+      usage: EMPTY_USAGE,
+      promptSections: [],
+      promptTotalChars: 0,
+      promptTotalApproxTokens: 0,
+      toolStats: [],
+      toolTotalRawBytes: 0,
+      toolTotalReducedBytes: 0,
+      toolSavingsPct: 0,
+    });
+  } catch (err) {
+    logger.debug("cost_debug:write_failed", { error: (err as Error)?.message ?? String(err) });
+  }
+}
+
+/** Append the upstream provider a generation resolved to, once OpenRouter's
+ *  /generation record reports it (seconds after the turn row is written).
+ *  Joins to the per-step rows via `generationId`. */
+export async function logProviderResolution(args: {
+  sessionId: string;
+  generationId: string;
+  provider: string;
+  costUsd?: number;
+  latencyMs?: number;
+}): Promise<void> {
+  try {
+    await logCostDebug({
+      v: LOG_VERSION,
+      ts: now(),
+      kind: "provider-resolution",
+      sessionId: args.sessionId,
+      generationId: args.generationId,
+      provider: args.provider,
+      ...(args.costUsd !== undefined ? { costUsd: args.costUsd } : {}),
+      ...(args.latencyMs !== undefined ? { latencyMs: args.latencyMs } : {}),
+      usage: EMPTY_USAGE,
+      promptSections: [],
+      promptTotalChars: 0,
+      promptTotalApproxTokens: 0,
+      toolStats: [],
+      toolTotalRawBytes: 0,
+      toolTotalReducedBytes: 0,
+      toolSavingsPct: 0,
+    });
+  } catch (err) {
+    logger.debug("cost_debug:write_failed", { error: (err as Error)?.message ?? String(err) });
+  }
+}
+
+const EMPTY_USAGE: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
 async function writeTurnDebug(ctx: TurnDebugContext): Promise<void> {
   const promptSections = analyzePrompt(ctx.messages);
   const promptTotalChars = promptSections.reduce((sum, s) => sum + s.chars, 0);
@@ -333,6 +423,7 @@ async function writeTurnDebug(ctx: TurnDebugContext): Promise<void> {
     model: ctx.model,
     generationId: ctx.generationId,
     modelRouting: ctx.modelRouting,
+    requestIds: ctx.requestIds,
   });
 }
 
