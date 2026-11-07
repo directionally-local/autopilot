@@ -128,7 +128,7 @@ Prioritized recommendations from both this report and the sibling incident repor
 | 3 | Bash sweep guard: reject/scope `grep -r ~`-style commands | ❌ Not done |
 | 4 | **Cap loop depth adaptively**: at ~50 requests with no progress, force compaction or ask the user | ✅ **Done & merged** — #1182 (3914677): the stall guardrail tracks the last file-changing iteration; after 50 iterations with no progress (`stallIterations`, 0 disables) it warns the model once, grants one more window, then ends the turn with a tool-free summary |
 | 5 | A/B a model router on eval bench (k2.5-class for qa/verify/light turns) | ❌ Not done |
-| 6 | Strengthen output reduction (2.3% → 30–60%) for bash/read/grep | ❌ Not done |
+| 6 | Strengthen output reduction (2.3% → 30–60%) for bash/read/grep | 🔶 **In review** — #1186: bash pass-through now also gates on char and per-line caps (long minified/JSON lines no longer sail through), grep's `maxOutputChars` is enforced, read caps scale to 4% of the context window with a 48k ceiling (was 6% / 120k), `defaultMaxChars` 10k → 8k |
 | 7 | Turn on KIMIFLARE_TRACE=1 locally | ❌ User-config item |
 | 8 | Log upstream `provider_name` in cost-debug.jsonl (from OpenRouter `/api/v1/generation`) | ❌ Not done — needed to prove provider-side cache busts |
 | — | Background CI waits instead of blocking `github_pr_checks` | ❌ Not done |
