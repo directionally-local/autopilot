@@ -16,6 +16,8 @@ import {
   REQUESTY_PLUMBING_MODEL,
   plumbingModelOf,
   saveConfig,
+  patchPersistedConfig,
+  configPath,
 } from "./config.js";
 
 describe("validateModelId", () => {
@@ -233,6 +235,21 @@ describe("loadConfig", () => {
       assert.ok(cfg);
       assert.strictEqual(cfg.memoryExtraction, "session");
     });
+  });
+
+  it("serializes concurrent patches so none is lost", async () => {
+    await writeConfigFile({ openrouterApiKey: "sk-or-file" });
+    // Fire the three `/settings … off` writes at once, as the TUI does.
+    await Promise.all([
+      patchPersistedConfig({ prFooter: false }),
+      patchPersistedConfig({ inviteTip: false }),
+      patchPersistedConfig({ starTip: false }),
+    ]);
+    const onDisk = JSON.parse(await readFile(configPath(), "utf8")) as Record<string, unknown>;
+    assert.strictEqual(onDisk.prFooter, false);
+    assert.strictEqual(onDisk.inviteTip, false);
+    assert.strictEqual(onDisk.starTip, false);
+    assert.strictEqual(onDisk.openrouterApiKey, "sk-or-file", "unrelated fields are kept");
   });
 
   it("loads an old config that still names a UI engine, and drops it on save", async () => {

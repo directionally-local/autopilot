@@ -729,29 +729,49 @@ async function forSaving(cfg: AutopilotConfig, path: string): Promise<AutopilotC
 }
 
 /**
+ * Serialize config-file writes. patchPersistedConfig() is a read-modify-write,
+ * so two concurrent patches (e.g. `/settings pr-footer off` immediately
+ * followed by `/settings invite-tip off`) can otherwise read the same file and
+ * the later write silently drops the earlier patch. saveConfig() shares the
+ * queue so a full rewrite cannot interleave with a patch either.
+ */
+let configWriteQueue: Promise<unknown> = Promise.resolve();
+
+function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = configWriteQueue.then(fn);
+  // Keep the chain alive even when this write rejects.
+  configWriteQueue = run.catch(() => undefined);
+  return run;
+}
+
+/**
  * Merge `patch` into the on-disk config without disturbing unrelated fields
  * (unlike saveConfig(), which rewrites the whole file from an in-memory cfg
  * that may carry env-derived defaults).
  */
-export async function patchPersistedConfig(patch: Partial<AutopilotConfig>): Promise<string> {
-  const p = configPath();
-  let existing: Partial<AutopilotConfig> = {};
-  try {
-    existing = JSON.parse(await readFile(p, "utf8")) as Partial<AutopilotConfig>;
-  } catch {
-    /* no file yet */
-  }
-  const merged = { ...existing, ...patch };
-  await mkdir(join(p, ".."), { recursive: true });
-  await writeFile(p, JSON.stringify(merged, null, 2), "utf8");
-  await chmod(p, 0o600);
-  return p;
+export function patchPersistedConfig(patch: Partial<AutopilotConfig>): Promise<string> {
+  return withConfigLock(async () => {
+    const p = configPath();
+    let existing: Partial<AutopilotConfig> = {};
+    try {
+      existing = JSON.parse(await readFile(p, "utf8")) as Partial<AutopilotConfig>;
+    } catch {
+      /* no file yet */
+    }
+    const merged = { ...existing, ...patch };
+    await mkdir(join(p, ".."), { recursive: true });
+    await writeFile(p, JSON.stringify(merged, null, 2), "utf8");
+    await chmod(p, 0o600);
+    return p;
+  });
 }
 
-export async function saveConfig(cfg: AutopilotConfig): Promise<string> {
-  const p = configPath();
-  await mkdir(join(p, ".."), { recursive: true });
-  await writeFile(p, JSON.stringify(await forSaving(cfg, p), null, 2), "utf8");
-  await chmod(p, 0o600);
-  return p;
+export function saveConfig(cfg: AutopilotConfig): Promise<string> {
+  return withConfigLock(async () => {
+    const p = configPath();
+    await mkdir(join(p, ".."), { recursive: true });
+    await writeFile(p, JSON.stringify(await forSaving(cfg, p), null, 2), "utf8");
+    await chmod(p, 0o600);
+    return p;
+  });
 }
