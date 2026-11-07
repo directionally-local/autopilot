@@ -126,9 +126,10 @@ describe("databases", () => {
     assert.deepStrictEqual(analyzeSql("CREATE TABLE t (id int REFERENCES u ON DELETE CASCADE ON UPDATE SET NULL)"), []);
   });
 
-  it("flags a DATABASE_URL host that isn't local as production", () => {
+  it("flags a DATABASE_URL host that isn't local as production, and needs its name typed", () => {
     const f = first(`DATABASE_URL=postgres://app:s3cret@db.example.com:5432/shop psql "$DATABASE_URL" -c 'DROP TABLE orders'`)!;
     assert.strictEqual(f.target?.production, true);
+    assert.strictEqual(f.target?.confirmName, "shop");
     assert.match(f.target!.label, /db\.example\.com\/shop/);
     assert.doesNotMatch(f.target!.label, /s3cret|app:/);
     const env = { DATABASE_URL: "postgres://u:p@db.internal.example.com/prod_db" };
@@ -151,7 +152,7 @@ describe("databases", () => {
   it("flags production environment names", () => {
     const f = first("RAILS_ENV=production bin/rails db:drop")!;
     assert.strictEqual(f.target?.production, true);
-    assert.match(f.target!.label, /`production`/);
+    assert.strictEqual(f.target?.confirmName, "production");
     assert.strictEqual(first("bin/rails db:drop", { env: { RAILS_ENV: "development" } })?.target?.production, false);
   });
 
@@ -300,14 +301,14 @@ describe("cloud and infrastructure", () => {
   });
 
   it("flags production workspaces, contexts, profiles and projects", () => {
-    assert.strictEqual(first("terraform destroy", { env: { TF_WORKSPACE: "prod" } })?.target?.production, true);
+    assert.strictEqual(first("terraform destroy", { env: { TF_WORKSPACE: "prod" } })?.target?.confirmName, "prod");
     const tf = join(T, "tf");
     mkdirSync(join(tf, ".terraform"), { recursive: true });
     writeFileSync(join(tf, ".terraform", "environment"), "production\n");
-    assert.strictEqual(first("terraform destroy", { cwd: tf })?.target?.production, true);
+    assert.strictEqual(first("terraform destroy", { cwd: tf })?.target?.confirmName, "production");
     assert.strictEqual(first(`terraform -chdir=${tf} destroy`)?.target?.production, true);
     assert.strictEqual(first("terraform destroy", { env: { TF_WORKSPACE: "staging" } })?.target?.production, false);
-    assert.strictEqual(first("kubectl delete ns web --context prod-eu")?.target?.production, true);
+    assert.strictEqual(first("kubectl delete ns web --context prod-eu")?.target?.confirmName, "prod-eu");
     const kube = join(T, "kubeconfig");
     writeFileSync(kube, "apiVersion: v1\ncurrent-context: gke_acme_production\n");
     assert.strictEqual(first("kubectl delete pod x", { env: { KUBECONFIG: kube } })?.target?.production, true);

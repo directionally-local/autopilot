@@ -2266,7 +2266,7 @@ function App({
       codeMode,
       intentTier,
       tasks,
-      permission: perm ? { tool: perm.tool, args: perm.args, ...(perm.sensitiveReason ? { sensitiveReason: perm.sensitiveReason } : {}) } : null,
+      permission: perm ? { tool: perm.tool, args: perm.args, ...(perm.sensitiveReason ? { sensitiveReason: perm.sensitiveReason } : {}), ...(perm.destructive ? { destructive: perm.destructive } : {}) } : null,
       modals: open,
       resumeSessions,
       checkpoints: checkpointSession ? { session: checkpointSession, list: checkpointList } : null,

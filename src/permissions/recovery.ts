@@ -1,12 +1,12 @@
 /**
  * Recovery points before destructive file and git actions (autopilot#1125).
  *
- * Before a recoverable or irreversible action runs, Autopilot
+ * Before an approved recoverable or irreversible action runs, Autopilot
  * saves what it would lose, in its own state directory (never inside the
  * project):
  *   - a copy of files about to be deleted or overwritten that git can't
  *     restore (untracked, ignored, or with uncommitted changes), up to a size
- *     limit; above it there is no copy;
+ *     limit; above it the prompt already said there is no copy;
  *   - for `git reset --hard`: the old commit, plus a copy of changed files;
  *   - for `git branch -D`: where each branch pointed;
  *   - for a force push or a deleted remote branch: the remote branch's old
@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { stateDir } from "../util/app-dirs.js";
@@ -179,10 +179,20 @@ export function listRecoveryPoints(): RecoveryManifest[] {
   return out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
 }
 
+/** The real path of `p`, when it exists: `git rev-parse` answers with one,
+ *  but callers pass paths through symlinks (macOS /var → /private/var). */
+function canonical(p: string): string {
+  try {
+    return realpathSync(resolve(p));
+  } catch {
+    return resolve(p);
+  }
+}
+
 /** The latest point for `project` that hasn't been undone. */
 export function latestRecoveryPoint(project: string): RecoveryManifest | null {
-  const root = resolve(project);
-  return listRecoveryPoints().find((m) => !m.undoneAt && resolve(m.project) === root) ?? null;
+  const root = canonical(project);
+  return listRecoveryPoints().find((m) => !m.undoneAt && canonical(m.project) === root) ?? null;
 }
 
 function prune(): void {
@@ -197,7 +207,7 @@ function prune(): void {
 }
 
 function shown(path: string, project: string): string {
-  const rel = relative(project, path);
+  const rel = relative(canonical(project), canonical(path));
   return rel && !rel.startsWith("..") ? rel : path;
 }
 

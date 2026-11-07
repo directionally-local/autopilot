@@ -6,6 +6,7 @@ import {
   type PermissionRequest,
 } from "../tools/executor.js";
 import { isBlockedInPlanMode, isReadOnlyBash, type Mode } from "../mode.js";
+import type { DestructivePrompt } from "../permissions/guardrails.js";
 
 /** Pre-built typed decisions for the two auto-resolve paths so we don't
  *  recreate them on every call. M2.2 — see `PermissionDecisionResult`. */
@@ -17,6 +18,8 @@ export interface PendingPermission {
   args: Record<string, unknown>;
   /** Why a normally-quiet call needs a prompt (reads/writes a credentials location). */
   sensitiveReason?: string;
+  /** Set when the call is irreversible: the guardrail question (permissions/guardrails.ts). */
+  destructive?: DestructivePrompt;
   resolve: (decision: PermissionDecision) => void;
 }
 
@@ -68,8 +71,23 @@ export async function resolvePermission(
   req: PermissionRequest,
   mode: Mode,
   opts: DecidePermissionOptions | undefined,
-  host: { onPlanModeBlocked: (toolName: string) => void; prompt: () => Promise<PermissionDecision> },
+  host: {
+    onPlanModeBlocked: (toolName: string) => void;
+    prompt: () => Promise<PermissionDecision>;
+    /** Asks about an irreversible action; without it such a call is denied. */
+    promptDestructive?: (destructive: DestructivePrompt) => Promise<PermissionDecision>;
+  },
 ): Promise<PermissionDecision> {
+  // Irreversible (#1125): asked in every mode, auto included; a hook may deny but not allow.
+  if (req.destructive) {
+    if (mode === "plan" && isBlockedInPlanMode(req.tool.name)) {
+      host.onPlanModeBlocked(req.tool.name);
+      return AUTO_DENY;
+    }
+    const fromHook = await permissionFromHook(req, mode);
+    if (fromHook?.decision === "deny") return fromHook;
+    return host.promptDestructive ? host.promptDestructive(req.destructive) : AUTO_DENY;
+  }
   const outcome = decidePermission(req, mode, opts);
   if (outcome.kind === "resolve") return outcome.decision;
   if (outcome.kind === "plan_blocked") {
@@ -130,7 +148,12 @@ export function usePermissionController(
         prompt: () =>
           new Promise<PermissionDecision>((resolve) => {
             resolveRef.current = resolve;
-            setPending({ tool: req.tool, args: req.args, ...(req.sensitiveReason ? { sensitiveReason: req.sensitiveReason } : {}), resolve });
+            setPending({ tool: req.tool, args: req.args, ...(req.sensitiveReason ? { sensitiveReason: req.sensitiveReason } : {}), ...(req.destructive ? { destructive: req.destructive } : {}), resolve });
+          }),
+        promptDestructive: (destructive) =>
+          new Promise<PermissionDecision>((resolve) => {
+            resolveRef.current = resolve;
+            setPending({ tool: req.tool, args: req.args, destructive, resolve });
           }),
       }),
     [],

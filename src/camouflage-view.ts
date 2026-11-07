@@ -82,6 +82,7 @@ import { runStarAsk } from "./star-ask.js";
 import { runGithubAccess, type GithubAccessOutcome } from "./github-access.js";
 import { ghAuthLogin, runGh, type GhLogin, type GhRun } from "./util/gh-cli.js";
 import { terminalWrapWidth, wrapText } from "./util/wrap.js";
+import { CONFIRMED_IRREVERSIBLE, type DestructivePrompt } from "./permissions/guardrails.js";
 import { PRESETS as LSP_PRESETS } from "./ui/lsp-presets.js";
 import { formatBashTitle, getShellCommand } from "./tools/bash.js";
 import { formatJobStartTitle } from "./tools/jobs.js";
@@ -948,6 +949,7 @@ export class View implements AppBridge {
     }
     if (this.permission === s.permission.args) return;
     this.permission = s.permission.args;
+    if (s.permission.destructive) return void this.askDestructive(s.permission.destructive);
     const { tool, args, sensitiveReason } = s.permission;
     const detail = permissionDetail(tool.name, args, sensitiveReason, process.stdout.columns);
     let render: { title: string; diff?: { path: string; before: string; after: string } } | undefined;
@@ -974,6 +976,26 @@ export class View implements AppBridge {
         if (feedback) this.actions?.denyWithFeedback(feedback);
         else this.actions?.decidePermission("deny");
       });
+  }
+
+  /**
+   * An irreversible action (permissions/guardrails.ts): says what will be
+   * lost and whether recovery exists. A production-looking target needs its
+   * name typed; anything else typed, or Esc, is Don't.
+   */
+  private async askDestructive(d: DestructivePrompt): Promise<void> {
+    if (d.confirmName) {
+      this.cam.send("RuntimeError", { message: d.subtitle, severity: "warn" });
+      const r = await this.sdk.form(this.cam, {
+        id: `destructive-${Date.now()}`,
+        title: d.title,
+        fields: [{ name: "confirm", label: `Type ${d.confirmName} to run it`, placeholder: "Anything else doesn't run it" }],
+      });
+      const ok = !r.cancelled && r.values?.confirm?.trim() === d.confirmName;
+      return void this.actions?.decidePermission(ok ? CONFIRMED_IRREVERSIBLE : "deny");
+    }
+    const r = await this.select(d.title, [{ value: "run", label: "Run it" }, { value: "deny", label: "Don't run it" }], "deny", d.subtitle);
+    this.actions?.decidePermission(r === "run" ? CONFIRMED_IRREVERSIBLE : "deny");
   }
 
   /**

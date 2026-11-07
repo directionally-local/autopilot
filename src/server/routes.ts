@@ -35,6 +35,7 @@ import { logger } from "../util/logger.js";
 import { createSseStream, type SseClient } from "./sse.js";
 import { getOpenApiSpec } from "./openapi.js";
 import { evaluatePermissionRules } from "../permissions-evaluator.js";
+import { unattendedDestructiveDecision } from "../permissions/guardrails.js";
 import { readFile, unlink } from "node:fs/promises";
 import { resolve, basename } from "node:path";
 import { isImagePath } from "../util/image.js";
@@ -1088,6 +1089,14 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
     onRunBudgetExceeded: (reason) => controller.abort(new Error(reason)),
     askPermission: async (req) => {
       const { tool, args } = req;
+      // Irreversible (#1125): no one confirms in a server session, so only a rule naming this exact action allows it.
+      if (req.destructive) {
+        const { decision, message } = unattendedDestructiveDecision(req, config.permissions, sessionFile.cwd);
+        for (const client of active.sseClients) {
+          client.send(decision.decision === "allow" ? "permission.granted" : "permission.denied", { tool: tool.name, args, reason: "irreversible", message });
+        }
+        return decision;
+      }
       if (active.askDlPermission) return active.askDlPermission(req);
       if (active.runId) {
         // Allowing a tool for a run never extends to credentials files.
