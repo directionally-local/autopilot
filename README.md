@@ -16,7 +16,7 @@
 
 <p align="center">
   <strong>The open-source coding agent inside <a href="https://dl.new">dl</a>. It doesn't ask permission.</strong><br>
-  Free with 50M tokens a week of DeepSeek V4.1 Flash, no credit card. Or bring your own key: OpenRouter, Anthropic, OpenAI and 25+ more.
+  Free with 50M tokens a week of GPT-6 Luna and DeepSeek, no credit card. Or bring your own key: OpenRouter, Anthropic, OpenAI and 25+ more.
 </p>
 
 ## Get it
@@ -49,6 +49,8 @@ On OpenRouter you also get:
 - **Up to 1M+ context** (model-dependent) — Read entire modules, large configs, and full stack traces without the model losing track.
 - **Image understanding** — Drop image paths (PNG, JPG, WebP, GIF, BMP up to 5 MB) into any prompt. Great for UI reviews, diagrams, and screenshots.
 - **Plan / Edit / Auto modes (opt-in)** — Modes are off by default: every interactive turn runs in `auto` until you turn them on with `/settings modes on` (`/settings modes off` turns them off again). With modes on, the session starts in `edit` and `Shift+Tab` or `/mode` switches between them. SDK sessions always have modes and start in `edit`. `plan` is a whitelist-only research mode: only read-only tools (read, glob, grep, web search, GitHub read-only, browser fetch) are allowed. Writes, edits, mutating bash, MCP tools, and LSP renames are all blocked. `edit` prompts per mutating call. `auto` approves everything for trusted tasks. In `plan` and `edit`, reading a credentials file (`~/.ssh`, `~/.aws`, Autopilot's own config with your provider keys, `.env`, `/proc/*/environ`) also asks first, so a prompt injection cannot quietly read a key and send it out with `web_fetch`. Likewise `web_fetch` and `browser_fetch` ask before reaching a local or private network address (localhost, `127.0.0.1`, `10.x`/`192.168.x`, cloud metadata at `169.254.169.254`, including names and redirects that resolve there), approved per origin, so a prompt injection cannot read metadata credentials or local services.
+- **Guardrails and `/undo`** — Irreversible actions always ask, even in `auto`, under `--dangerously-allow-all`, or under a broad allow rule: deleting untracked work, `git reset --hard`, force pushes, dropping a database. A production-looking target needs its name typed, not just Enter. Before a destructive file or git action Autopilot saves a recovery point outside the repo, and `/undo` restores the latest one. `/audit` reports what the agent could destroy from here and what would save you.
+- **Setup import from other coding agents** — On first run Autopilot finds your `CLAUDE.md`, `GEMINI.md`, Cursor rules, Copilot instructions, Claude Code commands and MCP servers and uses them in place; `/setup-import` shows the checklist again. Nothing is copied into the repo or sent anywhere.
 - **Subagents** — By default, the coordinator assesses substantial tasks for independent research and may delegate without special phrasing. Worker calls still go through permission checks and need a configured backend. See the [subagents guide](docs/subagents.md) for examples, controls, limits, and setup.
 - **Long-running unattended runs** — The headless server can launch detached jobs, sleep between check-ins, and resume from saved checkpoints. Overall runtime, token, cost, and action budgets are optional; explicit budget exhaustion pauses for input. See the [long-running runs guide](docs/long-running-unattended-runs.md).
 - **Windows support** — OS-aware shell auto-detects `cmd.exe` / PowerShell on Windows, `bash` on Unix. The `bash` tool works out of the box on all platforms.
@@ -78,7 +80,7 @@ npm install -g autopilot-ai
 autopilot
 ```
 
-On first run, **Sign in with OpenRouter**: approve autopilot in your browser and a key is created for you (or paste one from <https://openrouter.ai/keys>). Then pick a model. That's it.
+On first run, autopilot asks **"How should it think?"**: choose **Free — sign in with GitHub** (50M tokens a week, no credit card) or **Use my own API key** to pick a provider such as OpenRouter, then pick a model. A provider key already in your environment skips the question and is used as-is. That's it.
 
 Or install with Homebrew on macOS or Linux (Homebrew installs Node.js for you):
 
@@ -132,7 +134,7 @@ To continue a Claude Code conversation (say it stopped on a usage limit), run `a
 | Requesty | `requesty` | `REQUESTY_API_KEY` | |
 | Any OpenAI-compatible endpoint | `custom` | `AUTOPILOT_API_KEY` (optional) | `AUTOPILOT_BASE_URL` — LiteLLM, vLLM, llama.cpp, a company gateway |
 
-- **First run** asks which provider to use; providers with a key already in your environment are offered first and used without saving the key.
+- **First run** asks "How should it think?" — Free (sign in with GitHub) or your own key, which opens the provider picker. A provider with a key already in your environment skips the question and is used without saving the key.
 - **Switch any time** with `/provider <id> [key]` (`/provider` lists them and where each key comes from), or from the CLI: `autopilot auth <id>` (saves a key and makes it active), `autopilot auth use <id>`, `autopilot auth status`. For one run, set `AUTOPILOT_PROVIDER=<id>`.
 - **`autopilot connect`** runs the first-run screens on their own — the searchable provider list, key entry checked with the provider, then its live model list — and saves the choice, so a plain `autopilot` uses it. Installers and scripts can hand setup to it instead of asking for a key themselves: `--state-file <path>` writes the result (`provider`, `name`, `baseUrl`, `apiKey`, `apiKeyEnv`, `keyRequired`, `model`, `authHeader`, `authFormat`) as JSON readable by you only, and hides providers a plain key gateway cannot proxy (Copilot, ChatGPT, Vertex, Bedrock, Azure, Workers AI). `--model-only` keeps the active provider and only changes the model. Exits 0 when saved, 1 when cancelled, 2 on a usage error.
 - **Everything follows the provider**: chat, compaction and memory side-calls, memory/skill embeddings, the model picker (each provider's own catalog — models.dev for hosted providers, live discovery for Ollama and LM Studio), pricing, error messages and the status page link. Nothing is sent to OpenRouter while another provider is active.
@@ -427,8 +429,11 @@ autopilot
 | `/shell auto\|bash\|cmd\|powershell` | Show or set the shell for the bash tool |
 | `/resume` | Pick a past conversation to restore |
 | `/checkpoint [label]` / `/checkpoint list` | Save a checkpoint in the current session, or list this session's checkpoints |
+| `/undo` | Restore the latest recovery point Autopilot saved before a destructive file or git action in this project |
+| `/audit` | Read-only report of what the agent could destroy from here: allowed destructive actions, reachable databases and cloud accounts (names and hosts only), recovery that exists, and suggested rules |
 | `/compact` | Summarize older turns to free context |
 | `/init` | Scan repo and write `AGENTS.md` project context (refreshes an existing `AGENTS.md`, or a legacy `KIMI.md`, `KIMIFLARE.md` or `AGENT.md` in place) |
+| `/setup-import` | Show what Autopilot uses from your other coding agents (Claude Code, Cursor, Gemini CLI, GitHub Copilot, OpenCode) |
 | `/memory` | Show memory stats and search |
 | `/mcp list` / `/mcp reload` | Manage MCP servers |
 | `/reasoning` | Toggle chain-of-thought display |
