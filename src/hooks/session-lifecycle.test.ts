@@ -101,6 +101,24 @@ describe("reliable SessionEnd (#877)", () => {
       off();
     }
   });
+
+  it("observers get a floor beyond the hook deadline (#1193): the memory flush's LLM call survives a 3s exit timeout", async () => {
+    let done = false;
+    const off = observeSessionEnd(async () => {
+      // unref: a failure here must not keep the test process alive.
+      await new Promise((r) => setTimeout(r, 4_000).unref());
+      done = true;
+    });
+    try {
+      await noteSessionStart({ sessionId: "a", cwd: "/r", resumed: false });
+      const start = Date.now();
+      await endSession("a", "exit"); // default hook timeout: 3s < observer floor
+      assert.equal(done, true);
+      assert.ok(Date.now() - start >= 3_900, "the observer's full run time is awaited");
+    } finally {
+      off();
+    }
+  });
 });
 
 describe("shutdownOtelSink", () => {

@@ -17,7 +17,7 @@ import type { MemoryManager } from "../memory/manager.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { HybridResult } from "../memory/schema.js";
 import { hasRecalledMemory, injectRecalledMemoryOnce } from "../memory/recall-inject.js";
-import { logTurnDebug, analyzePrompt } from "../cost-debug.js";
+import { logTurnDebug, analyzePrompt, type MemoryRecallDebug } from "../cost-debug.js";
 import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extractors.js";
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
@@ -616,12 +616,27 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // re-synthesize (a byte-different paraphrase) and re-splice a recall block on
   // every turn, stacking duplicates at the front of the array and busting the
   // prompt-prefix cache. Skip entirely once a block is already present.
+  //
+  // `memoryRecallDebug` records the gate decision for cost-debug.jsonl —
+  // "memory never fires" was undebuggable when only a boolean was logged.
+  const memoryRecallDebug: MemoryRecallDebug = { attempted: false, candidates: 0, injected: false };
+  if (!opts.sessionStartRecall || !opts.memoryManager) memoryRecallDebug.reason = "disabled";
+  else if (hasRecalledMemory(opts.messages)) memoryRecallDebug.reason = "already-present";
   const recallPromise: Promise<{ text: string; count: number } | null> =
     opts.sessionStartRecall && opts.memoryManager && !hasRecalledMemory(opts.messages)
       ? (async () => {
+          memoryRecallDebug.attempted = true;
           const results = await opts.sessionStartRecall!(lastUserPrompt || opts.cwd);
-          if (results.length === 0 || !opts.memoryManager) return null;
+          memoryRecallDebug.candidates = results.length;
+          if (results.length === 0 || !opts.memoryManager) {
+            memoryRecallDebug.reason = "no-results";
+            return null;
+          }
           const text = await opts.memoryManager.synthesizeRecalled(results, opts.signal);
+          if (!text) {
+            memoryRecallDebug.reason = "synthesis-empty";
+            return null;
+          }
           return { text, count: results.length };
         })()
       : Promise.resolve(null);
@@ -664,8 +679,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     const { text, count } = recallSettled.value;
     if (injectRecalledMemoryOnce(opts.messages, text)) {
       memoryRecalledCount = count;
+      memoryRecallDebug.injected = true;
+      delete memoryRecallDebug.reason;
       opts.callbacks.onMemoryRecalled?.(count);
     }
+  } else if (recallSettled.status === "rejected") {
+    // Abort rejections rethrow above; only genuine recall errors land here.
+    memoryRecallDebug.reason = "error";
   }
 
   if (skillsSettled.status === "fulfilled" && skillsSettled.value) {
@@ -1319,6 +1339,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           userPromptPreview,
           preTurnMs,
           memoryRecalled: memoryRecalledCount > 0,
+          memoryContextPresent: hasRecalledMemory(opts.messages),
+          memoryRecall: memoryRecallDebug,
           model: responseMeta?.model ?? opts.model,
           ...(responseMeta?.generationId ? { generationId: responseMeta.generationId } : {}),
           ...(opts.routedFromModel
@@ -1990,6 +2012,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         userPromptPreview,
         preTurnMs,
         memoryRecalled: memoryRecalledCount > 0,
+        memoryContextPresent: hasRecalledMemory(opts.messages),
+        memoryRecall: memoryRecallDebug,
         model: responseMeta?.model ?? opts.model,
         ...(responseMeta?.generationId ? { generationId: responseMeta.generationId } : {}),
         ...(opts.routedFromModel

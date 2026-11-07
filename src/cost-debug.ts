@@ -76,6 +76,13 @@ export interface CostDebugEntry {
   preTurnMs?: number;
   /** True if at least one memory was recalled and injected this turn. */
   memoryRecalled?: boolean;
+  /** True if a recalled-memory block was present in the context this turn.
+   *  Unlike `memoryRecalled` (which is only true on the single injecting
+   *  turn), this stays true for the whole session, so "did the model have
+   *  recalled context?" is answerable per turn. */
+  memoryContextPresent?: boolean;
+  /** Why recall did or didn't inject this turn — the gate decision. */
+  memoryRecall?: MemoryRecallDebug;
   /** Model that served the turn (from the response when reported, else the requested model). */
   model?: string;
   /** OpenRouter generation id ("gen-…") — join key to usage.json's
@@ -85,6 +92,18 @@ export interface CostDebugEntry {
   /** Present when intent-based model routing (config `modelRouting`) sent
    *  this turn to a different model than the session default. */
   modelRouting?: { from: string; to: string; tier: string };
+}
+
+/** The session-start recall gate, per turn (#1193): why memory was or wasn't injected. */
+export interface MemoryRecallDebug {
+  /** Recall actually ran (manager + recall fn present, no block already injected). */
+  attempted: boolean;
+  /** Memories the hybrid retriever returned (0 when skipped or no matches). */
+  candidates: number;
+  /** A recalled-memory block was injected on this turn. */
+  injected: boolean;
+  /** "disabled" | "already-present" | "no-results" | "synthesis-empty" | "error"; unset when injected. */
+  reason?: string;
 }
 
 function now(): string {
@@ -179,6 +198,8 @@ export interface TurnDebugContext {
   userPromptPreview?: string;
   preTurnMs?: number;
   memoryRecalled?: boolean;
+  memoryContextPresent?: boolean;
+  memoryRecall?: MemoryRecallDebug;
   model?: string;
   generationId?: string;
   modelRouting?: { from: string; to: string; tier: string };
@@ -307,6 +328,8 @@ async function writeTurnDebug(ctx: TurnDebugContext): Promise<void> {
     userPromptPreview: ctx.userPromptPreview,
     preTurnMs: ctx.preTurnMs,
     memoryRecalled: ctx.memoryRecalled,
+    memoryContextPresent: ctx.memoryContextPresent,
+    memoryRecall: ctx.memoryRecall,
     model: ctx.model,
     generationId: ctx.generationId,
     modelRouting: ctx.modelRouting,

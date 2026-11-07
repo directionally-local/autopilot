@@ -213,6 +213,9 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       sessionId: sessionFile.id,
       offered: workerTools.some((tool) => tool.name === "subagent"),
       guidance: delegationGuidance.kind,
+      reason: delegationGuidance.reason,
+      tier: policy.classification.tier,
+      policy: opts.subagentPolicy ?? "auto",
     });
   }
 

@@ -8,6 +8,7 @@
 import type { HooksManager } from "./manager.js";
 import { emitOtelEvent } from "../util/otel-events.js";
 import { onShutdown, SHUTDOWN_TIMEOUT_MS, withDeadline } from "../util/exit.js";
+import { logger } from "../util/logger.js";
 
 const started = new Map<string, { hooks: HooksManager | undefined; cwd: string }>();
 let shutdownRegistered = false;
@@ -78,12 +79,25 @@ export function observeSessionEnd(observer: SessionEndObserver): () => void {
   };
 }
 
+/**
+ * Internal observers (the memory session-end flush, beacon) are trusted and
+ * bounded, so they get a floor beyond the user-facing hook budget: the memory
+ * flush makes ONE LLM synthesis call (typically 3–8s, more on a slow
+ * provider), and a 3s exit deadline killed it every time — silently dropping
+ * every buffered edit, which is why cross-session recall had nothing to
+ * recall. Hooks keep the caller's timeout; only observers get the floor.
+ */
+const OBSERVER_MIN_TIMEOUT_MS = 15_000;
+
 async function runSessionEndObservers(sessionId: string, reason: "exit" | "clear", timeoutMs: number): Promise<void> {
   if (observers.size === 0) return;
   const ran = Promise.all(
     [...observers].map((obs) => Promise.resolve().then(() => obs(sessionId, reason)).catch(() => undefined)),
   );
-  await withDeadline(ran, timeoutMs);
+  const result = await withDeadline(ran, Math.max(timeoutMs, OBSERVER_MIN_TIMEOUT_MS));
+  if (result === "timeout") {
+    logger.warn("session_end:observer_timeout", { sessionId, reason, timeoutMs: Math.max(timeoutMs, OBSERVER_MIN_TIMEOUT_MS) });
+  }
 }
 
 /** Fire SessionEnd for one session (e.g. /clear). */

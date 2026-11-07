@@ -1540,6 +1540,9 @@ function App({
         sessionId: ensureSessionId(),
         offered: turnTools.some((tool) => tool.name === "subagent"),
         guidance: delegationGuidance.kind,
+        reason: delegationGuidance.reason,
+        tier: policy.classification.tier,
+        policy: cfg.subagentPolicy ?? "auto",
       });
 
       // Session trace: `session_start` once per session (with the exact tools
