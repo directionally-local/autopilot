@@ -114,7 +114,7 @@ Overall reliability is good: 821/828 stream_end, 4 retries recovered. The waste 
 
 Any learned policy can be validated with the existing `autopilot eval run / eval compare` harness (paired McNemar on autopilot-bench).
 
-## 7. Status vs main (verified as of 37e7af8, 2026-11-07 — #1189 opt-in model router and #1191 bash sweep guard, items 5 and 3 below)
+## 7. Status vs main (verified as of 62adcdb, 2026-11-07 — #1192 memory/subagent gate logging, item 2 below)
 
 Prioritized recommendations from both this report and the sibling incident report (`../autopilot-slow-session-2026-11-06.md`):
 
@@ -124,7 +124,7 @@ Prioritized recommendations from both this report and the sibling incident repor
 | — | Cap the context (autoCompactCapTokens) | ✅ **Done & merged** — #1177 (3441328): compaction thresholds capped at 150k tokens by default |
 | — | Per-test timeout for the suite | ⚠️ **Partial** — package.json runs `--test-timeout=120000 --test-force-exit`, but `src/server/routes-github-proxy.test.ts` can still hang at the individual-test level; the underlying hang is unfixed |
 | 1 | Telemetry schema fixes: join key requestId↔turn, per-turn outcome label, real subagent.jsonl payloads | ❌ Not done. Cache-break attribution partially exists (`changedSegment` static/session/dynamic in `src/cost-debug.ts`) but reads `"none"` in practice — busts were provider-side, and §8 below is needed to prove it |
-| 2 | Debug why memory recall and subagent guidance fire 0% | ❌ Not done — no gate-decision logging exists |
+| 2 | Debug why memory recall and subagent guidance fire 0% | ✅ **Done & merged** — #1192 (62adcdb): root-caused, not just instrumented. Memory: the session-end flush was killed by its own hook timeout on nearly every exit (repo memory.db had zero rows after two days of heavy use) — internal observers now get a 15s floor; flush/synthesis failures were swallowed and now log. Subagent/memory gate decisions are recorded, so a 0% rate is now attributable rather than invisible. Follow-up: re-measure recall/offer rates after a few days of use |
 | 3 | Bash sweep guard: reject/scope `grep -r ~`-style commands | ✅ **Done & merged** — #1191 (37e7af8): `guardSweep` (src/tools/bash.ts) blocks recursive grep/rg/find sweeps of bare `~`/`$HOME`/`/` (pipes, `cd ~ &&` prefixes and `-maxdepth 4`-style false shallows included; `find/fd` with `-maxdepth ≤3` allowed) and points the agent at scoped paths; escape hatch `AUTOPILOT_ALLOW_HOME_SWEEP=1` |
 | 4 | **Cap loop depth adaptively**: at ~50 requests with no progress, force compaction or ask the user | ✅ **Done & merged** — #1182 (3914677): the stall guardrail tracks the last file-changing iteration; after 50 iterations with no progress (`stallIterations`, 0 disables) it warns the model once, grants one more window, then ends the turn with a tool-free summary |
 | 5 | A/B a model router on eval bench (k2.5-class for qa/verify/light turns) | ✅ **Shipped (opt-in)** — #1189 (ea250f4): config `modelRouting: { "light": "<model>" }` routes light/medium turns to a faster model while the session runs the default model (a /model pick wins). Off by default pending cache-impact measurement: watch per-turn `cacheHitRatio`/`modelRouting` in cost-debug.jsonl; eval A/B still open |
