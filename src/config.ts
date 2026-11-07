@@ -6,6 +6,7 @@ import { migrateLegacyModelId } from "./models/registry.js";
 import { DEFAULT_AUTO_COMPACT_CAP_TOKENS } from "./agent/context-budget.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
+import type { ModelRoutingConfig } from "./intent/model-routing.js";
 import { readEnv } from "./util/env.js";
 import { defaultCoauthor } from "./util/dl-identity.js";
 import { configPath as userConfigPath } from "./util/app-dirs.js";
@@ -131,6 +132,16 @@ export interface AutopilotConfig {
   subagentPolicy?: SubagentPolicy;
   /** Set only when the user explicitly chose a policy; used to migrate the former implicit suggest default. */
   subagentPolicyExplicit?: boolean;
+  /**
+   * Intent-based model routing (off by default): run lighter turns on a
+   * faster/cheaper model while heavy turns keep `model`, e.g.
+   * `{ "light": "moonshotai/kimi-k2.5" }`. Only applies while the session
+   * runs the configured default model — an explicit /model pick wins.
+   * Trade-off: a routed turn re-prices the prompt (cached prefixes are per
+   * model), so watch `cacheHitRatio` in cost-debug.jsonl and back off if it
+   * drops below ~95%. See src/intent/model-routing.ts.
+   */
+  modelRouting?: ModelRoutingConfig;
   /**
    * Feature flag for the plan / edit / auto permission modes. Off by default:
    * every session runs in auto (tools run without per-call prompts) and the

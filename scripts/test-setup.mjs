@@ -44,6 +44,10 @@ for (const suffix of ["TRACE_DIR", "DUMP_LLM_DIR", "REMOTES_FILE", "ASTER_CONFIG
   delete process.env[`AUTOPILOT_${suffix}`];
   delete process.env[`KIMIFLARE_${suffix}`];
 }
+// Tests assert the standalone (not dl-launched) identity: default co-author,
+// product name, headers. A run started from inside dl would otherwise leak
+// AUTOPILOT_LAUNCHED_BY=dl into every test process and flip those assertions.
+delete process.env.AUTOPILOT_LAUNCHED_BY;
 Object.assign(process.env, env);
 
 if (process.env.AUTOPILOT_TEST_KEEP_ROOT !== "1") {

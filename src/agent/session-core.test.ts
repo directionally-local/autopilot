@@ -91,6 +91,36 @@ describe("assembleTurn", () => {
     assert.deepStrictEqual(opts.tools.map((t) => t.name), ["read"]);
   });
 
+  it("routes light turns to the configured fast model, but never past a host-picked model", async () => {
+    const cfg = { ...deepseek, subagentPolicy: "off" as const, modelRouting: { light: "deepseek-flash" } };
+    const policy = await resolveTurnPolicy({ cfg, prompt: "hi", tools: TOOLS });
+    assert.strictEqual(policy.classification.tier, "light");
+    assert.strictEqual(policy.routedModel, "deepseek-flash");
+
+    // Session runs the default model → routing applies and is attributed.
+    const routed = assembleTurn({
+      cfg,
+      policy,
+      host: { model: "deepseek-v4-pro", messages: [], executor: {} as never, cwd: "/tmp", signal: new AbortController().signal, callbacks: { askPermission: async () => "allow" as const } },
+    });
+    assert.strictEqual(routed.model, "deepseek-flash");
+    assert.strictEqual(routed.routedFromModel, "deepseek-v4-pro");
+
+    // Session runs a model the user picked with /model → routing stays out.
+    const pinned = assembleTurn({
+      cfg,
+      policy,
+      host: { model: "moonshotai/kimi-k2.6", messages: [], executor: {} as never, cwd: "/tmp", signal: new AbortController().signal, callbacks: { askPermission: async () => "allow" as const } },
+    });
+    assert.strictEqual(pinned.model, "moonshotai/kimi-k2.6");
+    assert.strictEqual(pinned.routedFromModel, undefined);
+  });
+
+  it("keeps the session model when routing is unconfigured", async () => {
+    const policy = await resolveTurnPolicy({ cfg: { ...deepseek, subagentPolicy: "off" }, prompt: "hi", tools: TOOLS });
+    assert.strictEqual(policy.routedModel, undefined);
+  });
+
   it("describes guidance for hosts that show it", () => {
     assert.strictEqual(describeSubagentGuidance({ kind: "none", reason: "" }), null);
     assert.match(describeSubagentGuidance({ kind: "suggest", reason: "", probability: 0.7 })!, /Jev estimate: 70%/);

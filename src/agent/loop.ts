@@ -102,6 +102,10 @@ export interface AgentCallbacks {
 /** Credentials come in as `LlmAuth` fields — spread `llmAuthFromConfig(cfg)`. */
 export interface AgentTurnOpts extends LlmAuth {
   model: string;
+  /** Set when `model` was chosen by intent-based routing (config
+   *  `modelRouting`) instead of this model. Logged to cost-debug so the
+   *  routing's cache impact is measurable per turn. */
+  routedFromModel?: string;
   messages: ChatMessage[];
   tools: ToolSpec[];
   executor: ToolExecutor;
@@ -1315,6 +1319,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           userPromptPreview,
           preTurnMs,
           memoryRecalled: memoryRecalledCount > 0,
+          model: responseMeta?.model ?? opts.model,
+          ...(responseMeta?.generationId ? { generationId: responseMeta.generationId } : {}),
+          ...(opts.routedFromModel
+            ? { modelRouting: { from: opts.routedFromModel, to: opts.model, tier: opts.intentClassification?.tier ?? "medium" } }
+            : {}),
         });
       }
       if (budgetExhausted) {
@@ -1981,6 +1990,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         userPromptPreview,
         preTurnMs,
         memoryRecalled: memoryRecalledCount > 0,
+        model: responseMeta?.model ?? opts.model,
+        ...(responseMeta?.generationId ? { generationId: responseMeta.generationId } : {}),
+        ...(opts.routedFromModel
+          ? { modelRouting: { from: opts.routedFromModel, to: opts.model, tier: opts.intentClassification?.tier ?? "medium" } }
+          : {}),
       });
     }
 
