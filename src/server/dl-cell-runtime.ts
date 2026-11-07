@@ -866,7 +866,7 @@ export class DlHotcellRuntime implements DlApiRuntime {
       return;
     }
 
-    const install = await cell.exec(`mkdir -p /opt/autopilot && npm install --prefix /opt/autopilot --no-audit --no-fund ${this.packageSpec}`);
+    const install = await cell.exec(`mkdir -p /opt/autopilot && npm install --prefix /opt/autopilot --no-audit --no-fund --ignore-scripts ${this.packageSpec}`);
     if (install.exitCode !== 0) throw new Error("cell_runtime_install_failed");
   }
 
