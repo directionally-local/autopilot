@@ -114,7 +114,7 @@ Overall reliability is good: 821/828 stream_end, 4 retries recovered. The waste 
 
 Any learned policy can be validated with the existing `autopilot eval run / eval compare` harness (paired McNemar on autopilot-bench).
 
-## 7. Status vs main (as of 67558f6, 2026-11-07)
+## 7. Status vs main (as of 5f4215b, 2026-11-07)
 
 Prioritized recommendations from both this report and the sibling incident report (`../autopilot-slow-session-2026-11-06.md`):
 
@@ -126,7 +126,7 @@ Prioritized recommendations from both this report and the sibling incident repor
 | 1 | Telemetry schema fixes: join key requestId↔turn, per-turn outcome label, real subagent.jsonl payloads | ❌ Not done. Cache-break attribution partially exists (`changedSegment` static/session/dynamic in `src/cost-debug.ts`) but reads `"none"` in practice — busts were provider-side, and §8 below is needed to prove it |
 | 2 | Debug why memory recall and subagent guidance fire 0% | ❌ Not done — no gate-decision logging exists |
 | 3 | Bash sweep guard: reject/scope `grep -r ~`-style commands | ❌ Not done |
-| 4 | **Cap loop depth adaptively**: at ~50 requests with no progress, force compaction or ask the user | ❌ Not done — only the hard ceiling exists (`maxTotalToolIterations`, default 5 × `maxToolIterations`, in `src/agent/loop.ts`); no progress-aware intervention. **Recommended next PR.** |
+| 4 | **Cap loop depth adaptively**: at ~50 requests with no progress, force compaction or ask the user | ✅ **Done & merged** — #1182 (3914677): the stall guardrail tracks the last file-changing iteration; after 50 iterations with no progress (`stallIterations`, 0 disables) it warns the model once, grants one more window, then ends the turn with a tool-free summary |
 | 5 | A/B a model router on eval bench (k2.5-class for qa/verify/light turns) | ❌ Not done |
 | 6 | Strengthen output reduction (2.3% → 30–60%) for bash/read/grep | ❌ Not done |
 | 7 | Turn on KIMIFLARE_TRACE=1 locally | ❌ User-config item |
