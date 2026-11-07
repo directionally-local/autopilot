@@ -195,6 +195,10 @@ export interface AgentTurnOpts extends LlmAuth {
   /** Remind the model when a whole step went to bookkeeping alone (tasks_set /
    *  memory writes): fold those into the next substantive call. Default: true. */
   bookkeepingReminder?: boolean;
+  /** When a turn ends with every task completed or in progress (none pending),
+   *  mark the in-progress tasks completed in the harness instead of letting the
+   *  model spend a final response on a lone tasks_set. Default: true. */
+  autoFinalizeTasks?: boolean;
   /** Host language server manager, forwarded to tools for post-edit diagnostics. */
   lspManager?: LspManager;
   /** When false, edit/write results omit the post-edit diagnostics block. */
@@ -282,6 +286,13 @@ export const MAX_STALL_WARNINGS = 1;
  *  whole context. Two reminders nudge batching without nagging. */
 export const MAX_BOOKKEEPING_NUDGES = 2;
 
+/** Once the transient reminders for a turn are exhausted, this note is appended
+ *  to the bookkeeping tool's result instead. It reaches the model as tool
+ *  output — which carries more weight than a system reminder — and it persists
+ *  in history. Appending messages never touches the cached prompt prefix. */
+export const BOOKKEEPING_RESULT_NOTE =
+  "[harness] This step contained only plan/memory bookkeeping — a full model request spent on no substantive work. " +
+  "Fold updates like this into the same response as a substantive tool call (or your final answer); do not give bookkeeping its own step.";
 export class BudgetExhaustedError extends Error {
   constructor(message = "Cumulative input token budget exhausted") {
     super(message);
@@ -1451,6 +1462,20 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           }
         }
       }
+      // Auto-finalize the checklist: the model ended the turn with every task
+      // completed or in progress (none pending), so only the final
+      // "all completed" update is missing. Completing it here makes a
+      // bookkeeping-only final step — a full extra model round trip (#963) —
+      // unnecessary. A turn that pauses mid-plan (pending tasks remain, e.g.
+      // the model asked the user a question) keeps its list untouched.
+      if (
+        opts.autoFinalizeTasks !== false &&
+        currentTasks.length > 0 &&
+        currentTasks.some((t) => t.status === "in_progress") &&
+        currentTasks.every((t) => t.status !== "pending")
+      ) {
+        wrappedOnTasks(currentTasks.map((t) => (t.status === "in_progress" ? { ...t, status: "completed" as const } : t)));
+      }
       logger.info("turn:complete", { sessionId: opts.sessionId, durationMs: Math.round(performance.now() - turnStart) });
       recordOutcome("completed");
       await fireStopHook();
@@ -1879,6 +1904,9 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           }
         }
       }
+      if (annotateBookkeeping && BOOKKEEPING_TOOLS.has(tc.function.name)) {
+        result = { ...result, content: `${result.content}\n\n${BOOKKEEPING_RESULT_NOTE}` };
+      }
       toolResults.push(result);
       opts.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: sanitizeString(result.content), name: result.name });
       transcript?.appendToolResult({ tool_call_id: result.tool_call_id, content: sanitizeString(result.content), ok: result.ok });
@@ -1969,6 +1997,14 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       const tool = executorTools.find((t) => t.name === tc.function.name);
       return tool?.isReadOnly === true || tool?.concurrent === true;
     };
+    // A step made of only bookkeeping calls burned a full model request on
+    // bookkeeping alone. The first MAX_BOOKKEEPING_NUDGES get the transient
+    // reminder after execution; beyond that, annotate the tool result itself
+    // (cache-prefix-safe, and tool output carries more weight with the model).
+    const bookkeepingOnlyStep = toolCalls.length > 0 && toolCalls.every((tc) => BOOKKEEPING_TOOLS.has(tc.function.name));
+    const annotateBookkeeping =
+      bookkeepingOnlyStep && opts.bookkeepingReminder !== false && bookkeepingNudges >= MAX_BOOKKEEPING_NUDGES;
+
     const segments: Array<{ concurrent: boolean; calls: Array<{ tc: ToolCall; index: number }> }> = [];
     for (const [index, tc] of toolCalls.entries()) {
       const concurrent = isConcurrent(tc);
@@ -2054,7 +2090,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     // whole context — on no substantive work. Remind the model to fold
     // bookkeeping into the next substantive call's response. The reminder is
     // transient (request-only) and clears as soon as a real tool runs.
-    if (toolCalls.length > 0 && toolCalls.every((tc) => BOOKKEEPING_TOOLS.has(tc.function.name))) {
+    if (bookkeepingOnlyStep) {
       if (opts.bookkeepingReminder !== false && bookkeepingNudges < MAX_BOOKKEEPING_NUDGES) {
         bookkeepingNudges++;
         const names = [...new Set(toolCalls.map((tc) => tc.function.name))].join(", ");
