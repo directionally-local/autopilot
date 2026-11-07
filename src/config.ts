@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { isProviderId, PROVIDER_PRESETS, type ProviderId } from "./providers/presets.js";
 import { isProviderUsable, noteActiveProvider, resolveActiveProvider, resolveProviderId, type ProviderSettings } from "./providers/resolve.js";
 import { migrateLegacyModelId } from "./models/registry.js";
+import { DEFAULT_AUTO_COMPACT_CAP_TOKENS } from "./agent/context-budget.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
 import { readEnv } from "./util/env.js";
@@ -245,7 +246,9 @@ export interface AutopilotConfig {
   /** Estimated in-memory token threshold to trigger aggressive auto-compaction between turns. Default: 500_000. */
   autoCompactTokenThreshold?: number;
   /** Optional absolute cap for the budget-relative compaction thresholds (cost
-   *  control). Off by default: thresholds scale with the model's context window. */
+   *  and latency control). Defaults to DEFAULT_AUTO_COMPACT_CAP_TOKENS
+   *  (150k): very large context windows otherwise rarely compact, which
+   *  inflates prompt size and time-to-first-token. 0 = no cap. */
   autoCompactCapTokens?: number;
   /** Estimated in-memory token threshold to trigger auto-fresh when compaction cannot reduce below this. Default: 2_000_000. */
   autoFreshTokenThreshold?: number;
@@ -525,7 +528,7 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     autoFreshSuggestionTurns: persisted.autoFreshSuggestionTurns,
     autoFreshEnabled: persisted.autoFreshEnabled,
     autoCompactTokenThreshold: persisted.autoCompactTokenThreshold,
-    autoCompactCapTokens: readNumberEnv("AUTO_COMPACT_CAP_TOKENS") ?? persisted.autoCompactCapTokens,
+    autoCompactCapTokens: readNumberEnv("AUTO_COMPACT_CAP_TOKENS") ?? persisted.autoCompactCapTokens ?? DEFAULT_AUTO_COMPACT_CAP_TOKENS,
     autoFreshTokenThreshold: persisted.autoFreshTokenThreshold,
     permissions: persisted.permissions,
     preferPullRequests: readBooleanEnv("PREFER_PULL_REQUESTS") ?? persisted.preferPullRequests ?? true,

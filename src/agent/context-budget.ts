@@ -22,6 +22,13 @@ export const BUDGET_SAFETY_MARGIN_TOKENS = 8_192;
  *  thresholds no longer apply it unless a host opts in via `absoluteCapTokens`. */
 export const PROACTIVE_COMPACTION_CAP_TOKENS = 80_000;
 
+/** Default absolute cap applied to the compaction thresholds when the user
+ *  hasn't set `autoCompactCapTokens`. Long sessions otherwise grow to fill
+ *  large context windows, which drives up time-to-first-token on every
+ *  request and the cost of a cold prompt cache. Set the config value to 0
+ *  to opt out and let thresholds scale with the model's context window. */
+export const DEFAULT_AUTO_COMPACT_CAP_TOKENS = 150_000;
+
 /** Soft threshold: elide stale tool output at this share of the input budget. */
 export const SOFT_COMPACTION_SHARE = 0.6;
 

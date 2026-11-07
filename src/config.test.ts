@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateModelId } from "./agent/client.js";
+import { DEFAULT_AUTO_COMPACT_CAP_TOKENS } from "./agent/context-budget.js";
 import { getModelOrInfer } from "./models/registry.js";
 import {
   loadConfig,
@@ -89,6 +90,8 @@ describe("loadConfig", () => {
     // #1073: memory extraction policy
     "AUTOPILOT_MEMORY_EXTRACTION",
     "KIMIFLARE_MEMORY_EXTRACTION",
+    "AUTOPILOT_AUTO_COMPACT_CAP_TOKENS",
+    "KIMIFLARE_AUTO_COMPACT_CAP_TOKENS",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -148,6 +151,21 @@ describe("loadConfig", () => {
     delete process.env.AUTOPILOT_MEMORY_ENABLED;
     process.env.AUTOPILOT_MEMORY_ENABLED = "1";
     assert.strictEqual((await loadConfig())?.memoryEnabled, true, "env on is an explicit opt-in");
+  });
+
+  it("caps compaction thresholds at 150k by default; env/file override, 0 opts out", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    assert.strictEqual((await loadConfig())?.autoCompactCapTokens, DEFAULT_AUTO_COMPACT_CAP_TOKENS);
+
+    await writeConfigFile({ autoCompactCapTokens: 250_000 });
+    assert.strictEqual((await loadConfig())?.autoCompactCapTokens, 250_000, "persisted value wins");
+
+    process.env.AUTOPILOT_AUTO_COMPACT_CAP_TOKENS = "90000";
+    assert.strictEqual((await loadConfig())?.autoCompactCapTokens, 90_000, "env wins over the file");
+    delete process.env.AUTOPILOT_AUTO_COMPACT_CAP_TOKENS;
+
+    await writeConfigFile({ autoCompactCapTokens: 0 });
+    assert.strictEqual((await loadConfig())?.autoCompactCapTokens, 0, "0 opts out of the cap");
   });
 
   it("returns null when the file only has Cloudflare credentials (upgrading user → onboarding)", async () => {
