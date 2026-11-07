@@ -76,6 +76,15 @@ export interface CostDebugEntry {
   preTurnMs?: number;
   /** True if at least one memory was recalled and injected this turn. */
   memoryRecalled?: boolean;
+  /** Model that served the turn (from the response when reported, else the requested model). */
+  model?: string;
+  /** OpenRouter generation id ("gen-…") — join key to usage.json's
+   *  gatewayLogs, which carry the upstream `provider` the request was
+   *  routed to. */
+  generationId?: string;
+  /** Present when intent-based model routing (config `modelRouting`) sent
+   *  this turn to a different model than the session default. */
+  modelRouting?: { from: string; to: string; tier: string };
 }
 
 function now(): string {
@@ -170,6 +179,9 @@ export interface TurnDebugContext {
   userPromptPreview?: string;
   preTurnMs?: number;
   memoryRecalled?: boolean;
+  model?: string;
+  generationId?: string;
+  modelRouting?: { from: string; to: string; tier: string };
 }
 
 /** Serialize the prompt prefix (all leading system messages) for comparison. */
@@ -295,6 +307,9 @@ async function writeTurnDebug(ctx: TurnDebugContext): Promise<void> {
     userPromptPreview: ctx.userPromptPreview,
     preTurnMs: ctx.preTurnMs,
     memoryRecalled: ctx.memoryRecalled,
+    model: ctx.model,
+    generationId: ctx.generationId,
+    modelRouting: ctx.modelRouting,
   });
 }
 

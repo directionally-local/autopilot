@@ -26,7 +26,7 @@ import { ContextBudgetError } from "./context-budget.js";
 import { llmAuthFromConfig, activeOpenRouterKey } from "./llm-auth.js";
 import { completionCheckFromConfig } from "./completion-check.js";
 import { classifyIntent, type IntentResult } from "../intent/classify.js";
-import { allowsSubagentDispatch, resolveSubagentGuidance, type SubagentGuidance, type SubagentPolicy } from "../intent/subagent-policy.js";
+import { routedModelForTier } from "../intent/model-routing.js";import { allowsSubagentDispatch, resolveSubagentGuidance, type SubagentGuidance, type SubagentPolicy } from "../intent/subagent-policy.js";
 import { checkHotcellReadiness, type HotcellReadiness } from "../tools/hotcell-readiness.js";
 import type { AutopilotConfig } from "../config.js";
 import type { ToolSpec } from "../tools/registry.js";
@@ -71,6 +71,8 @@ export interface TurnPolicy {
   completionCheck?: AgentTurnOpts["completionCheck"];
   /** One line to show when delegation was suppressed because Hotcell is not ready. */
   readinessNotice?: string;
+  /** Model the turn should run on per config `modelRouting` (undefined: keep the session model). */
+  routedModel?: string;
 }
 
 /** Classification, delegation guidance, the tool set, and the completion check for one turn. */
@@ -101,6 +103,10 @@ export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPol
   const tools = input.tools.filter((tool) => tool.name !== "subagent" || allowsSubagentDispatch(guidance.kind));
   const directive = input.workerProfile === "research" ? undefined : guidance.refinedDirective ?? guidance.directive;
   const completionCheck = input.workerProfile === "research" ? undefined : completionCheckFromConfig(input.cfg);
+  const routedModel =
+    input.workerProfile === "research" || !input.cfg.model
+      ? undefined
+      : routedModelForTier(input.cfg.modelRouting, classification.tier, input.cfg.model);
   return {
     classification,
     guidance,
@@ -108,6 +114,7 @@ export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPol
     ...(directive ? { delegationDirective: directive } : {}),
     ...(completionCheck ? { completionCheck } : {}),
     ...(readinessNotice ? { readinessNotice } : {}),
+    ...(routedModel ? { routedModel } : {}),
   };
 }
 
@@ -155,12 +162,19 @@ export interface CoreTurn {
 
 /** Assemble the turn: config defaults, then the policy, then the host's own options (host wins). */
 export function assembleTurn({ cfg, policy, host }: CoreTurn): AgentTurnOpts {
+  // Model routing is policy, but it never overrides a model the host chose
+  // itself (e.g. a /model pick): only reroute while the session runs the
+  // configured default.
+  const routed = policy.routedModel !== undefined && host.model === cfg.model ? policy.routedModel : undefined;
   return {
     ...configTurnOpts(cfg),
     intentClassification: policy.classification,
     ...(policy.delegationDirective ? { delegationDirective: policy.delegationDirective } : {}),
     ...(policy.completionCheck ? { completionCheck: policy.completionCheck } : {}),
     ...host,
+    ...(routed !== undefined && routed !== host.model
+      ? { model: routed, routedFromModel: host.model }
+      : {}),
     tools: policy.tools,
   } as AgentTurnOpts;
 }
