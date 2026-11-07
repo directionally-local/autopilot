@@ -19,6 +19,7 @@ export interface ReducerConfig {
     maxErrorBlockLines: number;
     maxTrailingLines: number;
     maxOutputChars: number;
+    maxLineLength: number;
     dedupeConsecutiveLines: boolean;
   };
   glob: {
@@ -48,12 +49,18 @@ export interface ReducerConfig {
 }
 
 const MIN_CONTEXT_OUTPUT_CHARS = 4_000;
-const MAX_CONTEXT_OUTPUT_CHARS = 120_000;
+const MAX_CONTEXT_OUTPUT_CHARS = 48_000;
 
-/** Convert a model context window (tokens) into a conservative tool-output cap. */
+/**
+ * Convert a model context window (tokens) into a conservative tool-output cap.
+ * Trace analysis (docs/harness-trace-analysis-2026-11.md §3.3) showed the old
+ * scaling (6% of the window, up to 120k chars) let a single read inject ~30k
+ * tokens on large-window models while overall savings sat at ~2%. The 4% /
+ * 48k ceiling keeps big-context reads useful without re-bloating the prompt.
+ */
 export function toolOutputCapForContextWindow(contextWindow: number): number {
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) return DEFAULT_REDUCER_CONFIG.defaultMaxChars;
-  return Math.min(MAX_CONTEXT_OUTPUT_CHARS, Math.max(MIN_CONTEXT_OUTPUT_CHARS, Math.floor(contextWindow * 0.06)));
+  return Math.min(MAX_CONTEXT_OUTPUT_CHARS, Math.max(MIN_CONTEXT_OUTPUT_CHARS, Math.floor(contextWindow * 0.04)));
 }
 
 export function reducerConfigForContextWindow(contextWindow: number): ReducerConfig {
@@ -87,6 +94,7 @@ export const DEFAULT_REDUCER_CONFIG: ReducerConfig = {
     maxErrorBlockLines: 20,
     maxTrailingLines: 20,
     maxOutputChars: 4000,
+    maxLineLength: 400,
     dedupeConsecutiveLines: true,
   },
   glob: {
@@ -111,7 +119,7 @@ export const DEFAULT_REDUCER_CONFIG: ReducerConfig = {
     maxLines: 50,
     maxOutputChars: 3000,
   },
-  defaultMaxChars: 10_000,
+  defaultMaxChars: 8_000,
 };
 
 export interface ReducedOutput {
@@ -316,9 +324,18 @@ function reduceGrep(raw: string, args: Record<string, unknown>, cfg: ReducerConf
     lines.push(`  … (${totalHits - totalShown} more hits omitted)`);
   }
 
+  // Enforce the char cap: 50 lines × 200 chars of path prefixes and hit
+  // headers used to exceed maxOutputChars by several KB unreported.
+  let body = lines.join("\n");
+  let charTruncated = false;
+  if (body.length > cfg.maxOutputChars) {
+    body = body.slice(0, cfg.maxOutputChars) + `\n  … (match list truncated at ${cfg.maxOutputChars} chars)`;
+    charTruncated = true;
+  }
+
   return {
-    body: lines.join("\n"),
-    wasReduced: totalHits > totalShown || fileCount > 1,
+    body,
+    wasReduced: totalHits > totalShown || fileCount > 1 || charTruncated,
     hint: "Use expand_artifact for full matches, or re-run with output_mode=\"files\" for paths only.",
   };
 }
@@ -424,7 +441,11 @@ function reduceRead(raw: string, args: Record<string, unknown>, cfg: ReducerConf
 
 function reduceBash(raw: string, _args: Record<string, unknown>, cfg: ReducerConfig["bash"]): ReduceResult {
   const lines = raw.split("\n");
-  if (lines.length <= cfg.maxTotalLines) {
+  // Line count alone is not enough: few-but-huge lines (minified output, JSON
+  // blobs) used to sail past the line cap and re-inflate the prompt, which is
+  // why measured savings were ~2% (docs/harness-trace-analysis-2026-11.md §3.3).
+  const hasLongLine = lines.some((l) => l.length > cfg.maxLineLength);
+  if (lines.length <= cfg.maxTotalLines && raw.length <= cfg.maxOutputChars && !hasLongLine) {
     return { body: raw, wasReduced: false };
   }
 
@@ -436,7 +457,9 @@ function reduceBash(raw: string, _args: Record<string, unknown>, cfg: ReducerCon
     bodyStart = 1;
   }
 
-  const body = lines.slice(bodyStart);
+  const body = lines
+    .slice(bodyStart)
+    .map((l) => (l.length > cfg.maxLineLength ? l.slice(0, cfg.maxLineLength) + "…" : l));
 
   // Determine if this looks like a failure
   const isFailure = header.includes("exit=1") ||
