@@ -205,6 +205,14 @@ describe("reduceToolOutput — read", () => {
     assert.strictEqual(toolOutputCapForContextWindow(Number.NaN), DEFAULT_REDUCER_CONFIG.defaultMaxChars);
   });
 
+  it("lets a model profile pin the output cap (#999)", () => {
+    const config = reducerConfigForContextWindow(1_000_000, 12_000);
+    assert.strictEqual(config.read.maxOutputChars, 12_000);
+    assert.strictEqual(config.read.maxSliceLines, Math.max(200, Math.floor(12_000 / 80)));
+    // No override: context-window math applies unchanged.
+    assert.strictEqual(reducerConfigForContextWindow(1_000_000, undefined).read.maxOutputChars, 40_000);
+  });
+
   it("returns slice directly when offset/limit provided", () => {
     const store = new ToolArtifactStore();
     const raw = "  1\tline1\n  2\tline2\n  3\tline3";

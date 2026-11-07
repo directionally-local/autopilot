@@ -421,8 +421,8 @@ export class ToolExecutor {
   }
 
   /** Set output limits for the model currently driving this executor. */
-  setContextWindow(contextWindow: number): void {
-    this.reducerConfig = reducerConfigForContextWindow(contextWindow);
+  setContextWindow(contextWindow: number, maxToolContentCharsOverride?: number): void {
+    this.reducerConfig = reducerConfigForContextWindow(contextWindow, maxToolContentCharsOverride);
   }
 
   list(): ToolSpec[] {

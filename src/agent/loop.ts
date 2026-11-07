@@ -30,6 +30,7 @@ import type { SemanticSkillRoutingResult } from "../skills/types.js";
 import type { SqliteDatabase } from "../util/sqlite.js";
 import { buildSystemPrompt, buildSessionPrefix } from "./system-prompt.js";
 import { getModelOrInfer } from "../models/registry.js";
+import { modelProfileFor } from "../models/profile.js";
 import { toolOutputCapForContextWindow } from "../tools/reducer.js";
 import { createPermissionGate } from "./permission-gate.js";
 import { compactToFit, ContextBudgetError, effectiveInputBudget, type CompactionTarget } from "./context-budget.js";
@@ -427,7 +428,10 @@ interface TurnTrace {
 }
 
 export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
-  opts.executor.setContextWindow?.(getModelOrInfer(opts.model).contextWindow);
+  // Model profiles (#999): per-family caps flow into the reducer so switching
+  // models changes what the harness serves without any provider change.
+  const profile = modelProfileFor(opts.model);
+  opts.executor.setContextWindow?.(getModelOrInfer(opts.model).contextWindow, profile?.caps?.maxToolContentChars);
 
   // Observability (#871): SessionStart once per session, and model usage /
   // tool results as OpenTelemetry events when an OTLP endpoint is set.
@@ -512,7 +516,11 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
 }
 
 async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<void> {
-  const maxToolContentChars = toolOutputCapForContextWindow(getModelOrInfer(opts.model).contextWindow);
+  // Model profiles (#999): caps and guardrail thresholds follow the model.
+  const modelProfile = modelProfileFor(opts.model);
+  const maxToolContentChars =
+    modelProfile?.caps?.maxToolContentChars ??
+    toolOutputCapForContextWindow(getModelOrInfer(opts.model).contextWindow);
   const turnStart = tr.startedAt;
   const { trace, turnId } = tr;
   const notifyGuardrail = (ev: GuardrailEvent): void => {
@@ -816,7 +824,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // Anti-loop guardrail: track recent tool call signatures to detect thrashing
   const recentToolCalls: string[] = [];
   const LOOP_WINDOW = 8;
-  const LOOP_THRESHOLD = 2; // 3rd identical call triggers the guardrail
+  const LOOP_THRESHOLD = modelProfile?.guardrails?.loopThreshold ?? 2; // default: the 3rd identical call triggers the guardrail
   // Per-turn page cursor for repeated whole-file reads, keyed by path. The
   // cursor used to be derived from `recentToolCalls`, so any unrelated call in
   // between reset the count and the model was handed the same outline again —
@@ -869,7 +877,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       );
     }
   };
-  const MAX_WEB_FETCH_PER_TURN = 5;
+  const MAX_WEB_FETCH_PER_TURN = modelProfile?.caps?.webFetchPerTurn ?? 5;
 
   let cumulativePromptTokens = 0;
   let iter = 0;
