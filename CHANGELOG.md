@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.14.1](https://github.com/directionally-local/autopilot/compare/v3.14.0...v3.14.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* bash timeouts and aborts kill the whole process tree ([#1179](https://github.com/directionally-local/autopilot/issues/1179)) ([25a6f4c](https://github.com/directionally-local/autopilot/commit/25a6f4ca7745b16e96c062f0e750f2e2aad1192f))
+* **security:** close the audit's Tier 1 findings ([#1176](https://github.com/directionally-local/autopilot/issues/1176)) ([ac436e8](https://github.com/directionally-local/autopilot/commit/ac436e88c438bd766fb6aa64bc9a1bfee3323f06))
+
+
+### Performance
+
+* cap compaction thresholds at 150k tokens by default ([#1177](https://github.com/directionally-local/autopilot/issues/1177)) ([3441328](https://github.com/directionally-local/autopilot/commit/344132847a1ea048dfe32f491b845795bc582c10))
+
 ## [3.14.0](https://github.com/directionally-local/autopilot/compare/v3.13.0...v3.14.0) (2026-11-06)
 
 
