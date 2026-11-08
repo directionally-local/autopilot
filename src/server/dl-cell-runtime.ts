@@ -110,6 +110,8 @@ export interface DlCellProject {
   baseCommit?: string;
   /** Uncommitted client changes (a binary git diff against baseCommit), committed first on the branch. */
   patch?: string;
+  /** Reopen an existing code conversation from its already-pushed working branch. */
+  resumeBranch?: boolean;
 }
 
 export interface DlArtifact {
@@ -268,6 +270,26 @@ export class DlHotcellRuntime implements DlApiRuntime {
       ...(modelInfo ? { modelInfo } : {}),
     });
     return { cellId: cell.getInfo().id };
+  }
+
+  /** Hotcell lifecycle metadata used by the server-owned retention sweeper. */
+  async listConversationCells(): Promise<Array<{ id: string; conversationId: string; status: string; lastActivityAt: string }>> {
+    return this.provider.listConversationCells();
+  }
+
+  /** Commit leftover code edits and push the branch before a retention sweep removes its volume. */
+  async prepareCellForCleanup(cellId: string, project?: DlCellProject): Promise<void> {
+    if (project?.kind !== "code") return;
+    if (!project.branch || !BRANCH_RE.test(project.branch)) throw new Error("cleanup_branch_unavailable");
+    const cell = await this.provider.getCell(cellId);
+    if (!(await this.ensureRepository(cell))) throw new Error("cleanup_repository_unavailable");
+    await cell.writeFile(CHECKPOINT_MESSAGE_FILE, "WIP: preserved automatically before sandbox cleanup\n", { mode: "0600" });
+    const result = await cell.exec(
+      `set -e; ${GIT} add -A; ` +
+      `if ! ${GIT} diff --cached --quiet; then ${GIT} commit -q -F ${CHECKPOINT_MESSAGE_FILE}; fi; ` +
+      `${GIT} push -u origin ${shellQuote(project.branch)}`,
+    );
+    if (result.exitCode !== 0) throw new Error("cleanup_push_failed");
   }
 
   async destroyCell(cellId: string): Promise<void> {
@@ -741,9 +763,15 @@ export class DlHotcellRuntime implements DlApiRuntime {
     // A client base commit must exist upstream; never silently start from another one.
     const checkout = baseCommit
       ? `git fetch -q origin '${baseCommit}'; git checkout -q -b '${branch}' FETCH_HEAD; `
-      : `if git ls-remote --exit-code --heads origin '${baseBranch}' >/dev/null 2>&1; then ` +
-        `git fetch -q origin '${baseBranch}'; git checkout -q -b '${branch}' FETCH_HEAD; ` +
-        `else git checkout -q -b '${branch}'; fi; `;
+      : project.resumeBranch
+        ? `if git ls-remote --exit-code --heads origin '${branch}' >/dev/null 2>&1; then ` +
+          `git fetch -q origin '${branch}'; git checkout -q -b '${branch}' FETCH_HEAD; ` +
+          `else if git ls-remote --exit-code --heads origin '${baseBranch}' >/dev/null 2>&1; then ` +
+          `git fetch -q origin '${baseBranch}'; git checkout -q -b '${branch}' FETCH_HEAD; ` +
+          `else git checkout -q -b '${branch}'; fi; fi; `
+        : `if git ls-remote --exit-code --heads origin '${baseBranch}' >/dev/null 2>&1; then ` +
+          `git fetch -q origin '${baseBranch}'; git checkout -q -b '${branch}' FETCH_HEAD; ` +
+          `else git checkout -q -b '${branch}'; fi; `;
     const clone = await cell.exec(
       `set -e; cd ${CELL_WORKSPACE}; ` +
       // Prefer the dl server's repository-scoped proxy; fall back to Hotcell's GitHub gateway.

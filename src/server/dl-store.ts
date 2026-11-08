@@ -11,7 +11,7 @@ const TOKEN_PATTERN = /^Bearer ((?:dl|aster)_[A-Za-z0-9_-]{40,})$/;
 const OWNER_CLAIM_PATTERN = /^(?:dl|aster)_claim_[A-Za-z0-9_-]{40,}$/;
 
 export type DlScope = "workspaces:read" | "models:read" | "conversations:read" | "conversations:write" | "approvals:resolve" | "pairing:approve";
-export type DlConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "merged";
+export type DlConversationStatus = "provisioning" | "ready" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "paused" | "destroying" | "cleanup_pending" | "cleaned" | "destroyed" | "merged";
 export type DlApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
 
 export interface DlPrincipal {
@@ -58,7 +58,7 @@ export interface DlCellMapping {
   sessionId: string;
   cellName: string;
   cellId: string | null;
-  status: "provisioning" | "ready" | "running" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "failed";
+  status: "provisioning" | "ready" | "running" | "paused" | "destroying" | "cleanup_pending" | "destroyed" | "cleaned" | "failed";
   createAttempted: boolean;
   eventCursor: number;
   createdAt: number;
@@ -455,6 +455,39 @@ export class DlStore {
   setCellStatus(conversationId: string, status: DlCellMapping["status"]): void {
     this.db.prepare("UPDATE aster_cell_mappings SET status = ?, updated_at = ? WHERE conversation_id = ?")
       .run(status, Date.now(), conversationId);
+  }
+
+  /** Lock an inactive paused cell against new turns and approval requests before external cleanup. */
+  beginCellCleanup(conversationId: string, cellId: string): boolean {
+    const result = this.db.prepare(`UPDATE aster_cell_mappings SET status = 'destroying', updated_at = ?
+      WHERE conversation_id = ? AND cell_id = ? AND status IN ('paused', 'cleanup_pending')
+      AND EXISTS (SELECT 1 FROM aster_conversations c WHERE c.id = aster_cell_mappings.conversation_id AND c.active_run_id IS NULL
+        AND c.status NOT IN ('running', 'waiting_approval', 'provisioning', 'destroying'))
+      AND NOT EXISTS (SELECT 1 FROM aster_approvals a WHERE a.conversation_id = ? AND a.status = 'pending')`)
+      .run(Date.now(), conversationId, cellId, conversationId);
+    return result.changes === 1;
+  }
+
+  /** Atomically detach a successfully deleted cell while retaining the conversation and its event history. */
+  markCellCleaned(conversationId: string, cellId: string): boolean {
+    const result = this.db.prepare(`UPDATE aster_cell_mappings SET status = 'cleaned', cell_id = NULL, updated_at = ?
+      WHERE conversation_id = ? AND cell_id = ? AND status = 'destroying'`).run(Date.now(), conversationId, cellId);
+    return result.changes === 1;
+  }
+
+  /** Begin a new cell for a retained conversation without changing its durable conversation id. */
+  reopenCleanedCell(conversationId: string, sessionId: string): boolean {
+    const result = this.db.prepare(`UPDATE aster_cell_mappings SET session_id = ?, cell_id = NULL, status = 'provisioning',
+      create_attempted = 0, updated_at = ? WHERE conversation_id = ? AND status = 'cleaned'`)
+      .run(sessionId, Date.now(), conversationId);
+    return result.changes === 1;
+  }
+
+  /** Put a conversation back into the cleaned state after a failed reopen so it can be retried. */
+  resetCleanedCell(conversationId: string): void {
+    this.db.prepare(`UPDATE aster_cell_mappings SET status = 'cleaned', cell_id = NULL, updated_at = ?
+      WHERE conversation_id = ? AND status IN ('provisioning', 'failed')`)
+      .run(Date.now(), conversationId);
   }
 
   advanceCellEventCursor(conversationId: string, cursor: number): boolean {

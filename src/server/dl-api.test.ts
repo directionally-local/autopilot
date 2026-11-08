@@ -357,6 +357,45 @@ describe("dl server control-plane API", () => {
     }
   });
 
+  it("reclaims an idle paused sandbox, keeps its history, and reopens it on resume", async () => {
+    const harness = await createHarness("complete");
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" }, "retention-key");
+      assert.equal(created.status, 201);
+      const { conversationId } = await created.json() as { conversationId: string };
+      const cellId = `cell-${conversationId}`;
+      const pause = await request(harness, "POST", `/api/v1/conversations/${conversationId}/pause`);
+      assert.equal(pause.status, 200);
+
+      harness.retentionCells.push({ id: cellId, conversationId, status: "paused", lastActivityAt: "2020-01-01T00:00:00Z" });
+      await harness.api.runCellRetentionCleanup();
+
+      assert.deepEqual(harness.preparedCells, [cellId]);
+      assert.deepEqual(harness.destroyedCells, [cellId]);
+      const cleaned = await request(harness, "GET", `/api/v1/conversations/${conversationId}`);
+      assert.equal(cleaned.status, 200);
+      assert.equal((await cleaned.json() as { status: string }).status, "cleaned");
+
+      const store = new DlStore();
+      try {
+        assert.equal(store.getCellMapping(conversationId)?.status, "cleaned");
+        assert.equal(store.getCellMapping(conversationId)?.cellId, null);
+        assert.ok(store.eventsAfter(conversationId, 0).some((event) => event.type === "conversation.sandbox_cleaned"));
+      } finally {
+        store.close();
+      }
+
+      const resume = await request(harness, "POST", `/api/v1/conversations/${conversationId}/resume`);
+      assert.equal(resume.status, 200);
+      assert.equal((await resume.json() as { cellStatus: string }).cellStatus, "ready");
+      assert.equal(harness.provisionedProjects.length, 2);
+      const reopened = await request(harness, "GET", `/api/v1/conversations/${conversationId}`);
+      assert.equal((await reopened.json() as { status: string }).status, "ready");
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("accepts legacy text-only turns without deduplicating their text", async () => {
     const harness = await createHarness("hang");
     try {
@@ -987,6 +1026,9 @@ interface Harness {
   destroyedCells: string[];
   pausedCells: string[];
   resumedCells: string[];
+  preparedCells: string[];
+  retentionCells: Array<{ id: string; conversationId: string; status: string; lastActivityAt: string }>;
+  api: DlApi;
   modelSwitches: Array<{ cellId: string; model: string }>;
   restores: Array<{ cellId: string; checkpointId: string }>;
   provisionedProjects: Array<unknown>;
@@ -1060,6 +1102,8 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
   const destroyedCells: string[] = [];
   const pausedCells: string[] = [];
   const resumedCells: string[] = [];
+  const preparedCells: string[] = [];
+  const retentionCells: Array<{ id: string; conversationId: string; status: string; lastActivityAt: string }> = [];
   const modelSwitches: Array<{ cellId: string; model: string }> = [];
   const restores: Array<{ cellId: string; checkpointId: string }> = [];
   const provisionedProjects: Array<unknown> = [];
@@ -1118,6 +1162,8 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     destroyCell: async (cellId) => { destroyedCells.push(cellId); },
     pauseCell: async (cellId) => { pausedCells.push(cellId); },
     resumeCell: async (cellId) => { resumedCells.push(cellId); },
+    listConversationCells: async () => retentionCells,
+    prepareCellForCleanup: async (cellId) => { preparedCells.push(cellId); },
     startTurn: (turn) => {
       turns.push(turn);
       if (mode === "complete") void completeTurn(turn, `reply-${turns.length}`, options.turnEvents);
@@ -1160,6 +1206,9 @@ async function createHarness(mode: "complete" | "hang" | "approval" | "fail", op
     destroyedCells,
     pausedCells,
     resumedCells,
+    preparedCells,
+    retentionCells,
+    api,
     modelSwitches,
     restores,
     provisionedProjects,
