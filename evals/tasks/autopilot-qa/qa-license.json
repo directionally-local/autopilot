@@ -1,0 +1,9 @@
+{
+  "id": "qa-license",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "383f524fc4ace25eeedd55d9d16da682dd879e99",
+  "prompt": "Question about this repository: what license is it published under, and what is the name of the main npm package?\n\nWrite your final answer to a file named ANSWER.md in the repository root (a sentence or two is fine), then finish.",
+  "test": "grep -qi 'MIT' ANSWER.md && grep -q 'autopilot-ai' ANSWER.md",
+  "timeout_s": 600,
+  "tags": ["qa", "light"]
+}

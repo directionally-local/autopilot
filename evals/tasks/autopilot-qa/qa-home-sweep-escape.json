@@ -1,0 +1,9 @@
+{
+  "id": "qa-home-sweep-escape",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "383f524fc4ace25eeedd55d9d16da682dd879e99",
+  "prompt": "Question about this repository: the bash tool blocks recursive searches that sweep the whole home directory. What is the documented escape hatch for allowing one anyway?\n\nWrite your final answer to a file named ANSWER.md in the repository root (a sentence or two is fine), then finish.",
+  "test": "grep -q 'AUTOPILOT_ALLOW_HOME_SWEEP' ANSWER.md && grep -qi 'sweep' ANSWER.md",
+  "timeout_s": 600,
+  "tags": ["qa", "light"]
+}

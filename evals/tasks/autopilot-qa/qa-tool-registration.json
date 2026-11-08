@@ -1,0 +1,9 @@
+{
+  "id": "qa-tool-registration",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "383f524fc4ace25eeedd55d9d16da682dd879e99",
+  "prompt": "Question about this repository: where does an agent tool get registered so it is actually available at runtime? Name the registry/export and the file it lives in.\n\nWrite your final answer to a file named ANSWER.md in the repository root (a sentence or two is fine), then finish.",
+  "test": "grep -q 'ALL_TOOLS' ANSWER.md && grep -q 'executor.ts' ANSWER.md",
+  "timeout_s": 600,
+  "tags": ["qa", "light"]
+}

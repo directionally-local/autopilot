@@ -71,7 +71,13 @@ Commit the summary under `evals/results/` and add its row to the table in `evals
 
 ## autopilot-bench
 
-Twenty tasks mined from this repository's merged pull requests. Each task is a PR that changed source and added or changed a test: the worktree starts at the PR's base commit, the PR's test file(s) at the merge commit are placed in the worktree (`files/<task_id>/...`), the prompt is the PR description rewritten as a task, and `test` runs those files with `npx tsx --test`. Every test fails at the base commit and passes at the merge commit.
+Twenty tasks mined from this repository's merged pull requests. Each task is a PR that changed source and added or changed a test: the worktree starts at the PR's base commit, the PR's test file(s) at the merge commit are placed in the worktree (`files/<task_id>/...`), the prompt is the PR description rewritten as a task, and `test` runs those files with `npx tsx --test`. Every test fails at the base commit and passes at the merge commit. Every prompt is an implementation task, so under `classifyIntent` they all land in the `heavy` tier — autopilot-bench is the quality/regression instrument, not a latency one for light turns.
+
+## autopilot-qa
+
+Eight light/medium-tier question-answering tasks about this repository (supported Node versions, where tools register, the compaction cap, tracing env var, …). The prompt asks a question and tells the agent to write its final answer to `ANSWER.md` in the worktree root; `test` greps `ANSWER.md` for the required facts. No `setup`, no `files`, no code changes — this set exists to exercise the turns autopilot-bench structurally cannot: the qa/light traffic that intent-based model routing (config `modelRouting`) targets. Use it to A/B a model router, a system-prompt change aimed at chatty turns, or anything whose cost shows up on light tiers rather than on implementation quality.
+
+First result (k3, samples 2, `modelRouting.light/medium = moonshotai/kimi-k2.5`): 8 of 66 requests routed to k2.5 at p50 5.2s vs 10.8s for unrouted k3 requests (~2× faster first response on routed turns), cache hit 78–80% in both arms, 16/16 vs 15/16 samples passed (McNemar p = 1.0) — routing light turns pays no cache or quality penalty on this set.
 
 ### Recipe for adding a task
 
