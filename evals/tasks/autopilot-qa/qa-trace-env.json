@@ -1,0 +1,9 @@
+{
+  "id": "qa-trace-env",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "383f524fc4ace25eeedd55d9d16da682dd879e99",
+  "prompt": "Question about this repository: how do you turn on the opt-in local session tracing? Name the exact environment variable and the value that enables it.\n\nWrite your final answer to a file named ANSWER.md in the repository root (a sentence or two is fine), then finish.",
+  "test": "grep -q 'KIMIFLARE_TRACE' ANSWER.md",
+  "timeout_s": 600,
+  "tags": ["qa", "light"]
+}

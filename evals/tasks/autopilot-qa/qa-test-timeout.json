@@ -1,0 +1,9 @@
+{
+  "id": "qa-test-timeout",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "383f524fc4ace25eeedd55d9d16da682dd879e99",
+  "prompt": "Question about this repository: what per-test timeout does the npm test script pass to the Node test runner? Give the exact flag and value.\n\nWrite your final answer to a file named ANSWER.md in the repository root (a sentence or two is fine), then finish.",
+  "test": "grep -Eq '120000|120 ?s|2 ?min' ANSWER.md && grep -q 'test-timeout' ANSWER.md",
+  "timeout_s": 600,
+  "tags": ["qa", "light"]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "qa-stall-guardrail",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "383f524fc4ace25eeedd55d9d16da682dd879e99",
+  "prompt": "Question about this repository: the agent loop has a stall guardrail that ends runaway turns that make no file progress. After how many iterations without progress does it act by default, and which config key tunes it?\n\nWrite your final answer to a file named ANSWER.md in the repository root (a sentence or two is fine), then finish.",
+  "test": "grep -qw '50' ANSWER.md && grep -q 'stallIterations' ANSWER.md",
+  "timeout_s": 600,
+  "tags": ["qa", "light"]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "qa-compact-cap",
+  "repo": "https://github.com/directionally-local/autopilot.git",
+  "base_commit": "383f524fc4ace25eeedd55d9d16da682dd879e99",
+  "prompt": "Question about this repository: what is the default token cap for auto-compaction, and which config key controls it?\n\nWrite your final answer to a file named ANSWER.md in the repository root (a sentence or two is fine), then finish.",
+  "test": "grep -Eq '150[,.]?000|150k' ANSWER.md && grep -q 'autoCompactCapTokens' ANSWER.md",
+  "timeout_s": 600,
+  "tags": ["qa", "light"]
+}
