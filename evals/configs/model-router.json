@@ -1,0 +1,9 @@
+{
+  "name": "model-router",
+  "config": {
+    "modelRouting": {
+      "light": "moonshotai/kimi-k2.5",
+      "medium": "moonshotai/kimi-k2.5"
+    }
+  }
+}
