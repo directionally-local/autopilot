@@ -6,7 +6,8 @@ import {
   type PermissionRequest,
 } from "../tools/executor.js";
 import { isBlockedInPlanMode, isReadOnlyBash, type Mode } from "../mode.js";
-import type { DestructivePrompt } from "../permissions/guardrails.js";
+import { CONFIRMED_IRREVERSIBLE, exactRuleAllows, type DestructivePrompt } from "../permissions/guardrails.js";
+import type { PermissionRules } from "../config.js";
 
 /** Pre-built typed decisions for the two auto-resolve paths so we don't
  *  recreate them on every call. M2.2 — see `PermissionDecisionResult`. */
@@ -39,6 +40,15 @@ export interface DecidePermissionOptions {
    * not).
    */
   promptOnBlockedBash?: boolean;
+  /**
+   * The config's permission rules (config.json `permissions`). Consulted for
+   * an irreversible call: a rule naming that exact action allows it without a
+   * prompt, the same way headless runs and dl server sessions do
+   * (permissions/guardrails.ts). Globs and broad patterns never count.
+   */
+  rules?: Record<string, PermissionRules>;
+  /** Where relative paths in `args` resolve. Defaults to process.cwd(). */
+  cwd?: string;
 }
 
 export function decidePermission(
@@ -86,6 +96,8 @@ export async function resolvePermission(
     }
     const fromHook = await permissionFromHook(req, mode);
     if (fromHook?.decision === "deny") return fromHook;
+    // A rule naming this exact action allows it unattended, as in headless runs.
+    if (exactRuleAllows(req, opts?.rules, opts?.cwd ?? process.cwd())) return CONFIRMED_IRREVERSIBLE;
     return host.promptDestructive ? host.promptDestructive(req.destructive) : AUTO_DENY;
   }
   const outcome = decidePermission(req, mode, opts);
@@ -131,6 +143,8 @@ export interface PermissionController {
 export function usePermissionController(
   getMode: () => Mode,
   onPlanModeBlocked: (toolName: string) => void,
+  /** The config's permission rules, read fresh on each request. */
+  getRules?: () => Record<string, PermissionRules> | undefined,
 ): PermissionController {
   const [pending, setPending] = useState<PendingPermission | null>(null);
   const resolveRef = useRef<((d: PermissionDecision) => void) | null>(null);
@@ -140,10 +154,13 @@ export function usePermissionController(
   getModeRef.current = getMode;
   const onPlanModeBlockedRef = useRef(onPlanModeBlocked);
   onPlanModeBlockedRef.current = onPlanModeBlocked;
+  const getRulesRef = useRef(getRules);
+  getRulesRef.current = getRules;
 
   const askPermission = useCallback<PermissionController["askPermission"]>(
-    (req, askOpts) =>
-      resolvePermission(req, getModeRef.current(), askOpts, {
+    (req, askOpts) => {
+      const rules = getRulesRef.current?.();
+      return resolvePermission(req, getModeRef.current(), { ...askOpts, ...(rules ? { rules } : {}) }, {
         onPlanModeBlocked: (toolName) => onPlanModeBlockedRef.current(toolName),
         prompt: () =>
           new Promise<PermissionDecision>((resolve) => {
@@ -155,7 +172,8 @@ export function usePermissionController(
             resolveRef.current = resolve;
             setPending({ tool: req.tool, args: req.args, destructive, resolve });
           }),
-      }),
+      });
+    },
     [],
   );
 

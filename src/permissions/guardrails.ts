@@ -12,7 +12,9 @@
  *     exists, and for a production-looking target asks for its name to be
  *     typed, not just Enter;
  *   - headless runs and dl server sessions deny it unless a permission rule
- *     names that exact action (`**: allow` and other patterns never count).
+ *     names that exact action (`**: allow` and other patterns never count);
+ *     the interactive TUI honours the same exact rules, so a rule naming the
+ *     action skips its prompt there too.
  *
  * Before an approved recoverable or irreversible file or git action, the
  * executor saves a recovery point (permissions/recovery.ts) for /undo.
