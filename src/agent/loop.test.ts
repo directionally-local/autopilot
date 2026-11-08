@@ -1156,6 +1156,122 @@ describe("runAgentTurn", () => {
     assert.ok(bodies[1]!.messages.some((m) => String(m.content).includes("only bookkeeping (tasks_set)")));
   });
 
+  it("reminds the model to batch lookups after consecutive lone read steps", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "read the files" },
+    ];
+    const tool: ToolSpec = {
+      name: "read",
+      description: "Read a file",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    const bodies: Array<{ messages: ChatMessage[] }> = [];
+    let fetchCount = 0;
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as { messages: ChatMessage[] });
+      const encoder = new TextEncoder();
+      const step = fetchCount++;
+      // Steps 1 and 2 are each a single lone read; step 3 ends the turn.
+      const events =
+        step < 2
+          ? [
+              { choices: [{ delta: { tool_calls: [{ index: 0, id: `call-${step}`, type: "function", function: { name: "read", arguments: JSON.stringify({ path: `f${step}.ts` }) } }] } }] },
+              { choices: [{ finish_reason: "tool_calls" }] },
+            ]
+          : [{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string }) => ({ tool_call_id: call.id, name: call.name, content: "ok", ok: true }),
+    } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      intentClassification: { intent: "small_edit", rawScore: 0.5, tier: "medium", confidence: 0.5 },
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    assert.equal(bodies.length, 3);
+    assert.ok(!bodies[0]!.messages.some((m) => String(m.content).includes("Batch independent")));
+    assert.ok(!bodies[1]!.messages.some((m) => String(m.content).includes("Batch independent")));
+    // The second consecutive lone lookup triggers the transient reminder.
+    assert.ok(bodies[2]!.messages.some((m) => String(m.content).includes("Batch independent read/grep/glob")));
+    assert.ok(bodies[2]!.messages.some((m) => String(m.content).includes("single read")));
+  });
+
+  it("does not nudge lookup batching when lookupReminder is false", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "read the files" },
+    ];
+    const tool: ToolSpec = {
+      name: "read",
+      description: "Read a file",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+      needsPermission: false,
+      run: async () => "ok",
+    };
+    const bodies: Array<{ messages: ChatMessage[] }> = [];
+    let fetchCount = 0;
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as { messages: ChatMessage[] });
+      const encoder = new TextEncoder();
+      const step = fetchCount++;
+      const events =
+        step < 2
+          ? [
+              { choices: [{ delta: { tool_calls: [{ index: 0, id: `call-${step}`, type: "function", function: { name: "read", arguments: JSON.stringify({ path: `f${step}.ts` }) } }] } }] },
+              { choices: [{ finish_reason: "tool_calls" }] },
+            ]
+          : [{ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }];
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = {
+      list: () => [tool],
+      run: async (call: { id: string; name: string }) => ({ tool_call_id: call.id, name: call.name, content: "ok", ok: true }),
+    } as unknown as ToolExecutor;
+
+    await runAgentTurn({
+      openrouterApiKey: "sk-or-test",
+      model: "test/model",
+      messages,
+      tools: [tool],
+      executor,
+      cwd: "/tmp",
+      signal: new AbortController().signal,
+      intentClassification: { intent: "small_edit", rawScore: 0.5, tier: "medium", confidence: 0.5 },
+      lookupReminder: false,
+      callbacks: { askPermission: async () => "allow" },
+    });
+
+    assert.equal(bodies.length, 3);
+    assert.ok(!bodies.some((b) => b.messages.some((m) => String(m.content).includes("Batch independent"))));
+  });
+
   it("annotates bookkeeping tool results once the reminder budget is exhausted", async () => {
     const messages: ChatMessage[] = [
       { role: "system", content: "s" },
