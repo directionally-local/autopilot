@@ -39,7 +39,12 @@ function parseMemoryExtraction(raw: string | undefined): MemoryExtractionPolicy 
 }
 
 export interface McpServerConfig {
-  type: "local" | "remote";
+  /**
+   * `local` runs a command over stdio; `remote` connects over SSE;
+   * `http` connects over the MCP Streamable HTTP transport (POST plus an
+   * optional SSE stream), which most hosted servers use.
+   */
+  type: "local" | "remote" | "http";
   command?: string[];
   url?: string;
   env?: Record<string, string>;

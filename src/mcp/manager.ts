@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ToolSpec } from "../tools/registry.js";
 import { mcpToolToSpec, type McpToolEntry } from "./adapter.js";
 
@@ -10,9 +11,12 @@ export interface McpServerInfo {
   type: "local" | "remote";
 }
 
+/** How a remote server is reached: legacy SSE, or the Streamable HTTP transport most hosted servers use. */
+export type McpRemoteTransport = "sse" | "http";
+
 interface ActiveConnection {
   client: Client;
-  transport: StdioClientTransport | SSEClientTransport;
+  transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport;
   tools: McpToolEntry[];
 }
 
@@ -50,14 +54,17 @@ export class McpManager {
     url: string,
     headers?: Record<string, string>,
     options?: { timeoutMs?: number },
+    remoteTransport: McpRemoteTransport = "sse",
   ): Promise<void> {
     if (this.connections.has(name)) {
       await this.removeServer(name);
     }
 
-    const transport = new SSEClientTransport(new URL(url), {
-      requestInit: headers ? { headers } : undefined,
-    });
+    const requestInit = headers ? { headers } : undefined;
+    const transport =
+      remoteTransport === "http"
+        ? new StreamableHTTPClientTransport(new URL(url), { requestInit })
+        : new SSEClientTransport(new URL(url), { requestInit });
 
     const client = new Client({ name: "autopilot", version: "0.13.7" });
     await client.connect(transport);
