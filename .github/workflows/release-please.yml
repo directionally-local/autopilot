@@ -107,3 +107,20 @@ jobs:
 
           echo "::error::$NAME@$VERSION was not publicly resolvable after publishing. npm may have staged the version without making it available; see npm/cli#9889."
           exit 1
+
+      # Tell the installer repo right away, so it opens the dl pin bump now
+      # instead of at its next scheduled check. Optional: without the token the
+      # installer still picks the release up within 30 minutes.
+      - name: Tell the installer a new version is out
+        env:
+          TOKEN: ${{ secrets.INSTALLER_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::INSTALLER_DISPATCH_TOKEN is not set; the installer will pick this release up on its 30-minute check."
+            exit 0
+          fi
+          VERSION=$(node -p "require('./package.json').version")
+          curl -fsS -X POST https://api.github.com/repos/directionally-local/installer/dispatches \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            -d "{\"event_type\":\"autopilot-released\",\"client_payload\":{\"version\":\"$VERSION\"}}" \
+            || echo "::warning::Couldn't notify the installer; it will pick this release up on its 30-minute check."
