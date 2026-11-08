@@ -254,6 +254,9 @@ function App({
         },
       ]);
     },
+    // A config rule naming an irreversible action exactly allows it without a
+    // prompt here too, as in headless runs (permissions/guardrails.ts).
+    () => cfg?.permissions,
   );
   const modals = useModalHost();
   const {

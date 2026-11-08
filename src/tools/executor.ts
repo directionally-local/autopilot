@@ -297,7 +297,8 @@ export interface PermissionRequest {
   sensitiveReason?: string;
   /** Set when the call is irreversible (permissions/guardrails.ts): every
    *  host must ask a person, or deny. Auto mode, --dangerously-allow-all,
-   *  allow rules and session approvals don't cover it. */
+   *  broad allow rules and session approvals don't cover it; a config rule
+   *  naming the exact action does (headless, dl server and the TUI). */
   destructive?: DestructivePrompt;
   /**
    * Fires the `PermissionRequest` hooks for this call. Hosts call it right

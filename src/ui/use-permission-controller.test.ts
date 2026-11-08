@@ -147,3 +147,46 @@ describe("resolvePermission — PermissionRequest hooks (#891)", () => {
     assert.deepStrictEqual(calls, []);
   });
 });
+
+describe("resolvePermission — exact rules for irreversible actions (#1125)", () => {
+  const destructiveReq = (command: string): PermissionRequest => ({
+    ...req("bash", { command }),
+    destructive: { title: "This can't be undone: drops a table.", subtitle: "", recovery: "", actions: [command] },
+  });
+  const host = (prompts: string[]) => ({
+    onPlanModeBlocked: () => {},
+    prompt: async () => {
+      prompts.push("prompt");
+      return "allow" as const;
+    },
+    promptDestructive: async () => {
+      prompts.push("destructive");
+      return "allow" as const;
+    },
+  });
+
+  it("a rule naming the exact action allows it without a prompt", async () => {
+    const prompts: string[] = [];
+    const decision = await resolvePermission(
+      destructiveReq("terraform destroy"),
+      "auto",
+      { rules: { bash: { "terraform destroy": "allow" } }, cwd: "/tmp" },
+      host(prompts),
+    );
+    assert.deepStrictEqual(decision, { decision: "allow", scope: "once", irreversibleConfirmed: true });
+    assert.deepStrictEqual(prompts, []);
+  });
+
+  it("a broad or glob rule never counts", async () => {
+    const prompts: string[] = [];
+    await resolvePermission(destructiveReq("terraform destroy"), "auto", { rules: { bash: { "**": "allow" } }, cwd: "/tmp" }, host(prompts));
+    await resolvePermission(destructiveReq("terraform destroy"), "auto", { rules: { bash: { "terraform *": "allow" } }, cwd: "/tmp" }, host(prompts));
+    assert.deepStrictEqual(prompts, ["destructive", "destructive"]);
+  });
+
+  it("without a matching rule the destructive prompt still shows in auto mode", async () => {
+    const prompts: string[] = [];
+    await resolvePermission(destructiveReq("terraform destroy"), "auto", { rules: { bash: { "npm test": "allow" } }, cwd: "/tmp" }, host(prompts));
+    assert.deepStrictEqual(prompts, ["destructive"]);
+  });
+});
