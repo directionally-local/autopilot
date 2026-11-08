@@ -93,6 +93,99 @@ describe("DlStore", () => {
     }
   });
 
+  it("detaches a cleaned cell while retaining the conversation and its events", async () => {
+    const root = await fixture();
+    const store = new DlStore(join(root, "state", "dl.db"));
+    try {
+      const conversation = store.createConversation({
+        id: "conv-cleaned-1",
+        workspaceId: "default",
+        model: "test/model",
+        sessionId: "session-cleaned-1",
+        worktreePath: join(root, "workspace"),
+        cwd: join(root, "workspace"),
+        branch: "dl/cleaned",
+        kind: "code",
+        repository: "me/app",
+        baseBranch: "main",
+      });
+      store.reserveCellConversation({
+        conversationId: conversation.id,
+        credentialId: "cred-1",
+        workspaceId: "default",
+        model: "test/model",
+        sessionId: "session-cleaned-1",
+        cellName: "dl-conv-cleaned-1",
+        idempotencyKey: "create-cleaned-1",
+        kind: "code",
+        repository: "me/app",
+        baseCommit: "a".repeat(40),
+      });
+      store.setCellId(conversation.id, "cell-cleaned-1");
+      store.setCellStatus(conversation.id, "paused");
+      store.setConversationStatus(conversation.id, "paused");
+      store.appendEvent(conversation.id, null, "conversation.paused", {});
+
+      assert.equal(store.beginCellCleanup(conversation.id, "cell-cleaned-1"), true);
+      assert.equal(store.markCellCleaned(conversation.id, "cell-cleaned-1"), true);
+      const cleaned = store.getCellMapping(conversation.id);
+      assert.equal(cleaned?.status, "cleaned");
+      assert.equal(cleaned?.cellId, null);
+      assert.equal(store.getConversation(conversation.id)?.id, conversation.id);
+      assert.ok(store.eventsAfter(conversation.id, 0).some((event) => event.type === "conversation.paused"));
+
+      assert.equal(store.reopenCleanedCell(conversation.id, "session-cleaned-2"), true);
+      const reopened = store.getCellMapping(conversation.id);
+      assert.equal(reopened?.status, "provisioning");
+      assert.equal(reopened?.sessionId, "session-cleaned-2");
+      assert.equal(reopened?.createAttempted, false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refuses to clean a cell with an active run or a pending approval", async () => {
+    const root = await fixture();
+    const store = new DlStore(join(root, "state", "dl.db"));
+    try {
+      const conversation = store.createConversation({
+        id: "conv-busy-1",
+        workspaceId: "default",
+        model: "test/model",
+        sessionId: "session-busy-1",
+        worktreePath: join(root, "workspace"),
+        cwd: join(root, "workspace"),
+        branch: "dl/busy",
+      });
+      store.reserveCellConversation({
+        conversationId: conversation.id,
+        credentialId: "cred-1",
+        workspaceId: "default",
+        model: "test/model",
+        sessionId: "session-busy-1",
+        cellName: "dl-conv-busy-1",
+        idempotencyKey: "create-busy-1",
+      });
+      store.setCellId(conversation.id, "cell-busy-1");
+      store.setCellStatus(conversation.id, "paused");
+      store.setConversationStatus(conversation.id, "paused");
+      assert.equal(store.beginTurn(conversation.id, "run-busy-1"), true);
+      assert.equal(store.beginCellCleanup(conversation.id, "cell-busy-1"), false);
+      store.updateConversationStatus(conversation.id, "run-busy-1", "completed");
+      store.createApproval({
+        conversationId: conversation.id,
+        runId: "run-busy-1",
+        toolName: "bash",
+        explanation: "run a command",
+        arguments: {},
+        expiresAt: Date.now() + 60_000,
+      });
+      assert.equal(store.beginCellCleanup(conversation.id, "cell-busy-1"), false);
+    } finally {
+      store.close();
+    }
+  });
+
   it("resolves only hashed GitHub grants bound to their code conversation", async () => {
     const root = await fixture();
     const store = new DlStore(join(root, "state", "dl.db"));

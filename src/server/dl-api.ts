@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { prFooterEnabled, withPrFooter } from "../util/pr-footer.js";
 import { randomUUID } from "node:crypto";
-import { unlink } from "node:fs/promises";
+import { statfs, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AutopilotConfig } from "../config.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
@@ -14,11 +14,12 @@ import { loadSession, saveSession, sessionsDir, type SessionFile } from "../sess
 import { getAppVersion } from "../util/version.js";
 import { DlStore, type DlConversationProject, type DlConversation, type DlConversationStatus, type DlPrincipal, type DlScope } from "./dl-store.js";
 import { serverEnv } from "./dl-compat.js";
-import { DlConfigError, findDlWorkspace, loadDlServerConfig, type DlProviderConfig } from "./dl-workspaces.js";
+import { DlConfigError, findDlWorkspace, loadDlServerConfig, type DlProviderConfig, type DlServerConfig } from "./dl-workspaces.js";
 import { isSelectableModel, modelsResponse } from "./dl-models.js";
 import type { DlArtifact, DlCellProject } from "./dl-cell-runtime.js";
 import { DlGitHub, DlGitHubError, REPOSITORY_FULL_NAME_RE, type DlCommit } from "./dl-github.js";
 import { DlMemory } from "./dl-memory.js";
+import { cellRetentionReason, orderRetentionCandidates, type RetentionCandidate, type RetentionCell } from "./dl-cell-retention.js";
 import { DlGitHubProxy, createDlGitHubGrantToken } from "./dl-github-proxy.js";
 import { finalAssistantMessage, pullRequestBody, pullRequestTitle, type DlTurnEvent } from "./dl-pull-request.js";
 import { DlPush } from "./dl-push.js";
@@ -67,6 +68,10 @@ export interface DlApiRuntime {
   provisionConversation?: (input: { conversationId: string; sessionId: string; cellName: string; workspaceId: string; workspaceRoot: string; model: string; provider: DlProviderConfig; allowCreate: boolean; onCellCreated: (cellId: string) => void; project?: DlCellProject }) => Promise<{ cellId: string }>;
   findConversationCell?: (conversationId: string) => Promise<{ cellId: string } | undefined>;
   destroyCell?: (cellId: string) => Promise<void>;
+  /** Hotcell activity is required to distinguish paused idle cells from live cells. */
+  listConversationCells?: () => Promise<RetentionCell[]>;
+  /** Preserve local work before a retention sweep destroys a cell volume. */
+  prepareCellForCleanup?: (cellId: string, project?: DlCellProject) => Promise<void>;
   pauseCell?: (cellId: string) => Promise<void>;
   resumeCell?: (cellId: string) => Promise<void>;
   startTurn: (turn: DlTurnStart) => void;
@@ -104,6 +109,13 @@ export class DlApi {
   private readonly connectedEventStreams = new Map<string, number>();
   private readonly runtime: DlApiRuntime;
   private readonly config: AutopilotConfig;
+  private cellRetentionTimer: NodeJS.Timeout | undefined;
+  private cellRetentionRun: Promise<void> | undefined;
+  private cellRetentionLastRunAt: number | undefined;
+  private cellRetentionNextRunAt: number | undefined;
+  private cellRetentionSleepingCells = 0;
+  private cellRetentionDeleted = 0;
+  private cellRetentionDisk: { usedBytes: bigint; availableBytes: bigint; totalBytes: bigint } | undefined;
 
   private readonly github: DlGitHub;
 
@@ -188,6 +200,7 @@ export class DlApi {
         return;
       }
       await this.ensureRecovered(store);
+      this.startCellRetentionSweep(store);
       const config = await loadDlServerConfig();
       const method = req.method ?? "GET";
       const path = url.pathname;
@@ -199,7 +212,8 @@ export class DlApi {
           service: "autopilot",
           apiVersion: "v1",
           serviceVersion: getAppVersion(),
-          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "patch-upload", ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "catalog" ? ["model-catalog"] : [])],
+          cellRetention: this.cellRetentionSnapshot(),
+          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "patch-upload", ...(this.runtime.listConversationCells && this.runtime.destroyCell ? ["cell-retention"] : []), ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "catalog" ? ["model-catalog"] : [])],
         });
       }
 
@@ -410,7 +424,7 @@ export class DlApi {
         if (!conversation) return sendError(res, 404, "conversation_not_found", "Conversation not found");
         return lifecycleMatch[2] === "pause"
           ? this.pauseConversation(res, store, conversation)
-          : this.resumeConversation(res, store, conversation);
+          : this.resumeConversation(res, store, conversation, config);
       }
 
       const artifactsMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/artifacts(\/file)?$/);
@@ -518,6 +532,8 @@ export class DlApi {
   }
 
   close(): void {
+    if (this.cellRetentionTimer) clearInterval(this.cellRetentionTimer);
+    this.cellRetentionTimer = undefined;
     for (const [id, waiter] of this.waiters) {
       clearTimeout(waiter.timer);
       waiter.resolve("deny");
@@ -531,6 +547,109 @@ export class DlApi {
     this.githubProxy = undefined;
     this.push?.close();
     this.push = undefined;
+  }
+
+  private startCellRetentionSweep(store: DlStore): void {
+    if (this.cellRetentionTimer || !this.runtime.listConversationCells || !this.runtime.destroyCell) return;
+    const intervalMs = boundedEnvInteger(serverEnv(process.env, "CELL_CLEANUP_INTERVAL_MS"), 10 * 60_000, 1_000, 24 * 60 * 60_000);
+    this.cellRetentionNextRunAt = Date.now();
+    this.cellRetentionTimer = setInterval(() => {
+      this.cellRetentionNextRunAt = Date.now() + intervalMs;
+      void this.runCellRetentionCleanup(store).catch(() => {});
+    }, intervalMs);
+    this.cellRetentionTimer.unref();
+    void this.runCellRetentionCleanup(store).catch(() => {});
+  }
+
+  /** One sweep; public for deterministic integration tests and operator-triggered maintenance. */
+  async runCellRetentionCleanup(store = this.getStore()): Promise<void> {
+    if (!this.runtime.listConversationCells || !this.runtime.destroyCell) return;
+    if (this.cellRetentionRun) return this.cellRetentionRun;
+    const run = this.sweepCellRetention(store);
+    this.cellRetentionRun = run;
+    try { await run; } finally { this.cellRetentionRun = undefined; }
+  }
+
+  private async sweepCellRetention(store: DlStore): Promise<void> {
+    this.cellRetentionLastRunAt = Date.now();
+    this.cellRetentionDeleted = 0;
+    const retentionDays = boundedEnvInteger(serverEnv(process.env, "CELL_RETENTION_DAYS"), 7, 1, 365);
+    const cells = await this.runtime.listConversationCells!();
+    this.cellRetentionSleepingCells = cells.filter((cell) => cell.status === "paused").length;
+    const diskPath = serverEnv(process.env, "CELL_STORAGE_PATH");
+    const minimumFreeGb = boundedEnvInteger(serverEnv(process.env, "CELL_MIN_FREE_GB"), 5, 1, 10_000);
+    this.cellRetentionDisk = diskPath ? await readDiskStats(diskPath).catch(() => undefined) : undefined;
+    let diskPressure = this.cellRetentionDisk !== undefined && this.cellRetentionDisk.availableBytes < BigInt(minimumFreeGb) * 1024n ** 3n;
+    const mappings = new Map(store.listCellMappings().map((mapping) => [mapping.conversationId, mapping]));
+    const candidates: Array<{ candidate: RetentionCandidate; mapping: ReturnType<DlStore["getCellMapping"]>; project?: DlConversationProject }> = [];
+
+    for (const cell of cells) {
+      const mapping = mappings.get(cell.conversationId);
+      const conversation = store.getConversation(cell.conversationId);
+      if (!mapping || (mapping.status !== "paused" && mapping.status !== "cleanup_pending") || !mapping.cellId || !conversation) continue;
+      const pendingApprovals = store.pendingApprovalsForConversation(conversation.id).length;
+      const project = store.getConversationProject(conversation.id);
+      let pullRequest;
+      if (conversation.pullRequestNumber && project?.repository) {
+        pullRequest = await this.github.getPullRequest(project.repository, conversation.pullRequestNumber).catch(() => undefined);
+      }
+      candidates.push({
+        candidate: { conversation, cell, pendingApprovals, ...(pullRequest ? { pullRequest } : {}) },
+        mapping,
+        ...(project ? { project } : {}),
+      });
+    }
+
+    for (const item of orderRetentionCandidates(candidates.map((entry) => ({ ...entry, cell: entry.candidate.cell })))) {
+      if (diskPressure) {
+        this.cellRetentionDisk = diskPath ? await readDiskStats(diskPath).catch(() => undefined) : undefined;
+        diskPressure = this.cellRetentionDisk !== undefined && this.cellRetentionDisk.availableBytes < BigInt(minimumFreeGb) * 1024n ** 3n;
+      }
+      const reason = cellRetentionReason(item.candidate, { now: Date.now(), retentionDays, diskPressure });
+      if (!reason) continue;
+      const { conversation } = item.candidate;
+      const cellId = item.mapping?.cellId;
+      if (!cellId || !store.beginCellCleanup(conversation.id, cellId)) continue;
+      try {
+        if (item.project?.kind === "code" && !this.runtime.prepareCellForCleanup) throw new Error("cleanup_preservation_unavailable");
+        const project: DlCellProject | undefined = item.project?.kind === "code" && item.project.repository && item.project.branch
+          ? { kind: "code", repository: item.project.repository, baseBranch: conversation.baseBranch ?? "main", branch: item.project.branch }
+          : item.project?.kind === "chat" ? { kind: "chat" } : undefined;
+        await this.runtime.prepareCellForCleanup?.(cellId, project);
+        await this.runtime.destroyCell!(cellId);
+        store.revokeGitHubGrant(conversation.id);
+        if (!store.markCellCleaned(conversation.id, cellId)) continue;
+        store.setConversationStatus(conversation.id, "cleaned", { reason });
+        store.appendEvent(conversation.id, null, "conversation.sandbox_cleaned", {
+          reason,
+          ...(conversation.branch ? { branch: conversation.branch } : {}),
+          ...(conversation.pullRequestURL ? { pullRequestURL: conversation.pullRequestURL } : {}),
+        });
+        this.cellRetentionDeleted++;
+      } catch {
+        // Preservation or deletion failed: keep the cell and retry on the next sweep.
+        store.setCellStatus(conversation.id, "cleanup_pending");
+      }
+    }
+    this.cellRetentionNextRunAt = Date.now() + boundedEnvInteger(serverEnv(process.env, "CELL_CLEANUP_INTERVAL_MS"), 10 * 60_000, 1_000, 24 * 60 * 60_000);
+  }
+
+  private cellRetentionSnapshot(): Record<string, unknown> {
+    const retentionDays = boundedEnvInteger(serverEnv(process.env, "CELL_RETENTION_DAYS"), 7, 1, 365);
+    const disk = this.cellRetentionDisk;
+    return {
+      enabled: Boolean(this.runtime.listConversationCells && this.runtime.destroyCell),
+      retentionDays,
+      sleepingCells: this.cellRetentionSleepingCells,
+      deletedThisSweep: this.cellRetentionDeleted,
+      lastRunAt: this.cellRetentionLastRunAt ? new Date(this.cellRetentionLastRunAt).toISOString() : null,
+      nextRunAt: this.cellRetentionNextRunAt ? new Date(this.cellRetentionNextRunAt).toISOString() : null,
+      disk: disk ? {
+        usedBytes: (disk.usedBytes).toString(),
+        availableBytes: disk.availableBytes.toString(),
+        totalBytes: disk.totalBytes.toString(),
+      } : null,
+    };
   }
 
   private getStore(): DlStore {
@@ -667,11 +786,21 @@ export class DlApi {
     });
     if (reservation.kind === "conflict") return sendError(res, 409, "idempotency_conflict", "Idempotency-Key was already used for different conversation parameters");
 
-    const mapping = reservation.mapping;
+    let mapping = reservation.mapping;
     if (mapping.status === "destroyed") return sendError(res, 410, "conversation_destroyed", "Conversation was already destroyed");
     if (mapping.status === "ready") {
       const existing = store.getConversation(mapping.conversationId);
       if (existing) return json(res, 200, publicConversation(existing, store.getConversationProject(existing.id)));
+    }
+    // A retained conversation whose sandbox was reclaimed by the retention sweep gets a
+    // fresh cell on the same conversation id; its history and branch survive.
+    let reopened = false;
+    if (mapping.status === "cleaned") {
+      if (!store.reopenCleanedCell(mapping.conversationId, randomUUID())) {
+        return sendError(res, 409, "cell_not_ready", "Conversation sandbox is being reopened; retry with the same Idempotency-Key");
+      }
+      mapping = store.getCellMapping(mapping.conversationId)!;
+      reopened = true;
     }
     if (!this.runtime.provisionConversation) {
       store.setCellStatus(mapping.conversationId, "failed");
@@ -680,10 +809,11 @@ export class DlApi {
 
     // The project is fixed on first attempt; retries with the same Idempotency-Key reuse it.
     let project: DlCellProject | undefined;
-    if (kind) {
+    if (kind || reopened) {
       let stored = store.getConversationProject(mapping.conversationId);
       if (!stored) {
-        if (kind === "code") {
+        const effectiveKind = kind ?? store.getConversation(mapping.conversationId)?.kind ?? "chat";
+        if (effectiveKind === "code") {
           let repo;
           try {
             repo = await this.github.getRepository(repository!);
@@ -691,16 +821,12 @@ export class DlApi {
             if (error instanceof DlGitHubError) return sendError(res, error.status, error.code, error.message);
             throw error;
           }
-          store.setConversationProject(mapping.conversationId, {
-            kind,
-            repository: repo.fullName,
-            branch: `dl/${mapping.conversationId.slice(0, 8)}`,
-          });
-          stored = { kind, repository: repo.fullName, branch: `dl/${mapping.conversationId.slice(0, 8)}` };
-          project = { kind, repository: repo.fullName, baseBranch: repo.defaultBranch, branch: stored.branch! };
+          stored = { kind: "code", repository: repo.fullName, branch: `dl/${mapping.conversationId.slice(0, 8)}` };
+          store.setConversationProject(mapping.conversationId, stored);
+          project = { kind: "code", repository: repo.fullName, baseBranch: repo.defaultBranch, branch: stored.branch! };
         } else {
-          store.setConversationProject(mapping.conversationId, { kind, repository: null, branch: null });
-          stored = { kind, repository: null, branch: null };
+          stored = { kind: "chat", repository: null, branch: null };
+          store.setConversationProject(mapping.conversationId, stored);
         }
       }
       if (!project) {
@@ -712,6 +838,9 @@ export class DlApi {
         project.baseCommit = changes.baseCommit;
         if (changes.patch) project.patch = changes.patch;
       }
+      // Reopening a cleaned code conversation continues its existing branch instead of
+      // starting over from the repository's default branch.
+      if (reopened && project.kind === "code") project.resumeBranch = true;
       if (project.kind === "code" && project.repository && this.githubProxyUrl) {
         const grantToken = createDlGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", mapping.conversationId, project.repository, project.branch!);
         store.createGitHubGrant(mapping.conversationId, grantToken);
@@ -1117,9 +1246,11 @@ export class DlApi {
     }
   }
 
-  private async resumeConversation(res: ServerResponse, store: DlStore, conversation: DlConversation): Promise<void> {
+  private async resumeConversation(res: ServerResponse, store: DlStore, conversation: DlConversation, config: DlServerConfig): Promise<void> {
     const mapping = store.getCellMapping(conversation.id);
-    if (!mapping || !mapping.cellId) return sendError(res, 409, "cell_not_ready", "Conversation cell is not ready");
+    if (!mapping) return sendError(res, 404, "conversation_not_found", "Conversation not found");
+    if (mapping.status === "cleaned") return this.reopenCleanedConversation(res, store, conversation, config);
+    if (!mapping.cellId) return sendError(res, 409, "cell_not_ready", "Conversation cell is not ready");
     if (mapping.status !== "paused") return json(res, 200, { ...publicConversation(conversation), cellStatus: mapping.status });
     if (!this.runtime.resumeCell) return sendError(res, 503, "hotcell_resume_unavailable", "Hotcell resume is not configured");
     try {
@@ -1131,6 +1262,68 @@ export class DlApi {
       json(res, 200, { ...publicConversation(updated), cellStatus: "ready" });
     } catch {
       sendError(res, 503, "resume_failed", "Conversation could not be resumed; the persisted cell state is unchanged");
+    }
+  }
+
+  /**
+   * Recreate the sandbox of a conversation whose cell the retention sweep reclaimed.
+   * The conversation id, event history and (for code) the pushed branch are retained;
+   * only the cell volume is new.
+   */
+  private async reopenCleanedConversation(res: ServerResponse, store: DlStore, conversation: DlConversation, config: DlServerConfig): Promise<void> {
+    if (conversation.activeRunId) return sendError(res, 409, "turn_active", "Wait for the current turn to finish before reopening the sandbox");
+    if (!this.runtime.provisionConversation) return sendError(res, 503, "hotcell_unavailable", "Hotcell conversation runtime is not configured");
+    const workspace = findDlWorkspace(config, conversation.workspaceId);
+    if (!workspace) return sendError(res, 404, "workspace_not_found", "Workspace is not configured");
+    const project = store.getConversationProject(conversation.id);
+    const sessionId = randomUUID();
+    if (!store.reopenCleanedCell(conversation.id, sessionId)) {
+      return sendError(res, 409, "cell_not_ready", "Conversation sandbox is already being reopened");
+    }
+    const mapping = store.getCellMapping(conversation.id)!;
+    let cellProject: DlCellProject | undefined;
+    if (project?.kind === "code" && project.repository && project.branch) {
+      cellProject = {
+        kind: "code",
+        repository: project.repository,
+        baseBranch: conversation.baseBranch ?? "main",
+        branch: project.branch,
+        resumeBranch: true,
+      };
+      if (this.githubProxyUrl) {
+        const grantToken = createDlGitHubGrantToken(process.env.GITHUB_TOKEN ?? "", conversation.id, project.repository, project.branch);
+        store.createGitHubGrant(conversation.id, grantToken);
+        cellProject.github = { token: grantToken, gitUrl: `${this.githubProxyUrl}/git` };
+      }
+    } else if (project?.kind === "chat") {
+      cellProject = { kind: "chat" };
+    }
+    try {
+      const provisioned = await this.runtime.provisionConversation({
+        conversationId: conversation.id,
+        sessionId,
+        cellName: mapping.cellName,
+        workspaceId: conversation.workspaceId,
+        workspaceRoot: workspace.rootPath,
+        model: conversation.model,
+        provider: config.provider,
+        allowCreate: true,
+        onCellCreated: (cellId) => store.setCellId(conversation.id, cellId),
+        ...(cellProject ? { project: cellProject } : {}),
+      });
+      store.setCellId(conversation.id, provisioned.cellId);
+      store.setCellStatus(conversation.id, "ready");
+      store.setConversationStatus(conversation.id, "ready", { reason: "sandbox_reopened" });
+      store.appendEvent(conversation.id, null, "conversation.resumed", { sessionId, newCell: true });
+      const updated = store.getConversation(conversation.id)!;
+      json(res, 200, { ...publicConversation(updated, project), cellStatus: "ready" });
+    } catch {
+      const current = store.getCellMapping(conversation.id);
+      if (current?.cellId && this.runtime.destroyCell) {
+        await this.runtime.destroyCell(current.cellId).catch(() => {});
+      }
+      store.resetCleanedCell(conversation.id);
+      sendError(res, 503, "resume_failed", "The conversation's sandbox could not be recreated; retry resume");
     }
   }
 
@@ -1386,6 +1579,23 @@ function publicConversation(conversation: DlConversation, project?: DlConversati
     lastEventId: conversation.lastEventSequence,
     createdAt: new Date(conversation.createdAt).toISOString(),
     updatedAt: new Date(conversation.updatedAt).toISOString(),
+  };
+}
+
+/** A positive integer from the environment, or the fallback when unset or out of range. */
+function boundedEnvInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+/** Filesystem usage for the retention health snapshot; unavailable paths are reported as null. */
+async function readDiskStats(path: string): Promise<{ usedBytes: bigint; availableBytes: bigint; totalBytes: bigint }> {
+  const stats = await statfs(path, { bigint: true });
+  return {
+    usedBytes: (stats.blocks - stats.bfree) * stats.bsize,
+    availableBytes: stats.bavail * stats.bsize,
+    totalBytes: stats.blocks * stats.bsize,
   };
 }
 

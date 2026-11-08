@@ -21,6 +21,8 @@ export interface DlPullRequest {
   headBranch: string;
   baseBranch: string;
   merged: boolean;
+  closedAt: string | null;
+  mergedAt: string | null;
 }
 
 export interface DlCheckRun {
@@ -69,6 +71,7 @@ interface RawPullRequest {
   title: string;
   state: "open" | "closed";
   merged_at: string | null;
+  closed_at: string | null;
   head: { ref: string };
   base: { ref: string };
 }
@@ -275,5 +278,7 @@ function mapPullRequest(raw: RawPullRequest): DlPullRequest {
     headBranch: raw.head.ref,
     baseBranch: raw.base.ref,
     merged: raw.merged_at !== null,
+    closedAt: raw.closed_at,
+    mergedAt: raw.merged_at,
   };
 }

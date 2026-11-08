@@ -540,6 +540,35 @@ describe("dl server Hotcell runtime", () => {
     }
   });
 
+  it("commits and pushes leftover work before a retention sweep removes the cell", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dl-cell-"));
+    const remote = mkdtempSync(join(tmpdir(), "dl-remote-"));
+    try {
+      const git = (args: string) => execSync(`git -c user.name=t -c user.email=t@t -c commit.gpgsign=false ${args}`, { cwd: root, encoding: "utf8" });
+      execSync("git init -q --bare", { cwd: remote });
+      git("init -q");
+      writeFileSync(join(root, "README.md"), "seed\n");
+      git("add README.md");
+      git("commit -q -m base");
+      git("checkout -q -b dl/12345678");
+      git(`remote add origin ${remote}`);
+      mkdirSync(join(root, ".dl"));
+      writeFileSync(join(root, ".dl", ".seeded"), "");
+      writeFileSync(join(root, ".git", "info", "exclude"), ".dl/\n");
+
+      const state = emptyCellState();
+      const runtime = newRuntime(realWorkspaceProvider(state, root));
+      writeFileSync(join(root, "notes.md"), "uncommitted work\n");
+      await runtime.prepareCellForCleanup("real-cell", { kind: "code", repository: "me/app", baseBranch: "main", branch: "dl/12345678" });
+
+      assert.match(execSync("git log --format=%s dl/12345678", { cwd: remote, encoding: "utf8" }), /^WIP: preserved automatically before sandbox cleanup\n/);
+      assert.equal(execSync("git show dl/12345678:notes.md", { cwd: remote, encoding: "utf8" }), "uncommitted work\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(remote, { recursive: true, force: true });
+    }
+  });
+
   it("pushes a failed turn's work to its branch instead of stranding it, without opening a PR", async () => {
     const root = mkdtempSync(join(tmpdir(), "dl-cell-"));
     const remote = mkdtempSync(join(tmpdir(), "dl-remote-"));

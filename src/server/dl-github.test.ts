@@ -38,6 +38,8 @@ describe("dl server GitHub REST client", () => {
       headBranch: "dl/abc12345",
       baseBranch: "main",
       merged: false,
+      closedAt: undefined,
+      mergedAt: null,
     });
     assert.equal(calls[0]?.url, "https://api.github.com/repos/me/app/pulls");
     assert.equal(calls[0]?.method, "POST");
