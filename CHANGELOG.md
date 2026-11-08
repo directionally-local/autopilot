@@ -1,5 +1,37 @@
 # Changelog
 
+## [3.15.0](https://github.com/directionally-local/autopilot/compare/v3.14.1...v3.15.0) (2026-11-08)
+
+
+### Features
+
+* a bookkeeping-only step now triggers a batching reminder ([#1194](https://github.com/directionally-local/autopilot/issues/1194)) ([0046c75](https://github.com/directionally-local/autopilot/commit/0046c7540c77f93d9e1495c25542dac5d054e8d4))
+* **bash:** hand long-running commands off to durable background jobs ([#1200](https://github.com/directionally-local/autopilot/issues/1200)) ([ea71f77](https://github.com/directionally-local/autopilot/commit/ea71f777d6f4a50a1cbcc219ce95193cc86887fe)), closes [#1101](https://github.com/directionally-local/autopilot/issues/1101)
+* compact on return from an idle gap, when the prompt cache is already cold ([#1202](https://github.com/directionally-local/autopilot/issues/1202)) ([f02e251](https://github.com/directionally-local/autopilot/commit/f02e2510228fc5d15f48a35d0f0c9107779c6ad2))
+* enforce bookkeeping batching — annotate results past the nudge cap, auto-finalize the checklist at turn end ([#1204](https://github.com/directionally-local/autopilot/issues/1204)) ([4b28d8c](https://github.com/directionally-local/autopilot/commit/4b28d8c622c6417cce2679240b86e49b8eab6d63))
+* github_pr_checks waits for CI in a background job instead of blocking ([#1188](https://github.com/directionally-local/autopilot/issues/1188)) ([b663366](https://github.com/directionally-local/autopilot/commit/b663366d4dad69b398fc5e43842221f543d4b6af))
+* irreversible actions ask in every mode again; /audit ([#1125](https://github.com/directionally-local/autopilot/issues/1125)) ([#1201](https://github.com/directionally-local/autopilot/issues/1201)) ([4a3f180](https://github.com/directionally-local/autopilot/commit/4a3f180ffa0187a4a192a6e5682c63f28d2f051d))
+* **models:** per-profile caps, guardrail thresholds and config overrides ([#999](https://github.com/directionally-local/autopilot/issues/999)) ([#1203](https://github.com/directionally-local/autopilot/issues/1203)) ([e728ffe](https://github.com/directionally-local/autopilot/commit/e728ffe8a7a95d2168058091cb126c0104b39698))
+* optional intent-based model routing for light turns, with per-turn model attribution in cost-debug.jsonl ([#1189](https://github.com/directionally-local/autopilot/issues/1189)) ([ea250f4](https://github.com/directionally-local/autopilot/commit/ea250f42a0f13ed206a13f1a4c627eddc590393b))
+* per-turn outcome labels, requestId join keys, and direct provider attribution in cost-debug.jsonl ([#1197](https://github.com/directionally-local/autopilot/issues/1197)) ([9aa8a24](https://github.com/directionally-local/autopilot/commit/9aa8a24e1fdcea7495a613f625defda8c5e8c64a))
+* the stall guardrail ends runaway turns that make no file progress ([#1182](https://github.com/directionally-local/autopilot/issues/1182)) ([3914677](https://github.com/directionally-local/autopilot/commit/3914677af9c6e762f08382e423f65e243d23c604))
+
+
+### Bug Fixes
+
+* **bash:** block recursive sweeps of the home directory and filesystem root ([#1191](https://github.com/directionally-local/autopilot/issues/1191)) ([37e7af8](https://github.com/directionally-local/autopilot/commit/37e7af8408f43fdb1fda453e571a66ab7caf66e3))
+* **config:** serialize config writes so concurrent patches don't clobber each other ([#1207](https://github.com/directionally-local/autopilot/issues/1207)) ([89cb734](https://github.com/directionally-local/autopilot/commit/89cb7347204c47998710a74e4c19365de89e44d2))
+* **dl:** show the free tier's dl_only refusal as the service words it ([#1185](https://github.com/directionally-local/autopilot/issues/1185)) ([b69083a](https://github.com/directionally-local/autopilot/commit/b69083a38b6b8312d8ab4328de103e42e1aaa6f0))
+* memory and subagent gates log why they fire, and the exit flush survives its deadline ([#1192](https://github.com/directionally-local/autopilot/issues/1192)) ([62adcdb](https://github.com/directionally-local/autopilot/commit/62adcdb6d893a210ce4b24e99a5cb6db2a1d5639))
+* **security:** install the cell runtime with --ignore-scripts ([#1196](https://github.com/directionally-local/autopilot/issues/1196)) ([3f19133](https://github.com/directionally-local/autopilot/commit/3f191336a0d80545c42229a681944083b7e2b950))
+* **security:** pin camouflage-tui to an exact version ([#1190](https://github.com/directionally-local/autopilot/issues/1190)) ([279618d](https://github.com/directionally-local/autopilot/commit/279618ddb3b0bc9307420cc9c0d16091db7141c0))
+* the GitHub proxy's close() destroys held-open connections ([#1199](https://github.com/directionally-local/autopilot/issues/1199)) ([48bede5](https://github.com/directionally-local/autopilot/commit/48bede5aa6fba0f42ca4cde9017bfa13579ac398))
+
+
+### Performance
+
+* tool output reduction actually reduces (2% savings to real caps) ([#1186](https://github.com/directionally-local/autopilot/issues/1186)) ([0d86b09](https://github.com/directionally-local/autopilot/commit/0d86b09d6c5e2ff8d76cbeeb8015b972a3abae2e))
+
 ## [3.14.1](https://github.com/directionally-local/autopilot/compare/v3.14.0...v3.14.1) (2026-11-07)
 
 
