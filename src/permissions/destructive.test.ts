@@ -1,7 +1,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { analyzeSql, classifyCommand, classifyToolCall, isLocalHost, type ClassifyContext } from "./destructive.js";
@@ -206,6 +206,24 @@ describe("files", () => {
     assert.strictEqual(verdict("find . -name '*.tmp' | xargs rm -rf"), "irreversible");
     assert.strictEqual(verdict("xargs rm -rf < list.txt"), "irreversible");
     assert.strictEqual(verdict("xargs rm -rf"), "irreversible");
+  });
+
+  it("resolves a variable or a common substitution before giving up", () => {
+    // The temp root counts as scratch here: on macOS it lives under /var, and
+    // git reports the /private/var realpath.
+    const scratch = { scratchDirs: [T, realpathSync(T)] };
+    assert.strictEqual(verdict(`rm -rf "$BUILD_DIR"`, { ...scratch, env: { BUILD_DIR: "build-cache" } }), "recoverable");
+    assert.strictEqual(verdict("rm -rf ${BUILD_DIR}", { ...scratch, env: { BUILD_DIR: "build-cache" } }), "recoverable");
+    assert.strictEqual(verdict("DIR=build-cache; rm -rf $DIR", scratch), "recoverable");
+    assert.strictEqual(verdict("export DIR=build-cache && rm -rf $DIR", scratch), "recoverable");
+    assert.strictEqual(verdict("rm -rf $(pwd)/build-cache", scratch), "recoverable");
+    assert.strictEqual(verdict("rm -rf $(git rev-parse --show-toplevel)/build-cache", scratch), "recoverable");
+    // Still unknown: an unset variable, a command substitution, a default.
+    assert.strictEqual(verdict("rm -rf $UNSET_DIR", scratch), "irreversible");
+    assert.strictEqual(verdict("rm -rf $(cat dirs.txt)", scratch), "irreversible");
+    assert.strictEqual(verdict("rm -rf ${UNSET_DIR:-build-cache}", scratch), "irreversible");
+    // A resolved target outside the project is still irreversible.
+    assert.strictEqual(verdict("rm -rf $OUT", { ...scratch, env: { OUT: join(T, "..") } }), "irreversible");
   });
 
   it("find -delete lists its matches with a dry run", () => {

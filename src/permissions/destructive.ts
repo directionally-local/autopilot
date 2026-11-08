@@ -17,7 +17,10 @@
  *
  * Nothing here leaves the machine: it reads the command, local files that
  * are small (SQL files, package.json scripts, .env for DATABASE_URL's host),
- * local git state, and runs `find` / `git clean -n` dry runs.
+ * local git state, and runs `find` / `git clean -n` dry runs. A target
+ * written with a variable or a common substitution is expanded first
+ * (`$BUILD_DIR` from the environment, `$(pwd)`, `$(git rev-parse
+ * --show-toplevel)`), so it is classified on what it really names.
  */
 
 import { execFileSync } from "node:child_process";
@@ -93,6 +96,8 @@ export function worstVerdict(findings: Finding[]): Verdict {
 
 interface ShellWord {
   text: string;
+  /** The word as written, before a variable or substitution was expanded. */
+  raw: string;
   /** Depends on an expansion or substitution whose value isn't known here. */
   dynamic: boolean;
   /** Has a glob character. */
@@ -123,9 +128,27 @@ interface SimpleCommand {
 
 const DYNAMIC = /\$[A-Za-z_{(@*#?!0-9-]|`/;
 
-function toWord(text: string): ShellWord {
+function toWord(text: string, raw = text): ShellWord {
   const dynamic = DYNAMIC.test(text);
-  return { text, dynamic, glob: !dynamic && /[*?[]/.test(text) };
+  return { text, raw, dynamic, glob: !dynamic && /[*?[]/.test(text) };
+}
+
+/**
+ * Expand what the shell would, so a target written with a variable or a
+ * common substitution can still be classified: `$VAR` / `${VAR}` from the
+ * environment the command sees, `$(pwd)` and `$(git rev-parse
+ * --show-toplevel)`. Anything else (`$(cat list)`, `$?`, `${X:-y}`) stays as
+ * written and the word stays dynamic.
+ */
+function expandWord(text: string, env: Record<string, string | undefined>, cwd: string): string {
+  if (!DYNAMIC.test(text)) return text;
+  let out = text.replace(/\$\(\s*pwd\s*\)|`\s*pwd\s*`/g, () => cwd);
+  out = out.replace(/\$\(\s*git\s+rev-parse\s+--show-toplevel\s*\)|`\s*git\s+rev-parse\s+--show-toplevel\s*`/g, () => repoRootOf(cwd) ?? "$(git rev-parse --show-toplevel)");
+  out = out.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (whole, braced: string | undefined, bare: string | undefined) => {
+    const value = env[braced ?? bare ?? ""];
+    return value !== undefined && !DYNAMIC.test(value) ? value : whole;
+  });
+  return out;
 }
 
 function expandHome(p: string): string {
@@ -218,17 +241,29 @@ function runnerInner(a: string[]): { argv?: string[]; script?: string; via?: str
 }
 
 /** The commands `command` runs, as the classifier sees them. */
-function commandsOf(command: string, cwd: string, depth = 0): SimpleCommand[] {
+function commandsOf(command: string, cwd: string, depth = 0, baseEnv: Record<string, string | undefined> = process.env): SimpleCommand[] {
   const out: SimpleCommand[] = [];
   const converted = new Map<ParsedCommand, SimpleCommand>();
   let dir = cwd;
+  // Assignments persist for the rest of the shell line (`DIR=x; rm -rf $DIR`),
+  // including ones on a segment of their own, which the parser drops.
+  const shellEnv: Record<string, string | undefined> = { ...baseEnv };
+  for (const m of command.matchAll(/(?:^|[;&|(\n]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]+)/g)) {
+    shellEnv[m[1]!] = m[2]!.replace(/^["']|["']$/g, "");
+  }
   for (const pc of parseCommands(command)) {
     const env: Record<string, string> = {};
     for (const asg of pc.assignments) {
       const eq = asg.indexOf("=");
-      env[asg.slice(0, eq).replace(/\+$/, "")] = asg.slice(eq + 1);
+      const name = asg.slice(0, eq).replace(/\+$/, "");
+      const value = expandWord(asg.slice(eq + 1), shellEnv, dir);
+      env[name] = value;
+      shellEnv[name] = value;
     }
-    let argv = pc.argv;
+    const seen = { ...shellEnv, ...env };
+    let argv = pc.argv.map((w) => expandWord(w, seen, dir));
+    // The words as written, so `$DATABASE_URL` still names the variable.
+    let rawArgv = pc.argv;
     let via: string | undefined;
     for (let guard = 0; guard < 4 && depth < 4; guard++) {
       const inner = runnerInner(argv);
@@ -236,18 +271,19 @@ function commandsOf(command: string, cwd: string, depth = 0): SimpleCommand[] {
       via = inner.via ?? via;
       const script = inner.script ?? (inner.argv && inner.argv.length && ["sh", "bash", "zsh", "dash", "env", "sudo", "timeout", "nice", "xargs"].includes(base(inner.argv[0])) ? inner.argv.map(shellQuote).join(" ") : undefined);
       if (script !== undefined) {
-        for (const c of commandsOf(script, dir, depth + 1)) out.push({ ...c, env: { ...env, ...c.env }, raw: pc.text, via: c.via ?? via });
+        for (const c of commandsOf(script, dir, depth + 1, seen)) out.push({ ...c, env: { ...env, ...c.env }, raw: pc.text, via: c.via ?? via });
         argv = [];
         break;
       }
       argv = inner.argv ?? [];
+      rawArgv = argv;
     }
     if (argv.length === 0 && pc.argv.length > 0) continue;
     const sc: SimpleCommand = {
-      argv: argv.map(toWord),
+      argv: argv.map((w, i) => toWord(w, rawArgv[i] ?? w)),
       env,
       cwd: dir,
-      redirects: pc.redirects.map((r) => ({ op: r.op, target: toWord(r.target), ...(r.body !== undefined ? { body: r.body } : {}) })),
+      redirects: pc.redirects.map((r) => ({ op: r.op, target: toWord(expandWord(r.target, seen, dir), r.target), ...(r.body !== undefined ? { body: r.body } : {}) })),
       raw: pc.text,
       ...(pc.wrappers.includes("xargs") ? { argsFromInput: true } : {}),
       ...(via ? { via } : {}),
@@ -293,7 +329,7 @@ export function classifyCommand(command: string, ctx: ClassifyContext): Assessme
 function classifyCommandFindings(command: string, ctx: ClassifyContext, depth = 0): Finding[] {
   const out: Finding[] = [];
   const project = projectRoot(ctx);
-  for (const sc of commandsOf(command, ctx.cwd)) {
+  for (const sc of commandsOf(command, ctx.cwd, 0, ctx.env ?? process.env)) {
     out.push(...classifySimple(sc, { ...ctx, project, cwd: sc.cwd }, depth));
   }
   return out;
@@ -1184,7 +1220,9 @@ function dbTargetFromWords(sc: SimpleCommand, ctx: ClassifyContext, cmd: string)
   let via = "";
   for (let k = 1; k < a.length; k++) {
     const x = a[k]!;
-    const v = varName(x);
+    // The word as written: `$DATABASE_URL` still names the variable even
+    // though its value was expanded for classification.
+    const v = varName(sc.argv[k]?.raw ?? x);
     const val = v ? lookupVar(v, sc, ctx) : x;
     if (val && /^[a-z][a-z0-9+.-]*:\/\//i.test(val)) {
       const p = parseDbUrl(val);
