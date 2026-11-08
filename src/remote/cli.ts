@@ -237,6 +237,11 @@ class EventRenderer {
 
   render(event: RemoteEvent): void {
     const data = event.data;
+    if (event.type === "user.message") {
+      const text = typeof data.text === "string" ? data.text : "";
+      if (text) this.line(`  › you: ${oneLine(text, 200)}`);
+      return;
+    }
     if (event.type === "assistant.delta") {
       const text = typeof data.text === "string" ? data.text : typeof data.delta === "string" ? data.delta : "";
       if (!text) return;

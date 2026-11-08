@@ -198,6 +198,8 @@ export async function startDlStub(): Promise<DlStub> {
       const runId = `run-${++seq}`;
       c.activeRunId = runId;
       c.status = "running";
+      // The real server journals the accepted turn's text before the run starts.
+      stub.append(c.conversationId, { type: "user.message", data: { text: String(body?.text ?? "") } });
       json(202, { conversationId: c.conversationId, clientTurnId: body?.clientTurnId, runId, status: "running" });
       const events = stub.script(c.conversationId, String(body?.text ?? ""));
       void (async () => {

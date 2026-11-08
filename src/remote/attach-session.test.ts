@@ -222,6 +222,7 @@ describe("attach-remote: session against a stub dl server", () => {
     stub = await startDlStub();
     stub.seed({ conversationId: "11111111-aaaa", pullRequestURL: "https://github.com/acme/project/pull/3" }, [
       { type: "conversation.created", data: {} },
+      { type: "user.message", data: { text: "Earlier question." } },
       { type: "assistant.delta", data: { text: "Earlier answer." } },
       { type: "usage", data: { inputTokens: 10, outputTokens: 1, costUsd: 0.5, cumulative: true } },
       { type: "completed", data: {} },
@@ -229,8 +230,10 @@ describe("attach-remote: session against a stub dl server", () => {
     const stateFile = join(dir, "reconnect.json");
     const { bridge, done } = await attach({ conversation: "11111111-aaaa", stateFile });
     await waitFor(() => bridge.texts().includes("assistant:Earlier answer.") && bridge.texts().some((t) => t.includes("pull/3")), "replay");
+    assert.ok(bridge.texts().includes("user:Earlier question."), "the replayed question renders as the user's message");
     assert.equal(stub.requests.find((r) => r.path.endsWith("/events"))?.lastEventId, "0");
     assert.match(bridge.texts()[0]!, /Reconnected to conversation 11111111/);
+    assert.doesNotMatch(bridge.texts()[0]!, /not your past messages/, "the reconnect note no longer disclaims the user's side");
     assert.equal(JSON.parse(await readFile(stateFile, "utf8")).conversationId, "11111111-aaaa");
     assert.equal(turnRequests().length, 0, "reconnecting sends nothing");
     // A live turn: the PR URL is unchanged, so it isn't repeated.
@@ -263,6 +266,8 @@ describe("attach-remote: session against a stub dl server", () => {
     assert.equal(turnRequests()[1]!.body?.text, "second");
     assert.notEqual(turnRequests()[0]!.body?.clientTurnId, turnRequests()[1]!.body?.clientTurnId);
     assert.ok(bridge.last!.events.some((e) => e.kind === "user" && e.text === "second" && !e.queued));
+    await waitFor(() => bridge.texts().some((t) => t.includes("Working on: second")), "second reply");
+    assert.equal(bridge.last!.events.filter((e) => e.kind === "user" && e.text === "second").length, 1, "the server's user.message does not duplicate the local echo");
     stub.release();
     bridge.actions.exit();
     assert.equal(await done, 0);

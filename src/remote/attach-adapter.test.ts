@@ -25,6 +25,17 @@ describe("attach-remote adapter: dl server events → UI state", () => {
     assert.equal(state.phase, "generating");
   });
 
+  it("user.message renders the replayed question as the user's message", () => {
+    const { state } = feed([
+      { type: "user.message", data: { text: "Summarize the failing test." } },
+      { type: "assistant.delta", data: { text: "I found it." } },
+    ]);
+    assert.equal(state.events.length, 2);
+    const user = state.events[0]!;
+    assert.ok(user.kind === "user" && user.text === "Summarize the failing test.");
+    assert.equal(state.events[1]!.kind, "assistant");
+  });
+
   it("assistant.reasoning goes to the message's reasoning", () => {
     const { state } = feed([{ type: "assistant.reasoning", data: { text: "thinking" } }, { type: "assistant.delta", data: { text: "answer" } }]);
     const msg = state.events[0]!;
