@@ -209,7 +209,7 @@ export async function discoverOllamaModels(baseUrl: string, fetchImpl: typeof fe
   return out;
 }
 
-/** Models from an OpenAI-compatible `GET /models` (LM Studio, custom gateways). Ids only; capabilities unknown. */
+/** Models from an OpenAI-compatible `GET /models` (LM Studio, vLLM, custom gateways). Ids only; capabilities unknown. */
 export async function discoverOpenAiModels(baseUrl: string, apiKey: string | undefined, fetchImpl: typeof fetch = fetch): Promise<ModelEntry[]> {
   const res = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/models`, {
     headers: { Accept: "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },

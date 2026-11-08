@@ -46,6 +46,7 @@ export const PROVIDER_IDS = [
   "zai-coding",
   "ollama",
   "lmstudio",
+  "vllm",
 ] as const;
 
 export type ProviderId = (typeof PROVIDER_IDS)[number];
@@ -630,6 +631,20 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     keyRequired: false,
     embedding: null,
     catalog: "openai-models",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEffort: false },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  vllm: {
+    id: "vllm",
+    name: "vLLM",
+    // vLLM's OpenAI-compatible server (`vllm serve`), usually on your own GPUs.
+    baseUrl: "http://127.0.0.1:8000/v1",
+    apiKeyEnv: ["VLLM_API_KEY"],
+    keyRequired: false,
+    embedding: null,
+    catalog: "openai-models",
+    // Tool calls are plain Chat Completions; the server needs
+    // --enable-auto-tool-choice and a --tool-call-parser for the model.
     compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEffort: false },
     capabilities: NO_OPENROUTER_FEATURES,
   },

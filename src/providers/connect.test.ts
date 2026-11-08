@@ -44,6 +44,16 @@ describe("providerRows", () => {
     assert.strictEqual(rows[0]!.id, "cloudflare");
   });
 
+  it("offers vLLM next to LM Studio, keyless, with its own hint", () => {
+    const rows = providerRows(null, { env });
+    const vllm = rows.find((r) => r.id === "vllm")!;
+    assert.strictEqual(vllm.name, "vLLM");
+    assert.strictEqual(vllm.hint, "your own GPUs");
+    assert.strictEqual(credentialLabel(vllm), "no key needed");
+    assert.deepStrictEqual(planConnect("vllm", null, env), { kind: "ready", source: "none" });
+    assert.ok(filterProviderRows(rows, "gpu").some((r) => r.id === "vllm"));
+  });
+
   it("fuzzy search covers names, ids and hints", () => {
     const rows = providerRows(null, { env });
     assert.deepStrictEqual(filterProviderRows(rows, "claude").map((r) => r.id).slice(0, 1), ["anthropic"]);

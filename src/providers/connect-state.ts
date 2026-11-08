@@ -50,7 +50,7 @@ export interface ConnectState {
   name: string;
   /** The effective upstream URL: the preset's, or the custom URL the user entered. */
   baseUrl: string;
-  /** Null for keyless providers (Ollama, LM Studio) and a custom endpoint without a key. */
+  /** Null for keyless providers (Ollama, LM Studio, vLLM) and a custom endpoint without a key. */
   apiKey: string | null;
   /** The first env var the provider reads its key from, when it has one. */
   apiKeyEnv: string | null;
