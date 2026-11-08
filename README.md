@@ -867,6 +867,33 @@ SDK consumers opt in to hooks with `enableHooks: true` on
 not the TUI. SDK sessions fire SessionEnd on `dispose()`, or when the
 process exits without it (see [Ending a session](#ending-a-session)).
 
+## MCP servers
+
+Add servers to `~/.config/autopilot/config.json` (or `$XDG_CONFIG_HOME/autopilot/config.json`) under `mcpServers`. There is no interactive add wizard: `/mcp list` shows what is connected and `/mcp reload` reconnects after an edit.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "linear": { "type": "remote", "url": "https://mcp.linear.app/sse" },
+    "meta-ads": {
+      "type": "http",
+      "url": "https://mcp.facebook.com/ads",
+      "headers": { "Authorization": "Bearer ${META_ADS_ACCESS_TOKEN}" }
+    }
+  }
+}
+```
+
+- `local` runs a command over stdio.
+- `remote` uses the legacy SSE transport.
+- `http` uses the MCP Streamable HTTP transport (POST plus an optional SSE stream), which most hosted servers use. `${VAR}` in `url`, `env` and `headers` is expanded from the environment, so a token can stay out of the file.
+
+Servers configured in Claude Code, Cursor and OpenCode are also picked up automatically; they stay off until a task needs one. Hosted servers that require OAuth (rather than a bearer token) are not supported yet — use a user or system-user access token in `headers` instead.
+
 ## Development
 
 ```sh

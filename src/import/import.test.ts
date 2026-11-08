@@ -15,6 +15,7 @@ import {
   discoverMcpServers,
   displayCommand,
   resetMcpSessionState,
+  resolveLaunch,
   type McpLaunch,
 } from "./mcp.js";
 import { loadClaudeCommands } from "./commands.js";
@@ -255,12 +256,25 @@ describe("MCP servers", () => {
     const { servers, skipped } = discoverMcpServers(repo, env());
     assert.deepEqual(
       servers.map((s) => `${s.agent}:${s.name}`),
-      ["claude:postgres", "claude:sentry", "claude:github", "cursor:linear"],
+      ["claude:postgres", "claude:sentry", "claude:github", "claude:notion", "cursor:linear"],
     );
     assert.deepEqual(
       skipped.map((s) => `${s.name}: ${s.reason}`),
-      ["dangerous: denied in your Claude Code settings", "off-server: turned off in Claude Code", "notion: remote HTTP servers aren't supported yet"],
+      ["dangerous: denied in your Claude Code settings", "off-server: turned off in Claude Code"],
     );
+  });
+
+  it("picks the remote transport from the entry, defaulting to Streamable HTTP", () => {
+    const { servers } = discoverMcpServers(repo, env());
+    const byName = new Map(servers.map((s) => [s.name, s]));
+    assert.equal(byName.get("notion")!.transport, "http", "type: http");
+    assert.equal(byName.get("linear")!.transport, "sse", "an /sse URL");
+    assert.equal(byName.get("github")!.transport, undefined, "local servers have no remote transport");
+    assert.deepEqual(resolveLaunch(byName.get("notion")!), {
+      kind: "remote",
+      url: "https://mcp.notion.com/mcp",
+      transport: "http",
+    });
   });
 
   it("leaves out servers Autopilot's own config already has", () => {
@@ -404,7 +418,7 @@ describe("the checklist", () => {
       checklist,
       [
         "Bringing in your setup (stays on this computer)",
-        "  ✓ Claude Code     CLAUDE.md (project + personal) · 3 MCP servers · 3 commands · 7 deny rules",
+        "  ✓ Claude Code     CLAUDE.md (project + personal) · 4 MCP servers · 3 commands · 7 deny rules",
         "  ✓ Cursor          .cursor/rules (4 files) · .cursorrules · 1 MCP server",
         "  ✓ Gemini CLI      GEMINI.md",
         "  ✓ GitHub Copilot  .github/copilot-instructions.md",
@@ -416,7 +430,6 @@ describe("the checklist", () => {
         "  ↷ 1 Claude Code command not brought in · it runs shell commands",
         "  ↷ dangerous MCP server (Claude Code) not brought in · denied in your Claude Code settings",
         "  ↷ off-server MCP server (Claude Code) not brought in · turned off in Claude Code",
-        "  ↷ notion MCP server (Claude Code) not brought in · remote HTTP servers aren't supported yet",
         "  MCP servers stay off until a task needs one.",
       ].join("\n"),
     );

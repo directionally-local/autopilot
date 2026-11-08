@@ -20,6 +20,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ToolContext, ToolSpec } from "../tools/registry.js";
+import type { McpRemoteTransport } from "../mcp/manager.js";
 import { homeOf, isRecord, projectRootOf, readJson, setupImportEnabled, type ImportEnv } from "./paths.js";
 import { loadDenyRules, mcpDenied } from "./permissions.js";
 
@@ -42,6 +43,8 @@ export interface ImportedMcpServer {
   /** Command and arguments, as written (no secrets: env is not included). */
   command?: string[];
   url?: string;
+  /** For remote servers: SSE or Streamable HTTP. */
+  transport?: McpRemoteTransport;
   /** False when Autopilot can't run it yet; `reason` says why. */
   supported: boolean;
   reason?: string;
@@ -79,7 +82,11 @@ function fromMcpServersEntry(name: string, raw: unknown, agent: McpAgent, source
   }
   if (typeof raw.url === "string" && raw.url.trim()) {
     const url = raw.url;
-    const sse = type === "sse" || (type === undefined && /\/sse\/?$/.test(url));
+    // `type: "sse"` (or an /sse URL with no type) is the legacy SSE transport;
+    // everything else — including `type: "http"` and `streamable-http` — uses
+    // Streamable HTTP, which hosted servers such as Meta Ads require.
+    const transport: McpRemoteTransport =
+      type === "sse" || (type === undefined && /\/sse\/?$/.test(url)) ? "sse" : "http";
     return {
       name,
       agent,
@@ -87,8 +94,8 @@ function fromMcpServersEntry(name: string, raw: unknown, agent: McpAgent, source
       pointer,
       kind: "remote",
       url,
-      supported: sse,
-      ...(sse ? {} : { reason: "remote HTTP servers aren't supported yet" }),
+      transport,
+      supported: true,
       fingerprint: fingerprintOf("remote", undefined, url),
     };
   }
@@ -112,8 +119,8 @@ function fromOpenCodeEntry(name: string, raw: unknown, sourcePath: string, point
       pointer,
       kind: "remote",
       url: raw.url,
-      supported: false,
-      reason: "remote HTTP servers aren't supported yet",
+      transport: "http",
+      supported: true,
       fingerprint: fingerprintOf("remote", undefined, raw.url),
     };
   }
@@ -215,7 +222,7 @@ function stringMap(v: unknown): Record<string, string> | undefined {
 
 export type McpLaunch =
   | { kind: "local"; command: string[]; env?: Record<string, string> }
-  | { kind: "remote"; url: string; headers?: Record<string, string> };
+  | { kind: "remote"; url: string; headers?: Record<string, string>; transport: McpRemoteTransport };
 
 /**
  * Re-read the server's entry from its source file and build what starting
@@ -237,7 +244,12 @@ export function resolveLaunch(server: ImportedMcpServer): McpLaunch {
     return { kind: "local", command: now.command!.map((c) => expandVars(c)), ...(env ? { env } : {}) };
   }
   const headers = stringMap(raw.headers);
-  return { kind: "remote", url: expandVars(now.url!), ...(headers ? { headers } : {}) };
+  return {
+    kind: "remote",
+    url: expandVars(now.url!),
+    transport: now.transport ?? "http",
+    ...(headers ? { headers } : {}),
+  };
 }
 
 /** Test hook. */

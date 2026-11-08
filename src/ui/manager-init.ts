@@ -21,7 +21,7 @@ import { buildSessionPrefix, buildSystemPrompt } from "../agent/system-prompt.js
 import { DEFAULT_MODEL } from "../config.js";
 import type { Mode } from "../mode.js";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { createImportedMcpTool, discoverMcpServers, isImportedServerTool, startedLine } from "../import/mcp.js";
+import { createImportedMcpTool, discoverMcpServers, expandVars, isImportedServerTool, startedLine } from "../import/mcp.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -60,13 +60,17 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
     if (server.enabled === false) continue;
     try {
       if (server.type === "local" && server.command && server.command.length > 0) {
-        await manager.addLocalServer(name, server.command, server.env, {
+        await manager.addLocalServer(name, server.command, expandMap(server.env), {
           timeoutMs: server.timeoutMs,
         });
-      } else if (server.type === "remote" && server.url) {
-        await manager.addRemoteServer(name, server.url, server.headers, {
-          timeoutMs: server.timeoutMs,
-        });
+      } else if ((server.type === "remote" || server.type === "http") && server.url) {
+        await manager.addRemoteServer(
+          name,
+          expandVars(server.url),
+          expandMap(server.headers),
+          { timeoutMs: server.timeoutMs },
+          server.type === "http" ? "http" : "sse",
+        );
       } else {
         setEvents((e) => [
           ...e,
@@ -133,6 +137,12 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
   }
 }
 
+/** Expand `${VAR}` in config values, so a token can stay in the environment. */
+function expandMap(map: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!map) return undefined;
+  return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, expandVars(v)]));
+}
+
 /** The `mcp_imported` tool for this project's servers from other agents, or null. */
 function importedMcpTool(deps: InitMcpDeps): ToolSpec | null {
   const { cfg, setEvents, mkKey, mcpManagerRef } = deps;
@@ -144,7 +154,7 @@ function importedMcpTool(deps: InitMcpDeps): ToolSpec | null {
         const env = launch.env ? { ...getDefaultEnvironment(), ...launch.env } : undefined;
         await manager.addLocalServer(server.name, launch.command, env);
       } else {
-        await manager.addRemoteServer(server.name, launch.url, launch.headers);
+        await manager.addRemoteServer(server.name, launch.url, launch.headers, undefined, launch.transport);
       }
       const prefix = `mcp_${server.name.replace(/[^a-zA-Z0-9_]/g, "_")}_`;
       return manager.getAllTools().filter((t) => t.name.startsWith(prefix));
