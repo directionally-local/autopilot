@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
-import type { WorkerFinding, WorkerResultMessage } from "../agent/messages.js";
+import type { WorkerFinding, WorkerProfile, WorkerResultMessage } from "../agent/messages.js";
 import { validateModelId } from "../agent/client.js";
 import { getAppVersion, PACKAGE_NAME, CLI_NAME } from "../util/version.js";
 import { chunkPayload, getRepositorySnapshot, getWorkingTreeArchive } from "./hotcell-snapshot.js";
@@ -36,6 +36,11 @@ const SNAPSHOT_PREFIX = "/workspace/.autopilot-snapshot-";
 /** Where a streamed working-tree archive is unpacked inside the sandbox. */
 const ARCHIVE_ROOT = "/workspace/repo";
 const MAX_PARALLEL_WORKERS = 3;
+/** Largest `git diff --binary` returned from a build worker. The process
+ *  runner caps stdout at 1 MB, so a bigger diff is reported, never truncated. */
+const MAX_WORKER_PATCH_BYTES = 1_000_000;
+/** Separates the stat, the file list, and the binary diff in one exec. */
+const PATCH_MARKER = "---AUTOPILOT-PATCH---";
 /** Bounds on the structured report accepted from a worker. */
 const MAX_REPORT_FINDINGS = 12;
 const MAX_REPORT_SUMMARY_CHARS = 2_000;
@@ -62,6 +67,9 @@ export interface HotcellWorkerOptions {
   hotcellCommand?: string;
   processRunner?: HotcellProcessRunner;
   signal?: AbortSignal;
+  /** Tool profile the worker runs with (default "research"). A "build" worker
+   *  may edit files and run commands, and its diff is returned as `patch`. */
+  profile?: WorkerProfile;
 }
 
 export interface HotcellProcessResult {
@@ -79,11 +87,13 @@ export type HotcellProcessRunner = (
   options: { cwd: string; signal?: AbortSignal; timeoutMs: number },
 ) => Promise<HotcellProcessResult>;
 
-/** Run an independent read-only Autopilot research worker in a disposable Hotcell. */
+/** Run an independent Autopilot worker in a disposable Hotcell: read-only
+ *  research by default, or a write-capable build worker whose diff comes back. */
 export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<WorkerResultMessage> {
   const workerId = `hotcell-${crypto.randomUUID().slice(0, 8)}`;
   const cwd = resolve(options.cwd ?? process.cwd());
   const model = options.model.trim();
+  const profile: WorkerProfile = options.profile ?? "research";
   if (!model) throw new Error("Hotcell workers require the coordinator's explicit model ID.");
   validateModelId(model);
   if (options.task.length + (options.context?.length ?? 0) > MAX_PROMPT_CHARS) {
@@ -199,6 +209,15 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
     const runtimeStep = usedCache
       ? `test -x ${WORKER_BIN}`
       : `npm install --prefix ${CACHED_WORKER_DIR} --no-audit --no-fund --loglevel=error ${shellQuote(workerPackage)} 1>&2`;
+    // A build worker's changes are returned as a diff, so the sandbox needs a
+    // commit to diff against: the exact state it was handed, local changes
+    // included. `--allow-empty` keeps a clean tree from failing setup.
+    const baselineStep = (root: string) => profile === "build"
+      ? [
+          `git -C ${root} add -A -- . ':(exclude,glob)**/node_modules/**' ':(exclude,glob)**/.autopilot/**'`,
+          `git -C ${root} -c user.email=worker@autopilot.local -c user.name=autopilot-worker commit -qm autopilot-base --allow-empty`,
+        ]
+      : [];
     const setupCommand = (repo
       ? [
           ...(backupId ? [`mv ${REPO_ASIDE} "$(cat /tmp/autopilot-repo-root)"`] : []),
@@ -212,6 +231,7 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
                 'git -C "$REPO_ROOT" apply --binary --whitespace=nowarn /tmp/autopilot-snapshot.patch',
               ]
             : []),
+          ...baselineStep('"$REPO_ROOT"'),
           runtimeStep,
         ]
       : [
@@ -219,6 +239,8 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
           `cat ${SNAPSHOT_PREFIX}* | base64 -d | tar -xzf - -C ${ARCHIVE_ROOT}`,
           `rm -f ${SNAPSHOT_PREFIX}*`,
           `printf "%s" ${ARCHIVE_ROOT} > /tmp/autopilot-repo-root`,
+          ...(profile === "build" ? [`git -C ${ARCHIVE_ROOT} init -q`] : []),
+          ...baselineStep(ARCHIVE_ROOT),
           runtimeStep,
         ]).join(" && ");
     const setup = await run(["exec", cellId, setupCommand, "--cwd", "/workspace"]);
@@ -231,13 +253,21 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
         (repo.note ? `. ${repo.note}` : repo.changedFiles > 0 ? ` and applied your ${repo.changedFiles} local change${repo.changedFiles === 1 ? "" : "s"}.` : ".")
       : `The subagent saw your current working tree (${tree.files} file${tree.files === 1 ? "" : "s"}, uncommitted changes included).`;
 
-    const prompt = [
-      "You are an isolated, read-only research worker. You cannot edit files, run shell commands, push, publish, or call write-capable integrations.",
-      "Use the exact requested model and return concise findings, recommendations, and relevant file paths. Do not claim to have changed files.",
-      WORKER_REPORT_INSTRUCTIONS,
-      `Mission:\n${options.task}`,
-      options.context ? `Coordinator context:\n${options.context}` : "",
-    ].filter(Boolean).join("\n\n");
+    const prompt = profile === "build"
+      ? [
+          "You are an isolated implementation worker. You can read, search, edit files, and run shell commands inside your sandbox. You cannot push, open pull requests, or reach the network beyond the model gateway; the coordinator ships your changes.",
+          "Implement the mission completely. Run the repository's own checks when they are cheap and relevant, and leave the working tree in the state you want shipped. Your diff is returned to the coordinator automatically — do not paste it into your answer.",
+          WORKER_REPORT_INSTRUCTIONS,
+          `Mission:\n${options.task}`,
+          options.context ? `Coordinator context:\n${options.context}` : "",
+        ].filter(Boolean).join("\n\n")
+      : [
+          "You are an isolated, read-only research worker. You cannot edit files, run shell commands, push, publish, or call write-capable integrations.",
+          "Use the exact requested model and return concise findings, recommendations, and relevant file paths. Do not claim to have changed files.",
+          WORKER_REPORT_INSTRUCTIONS,
+          `Mission:\n${options.task}`,
+          options.context ? `Coordinator context:\n${options.context}` : "",
+        ].filter(Boolean).join("\n\n");
     // Use base64 to pass the bounded mission as one quoted shell argument. The
     // host key is never passed; Hotcell injects its revocable gateway token.
     const encodedPrompt = Buffer.from(prompt, "utf8").toString("base64");
@@ -246,11 +276,14 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
       'cd "$REPO_ROOT"',
       'export OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL%/}/v1"',
       `PROMPT="$(printf '%s' '${encodedPrompt}' | base64 -d)"`,
-      `${WORKER_BIN} --format json --model ${shellQuote(model)} --worker-profile research -p "$PROMPT"`,
+      `${WORKER_BIN} --format json --model ${shellQuote(model)} --worker-profile ${profile} -p "$PROMPT"`,
     ].join(" && ");
     const execution = await execute(command, ["exec", cellId, shellCommand, "--cwd", "/workspace"], {
       cwd, signal: options.signal, timeoutMs,
     });
+    // Build workers: return what changed as a binary patch, taken against the
+    // baseline commit made during setup so it holds only the worker's own edits.
+    const captured = profile === "build" ? await captureWorkerPatch(execute, command, cellId, cwd) : undefined;
     const stats = await execute(command, ["stats", cellId], { cwd, timeoutMs: 30_000 }).catch(() => undefined);
     const metrics = stats?.code === 0 ? parseHotcellStats(stats.stdout) : {};
     const json = parsePrintOutput(execution.stdout);
@@ -281,6 +314,15 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
       recommendations: [],
       filesRead: report?.filesRead ?? [],
       ...(snapshotNote ? { snapshotNote } : {}),
+      ...(profile === "build" ? { profile } : {}),
+      ...(captured?.patch
+        ? {
+            patch: captured.patch,
+            ...(captured.patchStat ? { patchStat: captured.patchStat } : {}),
+            ...(captured.changedFiles?.length ? { changedFiles: captured.changedFiles } : {}),
+          }
+        : {}),
+      ...(captured?.note ? { patchNote: captured.note } : {}),
       ...(report ? { structured: true, openQuestions: report.openQuestions } : {}),
       webSources: [],
       costUsd: metrics.costUsd ?? 0,
@@ -332,6 +374,54 @@ export async function runHotcellWorker(options: HotcellWorkerOptions): Promise<W
   return result!;
 }
 
+
+interface CapturedPatch {
+  patch?: string;
+  patchStat?: string;
+  changedFiles?: string[];
+  note?: string;
+}
+
+/** Read a build worker's changes out of its cell as a binary patch. The diff
+ *  is taken against the baseline commit made during setup, so it contains the
+ *  worker's own edits and not the local changes streamed in with it. */
+async function captureWorkerPatch(
+  execute: HotcellProcessRunner,
+  command: string,
+  cellId: string,
+  cwd: string,
+): Promise<CapturedPatch> {
+  const marker = `printf '\\n${PATCH_MARKER}\\n'`;
+  const script = [
+    ...READ_REPO_ROOT,
+    'cd "$REPO_ROOT"',
+    "git add -A -- . ':(exclude,glob)**/node_modules/**' ':(exclude,glob)**/.autopilot/**'",
+    "git diff --cached --stat HEAD",
+    marker,
+    "git diff --cached --name-only HEAD",
+    marker,
+    "git diff --binary --cached --no-color --no-ext-diff HEAD",
+  ].join(" && ");
+  const captured = await execute(command, ["exec", cellId, script, "--cwd", "/workspace"], { cwd, timeoutMs: 120_000 });
+  if (captured.outputLimitExceeded) {
+    return { note: "The worker's changes were too large to return (over 1 MB)." };
+  }
+  if (captured.code !== 0 || captured.timedOut || captured.aborted) {
+    return { note: `Could not read the worker's changes (exit ${captured.code}).` };
+  }
+  const [statPart = "", namesPart = "", patchPart = ""] = captured.stdout.split(PATCH_MARKER);
+  const patchText = patchPart.trim();
+  if (!patchText) return { note: "The worker made no changes." };
+  const bytes = Buffer.byteLength(patchText, "utf8");
+  if (bytes > MAX_WORKER_PATCH_BYTES) {
+    return { note: `The worker's changes (${(bytes / 1024 / 1024).toFixed(1)} MB) were too large to return.` };
+  }
+  return {
+    patch: Buffer.from(patchText, "utf8").toString("base64"),
+    patchStat: statPart.trim(),
+    changedFiles: namesPart.split("\n").map((line) => line.trim()).filter(Boolean),
+  };
+}
 
 const WORKER_REPORT_INSTRUCTIONS = [
   "Finish your answer with one fenced ```json block, and nothing after it, of exactly this shape:",

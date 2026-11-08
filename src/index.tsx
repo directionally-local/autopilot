@@ -1041,6 +1041,9 @@ program
 /** Positional words after the options: a task for --on. */
 let positionalTask: string[] = [];
 
+/** Hidden `--worker-profile` values the CLI accepts (see getWorkerTools). */
+const WORKER_PROFILES = new Set(["research", "build"]);
+
 program.action(async (task: string[] = []) => {
   positionalTask = task;
   await main();
@@ -1179,7 +1182,7 @@ async function main() {
     return;
   }
 
-  if (opts.workerProfile && (opts.workerProfile !== "research" || opts.print === undefined)) {
+  if (opts.workerProfile && (!WORKER_PROFILES.has(opts.workerProfile) || opts.print === undefined)) {
     console.error(`autopilot: unsupported or misplaced worker profile "${opts.workerProfile}" (requires -p).`);
     process.exit(2);
   }
@@ -1257,7 +1260,7 @@ async function main() {
       dir: opts.dir,
       title: opts.title,
       permissions: cfg.permissions,
-      workerProfile: opts.workerProfile as "research" | undefined,
+      workerProfile: opts.workerProfile as "research" | "build" | undefined,
       trace: cfg.trace,
       traceConfigSnapshot: cfg,
     });

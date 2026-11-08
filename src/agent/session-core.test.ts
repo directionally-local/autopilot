@@ -32,6 +32,10 @@ describe("resolveTurnPolicy", () => {
     assert.strictEqual(worker.completionCheck, undefined);
     assert.strictEqual(worker.delegationDirective, undefined);
     assert.ok(!worker.tools.some((t) => t.name === "subagent"));
+    const build = await resolveTurnPolicy({ cfg: { openrouterApiKey: "sk-or-x" }, prompt: "use subagents", tools: TOOLS, workerProfile: "build" });
+    assert.strictEqual(build.completionCheck, undefined);
+    assert.strictEqual(build.delegationDirective, undefined);
+    assert.ok(!build.tools.some((t) => t.name === "subagent"), "a build worker never delegates");
   });
 
   it("classifies the request", async () => {

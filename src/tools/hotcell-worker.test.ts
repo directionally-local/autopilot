@@ -208,8 +208,67 @@ describe("Hotcell worker helpers", () => {
     assert.deepEqual(calls.at(-1)?.args, ["rm", cellId]);
   });
 
-  it("recovers a successfully created cell by name when create output omits its ID", async () => {
+  it("runs a build worker with a baseline commit and returns its diff as a patch", async () => {
     const cwd = await makeRepo();
+    const calls: Array<{ args: string[]; options: { cwd: string; signal?: AbortSignal; timeoutMs: number } }> = [];
+    const patch = [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "",
+    ].join("\n");
+    const runner: HotcellProcessRunner = async (_exe, args, options) => {
+      calls.push({ args, options });
+      const ok = (stdout = "") => ({ code: 0, stdout, stderr: "", aborted: false });
+      if (args[0] === "start") return ok("started");
+      if (args[0] === "create") return ok(cellId);
+      if (args[0] === "exec" && args[2]?.includes("--format json")) return ok(JSON.stringify({ text: "Implemented." }));
+      if (args[0] === "exec" && args[2]?.includes("git diff --cached --stat HEAD")) {
+        return ok(` src/a.ts | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n---AUTOPILOT-PATCH---\nsrc/a.ts\n---AUTOPILOT-PATCH---\n${patch}`);
+      }
+      if (args[0] === "stats") return ok("Cost: 0.02");
+      return ok();
+    };
+    const result = await runHotcellWorker({
+      task: "Add the flag", model: "openai/gpt-6-luna", cwd, profile: "build", processRunner: runner, useRuntimeCache: false,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.profile, "build");
+    assert.deepEqual(result.changedFiles, ["src/a.ts"]);
+    assert.match(result.patchStat ?? "", /1 file changed/);
+    assert.equal(Buffer.from(result.patch!, "base64").toString("utf8"), patch.trim());
+
+    const setup = calls.filter((call) => call.args[0] === "exec" && call.args[2]!.includes("git -C \"$REPO_ROOT\" fetch"))[0]!.args[2]!;
+    assert.match(setup, /commit -qm autopilot-base --allow-empty/);
+    const command = calls.filter((call) => call.args[0] === "exec" && call.args[2]!.includes("--format json"))[0]!.args[2]!;
+    assert.match(command, /--worker-profile build/);
+    const prompt = Buffer.from(/printf '%s' '([A-Za-z0-9+/=]+)'/.exec(command)![1]!, "base64").toString("utf8");
+    assert.match(prompt, /isolated implementation worker/);
+    assert.deepEqual(calls.at(-1)?.args, ["rm", cellId]);
+  });
+
+  it("reports a build worker that changed nothing instead of an empty patch", async () => {
+    const cwd = await makeRepo();
+    const runner: HotcellProcessRunner = async (_exe, args) => {
+      const ok = (stdout = "") => ({ code: 0, stdout, stderr: "", aborted: false });
+      if (args[0] === "create") return ok(cellId);
+      if (args[0] === "exec" && args[2]?.includes("--format json")) return ok(JSON.stringify({ text: "Nothing to do." }));
+      if (args[0] === "exec" && args[2]?.includes("git diff --cached --stat HEAD")) return ok("---AUTOPILOT-PATCH---\n---AUTOPILOT-PATCH---\n");
+      return ok();
+    };
+    const result = await runHotcellWorker({
+      task: "Look around", model: "openai/gpt-6-luna", cwd, profile: "build", processRunner: runner, useRuntimeCache: false,
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(result.patch, undefined);
+    assert.match(result.patchNote ?? "", /made no changes/);
+  });
+
+  it("recovers a successfully created cell by name when create output omits its ID", async () => {    const cwd = await makeRepo();
     const calls: Array<{ args: string[]; options: { cwd: string; signal?: AbortSignal; timeoutMs: number } }> = [];
     let cellName = "";
     const runner: HotcellProcessRunner = async (_executable, args, options) => {

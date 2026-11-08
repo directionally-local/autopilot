@@ -30,7 +30,7 @@ import { routedModelForTier } from "../intent/model-routing.js";import { allowsS
 import { checkHotcellReadiness, type HotcellReadiness } from "../tools/hotcell-readiness.js";
 import type { AutopilotConfig } from "../config.js";
 import type { ToolSpec } from "../tools/registry.js";
-import type { ChatMessage } from "./messages.js";
+import type { ChatMessage, WorkerProfile } from "./messages.js";
 import { defaultCoauthor } from "../util/dl-identity.js";
 
 /** Text of the latest user message — what a turn's policy is decided on. */
@@ -54,8 +54,8 @@ export interface TurnPolicyInput {
   /** Tools the host would offer before policy (base tools + MCP + LSP). */
   tools: ToolSpec[];
   signal?: AbortSignal;
-  /** A research subagent answers one mission: no delegation, no completion check. */
-  workerProfile?: "research";
+  /** An isolated worker answers one mission: no delegation, no completion check. */
+  workerProfile?: WorkerProfile;
   /** Subagent policy override for this turn (default: config, else "auto"). */
   subagentPolicy?: SubagentPolicy;
   /** Test seam / override for the Hotcell readiness probe. */
@@ -79,8 +79,8 @@ export interface TurnPolicy {
 export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPolicy> {
   const classification = classifyIntent(input.prompt);
   let guidance: SubagentGuidance =
-    input.workerProfile === "research"
-      ? { kind: "explicit-sequential", reason: "research subagent" }
+    input.workerProfile !== undefined
+      ? { kind: "explicit-sequential", reason: `${input.workerProfile} worker` }
       : await resolveSubagentGuidance({
           prompt: input.prompt,
           tier: classification.tier,
@@ -92,7 +92,7 @@ export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPol
   // #966: do not offer delegation when Hotcell cannot run a worker. Probe only
   // when guidance would otherwise allow dispatch, so light turns pay nothing.
   let readinessNotice: string | undefined;
-  if (input.workerProfile !== "research" && allowsSubagentDispatch(guidance.kind)) {
+  if (input.workerProfile === undefined && allowsSubagentDispatch(guidance.kind)) {
     const readiness = await (input.hotcellReadiness ?? checkHotcellReadiness)();
     if (!readiness.ready) {
       guidance = { kind: "none", reason: readiness.reason ?? "Hotcell is not ready" };
@@ -101,10 +101,10 @@ export async function resolveTurnPolicy(input: TurnPolicyInput): Promise<TurnPol
   }
 
   const tools = input.tools.filter((tool) => tool.name !== "subagent" || allowsSubagentDispatch(guidance.kind));
-  const directive = input.workerProfile === "research" ? undefined : guidance.refinedDirective ?? guidance.directive;
-  const completionCheck = input.workerProfile === "research" ? undefined : completionCheckFromConfig(input.cfg);
+  const directive = input.workerProfile !== undefined ? undefined : guidance.refinedDirective ?? guidance.directive;
+  const completionCheck = input.workerProfile !== undefined ? undefined : completionCheckFromConfig(input.cfg);
   const routedModel =
-    input.workerProfile === "research" || !input.cfg.model
+    input.workerProfile !== undefined || !input.cfg.model
       ? undefined
       : routedModelForTier(input.cfg.modelRouting, classification.tier, input.cfg.model);
   return {

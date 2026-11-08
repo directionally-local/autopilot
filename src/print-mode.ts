@@ -13,9 +13,9 @@ import type { AgentCallbacks } from "./agent/loop.js";
 import { llmAuthFromConfig } from "./agent/llm-auth.js";
 import { recordUsage } from "./usage-tracker.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
-import { ToolExecutor, getWorkerTools, RESEARCH_WORKER_TOOL_NAMES, permissionFromHook } from "./tools/executor.js";
+import { ToolExecutor, getWorkerTools, RESEARCH_WORKER_TOOL_NAMES, BUILD_WORKER_TOOL_NAMES, permissionFromHook } from "./tools/executor.js";
 import type { HookFailureNotice } from "./hooks/manager.js";
-import type { ChatMessage, ContentPart } from "./agent/messages.js";
+import type { ChatMessage, ContentPart, WorkerProfile } from "./agent/messages.js";
 import { ApiError, humanizeApiError } from "./util/errors.js";
 import { ModelHostError } from "./agent/model-retry.js";
 import { dlHeadlessMessage } from "./providers/dl-growth.js";
@@ -68,8 +68,8 @@ export interface PrintModeOpts
   title?: string;
   /** Config-based permission rules */
   permissions?: Record<string, PermissionRules>;
-  /** Narrow tool permission profile for isolated research workers. */
-  workerProfile?: "research";
+  /** Narrow tool permission profile for isolated workers. */
+  workerProfile?: WorkerProfile;
   /** When false (default), the bash tool blocks `git push` to the default branch. */
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
@@ -201,13 +201,13 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     prompt: opts.prompt,
     tools: baseWorkerTools,
     subagentPolicy: opts.subagentPolicy ?? "auto",
-    ...(opts.workerProfile === "research" ? { workerProfile: "research" as const } : {}),
+    ...(opts.workerProfile ? { workerProfile: opts.workerProfile } : {}),
   });
   const delegationGuidance = policy.guidance;
   const workerTools = policy.tools;
   const executor = new ToolExecutor(workerTools, { hooks });
-  // The research worker profile never delegates; only coordinator runs count.
-  if (opts.workerProfile !== "research") {
+  // A worker profile never delegates; only coordinator runs count.
+  if (opts.workerProfile === undefined) {
     void recordSubagentEvent({
       kind: "turn",
       ts: Date.now(),
@@ -451,8 +451,9 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     },
     askPermission: async (req) => {
       const { tool, args } = req;
-      if (opts.workerProfile === "research") {
-        return RESEARCH_WORKER_TOOL_NAMES.has(tool.name) && tool.isReadOnly === true ? "allow" : "deny";
+      if (opts.workerProfile) {
+        const allowed = opts.workerProfile === "research" ? RESEARCH_WORKER_TOOL_NAMES : BUILD_WORKER_TOOL_NAMES;
+        return allowed.has(tool.name) && (opts.workerProfile === "build" || tool.isReadOnly === true) ? "allow" : "deny";
       }
       // Irreversible (#1125): only a rule naming this exact action allows it here.
       if (req.destructive) {
