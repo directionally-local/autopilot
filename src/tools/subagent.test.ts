@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chmod, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { formatWorkerResult, fromLegacySpawnWorkerArgs, subagentTool } from "./subagent.js";
+import { formatWorkerResult, fromLegacySpawnWorkerArgs, outOfScopePaths, patchPaths, subagentTool } from "./subagent.js";
 import { workerRegistry } from "./worker-registry.js";
 import type { ToolContext } from "./registry.js";
 
@@ -53,7 +53,7 @@ describe("subagent tool", () => {
     const parameters = subagentTool.parameters as { properties: Record<string, unknown>; required: string[] };
     assert.equal(subagentTool.name, "subagent");
     assert.deepEqual(parameters.required, ["mission"]);
-    assert.deepEqual(Object.keys(parameters.properties).sort(), ["background", "context", "mission"]);
+    assert.deepEqual(Object.keys(parameters.properties).sort(), ["background", "context", "mission", "mode", "paths"]);
     assert.equal(subagentTool.concurrent, true);
     assert.equal(subagentTool.codeModeDirect, true);
     assert.match(subagentTool.description, /IN THE SAME RESPONSE/);
@@ -99,7 +99,7 @@ describe("subagent tool", () => {
 
 describe("formatWorkerResult", () => {
   const base = {
-    workerId: "w1", status: "completed" as const, task: "t", recommendations: [], webSources: [],
+    workerId: "w1", status: "completed" as const, task: "t", recommendations: [], webSources: [], filesRead: [],
     costUsd: 0.0123, tokensUsed: 4567, reasoning: "", model: "openai/gpt-6-luna",
   };
 
@@ -138,6 +138,52 @@ describe("formatWorkerResult", () => {
       filesRead: [],
     }, "openai/gpt-6-luna");
     assert.match(text, /did not return a structured report/);
+  });
+
+  it("renders a build worker's saved patch with review and apply commands", () => {
+    const text = formatWorkerResult({ ...base, profile: "build", findings: [] }, "openai/gpt-6-luna", {
+      file: ".autopilot/subagent-patches/worker-1.patch",
+      stat: " src/a.ts | 2 +-",
+      files: ["src/a.ts"],
+      outside: [],
+    });
+    assert.match(text, /## Changes/);
+    assert.match(text, /Patch: \.autopilot\/subagent-patches\/worker-1\.patch \(1 file\)/);
+    assert.match(text, /git apply --3way \.autopilot\/subagent-patches\/worker-1\.patch/);
+    assert.doesNotMatch(text, /Scope violation/);
+  });
+
+  it("warns when a patch leaves the mission's owned paths", () => {
+    const text = formatWorkerResult({ ...base, profile: "build", findings: [] }, "openai/gpt-6-luna", {
+      file: "p.patch",
+      files: ["src/a.ts", "package.json"],
+      outside: ["package.json"],
+    });
+    assert.match(text, /Scope violation: .*package\.json/);
+    assert.match(text, /Do not apply it/);
+  });
+
+  it("explains why a build worker returned no patch", () => {
+    const text = formatWorkerResult({ ...base, profile: "build", findings: [], patchNote: "The worker made no changes." }, "openai/gpt-6-luna");
+    assert.match(text, /## Changes\nThe worker made no changes\./);
+  });
+});
+
+describe("build worker patch scope", () => {
+  const patch = [
+    "diff --git a/src/a.ts b/src/a.ts",
+    "diff --git a/src/nested/b.ts b/src/nested/b.ts",
+    "diff --git a/package.json b/package.json",
+  ].join("\n");
+
+  it("lists the files a patch touches", () => {
+    assert.deepEqual(patchPaths(patch), ["src/a.ts", "src/nested/b.ts", "package.json"]);
+  });
+
+  it("flags files outside the mission's owned paths", () => {
+    assert.deepEqual(outOfScopePaths(patchPaths(patch), ["src/"]), ["package.json"]);
+    assert.deepEqual(outOfScopePaths(patchPaths(patch), ["src", "./src/a.ts"]), ["package.json"]);
+    assert.deepEqual(outOfScopePaths(patchPaths(patch), []), patchPaths(patch));
   });
 });
 

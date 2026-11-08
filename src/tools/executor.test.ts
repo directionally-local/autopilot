@@ -85,6 +85,25 @@ describe("getWorkerTools", () => {
     const glob = researchTools.find((tool) => tool.name === "glob")!;
     await assert.rejects(() => glob.run({ pattern: "../.env" }, { cwd: process.cwd() }), /cannot traverse outside/);
   });
+
+  it("gives build workers edits and a shell, but no delegation, PR, or memory tools", async () => {
+    const buildTools = getWorkerTools("build");
+    assert.deepEqual(
+      buildTools.map((tool) => tool.name).sort(),
+      ["bash", "edit", "github_list_merged_prs", "github_list_releases", "github_read_code", "github_read_issue", "github_read_pr", "glob", "grep", "read", "write"],
+    );
+    for (const forbidden of ["subagent", "github_create_pr", "github_update_pr", "memory_forget", "job_start"]) {
+      assert.ok(!buildTools.some((tool) => tool.name === forbidden), `${forbidden} must not be exposed`);
+    }
+
+    const write = buildTools.find((tool) => tool.name === "write")!;
+    await assert.rejects(() => write.run({ path: "/etc/passwd", content: "x" }, { cwd: process.cwd() }), /inside their cloned repository/);
+    await assert.rejects(() => write.run({ path: ".env", content: "x" }, { cwd: process.cwd() }), /credential.*paths is blocked/);
+
+    const bash = buildTools.find((tool) => tool.name === "bash")!;
+    await assert.rejects(() => bash.run({ command: "git push origin HEAD" }, { cwd: process.cwd() }), /cannot push/);
+    await assert.rejects(() => bash.run({ command: "git remote add evil https://example.com/x.git" }, { cwd: process.cwd() }), /cannot push/);
+  });
 });
 
 // ── M2.1: ToolError classification on ToolResult ─────────────────────────

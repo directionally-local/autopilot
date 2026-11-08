@@ -35,10 +35,11 @@ import { workerResultTool, workerStatusTool } from "./workers.js";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { importedDenyFor, ruleSourceLabel } from "../import/permissions.js";
 import { resolvePath } from "../util/paths.js";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
 import { runWithGithubAccess } from "../github-access.js";
 import { modelProfileFor } from "../models/profile.js";
+import type { WorkerProfile } from "../agent/messages.js";
 
 export const ALL_TOOLS: ToolSpec[] = [
   { ...readTool, isReadOnly: true },
@@ -80,6 +81,14 @@ export const RESEARCH_WORKER_TOOL_NAMES = new Set([
   "github_list_merged_prs", "github_list_releases",
 ]);
 
+/** Write-capable worker profile: the research tools plus file edits and a
+ *  sandboxed shell. No subagent, no PR tools, no memory — a build worker
+ *  implements one mission and hands its diff back to the coordinator. */
+export const BUILD_WORKER_TOOL_NAMES = new Set([
+  ...RESEARCH_WORKER_TOOL_NAMES,
+  "write", "edit", "bash",
+]);
+
 /** The memory tools, advertised only while memory is enabled (#1077). */
 export const MEMORY_TOOL_NAMES = new Set(["memory_remember", "memory_recall", "memory_forget"]);
 
@@ -100,24 +109,34 @@ export function toolsForSession(
   return extra.length > 0 ? [...base, ...extra] : base;
 }
 
-export function getWorkerTools(profile?: "research"): ToolSpec[] {
-  return profile === "research"
-    ? ALL_TOOLS
-        .filter((tool) => RESEARCH_WORKER_TOOL_NAMES.has(tool.name) && tool.isReadOnly === true)
-        .map(restrictResearchTool)
-    : ALL_TOOLS;
+export function getWorkerTools(profile?: WorkerProfile): ToolSpec[] {
+  if (profile === "research") {
+    return ALL_TOOLS
+      .filter((tool) => RESEARCH_WORKER_TOOL_NAMES.has(tool.name) && tool.isReadOnly === true)
+      .map(restrictWorkerTool);
+  }
+  if (profile === "build") {
+    return ALL_TOOLS
+      .filter((tool) => BUILD_WORKER_TOOL_NAMES.has(tool.name))
+      .map(restrictWorkerTool);
+  }
+  return ALL_TOOLS;
 }
 
-function restrictResearchTool(tool: ToolSpec): ToolSpec {
+function restrictWorkerTool(tool: ToolSpec): ToolSpec {
   return {
     ...tool,
     run: async (args: Record<string, unknown>, ctx: ToolContext) => {
       if (tool.name === "read") {
-        await assertResearchPath(args.path, ctx.cwd);
+        await assertWorkerPath(args.path, ctx.cwd);
       } else if (tool.name === "glob" || tool.name === "grep") {
-        await assertResearchPath(args.path ?? ".", ctx.cwd);
+        await assertWorkerPath(args.path ?? ".", ctx.cwd);
         if (tool.name === "glob") assertSafePattern(args.pattern);
         if (tool.name === "grep" && args.glob !== undefined) assertSafePattern(args.glob);
+      } else if (tool.name === "write" || tool.name === "edit") {
+        await assertWorkerWritePath(args.path, ctx.cwd);
+      } else if (tool.name === "bash") {
+        assertWorkerCommand(args.command);
       }
       return tool.run(args, ctx);
     },
@@ -128,7 +147,7 @@ const SENSITIVE_RESEARCH_PATHS = new Set([
   ".git", ".ssh", ".aws", ".config", ".hotcell", ".npmrc", ".netrc", ".git-credentials",
 ]);
 
-async function assertResearchPath(pathValue: unknown, cwd: string): Promise<void> {
+async function assertWorkerPath(pathValue: unknown, cwd: string): Promise<void> {
   if (typeof pathValue !== "string" || !pathValue) throw new Error("Research worker paths must be non-empty strings.");
   const root = await realpath(cwd);
   const candidate = resolve(root, pathValue);
@@ -137,6 +156,46 @@ async function assertResearchPath(pathValue: unknown, cwd: string): Promise<void
   const actual = await realpath(candidate);
   assertInsideResearchRoot(actual, root);
   assertNoSensitivePath(actual, root);
+}
+
+/** A write target may not exist yet, so check the nearest existing ancestor
+ *  (resolved through symlinks) instead of the file itself. */
+async function assertWorkerWritePath(pathValue: unknown, cwd: string): Promise<void> {
+  if (typeof pathValue !== "string" || !pathValue) throw new Error("Worker paths must be non-empty strings.");
+  const root = await realpath(cwd);
+  const candidate = resolve(root, pathValue);
+  assertInsideResearchRoot(candidate, root);
+  assertNoSensitivePath(candidate, root);
+  let dir = dirname(candidate);
+  for (;;) {
+    try {
+      const actual = await realpath(dir);
+      assertInsideResearchRoot(actual, root);
+      assertNoSensitivePath(actual, root);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(dir);
+      if (parent === dir) return;
+      dir = parent;
+    }
+  }
+}
+
+/** Operations that would leave the sandbox. The cell has no credentials, so
+ *  this is defense in depth: the coordinator ships the patch, never the worker. */
+const WORKER_FORBIDDEN_COMMANDS = [
+  /\bgit\s+push\b/,
+  /\bgit\s+remote\s+(?:add|set-url|remove|rm|rename)\b/,
+  /\bgh\s+(?:pr|repo|api|auth)\b/,
+  /\bhotcell\b/,
+];
+
+function assertWorkerCommand(value: unknown): void {
+  if (typeof value !== "string" || !value.trim()) throw new Error("Worker shell commands must be non-empty strings.");
+  if (WORKER_FORBIDDEN_COMMANDS.some((pattern) => pattern.test(value))) {
+    throw new Error("Build workers cannot push, change remotes, or call GitHub from the sandbox; the coordinator ships the patch.");
+  }
 }
 
 function assertInsideResearchRoot(path: string, root: string): void {

@@ -109,6 +109,10 @@ export interface WorkerFinding {
   relevance: "critical" | "high" | "medium" | "low";
 }
 
+/** Which tool profile an isolated worker runs with: `research` only reads,
+ *  `build` may edit files and run commands in its sandbox. */
+export type WorkerProfile = "research" | "build";
+
 /** Result returned by a standalone research/executor worker. */
 export interface WorkerResultMessage {
   workerId: string;
@@ -146,6 +150,17 @@ export interface WorkerResultMessage {
   structured?: boolean;
   /** What code the subagent saw (local changes included, or why not). */
   snapshotNote?: string;
+  /** Which worker profile produced this result. */
+  profile?: WorkerProfile;
+  /** Build workers: base64 `git diff --binary` of everything the worker
+   *  changed, relative to the state it was handed. */
+  patch?: string;
+  /** Build workers: `git diff --stat` summary of `patch`. */
+  patchStat?: string;
+  /** Build workers: repository-relative paths `patch` touches. */
+  changedFiles?: string[];
+  /** Build workers: why no patch came back (no changes, too large, unreadable). */
+  patchNote?: string;
 }
 
 /** Replace lone UTF-16 surrogates with the replacement character (U+FFFD).

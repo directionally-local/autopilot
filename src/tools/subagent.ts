@@ -4,14 +4,22 @@ import { loadConfig } from "../config.js";
 import { runHotcellWorker } from "./hotcell-worker.js";
 import { workerRegistry, type WorkerHandle } from "./worker-registry.js";
 import { failureReason, recordSubagentEvent } from "./subagent-stats.js";
-import type { WorkerResultMessage } from "../agent/messages.js";
+import type { WorkerProfile, WorkerResultMessage } from "../agent/messages.js";
 import { readEnv } from "../util/env.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
 
 export interface SubagentArgs {
   mission: string;
   context?: string;
   /** Return at once and keep working; the findings arrive in the session inbox. */
   background?: boolean;
+  /** "build" lets the subagent edit files and run commands in its sandbox and
+   *  returns a patch; "research" (default) only reads. */
+  mode?: WorkerProfile;
+  /** Files or directories this mission owns. A returned patch that touches
+   *  anything else is flagged and must not be applied. */
+  paths?: string[];
 }
 
 /** Arguments accepted from sessions recorded before the rename. */
@@ -40,7 +48,8 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
     "Delegate a self-contained investigation to a subagent: a separate Autopilot instance that explores this repository in its own sandbox and reports back cited findings (files, line numbers, open questions).",
     "Use it to work in parallel. When a task touches several independent areas — e.g. how auth works, where billing is computed, which tests cover a module, how two subsystems interact — launch one subagent per area IN THE SAME RESPONSE; they run at the same time, behind a single approval, while their results come back to you together.",
     "Also use it for broad searches you would otherwise do with many read/grep calls, and to get an independent second look at a plan or a bug.",
-    "Subagents see your current working tree (including uncommitted changes) and can read and search code, but cannot edit files or run commands; do the edits yourself after reading their findings.",
+    "Subagents see your current working tree (including uncommitted changes). By default they can read and search code but cannot edit files or run commands; do the edits yourself after reading their findings.",
+    "With mode \"build\" a subagent may also edit files and run commands inside its sandbox, and its changes come back as a patch file you review and apply yourself. Give a build mission a narrow, self-contained scope and list the paths it owns; never run two build subagents over the same files.",
     "Give each subagent a specific mission: what to find, where to start if you know, and what to report. Do not use it for a lookup you can do in one or two tool calls, or for steps that depend on each other.",
   ].join(" "),
   parameters: {
@@ -59,6 +68,18 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
         description:
           "Run in the background: this call returns a worker id immediately and you keep working (or answer the user). The findings are delivered to you automatically when the subagent finishes; worker_status lists background subagents and worker_result (or wait_for with worker_id) fetches one. Use for long investigations you don't need right away.",
       },
+      mode: {
+        type: "string",
+        enum: ["research", "build"],
+        description:
+          "research (default): read-only investigation. build: the subagent may edit files and run commands in its sandbox; its changes come back as a patch file for you to review and apply. Build missions should be narrow and self-contained.",
+      },
+      paths: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "With mode \"build\": the files or directories this mission owns. A returned patch that touches anything else is flagged as a scope violation and must not be applied.",
+      },
     },
     required: ["mission"],
     additionalProperties: false,
@@ -72,14 +93,15 @@ export const subagentTool: ToolSpec<SubagentArgs> = {
   codeModeDirect: true,
   render: (args) => {
     const batch = (args as SubagentArgs & { batch?: SubagentArgs[] }).batch;
+    const label = args.mode === "build" ? "write" : "read-only";
     if (Array.isArray(batch) && batch.length > 1) {
       return {
-        title: `${batch.length} subagents (run in parallel, read-only)`,
+        title: `${batch.length} subagents (run in parallel, ${label})`,
         body: batch.map((item, i) => `${i + 1}. ${String(item.mission ?? "").slice(0, 160)}`).join("\n"),
       };
     }
     return {
-      title: "subagent (read-only)",
+      title: `subagent (${label})`,
       body: String(args.mission ?? "").slice(0, 200),
     };
   },
@@ -189,6 +211,7 @@ async function runWorker(
         maxParallel: cfg.workerMaxParallel,
         cwd: ctx.cwd,
         signal: handle.signal,
+        profile: args.mode === "build" ? "build" : "research",
       });
     } catch (error) {
       if (handle.cancelledByUser) {
@@ -212,12 +235,64 @@ async function runWorker(
       throw new Error("Subagent " + result.status + ": " + (result.error ?? "unknown error"));
     }
 
-    return { status: result.status, output: formatWorkerResult(result, model), costUsd: result.costUsd };
+    return { status: result.status, output: formatWorkerResult(result, model, await materializePatch(args, ctx, handle, result)), costUsd: result.costUsd };
+}
+
+/** A build worker's patch, saved next to the project so the coordinator can
+ *  review and apply it. Scope is checked against the mission's owned paths. */
+export interface MaterializedPatch {
+  /** Project-relative path of the saved patch. */
+  file: string;
+  stat?: string;
+  files: string[];
+  /** Files the patch touches that the mission does not own. */
+  outside: string[];
+}
+
+async function materializePatch(
+  args: SubagentArgs,
+  ctx: ToolContext,
+  handle: WorkerHandle,
+  result: WorkerResultMessage,
+): Promise<MaterializedPatch | undefined> {
+  if (!result.patch) return undefined;
+  const text = Buffer.from(result.patch, "base64").toString("utf8");
+  const files = patchPaths(text);
+  const outside = args.paths?.length ? outOfScopePaths(files, args.paths) : [];
+  const dir = join(ctx.cwd, ".autopilot", "subagent-patches");
+  await mkdir(dir, { recursive: true });
+  const file = join(dir, `${handle.id}.patch`);
+  await writeFile(file, text, "utf8");
+  return {
+    file: relative(ctx.cwd, file),
+    ...(result.patchStat ? { stat: result.patchStat } : {}),
+    files,
+    outside,
+  };
+}
+
+/** Repository-relative paths a `git diff` touches. */
+export function patchPaths(patchText: string): string[] {
+  const paths = new Set<string>();
+  for (const line of patchText.split("\n")) {
+    const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    if (match) paths.add(match[2]!);
+  }
+  return [...paths];
+}
+
+/** Paths in `paths` that fall outside every owned path (a file or a directory prefix). */
+export function outOfScopePaths(paths: string[], owned: string[]): string[] {
+  const normalized = owned
+    .map((path) => path.replace(/^\.\//, "").replace(/\/+$/, ""))
+    .filter(Boolean);
+  return paths.filter((path) => !normalized.some((owner) => path === owner || path.startsWith(`${owner}/`)));
 }
 
 /** Render a worker result for the coordinator: status, cost, cited findings,
- *  open questions, and a clear marker when the report was unstructured. */
-export function formatWorkerResult(result: WorkerResultMessage, model: string): string {
+ *  open questions, the saved patch for a build worker, and a clear marker when
+ *  the report was unstructured. */
+export function formatWorkerResult(result: WorkerResultMessage, model: string, patch?: MaterializedPatch): string {
   const lines = [
     "Subagent " + result.status + ((result.status === "budget_exhausted" || result.status === "spend_exhausted") ? " (partial result)" : "") + ".",
     "Model: " + (result.model ?? model) + " · Tokens: " + result.tokensUsed.toLocaleString() + " · Cost: " + (result.costUsd > 0 ? result.costUsd.toFixed(4) + " total cost" : "unavailable") + ".",
@@ -228,10 +303,28 @@ export function formatWorkerResult(result: WorkerResultMessage, model: string): 
   if (result.snapshotNote) {
     lines.push("\n" + result.snapshotNote);
   }
+  if (patch) {
+    lines.push([
+      "",
+      "## Changes",
+      `Patch: ${patch.file} (${patch.files.length} file${patch.files.length === 1 ? "" : "s"})`,
+      ...(patch.stat ? [patch.stat] : []),
+      `Review: git apply --stat ${patch.file}`,
+      `Apply:  git apply --3way ${patch.file}`,
+    ].join("\n"));
+    if (patch.outside.length) {
+      lines.push(
+        `\nScope violation: the patch touches files outside the mission's owned paths (${patch.outside.join(", ")}). ` +
+          "Do not apply it; re-delegate with a narrower mission, or apply only the in-scope hunks yourself.",
+      );
+    }
+  } else if (result.profile === "build") {
+    lines.push("\n## Changes\n" + (result.patchNote ?? "The subagent returned no patch."));
+  }
   if (result.openQuestions?.length) {
     lines.push("\n## Open questions\n" + result.openQuestions.map((q) => "- " + q).join("\n"));
   }
-  if (result.filesRead.length) {
+  if (result.filesRead?.length) {
     lines.push("\nFiles read: " + result.filesRead.join(", "));
   }
   if (!result.structured && result.findings.length) {
