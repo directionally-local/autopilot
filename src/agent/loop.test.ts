@@ -1493,11 +1493,17 @@ describe("runAgentTurn", () => {
     const deadline = Date.now() + 2000;
     let rows: Array<Record<string, unknown>> = [];
     while (Date.now() < deadline) {
-      rows = readFileSync(dataPath("cost-debug.jsonl"), "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => JSON.parse(l) as Record<string, unknown>)
-        .filter((r) => r.sessionId === sessionId);
+      try {
+        rows = readFileSync(dataPath("cost-debug.jsonl"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+          .filter((r) => r.sessionId === sessionId);
+      } catch (err) {
+        // The append is fire-and-forget; the file may not exist yet.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        rows = [];
+      }
       if (rows.some((r) => r.kind === "turn-outcome")) break;
       await new Promise((r) => setTimeout(r, 25));
     }

@@ -134,6 +134,11 @@ describe("Opened with dl: the PR footer", () => {
 
   it("the bash tool applies it to `gh pr create`", async (t) => {
     if (process.platform === "win32") return t.skip("POSIX shell only");
+    // The bash tool runs a login shell, which can reorder PATH ahead of the
+    // fake `gh` below. Only run where the real `gh` is authenticated; CI is.
+    if (spawnSync("gh", ["auth", "status"], { encoding: "utf8" }).status !== 0) {
+      return t.skip("gh is not authenticated");
+    }
     delete process.env.AUTOPILOT_PR_FOOTER;
     const dir = await mkdtemp(join(tmpdir(), "pr-footer-bash-"));
     const edited = join(dir, "edited.txt");
