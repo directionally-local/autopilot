@@ -195,6 +195,10 @@ export interface AgentTurnOpts extends LlmAuth {
   /** Remind the model when a whole step went to bookkeeping alone (tasks_set /
    *  memory writes): fold those into the next substantive call. Default: true. */
   bookkeepingReminder?: boolean;
+  /** Remind the model when consecutive steps each spend a whole request on a
+   *  single read/grep/glob: batch independent lookups into one response.
+   *  Default: true. */
+  lookupReminder?: boolean;
   /** When a turn ends with every task completed or in progress (none pending),
    *  mark the in-progress tasks completed in the harness instead of letting the
    *  model spend a final response on a lone tasks_set. Default: true. */
@@ -263,7 +267,9 @@ export type GuardrailEvent =
   /** A PR was opened this turn but its CI was never verified; the agent was told to check it. */
   | { kind: "pr_ci_nudge"; message: string }
   /** A step contained only bookkeeping tools; the agent was told to batch them with real work. */
-  | { kind: "bookkeeping_nudge"; message: string };
+  | { kind: "bookkeeping_nudge"; message: string }
+  /** Consecutive lone read/grep/glob steps; the agent was told to batch independent lookups. */
+  | { kind: "lookup_nudge"; message: string };
 
 /** Automatic loop recoveries granted per turn before the turn is wrapped up. */
 export const MAX_LOOP_RECOVERIES = 1;
@@ -285,6 +291,8 @@ export const MAX_STALL_WARNINGS = 1;
  *  only effect was a lone `tasks_set` — each still pays full TTFT on the
  *  whole context. Two reminders nudge batching without nagging. */
 export const MAX_BOOKKEEPING_NUDGES = 2;
+/** Per-turn cap on lookup-batching reminders (see loneLookupStreak below). */
+export const MAX_LOOKUP_NUDGES = 2;
 
 /** Once the transient reminders for a turn are exhausted, this note is appended
  *  to the bookkeeping tool's result instead. It reaches the model as tool
@@ -775,6 +783,17 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   /** Tools that update harness state but produce no substantive work. A step
    *  made of only these burned a full model request on bookkeeping alone. */
   const BOOKKEEPING_TOOLS = new Set(["tasks_set", "memory_remember", "memory_forget"]);
+  /** Read-only lookup tools. Consecutive steps of one lone lookup each burn a
+   *  full model request — TTFT on the whole context — per file, when the
+   *  independent calls could have gone out in one parallel response. */
+  const LOOKUP_TOOLS = new Set(["read", "grep", "glob"]);
+  /** Consecutive lone-lookup steps seen this turn, nudges given, reminder.
+   *  lastLookupKey dedupes re-reads of the same target: those are pagination
+   *  loops (handled by the read-pages guardrail), not batchable lookups. */
+  let loneLookupStreak = 0;
+  let lastLookupKey: string | undefined;
+  let lookupNudges = 0;
+  let lookupReminder: string | undefined;
   const AUTO_ADVANCE_THRESHOLD = 3;
   /** #950: verification runs after the last edit before the soft nudge. */
   const VERIFICATION_REMINDER_THRESHOLD = 3;
@@ -990,7 +1009,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         opts.planReminder !== false && opts.intentClassification?.tier !== "light"
           ? buildPlanReminder(currentTasks)
           : undefined;
-      const reminders = [planReminder, verificationReminder, bookkeepingReminder].filter(Boolean).join("\n");
+      const reminders = [planReminder, verificationReminder, bookkeepingReminder, lookupReminder].filter(Boolean).join("\n");
       return withPlanReminder(withDirective, reminders || undefined);
     };
 
@@ -1954,6 +1973,37 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       }
     } else if (bookkeepingReminder !== undefined && toolCalls.some((tc) => !BOOKKEEPING_TOOLS.has(tc.function.name))) {
       bookkeepingReminder = undefined;
+    }
+
+    // Lookup-batching guardrail: consecutive steps that each run exactly one
+    // read/grep/glob pay a full model round trip per file. From the second
+    // lone lookup in a row, remind the model to batch independent lookups
+    // into one parallel response. The reminder is transient (request-only)
+    // and clears on any step that isn't another lone lookup.
+    const loneLookupStep = toolCalls.length === 1 && LOOKUP_TOOLS.has(toolCalls[0]!.function.name);
+    if (loneLookupStep) {
+      let lookupKey = toolCalls[0]!.function.name;
+      try {
+        const args = JSON.parse(toolCalls[0]!.function.arguments || "{}") as Record<string, unknown>;
+        lookupKey += `:${String(args.path ?? args.pattern ?? "")}`;
+      } catch { /* malformed arguments can't be batched anyway */ }
+      if (lookupKey !== lastLookupKey) loneLookupStreak++;
+      lastLookupKey = lookupKey;
+      if (loneLookupStreak >= 2 && opts.lookupReminder !== false && lookupNudges < MAX_LOOKUP_NUDGES) {
+        lookupNudges++;
+        const name = toolCalls[0]!.function.name;
+        lookupReminder =
+          `<system-reminder>\nYour last ${loneLookupStreak} steps each ran a single ${name} — one full model request per lookup. ` +
+          `Batch independent read/grep/glob calls into the same response (parallel tool calls) instead of one lookup per step.\n</system-reminder>`;
+        notifyGuardrail({
+          kind: "lookup_nudge",
+          message: `${loneLookupStreak} consecutive lone-lookup steps (${name}) — reminded the agent to batch independent lookups.`,
+        });
+      }
+    } else {
+      loneLookupStreak = 0;
+      lastLookupKey = undefined;
+      lookupReminder = undefined;
     }
 
     // Allow external compaction / state management between iterations

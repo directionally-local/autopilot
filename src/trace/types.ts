@@ -192,7 +192,9 @@ export type GuardrailKind =
   /** The turn went many tool iterations without changing any file. */
   | "loop_stall"
   /** A step contained only bookkeeping tools; the agent was told to batch them. */
-  | "bookkeeping_nudge";
+  | "bookkeeping_nudge"
+  /** Consecutive lone read/grep/glob steps; the agent was told to batch them. */
+  | "lookup_nudge";
 
 export interface GuardrailPayload {
   kind: GuardrailKind;
