@@ -30,6 +30,7 @@ const P0: Array<{ id: ProviderId; model: string }> = [
   { id: "zai-coding", model: "glm-5.3" },
   { id: "ollama", model: "llama3.1:8b" },
   { id: "lmstudio", model: "qwen2.5-coder-32b" },
+  { id: "vllm", model: "Qwen/Qwen3-Coder-30B-A3B-Instruct" },
 ];
 
 const ENV = ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "AUTOPILOT_PROVIDER", "KIMIFLARE_BASE_URL", "OPENROUTER_API_KEY", "KIMIFLARE_OPENROUTER_KEY"];

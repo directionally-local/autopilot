@@ -47,6 +47,7 @@ export const PROVIDER_CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> =
   { id: "zai-coding", hint: "GLM Coding Plan subscription" },
   { id: "ollama", hint: "local models, no key" },
   { id: "lmstudio", hint: "local models, no key" },
+  { id: "vllm", hint: "your own GPUs" },
   { id: "requesty", hint: "Requesty gateway key" },
   { id: "custom", hint: "any OpenAI-compatible endpoint (LiteLLM, vLLM, a company gateway)" },
 ];

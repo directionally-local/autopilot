@@ -36,7 +36,7 @@ The provider fails closed: it refuses to create a cell if the Hotcell API auth i
 
 ### Which LLM provider the cells use
 
-Cells reach their LLM through the Hotcell egress route named after the provider in `server.json` (below); the route is named exactly like Autopilot's provider preset id (`openrouter`, `openai`, `deepseek`, `moonshot`, `anthropic`, `gemini`, `minimax`, `xai`, `mistral`, `groq`, `cerebras`, `together`, `fireworks`, `deepinfra`, `vercel`, `kimi-code`, `zai`, `zai-coding`, `requesty`, and the keyless `ollama` and `lmstudio`). The daemon mints a per-cell egress token scoped to the conversation's model, and the server configures the cell's Autopilot with:
+Cells reach their LLM through the Hotcell egress route named after the provider in `server.json` (below); the route is named exactly like Autopilot's provider preset id (`openrouter`, `openai`, `deepseek`, `moonshot`, `anthropic`, `gemini`, `minimax`, `xai`, `mistral`, `groq`, `cerebras`, `together`, `fireworks`, `deepinfra`, `vercel`, `kimi-code`, `zai`, `zai-coding`, `requesty`, and the keyless `ollama`, `lmstudio` and `vllm` — vLLM's OpenAI server is registered as a custom route with `--base-url`). The daemon mints a per-cell egress token scoped to the conversation's model, and the server configures the cell's Autopilot with:
 
 | Cell env | Value |
 | --- | --- |

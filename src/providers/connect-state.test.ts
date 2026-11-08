@@ -52,6 +52,11 @@ describe("buildConnectState", () => {
       authFormat: "Bearer {key}",
     } satisfies ConnectState);
     assert.strictEqual(buildConnectState({ id: "lmstudio", model: "m" }, null, env).apiKey, null);
+    const vllm = buildConnectState({ id: "vllm", model: "Qwen/Qwen3-Coder-30B-A3B-Instruct" }, null, env);
+    assert.strictEqual(vllm.baseUrl, "http://127.0.0.1:8000/v1");
+    assert.strictEqual(vllm.apiKey, null);
+    assert.strictEqual(vllm.apiKeyEnv, "VLLM_API_KEY");
+    assert.strictEqual(vllm.keyRequired, false);
   });
 
   it("a saved per-provider base URL wins over the preset's", () => {
@@ -108,7 +113,7 @@ describe("HIDDEN_WITHOUT_GATEWAY", () => {
     const rows = providerRows(null, { env }).filter((r) => !HIDDEN_WITHOUT_GATEWAY.has(r.id));
     const ids = new Set(rows.map((r) => r.id));
     for (const hidden of HIDDEN_WITHOUT_GATEWAY) assert.ok(!ids.has(hidden), `${hidden} should be hidden`);
-    for (const id of ["openrouter", "anthropic", "deepseek", "ollama", "lmstudio", "custom"] as const) assert.ok(ids.has(id), `${id} should stay`);
+    for (const id of ["openrouter", "anthropic", "deepseek", "ollama", "lmstudio", "vllm", "custom"] as const) assert.ok(ids.has(id), `${id} should stay`);
     assert.strictEqual(rows.length, PROVIDER_IDS.length - HIDDEN_WITHOUT_GATEWAY.size);
   });
 });
