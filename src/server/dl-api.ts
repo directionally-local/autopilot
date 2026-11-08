@@ -1022,6 +1022,10 @@ export class DlApi {
       const publishEvent = (type: string, data: Record<string, unknown>) => {
         store.appendEvent(conversation.id, runId, type, data);
       };
+      // The user's side of the conversation is part of its history too, so a
+      // reconnecting client can replay the question as well as the answer.
+      // Scrub it like every other stored event.
+      store.appendEvent(conversation.id, runId, "user.message", { text: redactLikelySecrets(text) });
       const turnStartSequence = store.getConversation(conversation.id)?.lastEventSequence ?? 0;
       const conversationProject = store.getConversationProject(conversation.id);
       const githubProxy = conversationProject?.kind === "code" && conversationProject.repository && conversationProject.branch && this.githubProxyUrl

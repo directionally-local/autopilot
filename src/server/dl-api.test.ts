@@ -568,6 +568,35 @@ describe("dl server control-plane API", () => {
     }
   });
 
+  it("records the accepted turn's text as a redacted user.message event in replay order", async () => {
+    const harness = await createHarness("complete");
+    try {
+      const created = await request(harness, "POST", "/api/v1/conversations", { workspaceId: "default", model: "test/model" });
+      const conversation = await created.json() as { conversationId: string };
+      // A plain key-shaped turn is refused before it is accepted (secret_input_rejected),
+      // so exercise the stored-event scrubbing with text the refusal's diff-aware scan
+      // skips: a line that looks like a diff header. The event must still be redacted.
+      const secret = "sk-or-v1-0123456789abcdefghijklmnop";
+      const turn = await request(harness, "POST", `/api/v1/conversations/${conversation.conversationId}/turns`, {
+        clientTurnId: "turn-user-message",
+        text: `please use this key:\n+++ ${secret}`,
+      });
+      assert.equal(turn.status, 202);
+      await waitForStatus(harness, conversation.conversationId, "completed");
+
+      const events = await request(harness, "GET", `/api/v1/conversations/${conversation.conversationId}/events?after=0`);
+      const stream = await readUntil(events, "event: completed");
+      const userIndex = stream.indexOf("event: user.message");
+      const assistantIndex = stream.indexOf("event: assistant.delta");
+      assert.ok(userIndex >= 0, "the user's message is in the replay");
+      assert.ok(assistantIndex > userIndex, "the user's message precedes the answer");
+      assert.match(stream, /\[REDACTED_PROVIDER_SECRET\]/);
+      assert.doesNotMatch(stream, new RegExp(secret));
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("cancels an active turn and does not accept arbitrary cwd input", async () => {
     const harness = await createHarness("hang");
     try {

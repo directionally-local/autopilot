@@ -20,6 +20,7 @@ import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
 import { getModel, getModelOrInfer, type ModelEntry } from "../models/registry.js";
 import { applyDlEvent, initialDlState, totalCostUsd, type DlEffect, type DlViewState } from "./attach-adapter.js";
 import { RemoteApiError, type RemoteClient, type RemoteConversation, type RemoteEvent, type RemoteModelInfo } from "./client.js";
+import { redactLikelySecrets } from "../secrets.js";
 
 /** The commands a remote session handles; everything else built in is local-only. */
 export const REMOTE_COMMANDS: { name: string; description: string; args_hint?: string }[] = [
@@ -148,6 +149,12 @@ export class RemoteAttachSession {
   private outcome: AttachOutcome | null = null;
   /** Local notices and the user's messages, merged into the transcript by event order. */
   private readonly queue: QueuedMessage[] = [];
+  /**
+   * Texts this client already echoed locally and sent as turns. The server
+   * journals the same text as a `user.message` event; consuming it here keeps
+   * the live view from showing the message twice while still replaying history.
+   */
+  private readonly pendingUserEchoes: string[] = [];
   /** A submit is in flight or a turn is running (events set state.running; this covers the gap before them). */
   private submitting = false;
   /** History before this event ID is replayed, not live: input waits until it's caught up. */
@@ -511,6 +518,7 @@ export class RemoteAttachSession {
     this.flush();
     const model = this.nextModel ?? undefined;
     const endedBefore = this.turnsEnded;
+    this.pendingUserEchoes.push(msg.text);
     try {
       await this.client.submitTurn(this.conversation.conversationId, msg.text, `attach-${this.newId()}`, model);
       if (model) {
@@ -519,6 +527,8 @@ export class RemoteAttachSession {
       }
       if (this.turnsEnded === endedBefore) this.state.running = true;
     } catch (error) {
+      const index = this.pendingUserEchoes.lastIndexOf(msg.text);
+      if (index >= 0) this.pendingUserEchoes.splice(index, 1);
       if (this.fatalIfUnauthorized(error)) return;
       const busy = error instanceof RemoteApiError && error.code === "conversation_busy";
       this.error(
@@ -593,6 +603,17 @@ export class RemoteAttachSession {
 
   /** Apply one event from the stream. */
   apply(event: RemoteEvent): void {
+    if (event.type === "user.message") {
+      const text = typeof event.data.text === "string" ? event.data.text : "";
+      const index = this.pendingUserEchoes.findIndex((pending) => pending === text || redactLikelySecrets(pending) === text);
+      if (index >= 0) {
+        // The local echo already shows this message; only advance the cursor.
+        this.pendingUserEchoes.splice(index, 1);
+        this.state.lastEventId = Math.max(this.state.lastEventId, event.id);
+        this.flush();
+        return;
+      }
+    }
     const wasReplaying = this.replaying;
     const effects = applyDlEvent(this.state, event);
     for (const effect of effects) this.effect(effect);
@@ -727,7 +748,7 @@ export function connectionNote(conversation: RemoteConversation, created: boolea
   const branch = conversation.branch ? ` · branch ${conversation.branch}` : "";
   if (created) return `Connected to conversation ${short}${branch}, created on the server just now. The agent runs in a sandbox there.`;
   if (conversation.lastEventId <= 1 && !conversation.activeRunId) return `Connected to conversation ${short}${branch}. Nothing has happened in it yet; the agent runs in a sandbox on the server.`;
-  return `Reconnected to conversation ${short}${branch}. Earlier output follows (the server's log keeps the agent's side, not your past messages).`;
+  return `Reconnected to conversation ${short}${branch}. Earlier output follows.`;
 }
 
 /**

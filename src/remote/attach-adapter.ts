@@ -80,6 +80,12 @@ export function applyDlEvent(state: DlViewState, event: RemoteEvent): DlEffect[]
   const d = event.data;
   const key = `dl-${event.id}`;
   switch (event.type) {
+    case "user.message": {
+      const text = str(d.text);
+      if (!text) return [];
+      push(state, { kind: "user", key, text });
+      return [];
+    }
     case "assistant.delta": {
       const text = str(d.text) ?? str(d.delta) ?? "";
       if (!text) return [];

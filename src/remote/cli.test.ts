@@ -75,6 +75,7 @@ describe("autopilot remote client against the dl server API", () => {
 
       const replayIO = captureIO();
       assert.equal(await watchRun({ id: runId }, replayIO), 0, "replaying a finished run ends on its own");
+      assert.match(replayIO.text(), /› you: Fix the flaky test/);
       assert.match(replayIO.text(), /Fixed the flaky test\./);
 
       // Pull: the cell pushed the branch to origin; the CLI checks it out.
