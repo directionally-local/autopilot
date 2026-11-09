@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.16.0](https://github.com/directionally-local/autopilot/compare/v3.15.0...v3.16.0) (2026-11-09)
+
+
+### Features
+
+* a lone-lookup streak reminds the agent to batch reads, and the prompt says so up front ([#1210](https://github.com/directionally-local/autopilot/issues/1210)) ([47d9e32](https://github.com/directionally-local/autopilot/commit/47d9e32d5b808a028c8f0362b12e9f9cfeba0c31))
+* add a vLLM provider preset ([#1220](https://github.com/directionally-local/autopilot/issues/1220)) ([a0a45f5](https://github.com/directionally-local/autopilot/commit/a0a45f5fcd9fcdd8749af83cfbe20976b770c737))
+* exact permission rules skip the irreversible prompt in the TUI ([#1218](https://github.com/directionally-local/autopilot/issues/1218)) ([ead088f](https://github.com/directionally-local/autopilot/commit/ead088f61cd64fd00baf58872637ca608cca51e1))
+* **free:** move the old DeepSeek default to GPT-6 Luna once ([#1224](https://github.com/directionally-local/autopilot/issues/1224)) ([424570f](https://github.com/directionally-local/autopilot/commit/424570ffd9219ed8cc7e1cfb699eb8a656c69e81))
+* **free:** show the free tier's below-the-bar message as it is ([#1223](https://github.com/directionally-local/autopilot/issues/1223)) ([24a1deb](https://github.com/directionally-local/autopilot/commit/24a1deb83e8dc27d5783abfb26c71483857c38ef))
+* **server:** reclaim idle conversation sandboxes ([#1216](https://github.com/directionally-local/autopilot/issues/1216)) ([3ca6f5e](https://github.com/directionally-local/autopilot/commit/3ca6f5e12f1086b41b485327d495065cc801dff6))
+* **server:** record user messages in conversation history ([#1217](https://github.com/directionally-local/autopilot/issues/1217)) ([e3d4986](https://github.com/directionally-local/autopilot/commit/e3d49869828f52c3045b621a12f9130604f7b0cb)), closes [#1093](https://github.com/directionally-local/autopilot/issues/1093)
+* support Streamable HTTP MCP servers ([#1212](https://github.com/directionally-local/autopilot/issues/1212)) ([8078c93](https://github.com/directionally-local/autopilot/commit/8078c93b6acadc78f936f2724e734691cf2dd74f))
+* write-capable subagents that return a reviewable patch ([#1215](https://github.com/directionally-local/autopilot/issues/1215)) ([06bb90c](https://github.com/directionally-local/autopilot/commit/06bb90cb47eadf1eed78c417dc2874131a15e121))
+
+
+### Bug Fixes
+
+* resolve a delete target's variables before calling it unknowable ([#1219](https://github.com/directionally-local/autopilot/issues/1219)) ([60e3e05](https://github.com/directionally-local/autopilot/commit/60e3e05db787d197d54158085e06a4fa9f0652fb))
+
 ## [3.15.0](https://github.com/directionally-local/autopilot/compare/v3.14.1...v3.15.0) (2026-11-08)
 
 
