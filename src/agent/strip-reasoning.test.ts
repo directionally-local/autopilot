@@ -31,7 +31,7 @@ describe("stripHistoricalReasoning", () => {
       },
     ];
     const out = stripHistoricalReasoning(messages);
-    assert.strictEqual(out[0]!.reasoning_content, undefined);
+    assert.strictEqual(out[0]!.reasoning_content, "old reasoning");
     assert.strictEqual(out[0]!.content, "");
     assert.strictEqual(out[2]!.reasoning_content, "new reasoning");
     assert.strictEqual(out[2]!.content, "new");
@@ -88,8 +88,24 @@ describe("stripHistoricalReasoning", () => {
     ];
     const out = stripHistoricalReasoning(messages, { keepLast: 0 });
     assert.strictEqual(out[0]!.content, "");
-    assert.strictEqual(out[0]!.reasoning_content, undefined);
+    assert.strictEqual(out[0]!.reasoning_content, "plan");
     assert.strictEqual(out[0]!.tool_calls!.length, 2);
+  });
+
+  it("keeps reasoning_content on tool-call turns with keepLast=0, strips narration text", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: "Let me check",
+        reasoning_content: "plan",
+        tool_calls: [
+          { id: "tc1", type: "function", function: { name: "read", arguments: "{}" } },
+        ],
+      },
+    ];
+    const out = stripHistoricalReasoning(messages, { keepLast: 0 });
+    assert.strictEqual(out[0]!.reasoning_content, "plan");
+    assert.strictEqual(out[0]!.content, "");
   });
 
   it("handles array content correctly", () => {
@@ -110,7 +126,7 @@ describe("stripHistoricalReasoning", () => {
     const content = out[0]!.content as Array<{ type: string; text?: string }>;
     assert.strictEqual(content[0]!.text, "");
     assert.strictEqual(content[1]!.type, "image_url");
-    assert.strictEqual(out[0]!.reasoning_content, undefined);
+    assert.strictEqual(out[0]!.reasoning_content, "plan");
   });
 
   it("does not modify tool messages", () => {
