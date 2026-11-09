@@ -143,8 +143,11 @@ export function installExitHandlers(opts: ExitSignalOptions = {}): void {
     installed.add("crash");
     const onCrash = (err: unknown) => {
       if (exiting) return;
-      process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+      const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
       logger.error("shutdown:crash", { error: err instanceof Error ? err.message : String(err) });
+      // The renderer owns the terminal while it is mounted; write the crash
+      // after its shutdown task restores it, so a crash is never silent.
+      onShutdown("crash-message", () => { process.stderr.write(`${message}\n`); }, SHUTDOWN_PHASE.flush);
       void gracefulExit(1);
     };
     process.on("uncaughtException", onCrash);

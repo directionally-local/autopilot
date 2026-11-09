@@ -30,7 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlCheckout, dlHeaderLine, dlModelAllowanceLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlHeaderLine, dlModelAllowanceLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
@@ -452,6 +452,26 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
 }
 
 /** Translates App snapshots into renderer events, sending only what changed. Exported for tests. */
+/**
+ * Run a provider call, turning an expired sign-in into a prompt instead of a
+ * rejection. The crash log names the error and the exit, not the caller, so
+ * every detached `fetchDlMe`/`dlAccessToken` call goes through here.
+ */
+export async function catchDlAuth<T>(
+  work: () => Promise<T>,
+  say: (message: string, severity?: "info" | "error") => void,
+): Promise<T | undefined> {
+  try {
+    return await work();
+  } catch (e) {
+    if (isDlAuthError(e)) {
+      say(dlAuthPrompt(e), "error");
+      return undefined;
+    }
+    throw e;
+  }
+}
+
 export class View implements AppBridge {
   actions: AppActions | null = null;
   /** Prompts the renderer already printed when the user submitted them. */
@@ -1597,7 +1617,7 @@ export class View implements AppBridge {
         say(res.message, "error");
         return { kind: "failed" };
       }
-      const me = await this.providerCalls.dlMe().catch(() => null);
+      const me = (await catchDlAuth(() => this.providerCalls.dlMe(), say)) ?? null;
       say(dlSignedInLine(me));
       const invite = dlSignedInInviteLine(me);
       if (invite) say(invite);
@@ -1702,7 +1722,7 @@ export class View implements AppBridge {
     return runFeedback(req.inline ? { inline: req.inline } : {}, {
       providerId: req.providerId,
       autopilotVersion: getAppVersion(),
-      token: this.feedbackCalls.token,
+      token: () => catchDlAuth(() => this.feedbackCalls.token(), say),
       ...(this.feedbackCalls.fetchImpl ? { fetchImpl: this.feedbackCalls.fetchImpl } : {}),
       status: say,
       askMessage: async ({ problem, draft }) => {

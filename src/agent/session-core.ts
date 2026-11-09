@@ -22,6 +22,7 @@
  */
 
 import { runAgentTurn, type AgentTurnOpts } from "./loop.js";
+import { dlAuthPrompt, isDlAuthError } from "../providers/directionally-local.js";
 import { ContextBudgetError } from "./context-budget.js";
 import { llmAuthFromConfig, activeOpenRouterKey } from "./llm-auth.js";
 import { completionCheckFromConfig } from "./completion-check.js";
@@ -187,6 +188,13 @@ export function assembleTurn({ cfg, policy, host }: CoreTurn): AgentTurnOpts {
 export async function runCoreTurn(opts: AgentTurnOpts, persist?: () => Promise<void> | void): Promise<void> {
   try {
     await runAgentTurn(opts);
+  } catch (error) {
+    if (isDlAuthError(error)) {
+      // An expired sign-in is a prompt, not a crash: surface it and keep the session alive.
+      opts.callbacks.onInfo?.(dlAuthPrompt(error));
+      return;
+    }
+    throw error;
   } finally {
     if (persist) await persist();
   }

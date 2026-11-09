@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { TurnSupervisor } from "./supervisor.js";
 import type { AgentTurnOpts } from "./loop.js";
+import { DlError } from "../providers/directionally-local.js";
+import { ApiError } from "../util/errors.js";
 
 function supervisorWith(run: () => Promise<void>): TurnSupervisor {
   const s = new TurnSupervisor();
@@ -39,6 +41,17 @@ describe("TurnSupervisor", () => {
     await s.waitForIdle();
     assert.strictEqual(error?.message, "boom");
     assert.strictEqual(s.killRequested, false);
+    assert.strictEqual(s.phase, "idle");
+  });
+
+  it("surfaces an expired sign-in as a provider error, not a crash", async () => {
+    const s = supervisorWith(() => Promise.reject(new DlError("invalid_grant", "Your Directionally Local sign-in expired; sign in again.")));
+    let error: Error | undefined;
+    s.startTurn(opts, { onError: (e) => void (error = e) });
+    await s.waitForIdle();
+    assert.ok(error instanceof ApiError);
+    assert.strictEqual((error as ApiError).providerCode, "invalid_grant");
+    assert.match(error!.message, /sign-in expired/);
     assert.strictEqual(s.phase, "idle");
   });
 
