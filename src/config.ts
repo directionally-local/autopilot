@@ -9,6 +9,8 @@ import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
 import type { ModelRoutingConfig } from "./intent/model-routing.js";
 import { readEnv } from "./util/env.js";
+import { readState, writeState } from "./util/state.js";
+import { DL_FREE_DEFAULT_MODEL } from "./providers/dl-endpoint.js";
 import { defaultCoauthor } from "./util/dl-identity.js";
 import { configPath as userConfigPath } from "./util/app-dirs.js";
 
@@ -78,6 +80,12 @@ export interface TraceConfig {
 
 /** @deprecated Renamed to {@link AutopilotConfig} in the kimiflare → autopilot rename (#911); kept so existing SDK imports keep compiling. */
 export type KimiConfig = AutopilotConfig;
+
+/** One-time migrations recorded in the config file once checked, so they never run twice. */
+export interface ConfigMigrations {
+  /** The free tier's saved model was checked for the pre-3.14 DeepSeek default (moved to GPT-6 Luna if so). */
+  freeDefaultLuna?: boolean;
+}
 
 export interface AutopilotConfig {
   /**
@@ -158,6 +166,8 @@ export interface AutopilotConfig {
    * `[{ "match": "qwen3.6", "promptAddendum": "…", "maxToolContentChars": 24000 }]`.
    */
   modelProfiles?: ModelProfileOverride[];
+  /** One-time config migrations already checked (each runs at most once). */
+  migrations?: ConfigMigrations;
   /**
    * Feature flag for the plan / edit / auto permission modes. Off by default:
    * every session runs in auto (tools run without per-call prompts) and the
@@ -470,6 +480,9 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     ? persisted.provider
     : resolveProviderId({ ...providerFields, provider: undefined, baseUrl: persisted.baseUrl }, {});
   const own = <T,>(v: T | undefined): T | undefined => (savedFor === active.id ? v : undefined);
+  if (hasFile && active.id === DL_FREE_PROVIDER && !envModel && persisted.migrations?.freeDefaultLuna !== true) {
+    persisted = await migrateFreeDefaultLuna(persisted, own(persisted.model));
+  }
   const model =
     m(envModel ?? persisted.providers?.[active.id]?.model ?? own(persisted.model)) ?? preset.defaultModel;
   // Side calls use the provider's cheap model; with none (custom gateways,
@@ -570,6 +583,7 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     postEditDiagnosticsWarnings: readBooleanEnv("POST_EDIT_DIAGNOSTICS_WARNINGS") ?? persisted.postEditDiagnosticsWarnings ?? false,
     trace: resolveTraceConfig(persisted.trace),
     modelProfiles: persisted.modelProfiles,
+    migrations: persisted.migrations,
   };
 
   // Model profiles (#999): config overrides replace the registry on every
@@ -585,6 +599,63 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
   }
 
   return stripUndefined(cfg);
+}
+
+const DL_FREE_PROVIDER = "directionally-local" as const;
+
+/** The free tier's default model before 3.14. */
+export const DL_FREE_OLD_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+
+/** Shown once at the next session start after the free-tier default migration moved someone. */
+export const FREE_DEFAULT_LUNA_NOTICE = "The free tier now runs GPT-6 Luna by default. /model switches back to DeepSeek.";
+
+/**
+ * One-time move off the pre-3.14 free-tier default. Before 3.14 sign-in saved
+ * DeepSeek as the free tier's model, so those people never got GPT-6 Luna.
+ * Called only when the free tier is active and no env model overrides the
+ * saved one: a saved model that is exactly the old default becomes GPT-6
+ * Luna and a notice is queued for the next session start. The flag is set
+ * either way, so someone who picks DeepSeek afterwards keeps it. Returns the
+ * config as it now stands; never throws (a failed write is retried next load).
+ */
+async function migrateFreeDefaultLuna<T extends Partial<AutopilotConfig>>(persisted: T, ownModel: string | undefined): Promise<T> {
+  const saved = persisted.providers?.[DL_FREE_PROVIDER]?.model ?? ownModel;
+  const move = saved === DL_FREE_OLD_DEFAULT_MODEL;
+  const merge = (c: Partial<AutopilotConfig>): Partial<AutopilotConfig> => ({
+    ...c,
+    migrations: { ...c.migrations, freeDefaultLuna: true },
+    ...(move
+      ? { providers: { ...c.providers, [DL_FREE_PROVIDER]: { ...c.providers?.[DL_FREE_PROVIDER], model: DL_FREE_DEFAULT_MODEL } } }
+      : {}),
+  });
+  try {
+    await withConfigLock(async () => {
+      const p = configPath();
+      const onDisk = JSON.parse(await readFile(p, "utf8")) as Partial<AutopilotConfig>;
+      await writeFile(p, JSON.stringify(merge(onDisk), null, 2), "utf8");
+      await chmod(p, 0o600);
+    });
+    if (move) await writeState({ ...(await readState()), freeDefaultLunaNoticePending: true });
+  } catch {
+    return persisted;
+  }
+  return merge(persisted) as T;
+}
+
+/**
+ * The free-tier default notice when the migration queued one, cleared as it
+ * is taken so it shows once. Never throws.
+ */
+export async function takeFreeDefaultLunaNotice(): Promise<string | null> {
+  try {
+    const state = await readState();
+    if (state.freeDefaultLunaNoticePending !== true) return null;
+    delete state.freeDefaultLunaNoticePending;
+    await writeState(state);
+    return FREE_DEFAULT_LUNA_NOTICE;
+  } catch {
+    return null;
+  }
 }
 
 /** The config file as stored (no env, no defaults), or null when there is none. */

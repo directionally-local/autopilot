@@ -18,6 +18,9 @@ import {
   saveConfig,
   patchPersistedConfig,
   configPath,
+  takeFreeDefaultLunaNotice,
+  DL_FREE_OLD_DEFAULT_MODEL,
+  FREE_DEFAULT_LUNA_NOTICE,
 } from "./config.js";
 
 describe("validateModelId", () => {
@@ -94,6 +97,7 @@ describe("loadConfig", () => {
     "KIMIFLARE_MEMORY_EXTRACTION",
     "AUTOPILOT_AUTO_COMPACT_CAP_TOKENS",
     "KIMIFLARE_AUTO_COMPACT_CAP_TOKENS",
+    "AUTOPILOT_DL_FREE_TOKEN",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -108,6 +112,8 @@ describe("loadConfig", () => {
     for (const k of ENV_KEYS) delete process.env[k];
     process.env.XDG_CONFIG_HOME = configHome;
     await rm(configFile(), { force: true });
+    // Notices queued by an earlier test (state.json) must not leak into the next.
+    await takeFreeDefaultLunaNotice();
   });
 
   after(async () => {
@@ -652,5 +658,92 @@ describe("loadConfig", () => {
       await writeConfigFile({ shell: "t" });
       assert.strictEqual(await hasLegacyCloudflareConfig(), false);
     });
+  });
+
+  describe("free tier default moves to GPT-6 Luna once", () => {
+    const DL = "directionally-local";
+    const free = (model: string | undefined, extra: Record<string, unknown> = {}) => ({
+      provider: DL,
+      providers: { [DL]: { apiKey: "access-1", ...(model ? { model } : {}) } },
+      ...extra,
+    });
+    const savedModel = async () =>
+      ((await readConfigFile()).providers as Record<string, { model?: string }>)[DL]?.model;
+    const flag = async () => ((await readConfigFile()).migrations as { freeDefaultLuna?: boolean } | undefined)?.freeDefaultLuna;
+
+    it("migrates the old DeepSeek default once and shows the notice once", async () => {
+      await writeConfigFile(free(DL_FREE_OLD_DEFAULT_MODEL, { shell: "zsh" }));
+      const cfg = await loadConfig();
+      assert.strictEqual(cfg?.model, "gpt-6-luna");
+      assert.strictEqual(await savedModel(), "gpt-6-luna");
+      assert.strictEqual(await flag(), true);
+      assert.strictEqual((await readConfigFile()).shell, "zsh", "other fields are kept");
+      assert.strictEqual((await readConfigFile() as { providers: Record<string, { apiKey?: string }> }).providers[DL]?.apiKey, "access-1");
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), FREE_DEFAULT_LUNA_NOTICE);
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), null, "the notice shows once");
+      assert.strictEqual((await loadConfig())?.model, "gpt-6-luna");
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), null, "a second load queues nothing");
+    });
+
+    it("keeps the flag through saveConfig (e.g. a later /model)", async () => {
+      await writeConfigFile(free(DL_FREE_OLD_DEFAULT_MODEL));
+      const cfg = (await loadConfig())!;
+      await saveConfig({ ...cfg, providers: { ...cfg.providers, [DL]: { ...cfg.providers?.[DL], model: DL_FREE_OLD_DEFAULT_MODEL } } });
+      assert.strictEqual(await flag(), true);
+    });
+
+    it("migrates a top-level model saved for the free tier", async () => {
+      await writeConfigFile({ ...free(undefined), model: DL_FREE_OLD_DEFAULT_MODEL });
+      assert.strictEqual((await loadConfig())?.model, "gpt-6-luna");
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), FREE_DEFAULT_LUNA_NOTICE);
+    });
+
+    it("does nothing when the flag is already set", async () => {
+      await writeConfigFile(free(DL_FREE_OLD_DEFAULT_MODEL, { migrations: { freeDefaultLuna: true } }));
+      assert.strictEqual((await loadConfig())?.model, DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await savedModel(), DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), null);
+    });
+
+    it("never switches someone who picks DeepSeek after the migration", async () => {
+      await writeConfigFile(free("gpt-6-luna"));
+      await loadConfig();
+      assert.strictEqual(await flag(), true, "checked, so the flag is set even with nothing to move");
+      const file = await readConfigFile();
+      await writeConfigFile({ ...file, providers: { [DL]: { apiKey: "access-1", model: DL_FREE_OLD_DEFAULT_MODEL } } });
+      assert.strictEqual((await loadConfig())?.model, DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await savedModel(), DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), null);
+    });
+
+    it("leaves an env model alone and saves nothing", async () => {
+      await writeConfigFile(free(DL_FREE_OLD_DEFAULT_MODEL));
+      process.env.KIMI_MODEL = DL_FREE_OLD_DEFAULT_MODEL;
+      assert.strictEqual((await loadConfig())?.model, DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await savedModel(), DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await flag(), undefined);
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), null);
+    });
+
+    it("leaves other providers alone", async () => {
+      await writeConfigFile({
+        openrouterApiKey: "sk-or-file",
+        model: DL_FREE_OLD_DEFAULT_MODEL,
+        providers: { [DL]: { apiKey: "access-1", model: DL_FREE_OLD_DEFAULT_MODEL } },
+      });
+      assert.strictEqual((await loadConfig())?.model, DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await savedModel(), DL_FREE_OLD_DEFAULT_MODEL);
+      assert.strictEqual(await flag(), undefined);
+      assert.strictEqual(await takeFreeDefaultLunaNotice(), null);
+    });
+
+    for (const model of ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]) {
+      it(`leaves ${model} alone`, async () => {
+        await writeConfigFile(free(model));
+        assert.strictEqual((await loadConfig())?.model, model);
+        assert.strictEqual(await savedModel(), model);
+        assert.strictEqual(await takeFreeDefaultLunaNotice(), null);
+      });
+    }
   });
 });
