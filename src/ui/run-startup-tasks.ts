@@ -9,7 +9,7 @@
  * the prior in-component implementation.
  */
 import { embeddingAuthFromConfig, llmAuthFromConfig } from "../agent/llm-auth.js";
-import { patchPersistedConfig, tuiMemoryEnabled } from "../config.js";
+import { patchPersistedConfig, takeFreeDefaultLunaNotice, tuiMemoryEnabled } from "../config.js";
 import React from "react";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -59,6 +59,12 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   // Started in the home folder: say once that a project folder works better.
   const homeNotice = homeFolderNoticeOnce();
   if (homeNotice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: homeNotice }]);
+
+  // The free tier's default moved to GPT-6 Luna (loadConfig's one-time
+  // migration): say so once; taking the notice clears it.
+  void takeFreeDefaultLunaNotice().then((notice) => {
+    if (notice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
+  });
 
   // Sessions and traces are never deleted automatically; once they get big,
   // say so and point at `autopilot history`.

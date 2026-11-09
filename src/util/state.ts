@@ -9,6 +9,8 @@ export interface StateFile {
   legacyHooksNoticePaths?: string[];
   /** The 1.29.0 "only exit 2 blocks" hooks notice was shown (#888). */
   hooksExitCodeNoticeShown?: boolean;
+  /** The free tier's default moved from DeepSeek to GPT-6 Luna; say so at the next session start. */
+  freeDefaultLunaNoticePending?: boolean;
 }
 
 function statePath(): string {
