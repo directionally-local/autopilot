@@ -3,11 +3,13 @@ import assert from "node:assert";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { analyzeSql, classifyCommand, classifyToolCall, isLocalHost, type ClassifyContext } from "./destructive.js";
 
 let T: string;
 let R: string;
+let OUTSIDE: string;
+let OUTSIDE_REL: string;
 let ctx: ClassifyContext;
 
 function git(dir: string, ...args: string[]): string {
@@ -18,7 +20,9 @@ const verdict = (command: string, extra: Partial<ClassifyContext> = {}) => class
 const first = (command: string, extra: Partial<ClassifyContext> = {}) => classifyCommand(command, { ...ctx, ...extra }).findings[0];
 
 before(() => {
-  T = mkdtempSync(join(tmpdir(), "ap-destructive-"));
+  // Resolve the temp root once: git reports the /private/var realpath on macOS,
+  // and every path the classifier compares must use the same form.
+  T = realpathSync(mkdtempSync(join(tmpdir(), "ap-destructive-")));
   R = join(T, "repo");
   mkdirSync(R);
   git(R, "init", "-q");
@@ -41,12 +45,21 @@ before(() => {
   writeFileSync(join(R, "scratch.txt"), "untracked");
   writeFileSync(join(R, "app.log"), "log");
   writeFileSync(join(R, ".env"), "SECRET=1\n");
-  mkdirSync(join(T, "build-cache-outside-repo"));
-  writeFileSync(join(T, "build-cache-outside-repo", "f"), "x");
-  ctx = { cwd: R, env: {}, scratchDirs: [] };
+  // A sibling of the temp root: outside the project and outside the scratch
+  // dirs, so deleting it is irreversible on every platform.
+  OUTSIDE = join(dirname(T), `ap-outside-${basename(T)}`);
+  mkdirSync(OUTSIDE);
+  writeFileSync(join(OUTSIDE, "f"), "x");
+  OUTSIDE_REL = relative(R, OUTSIDE);
+  // The temp root is scratch: on macOS it lives under /var, which SYSTEM_DIRS
+  // treats as dangerous unless a scratch dir contains it.
+  ctx = { cwd: R, env: {}, scratchDirs: [T, realpathSync(T)] };
 });
 
-after(() => rmSync(T, { recursive: true, force: true }));
+after(() => {
+  rmSync(T, { recursive: true, force: true });
+  rmSync(OUTSIDE, { recursive: true, force: true });
+});
 
 describe("databases", () => {
   it("tags destructive SQL through every client as irreversible", () => {
@@ -188,8 +201,8 @@ describe("files", () => {
 
   it("deleting outside the project, the project itself, home, root or a .git is irreversible", () => {
     for (const c of [
-      "rm -rf ../build-cache-outside-repo",
-      "timeout 60 rm -rf ../build-cache-outside-repo",
+      `rm -rf ${OUTSIDE_REL}`,
+      `timeout 60 rm -rf ${OUTSIDE_REL}`,
       "rm -rf /",
       "rm -rf ~",
       "rm -rf .",
@@ -231,7 +244,7 @@ describe("files", () => {
     assert.match(first("find . -name '*.log' -delete")!.loss, /app\.log/);
     assert.strictEqual(verdict("find . -name '*.nothing' -delete"), "safe");
     assert.strictEqual(verdict("find . -name '*.log'"), "safe");
-    assert.strictEqual(verdict("find ../build-cache-outside-repo -type f -exec rm {} +"), "irreversible");
+    assert.strictEqual(verdict(`find ${OUTSIDE_REL} -type f -exec rm {} +`), "irreversible");
   });
 
   it("globs expand to what they match", () => {
@@ -369,7 +382,7 @@ describe("compound commands, subshells and wrappers", () => {
 
   it("follows cd into another directory", () => {
     assert.strictEqual(verdict("cd src && rm -rf ../node_modules"), "recoverable");
-    assert.strictEqual(verdict("cd .. && rm -rf build-cache-outside-repo"), "irreversible");
+    assert.strictEqual(verdict(`cd ${relative(R, dirname(OUTSIDE))} && rm -rf ${basename(OUTSIDE)}`), "irreversible");
   });
 
   it("reports every destructive part, worst first", () => {

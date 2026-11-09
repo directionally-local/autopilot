@@ -1,7 +1,7 @@
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyCommand, classifyToolCall, type ClassifyContext } from "./destructive.js";
@@ -25,7 +25,8 @@ function point(command: string) {
 }
 
 before(() => {
-  T = mkdtempSync(join(tmpdir(), "ap-recovery-"));
+  // Resolve the temp root once: git reports the /private/var realpath on macOS.
+  T = realpathSync(mkdtempSync(join(tmpdir(), "ap-recovery-")));
   process.env.AUTOPILOT_RECOVERY_DIR = join(T, "state");
 });
 
@@ -41,7 +42,7 @@ beforeEach(() => {
   writeFileSync(join(R, "a.txt"), "one\n");
   git(R, "add", ".");
   git(R, "commit", "-qm", "one");
-  ctx = { cwd: R, env: {}, scratchDirs: [] };
+  ctx = { cwd: R, env: {}, scratchDirs: [T, realpathSync(T)] };
 });
 
 describe("recovery points and /undo", () => {
