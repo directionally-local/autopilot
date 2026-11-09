@@ -574,6 +574,10 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       return dlQueueLine(extra.position, extra.etaAt, { ...extra, where });
     case "suspended":
       return `This Directionally Local account is suspended, so its requests are refused. ${ownKeyNow(where)}`;
+    case "below_bar":
+      // The account is below the free tier's bar; the service's sentence says who free tokens
+      // are for and how to ask for credits anyway.
+      return extra.message ?? "Free tokens are for established GitHub accounts. Email contact@directionallylocal.com and tell us what you want to build with dl, and we'll give you free credits. Or use your own API key with /provider.";
     case "dl_only":
       // Free tokens were used from another tool; the service's sentence says what to do.
       return extra.message ?? "Free tokens work inside dl only. Run dl to keep using them, or use your own API key in any tool.";
