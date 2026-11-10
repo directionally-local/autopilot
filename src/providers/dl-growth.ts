@@ -135,7 +135,7 @@ export function dlWinLine(link: string): string {
 export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts = {}): string | undefined {
   const link = d.referralLink;
   const ways = `Keep going now: \`${DL_UPGRADE_COMMAND}\`, or your own key: \`autopilot connect\`.`;
-  if (code === "quota_exceeded" || code === "basic_limit") {
+  if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     const invite = link ? `Invite a friend and you both get +${formatTokens(DL_REFERRAL_BONUS_TOKENS)} a week: ${link} · ` : "";
     return `${dlLimitTitle(d.resetsAt, o)} ${invite}${ways}`;
   }
@@ -291,7 +291,7 @@ export interface DlScreenDeps extends PurchaseDeps {
 export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallbackLink?: string): DlScreen | undefined {
   const referralLink = d.referralLink ?? fallbackLink;
   const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}) };
-  if (code === "quota_exceeded" || code === "basic_limit") {
+  if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...common };
   }
   if (code === "free_tier_queued") return { kind: "queued", ...(d.position ? { position: d.position } : {}), ...(d.etaAt ? { etaAt: d.etaAt } : {}), ...common };
