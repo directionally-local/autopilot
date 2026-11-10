@@ -17,7 +17,7 @@
 
 <p align="center">
   <strong>The open-source coding agent inside <a href="https://dl.new">dl</a>. It doesn't ask permission.</strong><br>
-  Free with 50M tokens a week of GPT-6 Luna and DeepSeek, no credit card. Or bring your own key: OpenRouter, Anthropic, OpenAI and 25+ more.
+  Free GPT-6 and DeepSeek tokens every week with a GitHub sign-in, no credit card. Or bring your own key: OpenRouter, Anthropic, OpenAI and 25+ more.
 </p>
 
 ## Get it
@@ -81,7 +81,7 @@ npm install -g autopilot-ai
 autopilot
 ```
 
-On first run, autopilot asks **"How should it think?"**: choose **Free — sign in with GitHub** (50M tokens a week, no credit card) or **Use my own API key** to pick a provider such as OpenRouter, then pick a model. A provider key already in your environment skips the question and is used as-is. That's it.
+On first run, autopilot asks **"How should it think?"**: choose **Free — sign in with GitHub** (no credit card) or **Use my own API key** to pick a provider such as OpenRouter, then pick a model. A provider key already in your environment skips the question and is used as-is. That's it.
 
 Or install with Homebrew on macOS or Linux (Homebrew installs Node.js for you):
 
@@ -132,7 +132,7 @@ To continue a Claude Code conversation (say it stopped on a usage limit), run `a
 | Azure OpenAI | `azure` | `AZURE_API_KEY` + `AZURE_RESOURCE_NAME` (or `autopilot auth azure --resource <name>`) | v1 API over Responses; model ids are your deployment names, discovered from the resource. Entra ID sign-in isn't supported yet — use a key |
 | Ollama (local) | `ollama` | none | installed models are discovered; `providers.ollama.baseUrl` for another host |
 | LM Studio (local) | `lmstudio` | none | |
-| vLLM (local) | `vllm` | none | your own GPUs; `vllm serve` with `--enable-auto-tool-choice --tool-call-parser <name>` for tool calls |
+| vLLM (local) | `vllm` | none | your own GPUs; `dl model up` sets it up, tests it and connects autopilot on Nvidia GPUs, or run `vllm serve` yourself with `--enable-auto-tool-choice --tool-call-parser <name>` for tool calls |
 | Requesty | `requesty` | `REQUESTY_API_KEY` | |
 | Any OpenAI-compatible endpoint | `custom` | `AUTOPILOT_API_KEY` (optional) | `AUTOPILOT_BASE_URL` — LiteLLM, vLLM, llama.cpp, a company gateway |
 
