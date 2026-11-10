@@ -1,0 +1,31 @@
+name: Issues to Discord
+
+# Posts each new issue opened by someone other than the owner to the community
+# Discord's bugs/feedback channel. Needs the DISCORD_ISSUES_WEBHOOK secret (a
+# Discord channel webhook URL); without it the job does nothing.
+on:
+  issues:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.event.issue.user.login != 'sinameraji' && github.event.issue.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Post to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_ISSUES_WEBHOOK }}
+          TITLE: ${{ github.event.issue.title }}
+          URL: ${{ github.event.issue.html_url }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "DISCORD_ISSUES_WEBHOOK isn't set; skipping."; exit 0; fi
+          # Values come in through env, never pasted into the script. allowed_mentions
+          # is empty so a title can't ping @everyone or anyone else.
+          payload=$(jq -n --arg t "${TITLE:0:200}" --arg u "$URL" --arg a "$AUTHOR" --arg r "$REPO" \
+            '{content: ("new issue in **" + $r + "** from " + $a + ": " + $t + "\n<" + $u + ">"), allowed_mentions: {parse: []}}')
+          curl -fsS --max-time 20 -H 'content-type: application/json' -d "$payload" "$WEBHOOK" >/dev/null
