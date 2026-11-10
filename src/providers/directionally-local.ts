@@ -577,7 +577,8 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       // The token and the spending allowance read the same: both are "this week's free tokens".
       return dlQuotaLine(extra.resetsAt, { ...extra, where });
     case "basic_limit":
-      // A basic-tier account used its smaller weekly allowance: the same line, and where to ask for more.
+    case "starter_limit":
+      // A basic or starter account used its smaller weekly allowance: the same line, and where to ask for more.
       return withRequestHint(dlQuotaLine(extra.resetsAt, { ...extra, where }), extra, where);
     case "upstream_busy":
       return "The free tier is busy right now; try again shortly.";

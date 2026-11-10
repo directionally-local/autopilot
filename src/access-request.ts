@@ -18,7 +18,7 @@ export const ACCESS_BUILDING_MAX = 600;
 export const ACCESS_LINK_MAX = 300;
 const TIMEOUT_MS = 10_000;
 
-/** The line added to a below_bar or basic_limit refusal that carries `request`. */
+/** The line added to a below_bar, basic_limit or starter_limit refusal that carries `request`. */
 export const ACCESS_REQUEST_HINT = DL_REQUEST_HINT;
 
 export const ACCESS_TITLE = "Ask for more free tokens · Esc to cancel";

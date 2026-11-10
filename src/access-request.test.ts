@@ -323,6 +323,13 @@ describe("the /request hint on free tier refusals", () => {
     assert.ok(!describeDlError("basic_limit", { request, where: "cli" })!.includes("/request"));
   });
 
+  it("starter_limit reads and routes exactly like basic_limit", () => {
+    const resetsAt = "2026-11-16T00:00:00.000Z";
+    const opts = { resetsAt, request: "/v1/access-request", timeZone: "UTC", now: Date.parse("2026-11-10T00:00:00Z") };
+    assert.strictEqual(describeDlError("starter_limit", opts), describeDlError("basic_limit", opts));
+    assert.deepStrictEqual(dlScreenFor("starter_limit", { request: "/v1/access-request" }), { kind: "quota", request: "/v1/access-request" });
+  });
+
   it("basic_limit opens the weekly limit screen, which shows the hint only with `request`", async () => {
     assert.deepStrictEqual(dlScreenFor("basic_limit", { request }), { kind: "quota", request });
     assert.deepStrictEqual(dlScreenFor("basic_limit", {}), { kind: "quota" });
