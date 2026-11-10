@@ -2,6 +2,14 @@ export type Mode = "edit" | "plan" | "auto";
 
 export const MODES: Mode[] = ["edit", "plan", "auto"];
 
+/**
+ * The mode an interactive session starts in: `auto` unless the modes
+ * feature flag is on, then `edit`. Print mode follows the same policy.
+ */
+export function startMode(cfg: { modesEnabled?: boolean } | null | undefined): Mode {
+  return cfg?.modesEnabled === true ? "edit" : "auto";
+}
+
 export function nextMode(m: Mode): Mode {
   const i = MODES.indexOf(m);
   return MODES[(i + 1) % MODES.length]!;

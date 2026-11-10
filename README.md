@@ -251,9 +251,56 @@ autopilot -p "..." -m openai/gpt-4o-mini
 
 ```sh
 autopilot -p "summarize PLAN.md"                    # stream answer to stdout
-autopilot -p "..." --dangerously-allow-all          # auto-approve mutating tools (for scripts)
+autopilot -p "fix the failing test"                 # edits files and runs commands, as the TUI does
+autopilot -p "..." --dangerously-allow-all          # also approve what would need a person
 autopilot -p "..." --reasoning                      # include chain-of-thought in stderr
 ```
+
+**Permissions.** Print mode (`-p`) follows the interactive TUI's policy. What the TUI approves
+without asking, print mode approves: edits, writes, and safe or recoverable commands, with the
+same recovery points for `/undo`. What the TUI would stop and ask a person about is denied,
+because no one can answer:
+
+| Tool call in print mode | Without `--dangerously-allow-all` | With it |
+| --- | --- | --- |
+| Read-only tools | run | run |
+| Edits, writes, safe and recoverable commands, other tools that ask | **approved** (recovery point first when something is lost) | approved |
+| Matches a config `deny` rule | denied | approved (the flag overrides rules and hooks, as before) |
+| Matches a config `allow` rule | approved | approved |
+| Matches a config `ask` rule, or a `PreToolUse` hook answers `ask` | denied, unless a `PermissionRequest` hook allows it | approved |
+| A `PermissionRequest` hook answers | the hook decides | approved |
+| Irreversible action (guardrails: `git reset --hard`, `terraform destroy`, force push, …) | denied, unless a rule names that exact action | same: the flag doesn't cover it |
+
+With the modes feature flag on (`modesEnabled`), the TUI starts in `edit` mode and asks before
+mutating tools, so print mode denies them too unless a rule, a hook or the flag approves.
+
+The model is told the run is headless: no one can answer questions, so it shouldn't ask for
+permission or confirmation, and after a denial it should find another way or finish and report
+what's left.
+
+To keep the old read-only behaviour (earlier versions denied every mutating call in print mode
+without the flag), add deny rules to `~/.config/autopilot/config.json`:
+
+```json
+{ "permissions": { "write": { "**": "deny" }, "edit": { "**": "deny" }, "bash": { "**": "deny" } } }
+```
+
+**Exit codes.**
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The run finished. |
+| `1` | API error (after retries). |
+| `42` | `--max-input-tokens` budget exhausted. |
+| `43` | Agent loop detected (repeated blocked calls). |
+| `44` | A `UserPromptSubmit` hook blocked the prompt. |
+| `45` | The run didn't finish: a tool call was denied, the final reply asks a question, the model offered plan options to choose from, or a limit stopped the turn. |
+
+For `45`, the reason goes to stderr in `text` mode, to an `unfinished` field in `json`, and to an
+`unfinished` event (with `reasons`, `denied`, `question`) before `done` in `stream-json`. The
+question check is deliberately narrow: the last non-empty line of the final reply, outside a code
+block and ignoring trailing markdown, quotes and closing brackets, ends with `?`. A reply that
+ends with a statement, such as "Let me know if you need anything else.", counts as finished.
 
 ### Run tasks on your own server
 
@@ -658,8 +705,8 @@ A `PreToolUse` hook that exits `0` can instead print a JSON decision:
 
 - `deny` blocks, with `permissionDecisionReason` as the reason.
 - `ask` sends the call through the normal permission prompt, even for
-  tools that don't usually ask. Hosts with no one to ask answer as they
-  already do (`--print` denies unless `--dangerously-allow-all`).
+  tools that don't usually ask. Hosts with no one to ask deny it
+  (`--print` denies unless `--dangerously-allow-all`).
 - `allow` means the hook doesn't object; it does **not** bypass your own
   permission rules or mode.
 
@@ -708,7 +755,8 @@ events.
 `PermissionRequest` fires when Autopilot is about to ask you to approve a
 tool call — after plan mode, `--dangerously-allow-all` and config
 permission rules have had their say, so it never fires for calls those
-already settled. The payload has `tool`, `args`, `tool_call_id`,
+already settled. In print mode it fires for every such call, before print
+mode's own default (approve what the TUI approves without asking). The payload has `tool`, `args`, `tool_call_id`,
 `mode` (`edit`, `plan`, …; also `$AUTOPILOT_HOOK_MODE`), plus Claude Code's `tool_name`,
 `tool_input`, `tool_use_id` and `permission_mode`; `matcher` matches the
 tool name. The hook decides like a `PreToolUse` hook:
@@ -721,7 +769,8 @@ tool name. The hook decides like a `PreToolUse` hook:
   (an `allow` there still shows the prompt) or a config deny rule (those
   calls never reach the hook).
 - `"ask"`, no JSON, or a hook that fails open: the normal prompt.
-  Hosts with no one to ask answer as before (`--print` denies).
+  Hosts with no one to ask follow their own policy (`--print` approves
+  what the TUI would approve without asking and denies the rest).
 
 Claude Code's form, `{"hookSpecificOutput": {"decision": {"behavior": "allow"|"deny", "message": "..."}}}`,
 works too.

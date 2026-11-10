@@ -27,7 +27,7 @@ program
   // KimiFlare Cloud was retired with the move to OpenRouter. Keep the flag
   // parseable so old scripts don't break; it's ignored with a notice.
   .addOption(new Option("--cloud", "(retired) legacy cloud mode").hideHelp())
-  .option("--dangerously-allow-all", "auto-approve every permission prompt (print mode only)")
+  .option("--dangerously-allow-all", "print mode: also approve calls that would need a person, overriding config rules and hooks (edits and recoverable commands don't need it; irreversible actions need a rule naming them exactly)")
   .addOption(new Option("--worker-profile <profile>", "internal worker permission profile").hideHelp())
   .option("--reasoning", "include reasoning in stdout (print mode only)")
   .option("--thinking", "alias for --reasoning")

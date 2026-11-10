@@ -49,7 +49,7 @@ import { syncHerdrFromTui } from "./util/herdr.js";
 import { checkForUpdate, updateNotice } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
 import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
-import { nextMode, type Mode } from "./mode.js";
+import { nextMode, startMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
 import { getMemoryDb } from "./memory/db.js";
@@ -322,7 +322,7 @@ function App({
   // Plan/edit/auto modes are behind a feature flag (cfg.modesEnabled, off by
   // default): with it off every session runs in auto and the mode UI is hidden.
   const modesEnabled = cfg?.modesEnabled === true;
-  const [mode, setMode] = useState<Mode>(initialCfg?.modesEnabled ? "edit" : "auto");
+  const [mode, setMode] = useState<Mode>(startMode(initialCfg));
   useEffect(() => {
     // Toggling the flag from /settings: off → back to auto; on → start in edit.
     setMode((m) => (modesEnabled ? (m === "auto" ? "edit" : m) : "auto"));

@@ -29,8 +29,10 @@ import { submitUserPrompt, PROMPT_BLOCKED_EXIT_CODE } from "./hooks/prompt-submi
 import { buildAttachmentMessage } from "./util/attachments.js";
 import { updateNotice, type UpdateCheckResult } from "./util/update-check.js";
 import { glob } from "./util/glob.js";
-import { evaluatePermissionRules } from "./permissions-evaluator.js";
-import { unattendedDestructiveDecision } from "./permissions/guardrails.js";
+import { decideHeadlessPermission } from "./permissions/headless-policy.js";
+import { startMode } from "./mode.js";
+import { assistantText, unfinishedRun, type UnfinishedRun } from "./print-outcome.js";
+import type { TurnEndReason } from "./trace/types.js";
 import { assembleTurn, resolveTurnPolicy } from "./agent/session-core.js";
 import type { AutopilotConfig, PermissionRules, ReasoningEffort } from "./config.js";
 import { createRecorder, emitSessionStart, makeTurnId, type SessionEndReason } from "./trace/index.js";
@@ -40,7 +42,7 @@ import { defaultCoauthor } from "./util/dl-identity.js";
 export type PrintFormat = "text" | "json" | "stream-json";
 
 export interface PrintModeOpts
-  extends Pick<AutopilotConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck" | "imageMaxEdge" | "imageQuality"> {
+  extends Pick<AutopilotConfig, "openrouterApiKey" | "requestyApiKey" | "baseUrl" | "apiKey" | "openrouterProvider" | "subagentPolicy" | "completionCheck" | "imageMaxEdge" | "imageQuality" | "modesEnabled"> {
   model: string;
   reasoningEffort?: ReasoningEffort;
   prompt: string;
@@ -102,6 +104,8 @@ interface JsonOutput {
   sessionId: string;
   /** Hooks that failed this run (#889): one entry per hook, with its count. */
   hookFailures?: HookFailureNotice[];
+  /** Set when the run didn't finish (exit code 45, print-outcome.ts). */
+  unfinished?: UnfinishedRun;
 }
 
 async function resolveSession(opts: PrintModeOpts): Promise<{ sessionFile: SessionFile; isNew: boolean }> {
@@ -222,7 +226,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   // Build messages
   const messages: ChatMessage[] = [];
-  const systemPrompt = buildSystemPrompt({ cwd, tools: workerTools, model: opts.model, preferPullRequests: opts.preferPullRequests});
+  const systemPrompt = buildSystemPrompt({ cwd, tools: workerTools, model: opts.model, preferPullRequests: opts.preferPullRequests, headless: true });
   if (isNew || sessionFile.messages.length === 0) {
     messages.push({ role: "system", content: systemPrompt });
   } else {
@@ -341,6 +345,13 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     return;
   }
 
+  // What decides whether the run finished (exit code 45, print-outcome.ts).
+  const interactiveMode = startMode(opts);
+  const deniedCalls: string[] = [];
+  let finalText = "";
+  let offeredPlanOptions = false;
+  let turnEnd: TurnEndReason | null = null;
+
   const callbacks: AgentCallbacks = {
     onUsageFinal: (u, meta) => {
       const lookup =
@@ -401,6 +412,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       }
     },
     onToolResult: (result) => {
+      if (result.denied) deniedCalls.push(result.name);
       if (format === "text") {
         const snippet = result.content.length > 400 ? result.content.slice(0, 400) + "..." : result.content;
         process.stderr.write(`\x1b[2m[result: ${snippet.replace(/\n/g, " ⏎ ")}]\x1b[0m\n`);
@@ -449,52 +461,34 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
         emitStreamJson("warning", { message: msg });
       }
     },
+    onAssistantFinal: (msg) => {
+      finalText = assistantText(msg);
+    },
+    onPlanOptions: () => {
+      offeredPlanOptions = true;
+    },
+    onTurnEnd: (reason) => {
+      turnEnd = reason;
+    },
     askPermission: async (req) => {
       const { tool, args } = req;
       if (opts.workerProfile) {
         const allowed = opts.workerProfile === "research" ? RESEARCH_WORKER_TOOL_NAMES : BUILD_WORKER_TOOL_NAMES;
         return allowed.has(tool.name) && (opts.workerProfile === "build" || tool.isReadOnly === true) ? "allow" : "deny";
       }
-      // Irreversible (#1125): only a rule naming this exact action allows it here.
-      if (req.destructive) {
-        const { decision, message } = unattendedDestructiveDecision(req, opts.permissions, cwd);
-        if (format === "text") process.stderr.write(`\x1b[${decision.decision === "allow" ? "33" : "31"}m${message}\x1b[0m\n`);
-        else if (format === "stream-json") emitStreamJson(decision.decision === "allow" ? "warning" : "permission_denied", { tool: tool.name, args, reason: "irreversible", message });
-        return decision;
+      // Interactive mode's policy with no one to ask (permissions/headless-policy.ts).
+      const { decision, reason, notice } = await decideHeadlessPermission(req, {
+        allowAll: opts.allowAll,
+        ...(opts.permissions ? { rules: opts.permissions } : {}),
+        cwd,
+        mode: interactiveMode,
+      });
+      if (notice) {
+        const allowed = decision.decision === "allow";
+        if (format === "text") process.stderr.write(`\x1b[${allowed ? "33" : "31"}m${notice}\x1b[0m\n`);
+        else if (format === "stream-json") emitStreamJson(allowed ? "warning" : "permission_denied", { tool: tool.name, args, reason, message: notice });
       }
-      if (opts.allowAll) return "allow";
-
-      // Evaluate config-based permission rules
-      if (opts.permissions) {
-        const rule = evaluatePermissionRules({ tool: tool.name, args, cwd }, opts.permissions);
-        if (rule === "allow") return "allow";
-        if (rule === "deny") {
-          const msg = `[permission denied by config rule: ${tool.name}(${JSON.stringify(args)})]`;
-          if (format === "text") process.stderr.write(`\x1b[31m${msg}\x1b[0m\n`);
-          else if (format === "stream-json") emitStreamJson("permission_denied", { tool: tool.name, args, reason: "config_rule" });
-          return "deny";
-        }
-        // "ask" falls through to default deny in headless mode
-      }
-
-      // No one to ask in print mode, but PermissionRequest hooks may decide.
-      const fromHook = await permissionFromHook(req, "edit");
-      if (fromHook) {
-        if (fromHook.decision === "deny") {
-          const msg = `[permission denied by a PermissionRequest hook: ${tool.name}]`;
-          if (format === "text") process.stderr.write(`\x1b[31m${msg}\x1b[0m\n`);
-          else if (format === "stream-json") emitStreamJson("permission_denied", { tool: tool.name, args, reason: "hook" });
-        }
-        return fromHook;
-      }
-
-      const msg = `[permission denied: ${tool.name}(${JSON.stringify(args)}) — pass --dangerously-allow-all to approve in print mode, or configure permissions in config.json]`;
-      if (format === "text") {
-        process.stderr.write(`\x1b[31m${msg}\x1b[0m\n`);
-      } else if (format === "stream-json") {
-        emitStreamJson("permission_denied", { tool: tool.name, args });
-      }
-      return "deny";
+      return decision;
     },
   };
 
@@ -525,6 +519,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
           : undefined,
       allowDirectPush: opts.allowDirectPush,
       preferPullRequests: opts.preferPullRequests,
+      headless: true,
       // --continue sessions grow across runs; archive older turns onto the
       // session file (saved below) instead of failing on context size.
       compaction: sessionFileCompactionTarget(sessionFile),
@@ -573,12 +568,19 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   // Final output
   jsonOutput.durationMs = Date.now() - startMs;
+  const unfinished = unfinishedRun({ denied: deniedCalls, finalText, planOptions: offeredPlanOptions, turnEnd });
+  if (unfinished) {
+    process.exitCode = unfinished.code;
+    jsonOutput.unfinished = unfinished;
+  }
 
   if (format === "text") {
     process.stdout.write("\n");
+    if (unfinished) process.stderr.write(`\x1b[33mautopilot: ${unfinished.message}\x1b[0m\n`);
   } else if (format === "json") {
     process.stdout.write(JSON.stringify(jsonOutput, null, 2) + "\n");
   } else if (format === "stream-json") {
-    emitStreamJson("done", { sessionId: sessionFile.id, durationMs: jsonOutput.durationMs });
+    if (unfinished) emitStreamJson("unfinished", { ...unfinished });
+    emitStreamJson("done", { sessionId: sessionFile.id, durationMs: jsonOutput.durationMs, ...(unfinished ? { code: unfinished.code } : {}) });
   }
 }
