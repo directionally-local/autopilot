@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.17.0](https://github.com/directionally-local/autopilot/compare/v3.16.0...v3.17.0) (2026-11-10)
+
+
+### Features
+
+* /request to ask for more free tokens on the free tier ([#1227](https://github.com/directionally-local/autopilot/issues/1227)) ([d1cce3c](https://github.com/directionally-local/autopilot/commit/d1cce3c1d364a6523899df5e6f73aaa829e83b08))
+
+
+### Bug Fixes
+
+* treat the free tier's starter_limit like basic_limit ([#1230](https://github.com/directionally-local/autopilot/issues/1230)) ([b01414c](https://github.com/directionally-local/autopilot/commit/b01414c98a1ba577ebbf61ccadb6d4eeef8bfa9f))
+
 ## [3.16.0](https://github.com/directionally-local/autopilot/compare/v3.15.0...v3.16.0) (2026-11-09)
 
 
