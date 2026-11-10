@@ -14,6 +14,7 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "memory", argHint: "[on|off|menu|doctor|migrate-repo <old> <new>|clear|delete <id>|export [path]|search ...]", description: "Manage memory", source: "builtin" },
   { name: "usage", description: "Show your Directionally Local plan, tokens used and left this week, and when it resets", source: "builtin" },
   { name: "invite", description: "Free tier: your invite link (you both get +10M tokens a week), who joined, and your bonus", source: "builtin" },
+  { name: "request", description: "Free tier: ask for more free tokens (tell us what you're building)", source: "builtin" },
   { name: "upgrade", description: "Directionally Local: Pro or a one-time top-up; on Pro, manage or cancel your plan", source: "builtin" },
   { name: "cost", argHint: "[verify|on|off]", description: "Show cost report or toggle attribution", source: "builtin" },
   { name: "settings", argHint: "[modes|pr-footer|invite-tip|star-tip on|off]", description: "Show or change feature settings (e.g. plan/edit/auto modes, the PR footer)", source: "builtin" },

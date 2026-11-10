@@ -233,6 +233,8 @@ export interface DlErrorDetail {
   etaAt?: string;
   /** The service says trying again may work (its upstream's transient trouble). */
   retryable?: boolean;
+  /** below_bar, basic_limit: where to ask for more free tokens (/request); older servers send none. */
+  request?: string;
 }
 
 // ── Plans, offers, invites and the queue (all optional: older servers send none) ──
@@ -384,6 +386,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const position = num("position");
   const etaAt = str("etaAt", "eta_at");
   const retryable = e.retryable === true;
+  const request = str("request");
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -397,7 +400,16 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(position !== undefined && position >= 1 ? { position: Math.round(position) } : {}),
     ...(etaAt ? { etaAt } : {}),
     ...(retryable ? { retryable } : {}),
+    ...(request ? { request } : {}),
   };
+}
+
+/** Added to a below_bar or basic_limit refusal in a session when the service says where to ask (`request`). */
+export const DL_REQUEST_HINT = "type /request to ask for more free tokens.";
+
+/** The refusal's line, with the /request hint on its own line when the service sent `request` (sessions only). */
+function withRequestHint(line: string, extra: DlErrorExtra, where: DlWhere): string {
+  return extra.request && where === "session" ? `${line}\n${DL_REQUEST_HINT}` : line;
 }
 
 /** The free tier's transient codes: its own rate limit and its upstream's trouble. Retried with the shared policy. */
@@ -564,6 +576,9 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
     case "quota_exceeded":
       // The token and the spending allowance read the same: both are "this week's free tokens".
       return dlQuotaLine(extra.resetsAt, { ...extra, where });
+    case "basic_limit":
+      // A basic-tier account used its smaller weekly allowance: the same line, and where to ask for more.
+      return withRequestHint(dlQuotaLine(extra.resetsAt, { ...extra, where }), extra, where);
     case "upstream_busy":
       return "The free tier is busy right now; try again shortly.";
     case "upstream_unavailable":
@@ -577,7 +592,12 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
     case "below_bar":
       // The account is below the free tier's bar; the service's sentence says who free tokens
       // are for and how to ask for credits anyway.
-      return extra.message ?? "Free tokens are for established GitHub accounts. Email contact@directionallylocal.com and tell us what you want to build with dl, and we'll give you free credits. Or use your own API key with /provider.";
+      return withRequestHint(
+        extra.message ??
+          "Free tokens are for established GitHub accounts. Email contact@directionallylocal.com and tell us what you want to build with dl, and we'll give you free credits. Or use your own API key with /provider.",
+        extra,
+        where,
+      );
     case "dl_only":
       // Free tokens were used from another tool; the service's sentence says what to do.
       return extra.message ?? "Free tokens work inside dl only. Run dl to keep using them, or use your own API key in any tool.";

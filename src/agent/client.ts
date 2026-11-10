@@ -519,7 +519,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       const retryAfterMs =
         parseRetryAfter(dlErr?.retryAfter ?? res.headers.get("retry-after")) ?? (dlErr?.code === "upstream_busy" ? DL_BUSY_RETRY_AFTER_MS : undefined);
       if (retryAfterMs !== undefined) apiErr.retryAfterMs = retryAfterMs;
-      if (dlErr?.code === "quota_exceeded") noteDlQuotaExceeded({ ...(dlErr.reason ? { reason: dlErr.reason } : {}), ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}) });
+      if (dlErr?.code === "quota_exceeded" || dlErr?.code === "basic_limit") noteDlQuotaExceeded({ ...(dlErr.reason ? { reason: dlErr.reason } : {}), ...(dlErr.resetsAt ? { resetsAt: dlErr.resetsAt } : {}) });
       traceResponse(attemptStartedAt, apiErr.message);
       if (shouldRetryModelCall(apiErr, attempt, maxRetries)) {
         const delay = modelRetryDelay(attempt, retryAfterMs);

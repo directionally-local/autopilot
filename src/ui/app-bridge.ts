@@ -32,6 +32,7 @@ import type { IntentTier } from "./narrator.js";
 import type { QueuePlanChoice } from "./queue-plan.js";
 import type { DlScreen, DlScreenOutcome } from "../providers/dl-growth.js";
 import type { FeedbackLine, FeedbackRequest } from "../feedback.js";
+import type { AccessRequestLine, AccessRequestOpen } from "../access-request.js";
 import type { GithubAccessOutcome, GithubAccessRequest } from "../github-access.js";
 
 /** Which dialog App currently wants open (the Camouflage view draws it). */
@@ -121,6 +122,8 @@ export interface AppSnapshot {
   githubAccess?: GithubAccessRequest | null;
   /** `/feedback` is open: the message typed after the command, if any, and the active provider (see feedback.ts). */
   feedback?: FeedbackRequest | null;
+  /** `/request` is open: the active provider (see access-request.ts). */
+  accessRequest?: AccessRequestOpen | null;
 }
 
 export interface AppActions {
@@ -169,6 +172,8 @@ export interface AppActions {
   githubAccessDone?: (outcome: GithubAccessOutcome) => void;
   /** `/feedback` ended: the line to add to the transcript (sent, not sent, or why not). */
   feedbackDone?: (line: FeedbackLine) => void;
+  /** `/request` ended: the line to add to the transcript (sent, already in, cancelled, or why not). */
+  accessRequestDone?: (line: AccessRequestLine) => void;
   exit: () => void;
 }
 

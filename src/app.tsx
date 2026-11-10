@@ -130,6 +130,7 @@ import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won,
 import { lastKnownDlMe } from "./providers/directionally-local.js";
 import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
 import type { FeedbackLine, FeedbackRequest } from "./feedback.js";
+import type { AccessRequestLine, AccessRequestOpen } from "./access-request.js";
 import type { GithubAccessOutcome, GithubAccessRequest } from "./github-access.js";
 import { ApiError as DlApiError } from "./util/errors.js";
 
@@ -302,6 +303,8 @@ function App({
   const [starAsk, setStarAsk] = useState<string | null>(null);
   // /feedback's inputs, while open (the view runs the flow; see feedback.ts).
   const [feedback, setFeedback] = useState<FeedbackRequest | null>(null);
+  // /request's inputs, while open (the view runs the flow; see access-request.ts).
+  const [accessRequest, setAccessRequest] = useState<AccessRequestOpen | null>(null);
   // A push or pull request without GitHub access: the question, and the tool call waiting on it.
   const [githubAccess, setGithubAccess] = useState<GithubAccessRequest | null>(null);
   const githubAccessResolveRef = useRef<((outcome: GithubAccessOutcome) => void) | null>(null);
@@ -1089,6 +1092,7 @@ function App({
     turnHistoryRef,
     openDlScreen: setDlScreen,
     openFeedback: setFeedback,
+    openAccessRequest: setAccessRequest,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage,
@@ -2235,6 +2239,10 @@ function App({
         setFeedback(null);
         setEvents((es) => [...es, { kind: line.severity, key: mkKey(), text: line.text }]);
       },
+      accessRequestDone: (line: AccessRequestLine) => {
+        setAccessRequest(null);
+        setEvents((es) => [...es, { kind: line.severity, key: mkKey(), text: line.text }]);
+      },
       githubAccessDone: (outcome: GithubAccessOutcome) => {
         setGithubAccess(null);
         const resolve = githubAccessResolveRef.current;
@@ -2312,6 +2320,7 @@ function App({
       starAsk,
       githubAccess,
       feedback,
+      accessRequest,
       lsp: {
         servers: cfg?.lspServers ?? {},
         scope: lspScope,

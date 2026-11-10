@@ -34,6 +34,16 @@ import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlCheckout, dlHe
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
+import {
+  ACCESS_BUILDING_MAX,
+  ACCESS_BUILDING_PROMPT,
+  ACCESS_FAILED_LINE,
+  ACCESS_LINK_PROMPT,
+  ACCESS_TITLE,
+  runAccessRequest,
+  type AccessRequestLine,
+  type AccessRequestOpen,
+} from "./access-request.js";
 import { copyWithOsc52 } from "./util/osc52.js";
 import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
@@ -471,6 +481,10 @@ export class View implements AppBridge {
   freeStatus: () => Promise<DlFreeStatus> = () => dlFreeStatus();
   /** What /feedback calls (the free tier token, and fetch); replaced in tests. */
   feedbackCalls: { token: () => Promise<string | undefined>; fetchImpl?: typeof fetch } = { token: () => dlAccessToken() };
+  /** What /request calls (the free tier token, refreshed on `force`, and fetch); replaced in tests. */
+  accessRequestCalls: { token: (force?: boolean) => Promise<string | undefined>; fetchImpl?: typeof fetch } = {
+    token: (force) => dlAccessToken(force ? { force } : {}),
+  };
   /** What the free tier's limit, queue and /upgrade screens call; replaced in tests. */
   dlScreenCalls: Pick<DlScreenDeps, "checkout" | "fetchMe" | "openBrowser" | "copy" | "sleep" | "now"> = {
     checkout: (product) => dlCheckout(product),
@@ -1086,6 +1100,13 @@ export class View implements AppBridge {
       return want("feedback", async () => {
         const line = await this.feedback(req).catch((): FeedbackLine => ({ text: FEEDBACK_FALLBACK_LINE, severity: "error" }));
         a.feedbackDone?.(line);
+      });
+    }
+    if (s.accessRequest) {
+      const req = s.accessRequest;
+      return want("accessRequest", async () => {
+        const line = await this.accessRequest(req).catch((): AccessRequestLine => ({ text: ACCESS_FAILED_LINE, severity: "error" }));
+        a.accessRequestDone?.(line);
       });
     }
     if (s.queuePlan) {
@@ -1705,6 +1726,34 @@ export class View implements AppBridge {
           ],
         });
         return f.cancelled ? null : f.values?.email ?? "";
+      },
+    });
+  }
+
+  /**
+   * `/request`: the request's status, then (with none pending) what the
+   * person is building and an optional link, each on one line, then the
+   * send. The answers go only to the free tier service (see access-request.ts).
+   */
+  accessRequest(req: AccessRequestOpen): Promise<AccessRequestLine> {
+    const say = (message: string) => void this.cam.send("RuntimeError", { message, severity: "info" });
+    return runAccessRequest({
+      providerId: req.providerId,
+      ...(req.providerName ? { providerName: req.providerName } : {}),
+      token: this.accessRequestCalls.token,
+      ...(this.accessRequestCalls.fetchImpl ? { fetchImpl: this.accessRequestCalls.fetchImpl } : {}),
+      status: say,
+      ask: async (field, { problem, draft }) => {
+        const f = await this.sdk.form(this.cam, {
+          id: `access-request-${field}-${Date.now()}`,
+          title: `${ACCESS_TITLE}${problem ? ` · ${problem}` : ""}`,
+          fields: [
+            field === "building"
+              ? { name: field, label: ACCESS_BUILDING_PROMPT, required: true, placeholder: `10 to ${ACCESS_BUILDING_MAX} characters`, ...(draft ? { default: draft } : {}) }
+              : { name: field, label: ACCESS_LINK_PROMPT, placeholder: "https://github.com/you", ...(draft ? { default: draft } : {}) },
+          ],
+        });
+        return f.cancelled ? null : f.values?.[field] ?? "";
       },
     });
   }

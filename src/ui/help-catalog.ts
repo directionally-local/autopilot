@@ -94,6 +94,7 @@ export const CATEGORIES: Category[] = [
       { command: "/cost off", description: "disable cost attribution by task type" },
       { command: "/usage", description: "Directionally Local: plan, tokens used and left this week, top-up, invite bonus, and when it resets" },
       { command: "/invite", description: "free tier: your invite link (you both get +10M a week), who joined, and your bonus" },
+      { command: "/request", description: "free tier: ask for more free tokens (tell us what you're building)" },
       { command: "/upgrade", description: "Directionally Local: Pro or a top-up; on Pro, manage or cancel your plan" },
     ],
   },

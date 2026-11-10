@@ -17,6 +17,7 @@ import { statePath } from "../util/app-dirs.js";
 import { createsGhPr } from "../util/pr-footer.js";
 import {
   DL_INVITE_BONUS_TOKENS,
+  DL_REQUEST_HINT,
   DL_SWITCH_HINT,
   dlCheckout,
   dlQueuePlace,
@@ -134,7 +135,7 @@ export function dlWinLine(link: string): string {
 export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts = {}): string | undefined {
   const link = d.referralLink;
   const ways = `Keep going now: \`${DL_UPGRADE_COMMAND}\`, or your own key: \`autopilot connect\`.`;
-  if (code === "quota_exceeded") {
+  if (code === "quota_exceeded" || code === "basic_limit") {
     const invite = link ? `Invite a friend and you both get +${formatTokens(DL_REFERRAL_BONUS_TOKENS)} a week: ${link} · ` : "";
     return `${dlLimitTitle(d.resetsAt, o)} ${invite}${ways}`;
   }
@@ -268,7 +269,7 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 
 /** A screen the session shows: out of tokens, queued, or /upgrade. */
 export type DlScreen =
-  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string }
+  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string }
   | { kind: "queued"; position?: number; etaAt?: string; offers?: DlOffers; referralLink?: string }
   | { kind: "upgrade"; offers: DlOffers };
 
@@ -286,11 +287,13 @@ export interface DlScreenDeps extends PurchaseDeps {
   timeZone?: string;
 }
 
-/** The screen for a free-tier error, when it has one (quota_exceeded, free_tier_queued). */
+/** The screen for a free-tier error, when it has one (quota_exceeded or basic_limit, free_tier_queued). */
 export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallbackLink?: string): DlScreen | undefined {
   const referralLink = d.referralLink ?? fallbackLink;
   const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}) };
-  if (code === "quota_exceeded") return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...common };
+  if (code === "quota_exceeded" || code === "basic_limit") {
+    return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...common };
+  }
   if (code === "free_tier_queued") return { kind: "queued", ...(d.position ? { position: d.position } : {}), ...(d.etaAt ? { etaAt: d.etaAt } : {}), ...common };
   return undefined;
 }
@@ -307,7 +310,12 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
         ? dlQueueTitle(screen.position, screen.etaAt, t)
         : "Upgrade Directionally Local";
   const hint = "Enter to choose · Esc to close";
-  const subtitle = screen.kind === "queued" && link ? `Your invite link: ${link} · ${hint}` : hint;
+  const subtitle =
+    screen.kind === "queued" && link
+      ? `Your invite link: ${link} · ${hint}`
+      : screen.kind === "quota" && screen.request
+        ? `${DL_REQUEST_HINT} · ${hint}`
+        : hint;
   const choice = (await deps.select(title, choices, subtitle)) as DlChoice | null;
   if (choice === null) return "dismissed";
   if (choice === "own-key") return "own-key";
