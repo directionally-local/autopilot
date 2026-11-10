@@ -9,6 +9,7 @@
   <a href="https://github.com/directionally-local/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat-square&logo=homebrew&logoColor=black" alt="Install with Homebrew"></a>
   <a href="https://www.npmjs.com/package/autopilot-ai"><img src="https://img.shields.io/npm/dm/autopilot-ai?style=flat-square&color=cb3837" alt="npm downloads"></a>
   <a href="https://github.com/directionally-local/autopilot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/directionally-local/autopilot?style=flat-square&color=2ea44f" alt="license"></a>
+  <a href="https://discord.gg/zeBnJTgcRK"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Join the Discord"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.23.4-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js >= 22.23.4">
   <img src="https://img.shields.io/badge/typescript-5.7-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/runs%20on-OpenRouter%20·%20OpenAI%20·%20DeepSeek%20·%20Ollama%20·%20…-6566f1?style=flat-square" alt="Runs on OpenRouter, OpenAI, DeepSeek, Ollama and more">
@@ -915,6 +916,10 @@ Scripts:
 - `npm run dev` — run via tsx
 - `npm run typecheck` — `tsc --noEmit`
 - `npm test` — run tests
+
+## Community
+
+Questions, ideas, or something you built with it: [join the Directionally Local Discord](https://discord.gg/zeBnJTgcRK).
 
 ## Contributing
 
