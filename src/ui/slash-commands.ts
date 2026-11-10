@@ -106,6 +106,7 @@ import type { TurnRecord } from "./use-session-manager.js";
 import { launchedByDl, readEnv } from "../util/env.js";
 import { BUG_REPORT_EMAIL, BUG_REPORT_LINE, BUG_REPORT_URL } from "./bug-report.js";
 import type { FeedbackRequest } from "../feedback.js";
+import { accessNotFreeTierLine, type AccessRequestOpen } from "../access-request.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -203,6 +204,8 @@ export interface SlashContext {
   openDlScreen?: (screen: DlScreen) => void;
   /** Open `/feedback`'s inputs (the view runs feedback.ts's flow). */
   openFeedback?: (o: FeedbackRequest) => void;
+  /** Open `/request`'s inputs (the view runs access-request.ts's flow). */
+  openAccessRequest?: (o: AccessRequestOpen) => void;
 }
 
 type Handler = (ctx: SlashContext, rest: string[], arg: string) => boolean | Promise<boolean>;
@@ -2170,6 +2173,20 @@ const handleFeedback: Handler = (ctx, rest) => {
   return true;
 };
 
+/**
+ * `/request`: ask for more free tokens (free tier only). The view checks the
+ * request's status, asks two questions inline and sends them (see
+ * access-request.ts). Text typed after the command is ignored, never sent.
+ */
+const handleRequest: Handler = (ctx) => {
+  const provider = providerPresetOf(llmAuthFromConfig(ctx.cfg));
+  const say = (text: string) => ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text }]);
+  if (provider.id !== "directionally-local") say(accessNotFreeTierLine(provider.name));
+  else if (!ctx.openAccessRequest) say("/request isn't available here; run it in a dl session.");
+  else ctx.openAccessRequest({ providerId: provider.id, providerName: provider.name });
+  return true;
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const handlers: Record<string, Handler> = {
@@ -2181,6 +2198,7 @@ const handlers: Record<string, Handler> = {
   "/usage": handleUsage,
   "/invite": handleInvite,
   "/upgrade": handleUpgrade,
+  "/request": handleRequest,
   "/shell": handleShell,
   "/model": handleModel,
   "/jev": handleJev,

@@ -667,6 +667,47 @@ describe("Camouflage /feedback", () => {
   });
 });
 
+describe("Camouflage /request", () => {
+  it("checks the status, asks the two questions inline on one line each, sends, and hands App the line", async () => {
+    const { view, prompts, calls } = await fakeView({
+      form: [{ values: { building: "a local-first notes app" }, cancelled: false }, { values: { link: "" }, cancelled: false }],
+    });
+    const seen: { method: string; body?: unknown }[] = [];
+    view.accessRequestCalls = {
+      token: async () => "tok",
+      fetchImpl: (async (_url: string, init: RequestInit = {}) => {
+        seen.push({ method: init.method ?? "GET", ...(init.body ? { body: JSON.parse(String(init.body)) } : {}) });
+        return init.method === "POST" ? new Response(JSON.stringify({ status: "pending" }), { status: 201 }) : new Response(JSON.stringify({ status: "none" }));
+      }) as typeof fetch,
+    };
+    view.sync(baseSnapshot({ accessRequest: { providerId: "directionally-local" } }));
+    await settle();
+    const [building, link] = prompts.map((p) => (p.payload.fields as Record<string, unknown>[])[0]!);
+    assert.strictEqual(building!.label, "what are you building with dl?");
+    assert.strictEqual(building!.kind, undefined);
+    assert.strictEqual(link!.label, "a link that shows your work (github, site, anything), optional, enter to skip");
+    assert.deepStrictEqual(seen, [{ method: "GET" }, { method: "POST", body: { building: "a local-first notes app" } }]);
+    assert.deepStrictEqual(calls, [
+      ["accessRequestDone", { text: "sent. sina reviews these by hand, usually within a day. you'll get an email when it's done.", severity: "info" }],
+    ]);
+    view.dispose();
+  });
+
+  it("Esc cancels without sending", async () => {
+    const { view, calls } = await fakeView({ form: [{ cancelled: true }] });
+    const methods: string[] = [];
+    view.accessRequestCalls = {
+      token: async () => "tok",
+      fetchImpl: (async (_url: string, init: RequestInit = {}) => (methods.push(init.method ?? "GET"), new Response(JSON.stringify({ status: "none" })))) as typeof fetch,
+    };
+    view.sync(baseSnapshot({ accessRequest: { providerId: "directionally-local" } }));
+    await settle();
+    assert.deepStrictEqual(methods, ["GET"]);
+    assert.deepStrictEqual(calls, [["accessRequestDone", { text: "request not sent.", severity: "info" }]]);
+    view.dispose();
+  });
+});
+
 describe("Camouflage GitHub star ask", () => {
   const line = "⭐ Enjoying dl? Star it on GitHub: https://github.com/directionally-local/autopilot  (press s to star · any other key to dismiss)";
 
