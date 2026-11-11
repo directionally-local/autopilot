@@ -12,6 +12,8 @@ import { destructivePrompt } from "./guardrails.js";
 import { decideHeadlessPermission, type HeadlessPermissionOptions } from "./headless-policy.js";
 import { undoLatest } from "./recovery.js";
 import { startMode } from "../mode.js";
+import { decidePermission } from "./mode-policy.js";
+import { readTool } from "../tools/read.js";
 
 let T: string;
 const savedDir = process.env.AUTOPILOT_RECOVERY_DIR;
@@ -115,6 +117,80 @@ describe("print mode follows interactive mode's permission policy", () => {
     const unasked: string[] = [];
     await decideHeadlessPermission(edit("a", withHook({ decision: "allow" }, unasked)), opts({ rules: { edit: { "**": "deny" } } }));
     assert.deepEqual(unasked, []);
+  });
+});
+
+describe("print mode reads credentials only with an exact rule or the flag", () => {
+  const readEnv = (path = ".env", extra: Partial<PermissionRequest> = {}): PermissionRequest => ({
+    tool: { ...tool("read"), needsPermission: false } as ToolSpec,
+    args: { path },
+    sessionKey: "k",
+    sensitiveReason: "reads an environment file (.env)",
+    ...extra,
+  });
+
+  it("denies a credentials read without a rule, and tells the model not to ask", async () => {
+    const d = await decideHeadlessPermission(readEnv(), opts());
+    assert.equal(d.decision.decision, "deny");
+    assert.equal(d.reason, "credentials");
+    assert.match(d.decision.message ?? "", /do not retry it or ask for permission/);
+    assert.match(d.notice ?? "", /exact path/);
+  });
+
+  it("allows it with an allow rule naming the exact path, relative, absolute or under ~", async () => {
+    assert.equal((await decideHeadlessPermission(readEnv(), opts({ rules: { read: { [join(T, ".env")]: "allow" } } }))).decision.decision, "allow");
+    assert.equal((await decideHeadlessPermission(readEnv(), opts({ rules: { read: { ".env": "allow" } } }))).reason, "config_rule");
+    assert.equal(
+      (await decideHeadlessPermission(readEnv("~/.aws/credentials", { sensitiveReason: "reads credentials location ~/.aws" }), opts({ rules: { read: { "~/.aws/credentials": "allow" } } }))).decision.decision,
+      "allow",
+    );
+  });
+
+  it("broad allow rules, other paths' rules and PermissionRequest hooks don't allow it; a deny rule still denies", async () => {
+    assert.equal((await decideHeadlessPermission(readEnv(), opts({ rules: { read: { "**": "allow" } } }))).decision.decision, "deny");
+    assert.equal((await decideHeadlessPermission(readEnv(), opts({ rules: { read: { [T]: "allow" } } }))).decision.decision, "deny");
+    assert.equal((await decideHeadlessPermission(readEnv(), opts({ rules: { edit: { [join(T, ".env")]: "allow" } } }))).decision.decision, "deny");
+    const unasked: string[] = [];
+    assert.equal((await decideHeadlessPermission(readEnv(".env", withHook({ decision: "allow" }, unasked)), opts())).decision.decision, "deny");
+    assert.deepEqual(unasked, []);
+    const d = await decideHeadlessPermission(readEnv(), opts({ rules: { read: { [join(T, ".env")]: "deny" } } }));
+    assert.equal(d.reason, "config_rule");
+    assert.equal(d.decision.decision, "deny");
+  });
+
+  it("--dangerously-allow-all allows it, as for other calls that would need a person", async () => {
+    const d = await decideHeadlessPermission(readEnv(), opts({ allowAll: true }));
+    assert.equal(d.decision.decision, "allow");
+    assert.equal(d.reason, "allow_all");
+  });
+
+  it("covers grep over a credentials location, and leaves ordinary reads alone", async () => {
+    const grep: PermissionRequest = { tool: { ...tool("grep"), needsPermission: false } as ToolSpec, args: { pattern: "x" }, sessionKey: "k", sensitiveReason: "reads credentials location /x" };
+    assert.equal((await decideHeadlessPermission(grep, opts())).reason, "credentials");
+    assert.equal((await decideHeadlessPermission(grep, opts({ rules: { grep: { [T]: "allow" } } }))).decision.decision, "allow");
+    const plain: PermissionRequest = { tool: tool("read"), args: { path: "src/a.ts" }, sessionKey: "k" };
+    assert.equal((await decideHeadlessPermission(plain, opts())).decision.decision, "allow");
+  });
+
+  it("interactive auto mode still approves a credentials read without asking", () => {
+    assert.deepEqual(decidePermission(readEnv(), "auto"), { kind: "resolve", decision: { decision: "allow", scope: "once" } });
+    assert.equal(decidePermission(readEnv(), "edit").kind, "prompt");
+  });
+
+  it("through the executor, the real read tool's credentials read is a denied call", async () => {
+    const dir = mkdtempSync(join(T, "creds-"));
+    writeFileSync(join(dir, ".env"), "SECRET=1\n");
+    const exec = new ToolExecutor([readTool as unknown as ToolSpec]);
+    const asker: PermissionAsker = (req) => decideHeadlessPermission(req, opts({ cwd: dir })).then((d) => d.decision);
+    const res = await exec.run({ id: "r1", name: "read", arguments: JSON.stringify({ path: ".env" }) }, asker, { cwd: dir });
+    assert.equal(res.ok, false);
+    assert.equal(res.denied, true);
+    assert.doesNotMatch(res.content, /SECRET=1/);
+    assert.match(res.content, /finish and report what's left/);
+    const allowAll: PermissionAsker = (req) => decideHeadlessPermission(req, opts({ cwd: dir, allowAll: true })).then((d) => d.decision);
+    const ok = await exec.run({ id: "r2", name: "read", arguments: JSON.stringify({ path: ".env" }) }, allowAll, { cwd: dir });
+    assert.equal(ok.ok, true);
+    assert.match(ok.content, /SECRET=1/);
   });
 });
 
