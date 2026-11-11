@@ -21,7 +21,10 @@ import {
   takeFreeDefaultLunaNotice,
   DL_FREE_OLD_DEFAULT_MODEL,
   FREE_DEFAULT_LUNA_NOTICE,
+  pickedModel,
 } from "./config.js";
+import { switchProvider } from "./providers/keys.js";
+import { freeModelFallback } from "./providers/directionally-local.js";
 
 describe("validateModelId", () => {
   it("accepts OpenRouter model ids", () => {
@@ -735,6 +738,54 @@ describe("loadConfig", () => {
       assert.strictEqual(await savedModel(), DL_FREE_OLD_DEFAULT_MODEL);
       assert.strictEqual(await flag(), undefined);
       assert.strictEqual(await takeFreeDefaultLunaNotice(), null);
+    });
+
+    it("remembers a model picked with /model across sessions", async () => {
+      // Sign-in saves the free tier with GPT-6 Luna under providers.directionally-local.model.
+      await writeConfigFile({ providers: { [DL]: { apiKey: "access-1" } } });
+      await switchProvider(null, DL, "gpt-6-luna");
+      const first = (await loadConfig())!;
+      assert.strictEqual(first.model, "gpt-6-luna");
+      // The model picker and `/model <id>` both save { ...cfg, model }.
+      await saveConfig({ ...first, model: "gpt-6.1-sol" });
+      assert.strictEqual((await loadConfig())?.model, "gpt-6.1-sol", "the next session starts on the picked model");
+      assert.strictEqual(await savedModel(), "gpt-6.1-sol");
+      assert.strictEqual(await flag(), true);
+      assert.strictEqual((await loadConfig())?.model, "gpt-6.1-sol", "and keeps it after the migration has run");
+    });
+
+    it("keeps the picked free model when the free tier is chosen again", async () => {
+      await writeConfigFile(free("gpt-6.1-sol", { migrations: { freeDefaultLuna: true } }));
+      await switchProvider(await loadConfig(), "openai", "gpt-5.6");
+      await switchProvider(await loadConfig(), DL, "gpt-6-luna");
+      assert.strictEqual((await loadConfig())?.model, "gpt-6.1-sol");
+    });
+
+    it("falls back to Luna for a session without forgetting the saved choice", async () => {
+      await writeConfigFile(free("gpt-6.1-sol", { migrations: { freeDefaultLuna: true } }));
+      const cfg = (await loadConfig())!;
+      const fallback = freeModelFallback(cfg, { pools: { sol: { tokensPerWeek: 5_000_000, usedThisWeek: 5_000_000, remaining: 0, models: ["gpt-6.1-sol"] } } });
+      assert.ok(fallback);
+      assert.strictEqual(fallback.cfg.model, "gpt-6-luna");
+      assert.match(fallback.notice, /GPT-6\.1 Sol/);
+      assert.match(fallback.notice, /GPT-6 Luna/);
+      // Anything saved during the session (a /settings toggle) keeps Sol on disk.
+      await saveConfig({ ...fallback.cfg, shell: "zsh" });
+      assert.strictEqual(await savedModel(), "gpt-6.1-sol");
+      assert.strictEqual((await loadConfig())?.model, "gpt-6.1-sol");
+      // An explicit pick during the session is saved as usual.
+      await saveConfig({ ...pickedModel(fallback.cfg, "gpt-6-astra") });
+      assert.strictEqual(await savedModel(), "gpt-6-astra");
+    });
+
+    it("does not fall back when the model's pool has tokens or the service didn't say", async () => {
+      await writeConfigFile(free("gpt-6.1-sol", { migrations: { freeDefaultLuna: true } }));
+      const cfg = (await loadConfig())!;
+      assert.strictEqual(freeModelFallback(cfg, null), null);
+      assert.strictEqual(freeModelFallback(cfg, {}), null);
+      assert.strictEqual(freeModelFallback(cfg, { pools: { sol: { tokensPerWeek: 5, usedThisWeek: 1, remaining: 4, models: [] } } }), null);
+      assert.ok(freeModelFallback(cfg, { models: ["gpt-6-luna"] }), "a model the account isn't offered falls back");
+      assert.strictEqual(freeModelFallback({ ...cfg, model: "gpt-6-luna" }, { pools: { luna: { tokensPerWeek: 5, usedThisWeek: 5, remaining: 0, models: [] } } }), null, "Luna itself never falls back");
     });
 
     for (const model of ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]) {

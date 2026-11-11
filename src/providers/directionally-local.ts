@@ -19,7 +19,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { configPath, patchPersistedConfig, type AutopilotConfig } from "../config.js";
+import { configPath, patchPersistedConfig, setSessionModelFallback, type AutopilotConfig } from "../config.js";
 import { getUserAgent } from "../util/version.js";
 import type { ProviderSettings } from "./resolve.js";
 import type { ModelEntry } from "../models/registry.js";
@@ -1164,6 +1164,39 @@ export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnow
   const pool = model && me?.pools?.[model.pool];
   if (!pool) return undefined;
   return `${formatTokens(Math.max(0, pool.remaining))} of ${formatTokens(pool.tokensPerWeek)} left this week`;
+}
+
+/**
+ * The free model to run this session on when the saved one has nothing left:
+ * its pool is empty this week (or the service no longer offers it) while
+ * GPT-6 Luna's isn't. Returns the config for this session and a one-line
+ * notice, and records the fallback so saving the config keeps the saved
+ * model for later sessions. Null when the saved model is fine, isn't a free
+ * model, or /v1/me didn't say enough to tell.
+ */
+export function freeModelFallback<T extends { model?: string }>(
+  cfg: T,
+  me: Pick<DlMe, "pools" | "models" | "topupTokensLeft"> | null,
+): { cfg: T; notice: string } | null {
+  const saved = cfg.model;
+  const model = DL_FREE_MODELS.find((entry) => entry.id === saved);
+  const luna = DL_FREE_MODELS.find((entry) => entry.id === DL_FREE_MODEL)!;
+  if (!me || !saved || !model || model.pool === luna.pool) return null;
+  // Bought tokens cover an empty pool.
+  if ((me.topupTokensLeft ?? 0) > 0) return null;
+  const pool = me.pools?.[model.pool];
+  const notOffered = Array.isArray(me.models) && me.models.length > 0 && !me.models.includes(saved);
+  const empty = !!pool && pool.remaining <= 0;
+  if (!notOffered && !empty) return null;
+  // Nothing gained when Luna has nothing left either: the service's own limit message says why.
+  const lunaPool = me.pools?.[luna.pool];
+  if (lunaPool && lunaPool.remaining <= 0) return null;
+  setSessionModelFallback({ provider: DL_PROVIDER_ID, saved, used: luna.id });
+  const why = empty ? `has no free tokens left this week` : `isn't available on your account`;
+  return {
+    cfg: { ...cfg, model: luna.id },
+    notice: `${model.name} ${why}, so this session runs on ${luna.name}. ${model.name} stays your saved model for later sessions.`,
+  };
 }
 
 /**

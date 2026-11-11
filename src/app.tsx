@@ -48,7 +48,7 @@ import { setTerminalTitle } from "./ui/terminal-title.js";
 import { syncHerdrFromTui } from "./util/herdr.js";
 import { checkForUpdate, updateNotice } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, pickedModel, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, startMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
@@ -989,7 +989,7 @@ function App({
       const previousModel = cfg?.model ?? "the current model";
       setCfg((c) => {
         if (!c) return c;
-        const updated = { ...c, model: picked.id };
+        const updated = pickedModel(c, picked.id);
         void saveConfig(updated).catch(() => {});
         return updated;
       });

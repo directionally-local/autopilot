@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { unlink, writeFile } from "node:fs/promises";
 
 import type { Cfg } from "../app.js";
-import { configPath, loadConfig, saveConfig, patchPersistedConfig, readPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf, type AutopilotConfig } from "../config.js";
+import { configPath, loadConfig, saveConfig, patchPersistedConfig, pickedModel, readPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf, type AutopilotConfig } from "../config.js";
 import type { ChatEvent } from "./view-types.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
@@ -28,7 +28,7 @@ import { getPreset, isProviderId, type ProviderId } from "../providers/presets.j
 import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { switchedMessage } from "../providers/connect.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, dlBillingPortal, dlNotFreeLine, fetchDlMe, renderDlUsage, revokeDlTokens, withoutDlCredentials, type DlMe, type DlRevokeResult } from "../providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_FREE_MODELS, DL_PROVIDER_ID, dlBillingPortal, dlNotFreeLine, fetchDlMe, renderDlUsage, revokeDlTokens, withoutDlCredentials, type DlMe, type DlRevokeResult } from "../providers/directionally-local.js";
 import { dlInviteReport, dlUpgradeStep, type DlScreen } from "../providers/dl-growth.js";
 import { copyWithOsc52 } from "../util/osc52.js";
 import { endSession } from "../hooks/session-lifecycle.js";
@@ -750,7 +750,7 @@ const handleModel: Handler = (ctx, rest, arg) => {
     return true;
   }
   // Free only: any other model needs the person's own key, so connect a provider for it.
-  if (provider.id === "directionally-local" && id !== DL_FREE_MODEL) {
+  if (provider.id === "directionally-local" && !DL_FREE_MODELS.some((m) => m.id === id)) {
     setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `${dlNotFreeLine(id)} Pick a provider for your own key below (or any time with /provider); /model ${DL_FREE_MODEL} keeps you on the free tier.` }]);
     // The whole provider list (OpenRouter, Anthropic, OpenAI and the rest), not one provider chosen for them.
     ctx.setProviderSetup({});
@@ -762,7 +762,7 @@ const handleModel: Handler = (ctx, rest, arg) => {
   const profileNote = profile ? ` · profile ${profile}` : "";
   setCfg((prev) => {
     if (!prev) return prev;
-    const updated = { ...prev, model: id };
+    const updated = pickedModel(prev, id);
     void saveConfig(updated).catch(() => {});
     return updated;
   });
