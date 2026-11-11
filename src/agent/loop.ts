@@ -68,6 +68,9 @@ export interface AgentCallbacks {
   onUsageFinal?: (usage: Usage, responseMeta?: ResponseMeta) => void;
   onResponseMeta?: (meta: ResponseMeta) => void;
   onAssistantFinal?: (msg: ChatMessage) => void;
+  /** Once, when the turn returns normally: why it ended. "complete" is a
+   *  plain finish; "guardrail" means a limit stopped it before it finished. */
+  onTurnEnd?: (reason: TurnEndReason) => void;
   onToolResult?: (result: ToolResult) => void;
   onTasks?: (tasks: Task[]) => void;
   onPlanOptions?: (options: PlanOption[]) => void;
@@ -190,6 +193,8 @@ export interface AgentTurnOpts extends LlmAuth {
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
+  /** Print mode: keep the headless section when the system prompt is rebuilt. */
+  headless?: boolean;
   /** Re-inject the live `tasks_set` plan on every request (#950). Default: true. */
   planReminder?: boolean;
   /** Remind the model when a whole step went to bookkeeping alone (tasks_set /
@@ -490,6 +495,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
     await runAgentTurnInner(opts, tr);
     endTurn(tr.endReason ?? "complete", tr.finalText);
     dlTurnEnd(tr.endReason ?? "complete");
+    opts.callbacks.onTurnEnd?.(tr.endReason ?? "complete");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       endTurn("aborted", tr.partialText || tr.finalText);

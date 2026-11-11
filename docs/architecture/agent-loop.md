@@ -162,12 +162,17 @@ a coarse phase, and a kill flag; actual cancellation goes through the
 | --- | --- |
 | Assistant message with no tool calls | pending steers continue the turn; a substantial turn that stopped after only planning gets one "continue" nudge (Jev completion check); otherwise normal return (Stop hook fires) |
 | Every call in an iteration blocked | 1st time: recovery instruction; 2nd: tool-free summary, then `AgentLoopError` (exit 43 in print mode) |
-| `maxTotalToolIterations` reached | tool-free summary, clean return |
+| `maxTotalToolIterations` reached | tool-free summary, clean return (`onTurnEnd("guardrail")`; exit 45 in print mode) |
 | Cumulative prompt tokens ≥ `maxInputTokens` | `BudgetExhaustedError` (exit 42) |
 | Abort signal | `AbortError` |
 
 The loop never blocks waiting on a user decision except through permission
 prompts.
+
+A turn that returns normally reports why through `callbacks.onTurnEnd`
+(`complete`, `guardrail`, `needs_input`). Print mode uses it, together with
+denied tool calls (`ToolResult.denied`), plan options and a closing question
+in the final reply, to exit 45 when the run didn't finish (`src/print-outcome.ts`).
 
 ## Tools — `src/tools/`
 

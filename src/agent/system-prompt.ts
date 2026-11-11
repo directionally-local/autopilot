@@ -35,7 +35,13 @@ export interface SystemPromptOpts {
   memoryEnabled?: boolean;
   /** Display name of the provider serving the model; defaults to the one the loaded config uses. */
   provider?: string;
+  /** True in print mode (`-p`): no one can answer questions or approve actions. */
+  headless?: boolean;
 }
+
+/** Print mode only: no one is there to answer. */
+export const HEADLESS_PROMPT_SECTION =
+  "## Headless run\n\nNo one can answer questions in this run; don't ask for permission or confirmation. If an action is denied, choose another way or finish and report what's left.";
 
 const CONTEXT_FILENAMES = ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"];
 const MAX_CONTEXT_BYTES = 20 * 1024;
@@ -157,6 +163,7 @@ If the user asks what model you are, answer with exactly: \`${opts.model}\`. Thi
   // AGENTS.md, plus other agents' instruction files read in place (#1126).
   const contextBlock = buildInstructionsBlock(opts.cwd);
   const modeBlock = opts.mode ? systemPromptForMode(opts.mode) : "";
+  const headlessBlock = opts.headless ? `\n\n${HEADLESS_PROMPT_SECTION}` : "";
   // Per-model guidance (#999). Lives in the session prefix, not the static
   // one, so switching models mid-session swaps the addendum with the identity.
   const profile = modelProfileFor(opts.model);
@@ -181,7 +188,7 @@ If the user asks what model you are, answer with exactly: \`${opts.model}\`. Thi
   const mcpContextBlock = opts.mcpContext
     ? `\n\n## MCP Context\n\nThe following MCP server information was pre-computed by the coordinator.\n\n${opts.mcpContext}`
     : "";
-  return identity + "\n\n" + env + "\n\n" + tools + artifactGuidance + lspBlock + userShellBlock + contextBlock + modeBlock + profileBlock + skillsBlock + memoryBlock + lspContextBlock + mcpContextBlock;
+  return identity + "\n\n" + env + "\n\n" + tools + artifactGuidance + lspBlock + userShellBlock + contextBlock + modeBlock + headlessBlock + profileBlock + skillsBlock + memoryBlock + lspContextBlock + mcpContextBlock;
 }
 
 /** Build a single concatenated system prompt for backward compatibility. */

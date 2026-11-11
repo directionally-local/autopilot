@@ -13,7 +13,11 @@
  * Evaluation order:
  * 1. Match the most specific pattern first.
  * 2. If no rule matches, return "ask" (fallback to interactive behavior).
- * 3. In headless mode, "ask" becomes "deny" unless --dangerously-allow-all is set.
+ * 3. In headless mode (print mode, permissions/headless-policy.ts) a call no
+ *    rule matches gets interactive mode's answer: approved unless interactive
+ *    mode would ask a person. A rule that says "ask" means "a person decides",
+ *    so with no one to ask it becomes "deny" unless --dangerously-allow-all
+ *    is set (or a PermissionRequest hook decides).
  *
  * A pattern matches a target that starts with it, or that matches it as a
  * glob. For bash commands an "allow" rule is stricter, because a command
@@ -49,12 +53,24 @@ export function evaluatePermissionRules(
   req: PermissionEvalRequest,
   rules: Record<string, PermissionRules>,
 ): PermissionRule {
+  return matchPermissionRule(req, rules) ?? "ask";
+}
+
+/**
+ * The rule that matches a tool call, or null when none does. Unlike
+ * evaluatePermissionRules this tells an explicit "ask" rule apart from no
+ * rule at all.
+ */
+export function matchPermissionRule(
+  req: PermissionEvalRequest,
+  rules: Record<string, PermissionRules>,
+): PermissionRule | null {
   const toolRules = rules[req.tool];
-  if (!toolRules) return "ask";
+  if (!toolRules) return null;
 
   // Extract the target path or command from args
   const target = extractTarget(req.tool, req.args, req.cwd);
-  if (!target) return "ask";
+  if (!target) return null;
 
   // Find matching rules, sorted by specificity (longest pattern first)
   const entries = Object.entries(toolRules).sort((a, b) => b[0].length - a[0].length);
@@ -71,7 +87,7 @@ export function evaluatePermissionRules(
     }
   }
 
-  return "ask";
+  return null;
 }
 
 function expandHome(path: string): string {

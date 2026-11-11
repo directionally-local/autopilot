@@ -1,0 +1,161 @@
+import { after, before, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ToolExecutor, type PermissionAsker, type PermissionHookResult, type PermissionRequest } from "../tools/executor.js";
+import type { ToolSpec } from "../tools/registry.js";
+import type { PermissionRules } from "../config.js";
+import { classifyCommand } from "./destructive.js";
+import { destructivePrompt } from "./guardrails.js";
+import { decideHeadlessPermission, type HeadlessPermissionOptions } from "./headless-policy.js";
+import { undoLatest } from "./recovery.js";
+import { startMode } from "../mode.js";
+
+let T: string;
+const savedDir = process.env.AUTOPILOT_RECOVERY_DIR;
+
+before(() => {
+  T = mkdtempSync(join(tmpdir(), "ap-headless-policy-"));
+  process.env.AUTOPILOT_RECOVERY_DIR = join(T, "state");
+});
+after(() => {
+  if (savedDir === undefined) delete process.env.AUTOPILOT_RECOVERY_DIR;
+  else process.env.AUTOPILOT_RECOVERY_DIR = savedDir;
+  rmSync(T, { recursive: true, force: true });
+});
+
+const tool = (name: string): ToolSpec => ({ name, description: "t", parameters: { type: "object", properties: {} }, needsPermission: true, run: async () => "ok" }) as unknown as ToolSpec;
+const edit = (path = "src/a.ts", extra: Partial<PermissionRequest> = {}): PermissionRequest => ({ tool: tool("edit"), args: { path }, sessionKey: "k", ...extra });
+const bash = (command: string, extra: Partial<PermissionRequest> = {}): PermissionRequest => {
+  const a = classifyCommand(command, { cwd: T });
+  return {
+    tool: tool("bash"),
+    args: { command },
+    sessionKey: "k",
+    ...(a.verdict === "irreversible" ? { destructive: destructivePrompt(a, command) } : {}),
+    ...extra,
+  };
+};
+const withHook = (answer: PermissionHookResult | null, seen: string[] = []): Partial<PermissionRequest> => ({
+  firePermissionHook: async (mode) => (seen.push(mode), answer),
+});
+const opts = (o: Partial<HeadlessPermissionOptions> = {}): HeadlessPermissionOptions => ({ allowAll: false, cwd: T, mode: "auto", ...o });
+
+describe("print mode follows interactive mode's permission policy", () => {
+  it("starts from the mode interactive starts in: auto, or edit with the modes flag", () => {
+    assert.equal(startMode({}), "auto");
+    assert.equal(startMode(null), "auto");
+    assert.equal(startMode({ modesEnabled: true }), "edit");
+  });
+
+  it("approves an edit without --dangerously-allow-all, as interactive auto mode does", async () => {
+    const d = await decideHeadlessPermission(edit(), opts());
+    assert.equal(d.decision.decision, "allow");
+    assert.equal(d.reason, "mode");
+    assert.equal(d.notice, undefined);
+  });
+
+  it("approves safe and recoverable commands, but denies an irreversible one without an exact rule", async () => {
+    assert.equal((await decideHeadlessPermission(bash("npm test"), opts())).decision.decision, "allow");
+    assert.equal((await decideHeadlessPermission(bash("rm draft.md"), opts())).decision.decision, "allow");
+    const d = await decideHeadlessPermission(bash("terraform destroy"), opts());
+    assert.equal(d.decision.decision, "deny");
+    assert.equal(d.reason, "irreversible");
+    assert.match(d.notice ?? "", /don't cover irreversible actions/);
+  });
+
+  it("--dangerously-allow-all and broad rules don't cover irreversible actions; an exact rule does", async () => {
+    assert.equal((await decideHeadlessPermission(bash("terraform destroy"), opts({ allowAll: true }))).decision.decision, "deny");
+    assert.equal((await decideHeadlessPermission(bash("terraform destroy"), opts({ rules: { bash: { "**": "allow" } } }))).decision.decision, "deny");
+    const exact = await decideHeadlessPermission(bash("terraform destroy"), opts({ rules: { bash: { "terraform destroy": "allow" } } }));
+    assert.equal(exact.decision.decision, "allow");
+    assert.equal(exact.decision.irreversibleConfirmed, true);
+  });
+
+  it("a config deny rule still denies, and tells the model not to ask", async () => {
+    const rules: Record<string, PermissionRules> = { edit: { "**": "deny" } };
+    const d = await decideHeadlessPermission(edit(), opts({ rules }));
+    assert.equal(d.decision.decision, "deny");
+    assert.equal(d.reason, "config_rule");
+    assert.match(d.decision.message ?? "", /do not retry it or ask for permission/);
+  });
+
+  it("an \"ask\" rule means a person decides: denied, since no one can answer", async () => {
+    const d = await decideHeadlessPermission(edit(), opts({ rules: { edit: { "**": "ask" } } }));
+    assert.equal(d.decision.decision, "deny");
+    assert.equal(d.reason, "no_one_to_ask");
+    assert.equal((await decideHeadlessPermission(edit(), opts({ rules: { edit: { "**": "ask" } }, allowAll: true }))).decision.decision, "allow");
+  });
+
+  it("a PreToolUse hook answering \"ask\" is denied without the flag", async () => {
+    assert.equal((await decideHeadlessPermission(edit("a", { hookAsked: true }), opts())).decision.decision, "deny");
+  });
+
+  it("with the modes flag on, interactive starts in edit and asks: denied unless a rule, hook or the flag approves", async () => {
+    assert.equal((await decideHeadlessPermission(edit(), opts({ mode: "edit" }))).decision.decision, "deny");
+    assert.equal((await decideHeadlessPermission(edit(), opts({ mode: "edit", allowAll: true }))).decision.decision, "allow");
+    assert.equal((await decideHeadlessPermission(edit(), opts({ mode: "edit", rules: { edit: { "**": "allow" } } }))).decision.decision, "allow");
+  });
+
+  it("a PermissionRequest hook still decides", async () => {
+    const seen: string[] = [];
+    const denied = await decideHeadlessPermission(edit("a", withHook({ decision: "deny", reason: "no" }, seen)), opts());
+    assert.equal(denied.decision.decision, "deny");
+    assert.equal(denied.reason, "hook");
+    assert.deepEqual(seen, ["edit"]);
+    const allowed = await decideHeadlessPermission(edit("a", withHook({ decision: "allow" })), opts({ rules: { edit: { "**": "ask" } } }));
+    assert.equal(allowed.decision.decision, "allow");
+    assert.equal(allowed.reason, "hook");
+    // A hook may deny an irreversible action, never allow it.
+    assert.equal((await decideHeadlessPermission(bash("terraform destroy", withHook({ decision: "deny" })), opts())).reason, "hook");
+    assert.equal((await decideHeadlessPermission(bash("terraform destroy", withHook({ decision: "allow" })), opts())).decision.decision, "deny");
+    // A deny rule wins before the hook is asked.
+    const unasked: string[] = [];
+    await decideHeadlessPermission(edit("a", withHook({ decision: "allow" }, unasked)), opts({ rules: { edit: { "**": "deny" } } }));
+    assert.deepEqual(unasked, []);
+  });
+});
+
+describe("print mode's policy through the executor", () => {
+  const asker = (o: Partial<HeadlessPermissionOptions> = {}): PermissionAsker => (req) => decideHeadlessPermission(req, opts(o)).then((d) => d.decision);
+  const call = (command: string) => ({ id: "c1", name: "bash", arguments: JSON.stringify({ command }) });
+
+  it("takes a recovery point before an approved recoverable action, as in the TUI", async () => {
+    const repo = mkdtempSync(join(T, "repo-"));
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, "draft.md"), "keep me\n");
+    const exec = new ToolExecutor([
+      {
+        name: "bash",
+        description: "test",
+        parameters: { type: "object", properties: {}, additionalProperties: true },
+        needsPermission: true,
+        run: async () => (rmSync(join(repo, "draft.md")), "removed"),
+      } as ToolSpec,
+    ]);
+    const res = await exec.run(call("rm draft.md"), asker(), { cwd: repo });
+    assert.equal(res.ok, true);
+    assert.equal(res.denied, undefined);
+    assert.match(res.content, /\/undo puts it back/);
+    assert.match(undoLatest(repo), /restored 1 file \(draft\.md\)/);
+    assert.equal(readFileSync(join(repo, "draft.md"), "utf8"), "keep me\n");
+  });
+
+  it("marks denied calls, and the model hears it's headless instead of \"ask the user\"", async () => {
+    const ran: string[] = [];
+    const exec = new ToolExecutor([
+      { name: "bash", description: "t", parameters: { type: "object", properties: {}, additionalProperties: true }, needsPermission: true, run: async (a: { command: string }) => (ran.push(a.command), "ok") } as ToolSpec,
+    ]);
+    const res = await exec.run(call("npm publish"), asker({ rules: { bash: { "npm publish": "deny" } } }), { cwd: T });
+    assert.equal(res.ok, false);
+    assert.equal(res.denied, true);
+    assert.deepEqual(ran, []);
+    assert.doesNotMatch(res.content, /ask the user/);
+    assert.match(res.content, /finish and report what's left/);
+    const irreversible = await exec.run(call("terraform destroy"), asker({ allowAll: true }), { cwd: T });
+    assert.equal(irreversible.denied, true);
+    assert.deepEqual(ran, []);
+  });
+});
