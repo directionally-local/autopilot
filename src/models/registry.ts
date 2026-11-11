@@ -195,6 +195,21 @@ export function registerModelHints(entries: ModelEntry[]): void {
   for (const entry of entries) hintIndex.set(entry.id, entry);
 }
 
+/**
+ * A local server (vLLM, LM Studio, Ollama, custom) reported the context it
+ * serves `id` with (models/local-context.ts): the provider's catalog entry,
+ * or a hint when the catalog doesn't list it, takes that context window so
+ * compaction and the context meter use it. A user override still wins.
+ */
+export function noteServedContextWindow(id: string, contextWindow: number): void {
+  const own = providerIndex.get(id);
+  if (own) {
+    providerIndex.set(id, { ...own, contextWindow });
+    return;
+  }
+  hintIndex.set(id, { ...(hintIndex.get(id) ?? getModelOrInfer(id)), contextWindow });
+}
+
 /** True once a live (or cached) OpenRouter catalog has been registered. */
 export function hasOpenRouterCatalog(): boolean {
   return openRouterIndex.size > 0;

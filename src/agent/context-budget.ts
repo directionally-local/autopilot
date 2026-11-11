@@ -1,5 +1,6 @@
 import type { ChatMessage } from "./messages.js";
 import { getModelOrInfer } from "../models/registry.js";
+import { capOutputTokens, servedContextLength } from "../models/local-context.js";
 import { compactMessagesViaArtifacts, estimatePromptTokens } from "./artifact-compaction.js";
 import {
   ArtifactStore,
@@ -39,11 +40,21 @@ export const HARD_COMPACTION_SHARE = 0.85;
 const KEEP_TURNS_LADDER = [4, 2, 1] as const;
 
 /** Largest prompt the model accepts: context window minus the completion
- *  budget and a safety margin. Shared by request preflight and compaction. */
+ *  budget and a safety margin. Shared by request preflight and compaction.
+ *  When a local server reported the context it serves the model with
+ *  (models/local-context.ts), that context counts, the completion budget is
+ *  capped the way the client caps `max_tokens`, and the margin shrinks with
+ *  the window (8k of a 32k window would be a quarter of it). */
 export function effectiveInputBudget(model: string, maxCompletionTokens?: number): number {
+  const requested = maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS;
+  const served = servedContextLength(model);
+  if (served) {
+    const completion = capOutputTokens(requested, served, model);
+    const margin = Math.min(BUDGET_SAFETY_MARGIN_TOKENS, Math.floor(served / 16));
+    return Math.max(1, served - completion - margin);
+  }
   const contextWindow = getModelOrInfer(model).contextWindow;
-  const completion = maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS;
-  return Math.max(1, contextWindow - completion - BUDGET_SAFETY_MARGIN_TOKENS);
+  return Math.max(1, contextWindow - requested - BUDGET_SAFETY_MARGIN_TOKENS);
 }
 
 export interface CompactionThresholdOpts {
@@ -71,14 +82,18 @@ export function proactiveCompactionThreshold(model: string, maxCompletionTokens?
   return softCompactionThreshold(model, { maxCompletionTokens });
 }
 
-/** The prompt cannot fit even after compacting everything but the active turn. */
+/** The prompt cannot fit even after compacting everything but the active turn
+ *  (or, for a local server's reported context, before the request is sent). */
 export class ContextBudgetError extends Error {
   constructor(
     readonly estimatedTokens: number,
     readonly budgetTokens: number,
     readonly contextWindow: number,
+    /** Replaces the default message (local servers: see models/local-context.ts). */
+    message?: string,
   ) {
     super(
+      message ??
       `autopilot: context window exceeded (~${estimatedTokens.toLocaleString()} tokens needed, ` +
         `${budgetTokens.toLocaleString()} available of ${contextWindow.toLocaleString()}). ` +
         `Older turns were already compacted; the current turn alone is too large. ` +

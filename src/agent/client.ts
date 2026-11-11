@@ -35,6 +35,9 @@ import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
 import { resolveCustomEndpoint, customChatCompletionsUrl, type CustomEndpoint } from "./custom-endpoint.js";
 import type { LlmAuth } from "./llm-auth.js";
+import { fitOutputTokens, localContextLength, localContextMessage, localProviderOf, servedPromptLimit } from "../models/local-context.js";
+import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
+import { ContextBudgetError } from "./context-budget.js";
 
 export type ModelEvent =
   | { type: "response_meta"; meta: ResponseMeta }
@@ -141,11 +144,36 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
   const supportsReasoning = entry.supports.reasoning === true;
 
   const hasTools = !!opts.tools && opts.tools.length > 0;
-  const maxTokens = opts.maxCompletionTokens ?? 16384;
+  let maxTokens = opts.maxCompletionTokens ?? 16384;
   // Request-shape quirks of the provider this request goes to (presets.ts).
   const preset = getPreset(
     customEndpoint ? (customEndpoint.providerId ?? "custom") : requesty ? "requesty" : "openrouter",
   );
+  // A local server (vLLM, LM Studio, Ollama, custom) rejects prompt + max_tokens
+  // beyond the context it was started with: ask it once for that context, keep
+  // the reply to at most half of it (less when the prompt leaves less room),
+  // and fail here, before sending, when the prompt can't fit with room for a
+  // reply. No answer leaves the request as it was.
+  const servedContext = await localContextLength(customEndpoint, opts.model);
+  if (servedContext) {
+    const promptTokens = estimatePromptTokens(opts.messages) + (hasTools ? approxTokens(JSON.stringify(opts.tools).length) : 0);
+    const fit = fitOutputTokens(maxTokens, servedContext, promptTokens, opts.model);
+    if (fit === null) {
+      throw new ContextBudgetError(
+        promptTokens,
+        servedPromptLimit(servedContext),
+        servedContext,
+        localContextMessage({
+          promptTokens,
+          contextLength: servedContext,
+          model: opts.model,
+          providerId: localProviderOf(customEndpoint),
+          providerName: preset.name,
+        }),
+      );
+    }
+    maxTokens = fit;
+  }
   const body: Record<string, unknown> = {
     model: opts.model,
     messages: sanitizeMessagesForApi(

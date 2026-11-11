@@ -93,3 +93,18 @@ describe("context budget", () => {
     assert.equal(stateMessages.length, 1);
   });
 });
+
+describe("context budget: a local server's reported context", () => {
+  it("uses the served context, the capped reply and a margin that fits the window", async () => {
+    const { localContextLength, resetLocalContextForTesting } = await import("../models/local-context.js");
+    const { effectiveInputBudget } = await import("./context-budget.js");
+    resetLocalContextForTesting();
+    const fetchImpl = (async () => new Response(JSON.stringify({ data: [{ id: "served-model", max_model_len: 32768 }] }))) as unknown as typeof fetch;
+    const before = effectiveInputBudget("served-model");
+    await localContextLength({ baseUrl: "http://127.0.0.1:8000/v1", providerId: "vllm" }, "served-model", { fetchImpl });
+    // 32768 - min(16384, 32768 / 2) - 32768 / 16
+    assert.equal(effectiveInputBudget("served-model"), 32768 - 16384 - 2048);
+    assert.notEqual(before, effectiveInputBudget("served-model"));
+    resetLocalContextForTesting();
+  });
+});

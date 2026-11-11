@@ -20,7 +20,7 @@ import { ApiError, humanizeApiError } from "./util/errors.js";
 import { ModelHostError } from "./agent/model-retry.js";
 import { dlHeadlessMessage } from "./providers/dl-growth.js";
 import { saveSession, loadSession, listSessions, sessionsDir, type SessionFile } from "./sessions.js";
-import { sessionFileCompactionTarget } from "./agent/context-budget.js";
+import { ContextBudgetError, sessionFileCompactionTarget } from "./agent/context-budget.js";
 import { recordSubagentEvent } from "./tools/subagent-stats.js";
 import { completionCheckFromConfig } from "./agent/completion-check.js";
 import { isImagePath } from "./util/image.js";
@@ -542,13 +542,22 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       process.exitCode = 43;
       return;
     }
-    if (err instanceof ApiError) {
+    if (err instanceof ApiError || err instanceof ContextBudgetError) {
       // Free tier out of tokens or queued: one plain line with the invite link and `autopilot upgrade`.
-      const dlLine = dlHeadlessMessage(err);
+      const dlLine = err instanceof ApiError ? dlHeadlessMessage(err) : null;
       // After every retry failed, the host's own error goes on the same line.
-      const msg = dlLine ? `Error: ${dlLine}` : err instanceof ModelHostError ? `Error: ${humanizeApiError(err)} (${err.detail})` : `Error: ${humanizeApiError(err)}`;
+      // A request the provider rejected (a 4xx) prints the provider's own message (the
+      // client words it so); a prompt too long for the context prints why.
+      const msg = err instanceof ContextBudgetError
+        ? `Error: ${err.message.replace(/^autopilot: /, "")}`
+        : dlLine ? `Error: ${dlLine}` : err instanceof ModelHostError ? `Error: ${humanizeApiError(err)} (${err.detail})` : `Error: ${humanizeApiError(err)}`;
+      const status = err instanceof ApiError ? err.httpStatus : undefined;
       if (format === "text") process.stderr.write(`\n\x1b[31m${msg}\x1b[0m\n`);
-      else if (format === "stream-json") emitStreamJson("error", { message: msg, code: 1 });
+      else if (format === "stream-json") emitStreamJson("error", { message: msg, code: 1, ...(status ? { status } : {}) });
+      else if (format === "json") {
+        jsonOutput.durationMs = Date.now() - startMs;
+        process.stdout.write(JSON.stringify({ ...jsonOutput, error: msg, code: 1, ...(status ? { status } : {}) }, null, 2) + "\n");
+      }
       process.exitCode = 1;
       return;
     }
