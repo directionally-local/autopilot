@@ -2,7 +2,7 @@ import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolExecutor, type PermissionAsker, type PermissionHookResult, type PermissionRequest } from "../tools/executor.js";
 import type { ToolSpec } from "../tools/registry.js";
@@ -14,6 +14,10 @@ import { undoLatest } from "./recovery.js";
 import { startMode } from "../mode.js";
 import { decidePermission } from "./mode-policy.js";
 import { readTool } from "../tools/read.js";
+import { writeTool } from "../tools/write.js";
+import { editTool } from "../tools/edit.js";
+import { changelogImageTool } from "../tools/changelog-image.js";
+import { existsSync } from "node:fs";
 
 let T: string;
 const savedDir = process.env.AUTOPILOT_RECOVERY_DIR;
@@ -191,6 +195,107 @@ describe("print mode reads credentials only with an exact rule or the flag", () 
     const ok = await exec.run({ id: "r2", name: "read", arguments: JSON.stringify({ path: ".env" }) }, allowAll, { cwd: dir });
     assert.equal(ok.ok, true);
     assert.match(ok.content, /SECRET=1/);
+  });
+});
+
+describe("print mode writes credentials only with an exact rule or the flag", () => {
+  const writeCreds = (name: "write" | "edit", path = ".env", extra: Partial<PermissionRequest> = {}): PermissionRequest => ({
+    tool: tool(name),
+    args: name === "write" ? { path, content: "x" } : { path, old_string: "a", new_string: "b" },
+    sessionKey: "k",
+    sensitiveReason: path.startsWith("~/.ssh") ? "writes credentials location ~/.ssh" : "writes an environment file (.env)",
+    ...extra,
+  });
+
+  it("denies a write or edit to a credentials path without a rule, and tells the model not to ask", async () => {
+    for (const name of ["write", "edit"] as const) {
+      const d = await decideHeadlessPermission(writeCreds(name, "~/.ssh/authorized_keys"), opts());
+      assert.equal(d.decision.decision, "deny");
+      assert.equal(d.reason, "credentials");
+      assert.match(d.decision.message ?? "", /print mode writes credentials only/);
+      assert.match(d.decision.message ?? "", /do not retry it or ask for permission/);
+      assert.match(d.notice ?? "", /doesn't write credentials/);
+      assert.ok(d.notice?.includes(`"${name}": { ${JSON.stringify(join(homedir(), ".ssh", "authorized_keys"))}: "allow" }`), d.notice);
+    }
+  });
+
+  it("allows it with an allow rule for that tool naming the exact path", async () => {
+    assert.equal((await decideHeadlessPermission(writeCreds("write"), opts({ rules: { write: { [join(T, ".env")]: "allow" } } }))).decision.decision, "allow");
+    assert.equal((await decideHeadlessPermission(writeCreds("edit"), opts({ rules: { edit: { ".env": "allow" } } }))).reason, "config_rule");
+    assert.equal(
+      (await decideHeadlessPermission(writeCreds("write", "~/.ssh/authorized_keys"), opts({ rules: { write: { "~/.ssh/authorized_keys": "allow" } } }))).decision.decision,
+      "allow",
+    );
+  });
+
+  it("broad allow rules, other tools' rules and PermissionRequest hooks don't allow it; a deny rule still denies", async () => {
+    assert.equal((await decideHeadlessPermission(writeCreds("write"), opts({ rules: { write: { "**": "allow" } } }))).decision.decision, "deny");
+    assert.equal((await decideHeadlessPermission(writeCreds("edit"), opts({ rules: { edit: { [T]: "allow" } } }))).decision.decision, "deny");
+    assert.equal((await decideHeadlessPermission(writeCreds("write"), opts({ rules: { read: { [join(T, ".env")]: "allow" } } }))).decision.decision, "deny");
+    assert.equal((await decideHeadlessPermission(writeCreds("edit"), opts({ rules: { write: { [join(T, ".env")]: "allow" } } }))).decision.decision, "deny");
+    const unasked: string[] = [];
+    assert.equal((await decideHeadlessPermission(writeCreds("write", ".env", withHook({ decision: "allow" }, unasked)), opts())).decision.decision, "deny");
+    assert.deepEqual(unasked, []);
+    const d = await decideHeadlessPermission(writeCreds("write"), opts({ rules: { write: { [join(T, ".env")]: "deny" } } }));
+    assert.equal(d.reason, "config_rule");
+    assert.equal(d.decision.decision, "deny");
+  });
+
+  it("--dangerously-allow-all allows it", async () => {
+    const d = await decideHeadlessPermission(writeCreds("edit", "~/.ssh/authorized_keys"), opts({ allowAll: true }));
+    assert.equal(d.decision.decision, "allow");
+    assert.equal(d.reason, "allow_all");
+  });
+
+  it("leaves ordinary writes and edits alone", async () => {
+    for (const name of ["write", "edit"] as const) {
+      const d = await decideHeadlessPermission({ tool: tool(name), args: { path: "src/a.ts", content: "x" }, sessionKey: "k" }, opts());
+      assert.equal(d.decision.decision, "allow");
+      assert.equal(d.reason, "mode");
+    }
+  });
+
+  it("the real write and edit tools flag credentials paths, and not ordinary ones", async () => {
+    const ctx = { cwd: T } as Parameters<NonNullable<typeof writeTool.permissionReason>>[1];
+    assert.match((await writeTool.permissionReason!({ path: "~/.ssh/authorized_keys", content: "k" }, ctx)) ?? "", /^writes credentials location/);
+    assert.match((await editTool.permissionReason!({ path: ".env.local", old_string: "a", new_string: "b" }, ctx)) ?? "", /^writes an environment file/);
+    assert.equal(await writeTool.permissionReason!({ path: "src/a.ts", content: "k" }, ctx), null);
+    assert.equal(await writeTool.permissionReason!({ path: ".env.example", content: "k" }, ctx), null);
+    // changelog_image saves a PNG to `output`: flagged the same way, and the policy reads that path.
+    assert.match((await changelogImageTool.permissionReason!({ owner: "o", repo: "r", output: "~/.ssh/authorized_keys" }, ctx)) ?? "", /^writes credentials location/);
+    assert.equal(await changelogImageTool.permissionReason!({ owner: "o", repo: "r", output: "out.png" }, ctx), null);
+    const png: PermissionRequest = { tool: tool("changelog_image"), args: { owner: "o", repo: "r", output: "~/.ssh/authorized_keys" }, sessionKey: "k", sensitiveReason: "writes credentials location ~/.ssh" };
+    assert.equal((await decideHeadlessPermission(png, opts())).reason, "credentials");
+  });
+
+  it("interactive auto mode still approves a credentials write without asking", () => {
+    assert.deepEqual(decidePermission(writeCreds("write"), "auto"), { kind: "resolve", decision: { decision: "allow", scope: "once" } });
+    assert.equal(decidePermission(writeCreds("edit"), "edit").kind, "prompt");
+  });
+
+  it("through the executor, the real write tool's credentials write is a denied call and the file isn't written", async () => {
+    const dir = mkdtempSync(join(T, "creds-w-"));
+    const exec = new ToolExecutor([writeTool as unknown as ToolSpec, editTool as unknown as ToolSpec]);
+    const asker: PermissionAsker = (req) => decideHeadlessPermission(req, opts({ cwd: dir })).then((d) => d.decision);
+    const res = await exec.run({ id: "w1", name: "write", arguments: JSON.stringify({ path: ".env", content: "SECRET=1\n" }) }, asker, { cwd: dir });
+    assert.equal(res.ok, false);
+    assert.equal(res.denied, true);
+    assert.match(res.content, /finish and report what's left/);
+    assert.equal(existsSync(join(dir, ".env")), false);
+
+    writeFileSync(join(dir, ".env"), "TOKEN=old\n");
+    const edited = await exec.run({ id: "e1", name: "edit", arguments: JSON.stringify({ path: ".env", old_string: "old", new_string: "new" }) }, asker, { cwd: dir });
+    assert.equal(edited.denied, true);
+    assert.equal(readFileSync(join(dir, ".env"), "utf8"), "TOKEN=old\n");
+
+    const ordinary = await exec.run({ id: "w2", name: "write", arguments: JSON.stringify({ path: "notes.md", content: "hi\n" }) }, asker, { cwd: dir });
+    assert.equal(ordinary.ok, true, ordinary.content);
+    assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "hi\n");
+
+    const allowAll: PermissionAsker = (req) => decideHeadlessPermission(req, opts({ cwd: dir, allowAll: true })).then((d) => d.decision);
+    const ok = await exec.run({ id: "w3", name: "write", arguments: JSON.stringify({ path: ".env.local", content: "SECRET=1\n" }) }, allowAll, { cwd: dir });
+    assert.equal(ok.ok, true, ok.content);
+    assert.equal(readFileSync(join(dir, ".env.local"), "utf8"), "SECRET=1\n");
   });
 });
 

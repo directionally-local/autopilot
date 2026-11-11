@@ -257,7 +257,7 @@ autopilot -p "..." --reasoning                      # include chain-of-thought i
 ```
 
 **Permissions.** Print mode (`-p`) follows the interactive TUI's policy. What the TUI approves
-without asking, print mode approves: edits, writes, and safe or recoverable commands, with the
+without asking, print mode approves: edits, writes (except to credentials paths, below), and safe or recoverable commands, with the
 same recovery points for `/undo`. What the TUI would stop and ask a person about is denied,
 because no one can answer:
 
@@ -269,7 +269,7 @@ because no one can answer:
 | Matches a config `allow` rule | approved | approved |
 | Matches a config `ask` rule, or a `PreToolUse` hook answers `ask` | denied, unless a `PermissionRequest` hook allows it | approved |
 | A `PermissionRequest` hook answers | the hook decides | approved |
-| Reading credentials (`read`/`grep` on `~/.ssh`, `~/.aws`, Autopilot's config, `.env`, `/proc/*/environ`, …; the TUI's auto mode approves these) | denied, unless an `allow` rule names that exact path (`"read": { "~/.aws/credentials": "allow" }`); broad rules and hooks don't count | approved |
+| Reading or writing credentials (`read`/`grep`, or `write`/`edit`, on `~/.ssh` incl. `authorized_keys`, `~/.aws`, Autopilot's config, `.env`, `/proc/*/environ`, …; the TUI's auto mode approves these). Bash commands that write there (`>> ~/.ssh/authorized_keys`) aren't recognised yet | denied, unless an `allow` rule for that tool names that exact path (`"read": { "~/.aws/credentials": "allow" }`, `"write": { ".env": "allow" }`); broad rules and hooks don't count | approved |
 | Irreversible action (guardrails: `git reset --hard`, `terraform destroy`, force push, …) | denied, unless a rule names that exact action | same: the flag doesn't cover it |
 
 With the modes feature flag on (`modesEnabled`), the TUI starts in `edit` mode and asks before
