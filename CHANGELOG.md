@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.20.0](https://github.com/directionally-local/autopilot/compare/v3.19.0...v3.20.0) (2026-11-11)
+
+
+### Features
+
+* optional email after a yes to GPU early access ([#1245](https://github.com/directionally-local/autopilot/issues/1245)) ([fa5709b](https://github.com/directionally-local/autopilot/commit/fa5709bf32974a294dea9e221822888dcfe3a21e))
+
 ## [3.19.0](https://github.com/directionally-local/autopilot/compare/v3.18.0...v3.19.0) (2026-11-11)
 
 
