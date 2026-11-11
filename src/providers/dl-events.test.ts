@@ -88,8 +88,16 @@ describe("free-tier usage events", () => {
     assert.deepStrictEqual(props, { turns: 3, toolCalls: { bash: 2, read: 1 }, durationMs: 13, model: "deepseek/deepseek-v4.1-flash-1017" });
   });
 
-  it("hashes the remote URL instead of sending it", async () => {
-    assert.strictEqual(hashRemote("git@github.com:o/r.git"), createHash("sha256").update("git@github.com:o/r.git").digest("hex"));
+  it("correlates equivalent Git remotes without including credentials or transport", async () => {
+    const canonical = hashRemote("git@github.com:o/r.git");
+    assert.strictEqual(hashRemote("https://github.com/o/r"), canonical);
+    assert.strictEqual(hashRemote("ssh://git@GITHUB.com/o/r.git"), canonical);
+    assert.strictEqual(hashRemote("https://user:secret@github.com/o/r.git?token=secret#fragment"), canonical);
+    assert.notStrictEqual(hashRemote("https://github.com/o/other.git"), canonical, "distinct repositories remain distinct");
+    assert.notStrictEqual(hashRemote("ftp://github.com/o/r.git"), canonical, "unsupported schemes are not treated as Git remote identities");
+    assert.strictEqual(hashRemote("https://[::1/o/r"), createHash("sha256").update("https://[::1/o/r").digest("hex"), "malformed remotes retain the legacy opaque hash behavior");
+    assert.strictEqual(hashRemote("git@github.com:o/r.git"), createHash("sha256").update("github.com/o/r").digest("hex"));
+
     const repo = await mkdtemp(join(tmpdir(), "dl-repo-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });
     execFileSync("git", ["remote", "add", "origin", "https://github.com/o/r.git"], { cwd: repo });
