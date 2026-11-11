@@ -80,6 +80,7 @@ describe("first-run choices under the free tier's status", () => {
       [
         ["free", "Free — sign in with GitHub", "GPT-6 Luna + DeepSeek, 50M tokens a week, no credit card"],
         ["own-key", "Use my own API key", "OpenRouter, Anthropic, OpenAI and more"],
+        ["gpus", "Use your own GPUs", "a private model on this machine, a server of yours, or your vLLM"],
       ],
     );
     assert.strictEqual(firstRunSubtitle(DL_STATUS_OPEN, "Esc to quit"), `${DL_FREE_MODEL_LINE} · Esc to quit`);
@@ -102,8 +103,8 @@ describe("first-run choices under the free tier's status", () => {
 
   it("paused: own key first (the default), Free last and not choosable, the subtitle is the service's message", () => {
     const choices = firstRunChoices(paused);
-    assert.deepStrictEqual(choices.map((c) => c.value), ["own-key", "free"]);
-    assert.strictEqual(choices[1]?.label, DL_FREE_PAUSED_LABEL);
+    assert.deepStrictEqual(choices.map((c) => c.value), ["own-key", "gpus", "free"]);
+    assert.strictEqual(choices[2]?.label, DL_FREE_PAUSED_LABEL);
     assert.ok(!freeChoosable(paused));
     assert.strictEqual(firstRunSubtitle(paused, "Esc to cancel"), `${paused.message} · Esc to cancel`);
   });
