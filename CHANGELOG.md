@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.18.0](https://github.com/directionally-local/autopilot/compare/v3.17.0...v3.18.0) (2026-11-11)
+
+
+### Features
+
+* add typed failed outcomes to dl server turns ([#1235](https://github.com/directionally-local/autopilot/issues/1235)) ([623d5e9](https://github.com/directionally-local/autopilot/commit/623d5e998e14c2802ddb805d9a506ccf11e498be))
+
+
+### Bug Fixes
+
+* normalize repository hashes in usage telemetry ([#1234](https://github.com/directionally-local/autopilot/issues/1234)) ([0255c4f](https://github.com/directionally-local/autopilot/commit/0255c4fec793f198b3148ca864f25f6c9c72259a))
+* print mode denies credentials reads unless a rule names the exact path ([#1238](https://github.com/directionally-local/autopilot/issues/1238)) ([082ad0f](https://github.com/directionally-local/autopilot/commit/082ad0f7d37ecf92718e5bc91934f731c5a3af6e))
+* print mode denies credentials writes unless a rule names the exact path ([#1239](https://github.com/directionally-local/autopilot/issues/1239)) ([6024c6c](https://github.com/directionally-local/autopilot/commit/6024c6ca0a244678a7aaa72c9deaf5649d85d1f2))
+* print mode follows the interactive permission policy and exits 45 when a run didn't finish ([#1233](https://github.com/directionally-local/autopilot/issues/1233)) ([ea6c0f0](https://github.com/directionally-local/autopilot/commit/ea6c0f080a72a26d79c0fb24311a57db49c9693c))
+* **security:** make a DL auth failure survivable ([#1236](https://github.com/directionally-local/autopilot/issues/1236)) ([9ed5a81](https://github.com/directionally-local/autopilot/commit/9ed5a819fc55b38ec07232025d40a698479a4586))
+
 ## [3.17.0](https://github.com/directionally-local/autopilot/compare/v3.16.0...v3.17.0) (2026-11-10)
 
 
