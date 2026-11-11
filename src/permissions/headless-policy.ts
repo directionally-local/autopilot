@@ -15,13 +15,15 @@
  *  2. --dangerously-allow-all approves everything else, as before.
  *  3. A config rule: "deny" denies, "allow" approves (except step 4), "ask"
  *     means a person decides (step 6).
- *  4. Reads of credentials (util/sensitive-paths.ts: ~/.ssh, ~/.aws,
- *     Autopilot's config, .env files, /proc/<pid>/environ, …) are denied unless
- *     a config "allow" rule names that exact path. Interactive auto mode
- *     approves them because a person watches the session; print mode runs
- *     unwatched, where a prompt injection could read a key and send it out
- *     with web_fetch. Broad allow rules and PermissionRequest hooks don't
- *     approve them.
+ *  4. Reads and writes of credentials (util/sensitive-paths.ts: ~/.ssh,
+ *     ~/.aws, Autopilot's config, .env files, /proc/<pid>/environ, …) are
+ *     denied unless a config "allow" rule names that exact path. Interactive
+ *     auto mode approves them because a person watches the session; print
+ *     mode runs unwatched, where a prompt injection could read a key and send
+ *     it out with web_fetch, or write ~/.ssh/authorized_keys and keep access.
+ *     Broad allow rules and PermissionRequest hooks don't approve them.
+ *     Bash commands are not covered: a command that writes a credentials
+ *     path (`echo … >> ~/.ssh/authorized_keys`) isn't recognised yet.
  *  5. A PermissionRequest hook may approve or deny.
  *  6. Interactive mode's own answer: approved unless it would ask a person
  *     (an "ask" rule, a PreToolUse hook answering "ask", or `edit` mode's
@@ -65,11 +67,28 @@ function deny(message: string): PermissionDecisionResult {
   return { decision: "deny", scope: "once", message };
 }
 
-/** The path a credentials read targets: `path`, or the cwd for a search without one. */
-function credentialReadTarget(req: PermissionRequest, cwd: string): string | null {
-  if (!req.sensitiveReason?.startsWith("reads ")) return null;
-  const path = typeof req.args.path === "string" ? req.args.path : req.tool.name === "grep" ? cwd : null;
-  return path === null ? null : resolve(cwd, expandHome(path));
+interface CredentialTarget {
+  access: "read" | "write";
+  path: string;
+}
+
+/**
+ * The credentials path a call reads or writes, from the reason its tool gave
+ * (util/sensitive-paths.ts readsCredentials / writesCredentials): `path`, the
+ * cwd for a search without one, or `output` for a tool that saves a file there.
+ */
+function credentialTarget(req: PermissionRequest, cwd: string): CredentialTarget | null {
+  const reason = req.sensitiveReason ?? "";
+  const { args } = req;
+  if (reason.startsWith("reads ")) {
+    const path = typeof args.path === "string" ? args.path : req.tool.name === "grep" ? cwd : null;
+    return path === null ? null : { access: "read", path: resolve(cwd, expandHome(path)) };
+  }
+  if (reason.startsWith("writes ")) {
+    const path = typeof args.path === "string" ? args.path : typeof args.output === "string" ? args.output : null;
+    return path === null ? null : { access: "write", path: resolve(cwd, expandHome(path)) };
+  }
+  return null;
 }
 
 function expandHome(path: string): string {
@@ -109,13 +128,14 @@ export async function decideHeadlessPermission(req: PermissionRequest, opts: Hea
     };
   }
 
-  const credentials = credentialReadTarget(req, opts.cwd);
+  const credentials = credentialTarget(req, opts.cwd);
   if (credentials !== null) {
-    if (exactPathRuleAllows(tool.name, credentials, opts.rules, opts.cwd)) return { decision: AUTO_ALLOW, reason: "config_rule" };
+    if (exactPathRuleAllows(tool.name, credentials.path, opts.rules, opts.cwd)) return { decision: AUTO_ALLOW, reason: "config_rule" };
+    const verb = credentials.access === "read" ? "reads" : "writes";
     return {
-      decision: deny(`Permission denied: this ${req.sensitiveReason}, and print mode reads credentials only when a config rule names the exact path. ${HEADLESS_DENIAL_ADVICE}`),
+      decision: deny(`Permission denied: this ${req.sensitiveReason}, and print mode ${verb} credentials only when a config rule names the exact path. ${HEADLESS_DENIAL_ADVICE}`),
       reason: "credentials",
-      notice: `[permission denied: ${shown} ${req.sensitiveReason}. Print mode doesn't read credentials without a config.json rule naming the exact path, e.g. "permissions": { ${JSON.stringify(tool.name)}: { ${JSON.stringify(credentials)}: "allow" } }, or --dangerously-allow-all]`,
+      notice: `[permission denied: ${shown} ${req.sensitiveReason}. Print mode doesn't ${credentials.access} credentials without a config.json rule naming the exact path, e.g. "permissions": { ${JSON.stringify(tool.name)}: { ${JSON.stringify(credentials.path)}: "allow" } }, or --dangerously-allow-all]`,
     };
   }
 

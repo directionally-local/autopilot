@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolvePath } from "../util/paths.js";
+import { sensitivePathReason, writesCredentials } from "../util/sensitive-paths.js";
 import type { ToolSpec, ToolContext, ToolOutput, Task } from "./registry.js";
 import { runKimi } from "../agent/client.js";
 import { hasLlmAuth } from "../agent/llm-auth.js";
@@ -344,6 +346,11 @@ export const changelogImageTool: ToolSpec<ChangelogImageArgs> = {
     additionalProperties: false,
   },
   needsPermission: false,
+  // Saving the PNG into a credentials location is flagged, like the write tool (T2-01).
+  permissionReason: (args, ctx) =>
+    typeof args.output === "string" && args.output
+      ? writesCredentials(sensitivePathReason(resolvePath(ctx.cwd, args.output)))
+      : null,
   render: (args) => ({ title: `Changelog image for ${args.owner ?? ""}/${args.repo ?? ""}` }),
   async run(args, ctx): Promise<ToolOutput> {
     const token = getToken(ctx);
@@ -445,7 +452,7 @@ export const changelogImageTool: ToolSpec<ChangelogImageArgs> = {
     // 6. Save
     setTask("5", "in_progress");
     const outputPath = args.output ?? `./changelog-${args.repo}-${version.replace(/[^a-zA-Z0-9._-]/g, "_")}.png`;
-    await writeFile(outputPath, pngBuffer);
+    await writeFile(resolvePath(ctx.cwd, outputPath), pngBuffer);
     setTask("5", "completed");
 
     const periodLabel = days === 1 ? "past day" : `past ${days} days`;
