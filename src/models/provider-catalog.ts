@@ -18,6 +18,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { registerProviderModels, type ModelEntry } from "./registry.js";
+import { contextLengthOf } from "./local-context.js";
 import { MODELS_DEV_SNAPSHOT } from "./models-dev-snapshot.js";
 import { PROVIDER_PRESETS, type ProviderId } from "../providers/presets.js";
 import { getUserAgent } from "../util/version.js";
@@ -209,7 +210,7 @@ export async function discoverOllamaModels(baseUrl: string, fetchImpl: typeof fe
   return out;
 }
 
-/** Models from an OpenAI-compatible `GET /models` (LM Studio, vLLM, custom gateways). Ids only; capabilities unknown. */
+/** Models from an OpenAI-compatible `GET /models` (LM Studio, vLLM, custom gateways). Ids and context length when listed; capabilities unknown. */
 export async function discoverOpenAiModels(baseUrl: string, apiKey: string | undefined, fetchImpl: typeof fetch = fetch): Promise<ModelEntry[]> {
   const res = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/models`, {
     headers: { Accept: "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
@@ -222,7 +223,8 @@ export async function discoverOpenAiModels(baseUrl: string, apiKey: string | und
     .map((m) => ({
       id: m.id,
       ...(typeof m.created === "number" ? { created: m.created } : {}),
-      contextWindow: 32_768,
+      // vLLM's max_model_len, LM Studio's loaded/max context, or context_length when listed.
+      contextWindow: contextLengthOf(m) ?? 32_768,
       maxOutputTokens: 16_384,
       pricing: { inputPerMtok: 0, outputPerMtok: 0 },
       supports: { tools: true, reasoning: false, streaming: true },

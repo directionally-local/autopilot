@@ -23,7 +23,9 @@ import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extract
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
 import type { SandboxReadCursor } from "../code-mode/index.js";
-import { estimatePromptTokens } from "./artifact-compaction.js";
+import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
+import { resolveCustomEndpoint } from "./custom-endpoint.js";
+import { localContextLength, localContextMessage, localProviderOf, servedPromptLimit } from "../models/local-context.js";
 import { logger } from "../util/logger.js";
 import { prepareTurn } from "./pre-turn.js";
 import type { SemanticSkillRoutingResult } from "../skills/types.js";
@@ -1021,9 +1023,15 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
 
     let apiMessages = buildApiMessages();
     let promptTokens = estimatePromptTokens(apiMessages);
+    // A local server's own context, asked once per process (models/local-context.ts):
+    // the budget below then uses it, and the tool definitions it counts too.
+    const llmAuth = llmAuthOf(opts);
+    const localEndpoint = llmAuth.customEndpoint ?? resolveCustomEndpoint(); // as runKimi resolves it
+    const servedContext = await localContextLength(localEndpoint, opts.model);
+    const toolTokens = servedContext ? approxTokens(JSON.stringify(toolDefs ?? []).length) : 0;
     // The API rejects when `input + max_completion_tokens > ctxWindow`, so the
     // budget comes from those exact terms plus a margin for estimator drift.
-    const maxPromptTokens = effectiveInputBudget(opts.model, opts.maxCompletionTokens);
+    const maxPromptTokens = Math.max(1, effectiveInputBudget(opts.model, opts.maxCompletionTokens) - toolTokens);
     if (promptTokens > maxPromptTokens && opts.compaction) {
       // One bounded pass: archive older complete turns (raw content stays in
       // the artifact store), keep the active turn, then re-estimate.
@@ -1065,8 +1073,25 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           );
       }
     }
-    if (promptTokens > maxPromptTokens) {
-      logger.warn("context:irreducible", { sessionId: opts.sessionId, promptTokens, budgetTokens: maxPromptTokens });
+    // Past the compaction budget, a local server still takes the prompt while
+    // it leaves room for a reply (the client lowers max_tokens to fit).
+    const promptLimit = servedContext ? Math.max(maxPromptTokens, servedPromptLimit(servedContext) - toolTokens) : maxPromptTokens;
+    if (promptTokens > promptLimit) {
+      logger.warn("context:irreducible", { sessionId: opts.sessionId, promptTokens, budgetTokens: promptLimit });
+      if (servedContext) {
+        throw new ContextBudgetError(
+          promptTokens,
+          promptLimit,
+          servedContext,
+          localContextMessage({
+            promptTokens: promptTokens + toolTokens,
+            contextLength: servedContext,
+            model: opts.model,
+            providerId: localProviderOf(localEndpoint),
+            providerName: providerPresetOf(llmAuth).name,
+          }),
+        );
+      }
       throw new ContextBudgetError(promptTokens, maxPromptTokens, getModelOrInfer(opts.model).contextWindow);
     }
 

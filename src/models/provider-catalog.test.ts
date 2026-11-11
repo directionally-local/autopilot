@@ -118,6 +118,13 @@ describe("local discovery", () => {
     assert.deepStrictEqual(models.map((m) => m.id), ["qwen2.5-coder-32b"]);
     assert.strictEqual(auth, "Bearer k");
   });
+
+  it("takes the context window from vLLM's max_model_len (or an equivalent) when listed", async () => {
+    const fetchImpl = (async () =>
+      json({ data: [{ id: "qwen", max_model_len: 24000 }, { id: "lm", loaded_context_length: 8192, max_context_length: 131072 }, { id: "plain" }] })) as unknown as typeof fetch;
+    const models = await discoverOpenAiModels("http://127.0.0.1:8000/v1", undefined, fetchImpl);
+    assert.deepStrictEqual(models.map((m) => [m.id, m.contextWindow]), [["qwen", 24000], ["lm", 8192], ["plain", 32768]]);
+  });
 });
 
 describe("registry with a provider catalog", () => {
