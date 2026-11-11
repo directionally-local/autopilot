@@ -19,6 +19,8 @@ import { costNote } from "../usage-tracker.js";
 import {
   describeDlError,
   dlAccessToken,
+  dlAuthPrompt,
+  isDlAuthError,
   DL_DENIALS,
   dlDenialLine,
   dlDenialOf,
@@ -126,6 +128,17 @@ function me(over: Partial<DlMe["allowance"]> = {}): DlMe {
 
 const NOW = Date.parse("2026-11-04T00:00:00.000Z");
 const noSleep = async () => {};
+
+describe("isDlAuthError", () => {
+  it("recognizes the sign-in codes and ignores transient ones", () => {
+    assert.strictEqual(isDlAuthError(new DlError("invalid_grant", "expired")), true);
+    assert.strictEqual(isDlAuthError(new DlError("invalid_token", "bad")), true);
+    assert.strictEqual(isDlAuthError(new DlError("signed_out", "out")), true);
+    assert.strictEqual(isDlAuthError(new DlError("network", "down")), false);
+    assert.strictEqual(isDlAuthError(new Error("x")), false);
+    assert.match(dlAuthPrompt(new DlError("invalid_grant", "expired")), /expired/);
+  });
+});
 
 describe("Directionally Local free tier", () => {
   let home: string;

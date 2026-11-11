@@ -213,6 +213,19 @@ export class DlError extends Error {
   }
 }
 
+/** The codes that mean the sign-in must be renewed (not a transient failure). */
+const DL_AUTH_CODES = new Set(["invalid_grant", "invalid_token", "signed_out", "expired_token"]);
+
+/** True when `err` is a Directionally Local auth failure that needs a new sign-in. */
+export function isDlAuthError(err: unknown): err is DlError {
+  return err instanceof DlError && DL_AUTH_CODES.has(err.code);
+}
+
+/** The sign-in prompt for an auth failure (the error's own sentence, or a default). */
+export function dlAuthPrompt(err?: unknown): string {
+  return err instanceof DlError ? err.message : "Your Directionally Local sign-in expired. Run `autopilot auth directionally-local` to sign in again.";
+}
+
 /** The fields of the service's `{error:{…}}` this client reads. */
 export interface DlErrorDetail {
   message?: string;
