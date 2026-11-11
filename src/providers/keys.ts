@@ -12,6 +12,7 @@ import { checkRequestyKey } from "../models/requesty.js";
 import { getPreset, keyHeaders, PROVIDER_IDS, type ProviderId } from "./presets.js";
 import { anthropicHeaders } from "../agent/protocols/anthropic.js";
 import { resolveActiveProvider, resolveProviderKey, type ProviderSettings } from "./resolve.js";
+import { DL_FREE_MODELS } from "./directionally-local.js";
 
 export type ProviderKeyCheck =
   | { ok: true; detail?: string }
@@ -168,6 +169,17 @@ export async function saveProviderKey(id: ProviderId, key: string | undefined, b
 }
 
 /**
+ * The free tier's model on (re)choosing it: an explicit pick other than the
+ * default, else the free model last used there, else the default. Sign-in
+ * passes the default, so choosing Free again keeps a model picked earlier.
+ */
+function freeTierModel(saved: string | undefined, requested: string | undefined): string {
+  const fallback = getPreset("directionally-local").defaultModel!;
+  const free = (id: string | undefined) => (id && DL_FREE_MODELS.some((m) => m.id === id) ? id : undefined);
+  return (requested !== fallback ? free(requested) : undefined) ?? free(saved) ?? fallback;
+}
+
+/**
  * Make `to` the active provider. The outgoing provider's model is kept under
  * providers.<from>.model so switching back restores it; the incoming one's
  * last model (or its preset default) becomes the top-level model.
@@ -176,8 +188,7 @@ export async function switchProvider(cfg: AutopilotConfig | null, to: ProviderId
   const providers = await persistedProviders();
   const from = cfg ? resolveActiveProvider(cfg).id : undefined;
   if (from && cfg?.model) providers[from] = { ...providers[from], model: cfg.model };
-  // The free tier serves one model: switching back always restores it.
-  const nextModel = to === "directionally-local" ? getPreset(to).defaultModel : model ?? providers[to]?.model ?? getPreset(to).defaultModel;
+  const nextModel = to === "directionally-local" ? freeTierModel(providers[to]?.model, model) : model ?? providers[to]?.model ?? getPreset(to).defaultModel;
   if (nextModel) providers[to] = { ...providers[to], model: nextModel };
   return patchPersistedConfig({ provider: to, providers, model: nextModel });
 }

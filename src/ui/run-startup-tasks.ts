@@ -9,6 +9,7 @@
  * the prior in-component implementation.
  */
 import { embeddingAuthFromConfig, llmAuthFromConfig } from "../agent/llm-auth.js";
+import { resolveActiveProvider } from "../providers/resolve.js";
 import { patchPersistedConfig, takeFreeDefaultLunaNotice, tuiMemoryEnabled } from "../config.js";
 import React from "react";
 import { existsSync } from "node:fs";
@@ -35,7 +36,7 @@ type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
 export interface RunStartupTasksDeps {
   cfg: Cfg;
-  setCfg: (cfg: Cfg) => void;
+  setCfg: React.Dispatch<React.SetStateAction<Cfg | null>>;
   setEvents: SetEvents;
   mkKey: () => string;
   memoryManagerRef: React.MutableRefObject<MemoryManager | null>;
@@ -44,6 +45,9 @@ export interface RunStartupTasksDeps {
   customCommandsRef: React.MutableRefObject<CustomCommand[]>;
   setCustomCommandsVersion: React.Dispatch<React.SetStateAction<number>>;
 }
+
+/** The free-tier model check runs once per process (startup tasks rerun on every config change). */
+let freeModelChecked = false;
 
 export function runStartupTasks(deps: RunStartupTasksDeps): void {
   const {
@@ -65,6 +69,25 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   void takeFreeDefaultLunaNotice().then((notice) => {
     if (notice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
   });
+
+  // On the free tier, a saved model with no tokens left this week runs this
+  // session on GPT-6 Luna (said once); the saved choice stays for later.
+  if (!freeModelChecked && resolveActiveProvider(cfg).id === "directionally-local" && !process.env.KIMI_MODEL) {
+    freeModelChecked = true;
+    const startModel = cfg.model;
+    void import("../providers/directionally-local.js")
+      .then(async ({ fetchDlMe, freeModelFallback, lastKnownDlMe }) => {
+        const me = lastKnownDlMe() ?? (await fetchDlMe().catch(() => null));
+        const fallback = freeModelFallback(cfg, me);
+        if (!fallback) return;
+        // Someone who already picked a model this session keeps it.
+        setCfg((current) => (current && current.model === startModel ? { ...current, model: fallback.cfg.model } : current));
+        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: fallback.notice }]);
+      })
+      .catch(() => {
+        // Non-fatal: the service's own limit message still applies.
+      });
+  }
 
   // Sessions and traces are never deleted automatically; once they get big,
   // say so and point at `autopilot history`.
