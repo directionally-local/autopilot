@@ -113,12 +113,18 @@ import { resumeHint } from "./interactive-resume.js";
 import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu } from "./gpu/detect.js";
 import { handoffPath, modelUpResult, requestModelUp } from "./gpu/handoff.js";
 import { checkModelsEndpoint, normalizeBaseUrl, serverBaseUrl } from "./gpu/endpoint.js";
-import { flushGpuTelemetry, gpuProps, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
+import { flushGpuTelemetry, gpuProps, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
 import {
   EARLY_ACCESS_CHOICES,
+  EARLY_ACCESS_EMAIL_ERROR,
+  EARLY_ACCESS_EMAIL_TITLE,
   EARLY_ACCESS_SUBTITLE,
+  EARLY_ACCESS_TELEMETRY_OFF,
   EARLY_ACCESS_THANKS,
+  EARLY_ACCESS_THANKS_EMAIL,
+  earlyAccessEmailSubtitle,
   earlyAccessQuestion,
+  looksLikeEmail,
   ENDPOINT_TITLE,
   ENDPOINT_URL_ERROR,
   modelUpFailedLine,
@@ -1675,13 +1681,31 @@ export class View implements AppBridge {
       const answer = await this.select(earlyAccessQuestion(gpu), EARLY_ACCESS_CHOICES.map((c) => ({ ...c })), "no", EARLY_ACCESS_SUBTITLE);
       if (answer === null) return undefined;
       const yes = answer === "yes";
-      sendGpuTelemetry({ event: "early_access", gpuVendor: gpu.vendor, answer: yes ? "yes" : "no", gpuModel: gpu.model, gpuVramGb: gpu.vramGb }, env);
+      // A yes may leave an email, sent with the count; with telemetry off nothing is sent, so none is asked for.
+      const sending = gpuTelemetrySends(env);
+      const email = yes && sending ? await this.earlyAccessEmail(gpu, say) : undefined;
+      sendGpuTelemetry({ event: "early_access", gpuVendor: gpu.vendor, answer: yes ? "yes" : "no", gpuModel: gpu.model, gpuVramGb: gpu.vramGb, ...(email ? { email } : {}) }, env);
       await rememberGpu({ earlyAccess: { [gpu.vendor]: yes ? "yes" : "no" } });
-      if (yes) say(EARLY_ACCESS_THANKS);
+      if (yes) say(!sending ? EARLY_ACCESS_TELEMETRY_OFF : email ? EARLY_ACCESS_THANKS_EMAIL : EARLY_ACCESS_THANKS);
       return undefined;
     }
     if (!gpu) say(NO_GPU_HINT);
     return undefined;
+  }
+
+  /** The optional email after a yes to early access; asked again until it looks like one. Esc or empty skips. */
+  private async earlyAccessEmail(gpu: DetectedGpu, say: (message: string, severity?: "info" | "error") => void): Promise<string | undefined> {
+    for (;;) {
+      const f = await this.sdk.form(this.cam, {
+        id: `early-access-email-${Date.now()}`,
+        title: EARLY_ACCESS_EMAIL_TITLE,
+        fields: [{ name: "email", label: earlyAccessEmailSubtitle(gpu), placeholder: "you@example.com" }],
+      });
+      const email = f.cancelled ? "" : (f.values?.email?.trim() ?? "");
+      if (!email) return undefined;
+      if (looksLikeEmail(email)) return email;
+      say(EARLY_ACCESS_EMAIL_ERROR, "error");
+    }
   }
 
   /** Ask dl for `dl model up` (Autopilot exits next; dl starts it again on the new model). */
