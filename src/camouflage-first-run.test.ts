@@ -67,17 +67,21 @@ describe("first run: one question", () => {
     if (root?.startsWith(tmpdir())) await rm(root, { recursive: true, force: true });
   });
 
-  it("asks how it should think: Free or your own key, Free highlighted, nothing about billing", async () => {
+  it("asks how it should think: Free, your own key or your own GPUs, Free highlighted, nothing about billing", async () => {
     await fresh();
     const { view, prompts, options } = await fakeView([null]);
     assert.strictEqual(await view.firstRunSetup({ upgrading: false }), false, "Esc quits");
     assert.strictEqual(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
     assert.strictEqual(FIRST_RUN_QUESTION, "How should it think?");
-    assert.deepStrictEqual(options(0), ["free", "own-key"]);
+    assert.deepStrictEqual(options(0), ["free", "own-key", "gpus"]);
     assert.strictEqual(prompts[0]?.payload.default, undefined, "nothing is marked current before anything was chosen");
     assert.deepStrictEqual(
       firstRunChoices().map((c) => `${c.label} · ${c.description}`),
-      ["Free — sign in with GitHub · GPT-6 Luna + DeepSeek, 50M tokens a week, no credit card", "Use my own API key · OpenRouter, Anthropic, OpenAI and more"],
+      [
+        "Free — sign in with GitHub · GPT-6 Luna + DeepSeek, 50M tokens a week, no credit card",
+        "Use my own API key · OpenRouter, Anthropic, OpenAI and more",
+        "Use your own GPUs · a private model on this machine, a server of yours, or your vLLM",
+      ],
     );
     assert.doesNotMatch(JSON.stringify(prompts[0]), /billed/);
     view.dispose();
@@ -420,8 +424,8 @@ describe("first run and /provider: the free tier's status", () => {
     };
     assert.strictEqual(await view.firstRunSetup({ upgrading: false }), false);
     const options = prompts[0]!.payload.options as Option[];
-    assert.deepStrictEqual(options.map((o) => o.value), ["own-key", "free"]);
-    assert.strictEqual(options[1]!.label, "Free — paused");
+    assert.deepStrictEqual(options.map((o) => o.value), ["own-key", "gpus", "free"]);
+    assert.strictEqual(options[2]!.label, "Free — paused");
     assert.strictEqual(prompts[0]!.payload.default, undefined, "no ✓ current: own key is selected by being first");
     assert.strictEqual(prompts[0]!.payload.subtitle, `${paused.message} · Esc to quit`);
     assert.ok(said().includes(paused.message));
