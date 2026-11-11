@@ -246,8 +246,9 @@ export async function verifyProvider(
 export async function commitProvider(connection: Connection, modelId: string): Promise<AutopilotConfig> {
   const { id, key, source, baseUrl } = connection;
   const toSave = source === "key" || source === "signin" ? key : undefined;
-  if (toSave || (id === "custom" && baseUrl)) {
-    await saveProviderKey(id, toSave, id === "custom" || id === "copilot" || id === "azure" ? baseUrl || undefined : undefined);
+  // vLLM keeps its address too: your own GPUs are rarely on the preset's 127.0.0.1:8000.
+  if (toSave || ((id === "custom" || id === "vllm") && baseUrl)) {
+    await saveProviderKey(id, toSave, id === "custom" || id === "copilot" || id === "azure" || id === "vllm" ? baseUrl || undefined : undefined);
   }
   await switchProvider(null, id, modelId);
   const cfg = await loadConfig();
@@ -313,7 +314,10 @@ export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved
 export const DL_FREE_MODEL_LINE = "Free: GPT-6 Luna on OpenAI, with DeepSeek on Luminal as the backup";
 
 /** The first-run question's answers. */
-export type FirstRunChoice = "free" | "own-key";
+export type FirstRunChoice = "free" | "own-key" | "gpus";
+
+/** The third answer: vLLM on this machine, on another server, or an endpoint already running. */
+export const OWN_GPUS_CHOICE = { value: "gpus" as const, label: "Use your own GPUs", description: "a private model on this machine, a server of yours, or your vLLM" };
 
 /** The one question first run asks when no provider is usable. */
 export const FIRST_RUN_QUESTION = "How should it think?";
@@ -322,18 +326,18 @@ export const FIRST_RUN_QUESTION = "How should it think?";
 export const DL_FREE_PAUSED_LABEL = "Free — paused";
 
 /**
- * Its two answers: the free tier, or the provider picker (without the free
- * tier). With the free tier on a waitlist, Free says when it opens; paused,
+ * Its three answers: the free tier, the provider picker (without the free
+ * tier), or your own GPUs (vLLM). With the free tier on a waitlist, Free says when it opens; paused,
  * Free goes last (choosing it only says why: see `freeChoosable`), so own
  * key is the one selected.
  */
 export function firstRunChoices(status: DlFreeStatus = DL_STATUS_OPEN, timeZone?: string, starter = false): Array<{ value: FirstRunChoice; label: string; description: string }> {
   const ownKey = { value: "own-key" as const, label: "Use my own API key", description: "OpenRouter, Anthropic, OpenAI and more" };
-  if (status.free === "paused") return [ownKey, { value: "free", label: DL_FREE_PAUSED_LABEL, description: "not taking new sign-ins right now" }];
+  if (status.free === "paused") return [ownKey, OWN_GPUS_CHOICE, { value: "free", label: DL_FREE_PAUSED_LABEL, description: "not taking new sign-ins right now" }];
   const description = starter
     ? "Starter: DeepSeek only, 5M tokens a week"
     : status.free === "waitlist" ? dlWaitlistText(status, timeZone) : `GPT-6 Luna + DeepSeek, ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens a week, no credit card`;
-  return [{ value: "free", label: "Free — sign in with GitHub", description }, ownKey];
+  return [{ value: "free", label: "Free — sign in with GitHub", description }, ownKey, OWN_GPUS_CHOICE];
 }
 
 /** The first-run question's subtitle: the free model's line, or the service's word on a waitlist or pause. */

@@ -63,6 +63,8 @@ export function onboardingCancelledMessage(env: NodeJS.ProcessEnv = process.env)
 export type FirstRunOutcome =
   | { kind: "ready"; cfg: AutopilotConfig & { model: string } }
   | { kind: "cancelled" }
+  /** The person wants a private model on this machine's GPU: dl runs dl model up, then starts Autopilot again (gpu/handoff.ts). */
+  | { kind: "model-up" }
   | { kind: "failed"; message: string };
 
 export interface FirstRunDeps {
@@ -73,8 +75,8 @@ export interface FirstRunDeps {
   show(lines: string[]): void;
   /** A known provider's key in the environment, used without asking (undefined: ask). */
   envKey?(): { id: ProviderId; envVar: string } | undefined;
-  /** Ask the question (or use the env key), connect, pick a model; true once saved, false if the user backed out. */
-  setup(o: { upgrading: boolean; envKey?: { id: ProviderId; envVar: string } }): Promise<boolean>;
+  /** Ask the question (or use the env key), connect, pick a model; true once saved, false if the user backed out, "model-up" when handed to dl. */
+  setup(o: { upgrading: boolean; envKey?: { id: ProviderId; envVar: string } }): Promise<boolean | "model-up">;
   loadConfig(): Promise<AutopilotConfig | null>;
 }
 
@@ -87,7 +89,9 @@ export async function runFirstRun(deps: FirstRunDeps): Promise<FirstRunOutcome> 
   const upgrading = await deps.upgrading().catch(() => false);
   const envKey = deps.envKey?.();
   deps.show(firstRunIntro({ upgrading, configPath: deps.configPath(), ...(envKey ? { envKey } : {}) }));
-  if (!(await deps.setup({ upgrading, ...(envKey ? { envKey } : {}) }))) return { kind: "cancelled" };
+  const saved = await deps.setup({ upgrading, ...(envKey ? { envKey } : {}) });
+  if (saved === "model-up") return { kind: "model-up" };
+  if (!saved) return { kind: "cancelled" };
   let cfg: AutopilotConfig | null;
   try {
     cfg = await deps.loadConfig();
