@@ -174,7 +174,8 @@ describe("GPU-aware first run", () => {
     await view.firstRunSetup({ upgrading: false });
     assert.equal(prompts[0]?.payload.prompt, "Detected AMD Instinct MI300X. Support is coming. Want early access?");
     assert.equal(prompts[0]?.payload.default, "no");
-    assert.equal(prompts[1]?.payload.prompt, FIRST_RUN_QUESTION);
+    assert.equal(prompts[1]?.payload.title, "Email for early access? (optional, Enter to skip)", "Esc on the email skips it");
+    assert.equal(prompts[2]?.payload.prompt, FIRST_RUN_QUESTION);
     assert.ok(said().includes("Thanks, counted."));
     assert.deepEqual(events().at(-1), { event: "early_access", gpuVendor: "amd", answer: "yes", gpuModel: "AMD Instinct MI300X", gpuVramGb: 192 });
     const again = await fakeView([null], { gpu: MI300X, env: dl() });
@@ -183,6 +184,61 @@ describe("GPU-aware first run", () => {
     view.dispose();
     again.view.dispose();
   });
+
+  it("AMD yes with an email: one form, sent with the count, then thanks", async () => {
+    const { view, prompts, said } = await fakeView(["yes", null], { gpu: MI300X, env: dl(), forms: [{ email: "  ada@example.com " }] });
+    await view.firstRunSetup({ upgrading: false });
+    const form = prompts[1]!.payload as { title: string; fields: Array<{ name: string; label: string; placeholder?: string }> };
+    assert.equal(form.title, "Email for early access? (optional, Enter to skip)");
+    assert.deepEqual(form.fields, [{ name: "email", label: "Only used to tell you when AMD support is ready.", placeholder: "you@example.com" }]);
+    assert.equal(prompts[2]?.payload.prompt, FIRST_RUN_QUESTION);
+    assert.ok(said().includes("Thanks, we'll email you."));
+    assert.ok(!said().includes("Thanks, counted."));
+    const early = events().filter((e) => e.event === "early_access");
+    assert.deepEqual(early, [{ event: "early_access", gpuVendor: "amd", answer: "yes", gpuModel: "AMD Instinct MI300X", gpuVramGb: 192, email: "ada@example.com" }], "one count, with the email");
+    view.dispose();
+  });
+
+  it("AMD yes, email left empty: no email sent, counted as before", async () => {
+    const { view, said } = await fakeView(["yes", null], { gpu: MI300X, env: dl(), forms: [{ email: "   " }] });
+    await view.firstRunSetup({ upgrading: false });
+    assert.ok(said().includes("Thanks, counted."));
+    assert.deepEqual(events().at(-1), { event: "early_access", gpuVendor: "amd", answer: "yes", gpuModel: "AMD Instinct MI300X", gpuVramGb: 192 });
+    view.dispose();
+  });
+
+  it("a bad email asks again; a long one too", async () => {
+    const long = `${"a".repeat(250)}@example.com`;
+    const { view, prompts, said } = await fakeView(["yes", null], { gpu: ASCEND, env: dl(), forms: [{ email: "not an email" }, { email: long }, { email: "lin@example.cn" }] });
+    await view.firstRunSetup({ upgrading: false });
+    const forms = prompts.filter((p) => p.type === "form");
+    assert.equal(forms.length, 3);
+    assert.equal((forms[0]!.payload.fields as Array<{ label: string }>)[0]!.label, "Only used to tell you when Huawei Ascend support is ready.");
+    assert.equal(said().filter((line) => line === "That doesn't look like an email. Enter one like you@example.com, or leave it empty to skip.").length, 2);
+    assert.deepEqual(events().at(-1), { event: "early_access", gpuVendor: "ascend", answer: "yes", gpuModel: "Ascend 910B3", gpuVramGb: 64, email: "lin@example.cn" });
+    view.dispose();
+  });
+
+  it("a no never asks for an email", async () => {
+    const { view, prompts } = await fakeView(["no", null], { gpu: MI300X, env: dl(), forms: [{ email: "x@example.com" }] });
+    await view.firstRunSetup({ upgrading: false });
+    assert.equal(prompts.filter((p) => p.type === "form").length, 0);
+    assert.equal((events().at(-1) as { email?: string }).email, undefined);
+    view.dispose();
+  });
+
+  for (const off of [{ DL_NO_TELEMETRY: "1" }, { DO_NOT_TRACK: "1" }, { CI: "true" }]) {
+    it(`telemetry off (${Object.keys(off)[0]}): no email field, nothing sent, and says where to write instead`, async () => {
+      const { view, prompts, said } = await fakeView(["yes", null], { gpu: MI300X, env: { ...dl(), ...off }, forms: [{ email: "x@example.com" }] });
+      await view.firstRunSetup({ upgrading: false });
+      assert.equal(prompts.filter((p) => p.type === "form").length, 0);
+      assert.equal(prompts[1]?.payload.prompt, FIRST_RUN_QUESTION);
+      assert.ok(said().includes("Thanks. Telemetry is off, so nothing was sent. For early access, email contact@directionallylocal.com."));
+      assert.ok(!said().includes("Thanks, counted."));
+      assert.ok(events().every((e) => !("email" in e)));
+      view.dispose();
+    });
+  }
 
   it("Ascend: the same question, with Huawei's name", async () => {
     const { view, prompts } = await fakeView(["no", null], { gpu: ASCEND, env: dl() });

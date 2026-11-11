@@ -7,7 +7,9 @@
  * /v1/events. Counts only: a vendor, a GPU model name (64 characters at most), its memory in
  * GB, a GPU count and short words from fixed lists. Never a prompt, a key, a URL or an address,
  * and no account, device id or IP is kept by the service. The service validates the same lists
- * (installer services/free/src/events.ts).
+ * (installer services/free/src/events.ts). The one exception is an email the person chooses to
+ * type after a yes to early access: it rides on that early_access body, and the service keeps it
+ * apart from the counts, only to tell them when their GPU is supported.
  *
  * Off with DL_NO_TELEMETRY, DO_NOT_TRACK or CI, and in tests. Fire and forget: 3 s timeout,
  * never throws, and anything still sending gets at most 1.5 s at exit.
@@ -42,7 +44,7 @@ export type GpuErrorType =
 export type GpuTelemetry =
   | { event: "detected"; gpuVendor: "nvidia" | "amd" | "ascend" | "none"; gpuModel?: string; gpuVramGb?: number; gpuCount?: number }
   | { event: "prompt"; gpuVendor: "nvidia"; answer: "yes" | "no"; gpuVramGb?: number }
-  | { event: "early_access"; gpuVendor: "amd" | "ascend"; answer: "yes" | "no"; gpuModel?: string; gpuVramGb?: number }
+  | { event: "early_access"; gpuVendor: "amd" | "ascend"; answer: "yes" | "no"; gpuModel?: string; gpuVramGb?: number; email?: string }
   | { event: "option"; option: GpuOption; gpuVendor?: "nvidia" | "amd" | "ascend" | "none" }
   | { event: "result"; outcome: "ok" | "failed"; path: GpuPath; errorType?: GpuErrorType; gpuVendor?: "nvidia" | "amd" | "ascend" | "none" };
 
@@ -52,11 +54,23 @@ export function gpuProps(gpu: DetectedGpu | null): { gpuVendor: "nvidia" | "amd"
   return { gpuVendor: gpu.vendor, gpuModel: gpu.model.slice(0, 64), gpuVramGb: gpu.vramGb, gpuCount: gpu.count };
 }
 
+/** DL_NO_TELEMETRY, DO_NOT_TRACK or CI. */
+function telemetryOptedOut(env: NodeJS.ProcessEnv): boolean {
+  const off = (v: string | undefined) => v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false";
+  return off(env.DL_NO_TELEMETRY) || off(env.DO_NOT_TRACK) || !!env.CI;
+}
+
 /** Whether counts may be sent at all. */
 export function gpuTelemetryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const off = (v: string | undefined) => v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false";
-  if (off(env.DL_NO_TELEMETRY) || off(env.DO_NOT_TRACK) || env.CI) return false;
-  return !isAutopilotTestRun(env);
+  return !telemetryOptedOut(env) && !isAutopilotTestRun(env);
+}
+
+/**
+ * Whether sendGpuTelemetry will send: the opt-outs always count, and in tests a transport
+ * stands in for the network. The early-access email is only asked for when this is true.
+ */
+export function gpuTelemetrySends(env: NodeJS.ProcessEnv = process.env): boolean {
+  return transport ? !telemetryOptedOut(env) : gpuTelemetryEnabled(env);
 }
 
 const pending = new Set<Promise<void>>();

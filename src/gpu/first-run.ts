@@ -7,7 +7,8 @@
  * - Nvidia with a 24 GB card, started by dl: "Run a private model on this GPU?" Yes hands over
  *   to `dl model up` (handoff.ts); No is remembered and the question isn't asked again.
  * - Nvidia, smaller: a one-line hint that `dl model up` can run small models.
- * - AMD or Ascend: "Support is coming. Want early access?" once, remembered.
+ * - AMD or Ascend: "Support is coming. Want early access?" once, remembered. A yes may leave an
+ *   email to hear when support is ready (only while telemetry is on).
  * - Nothing: a one-line hint for people whose GPUs are on a server.
  */
 
@@ -64,6 +65,25 @@ export const EARLY_ACCESS_CHOICES = [
 ] as const;
 
 export const EARLY_ACCESS_THANKS = "Thanks, counted.";
+
+/** After a yes: an optional email, sent with the count (telemetry.ts) only when given. */
+export const EARLY_ACCESS_EMAIL_TITLE = "Email for early access? (optional, Enter to skip)";
+
+export function earlyAccessEmailSubtitle(gpu: DetectedGpu): string {
+  return `Only used to tell you when ${vendorName(gpu.vendor)} support is ready.`;
+}
+
+export const EARLY_ACCESS_EMAIL_ERROR = "That doesn't look like an email. Enter one like you@example.com, or leave it empty to skip.";
+
+export const EARLY_ACCESS_THANKS_EMAIL = "Thanks, we'll email you.";
+
+/** A yes with telemetry off (DL_NO_TELEMETRY, DO_NOT_TRACK, CI): nothing is sent, so no email is asked for. */
+export const EARLY_ACCESS_TELEMETRY_OFF = "Thanks. Telemetry is off, so nothing was sent. For early access, email contact@directionallylocal.com.";
+
+/** Light check: one @, a dot in the domain, no spaces, at most 254 characters. The service checks again. */
+export function looksLikeEmail(value: string): boolean {
+  return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
 
 const MODEL_UP_WHY: Record<ModelUpError, string> = {
   cancelled: "cancelled",
