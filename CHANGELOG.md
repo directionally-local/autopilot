@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.19.0](https://github.com/directionally-local/autopilot/compare/v3.18.0...v3.19.0) (2026-11-11)
+
+
+### Features
+
+* GPU-aware first run and "Use your own GPUs" ([#1244](https://github.com/directionally-local/autopilot/issues/1244)) ([baa98c4](https://github.com/directionally-local/autopilot/commit/baa98c49462bc8854315b3b90b93d2311492dfb7))
+
+
+### Bug Fixes
+
+* remember the free tier's picked model across sessions ([#1242](https://github.com/directionally-local/autopilot/issues/1242)) ([75838ec](https://github.com/directionally-local/autopilot/commit/75838ecf28b59aa9fd26893714ee4b6737a7840f))
+
 ## [3.18.0](https://github.com/directionally-local/autopilot/compare/v3.17.0...v3.18.0) (2026-11-11)
 
 
