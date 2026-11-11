@@ -7,7 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { AutopilotConfig } from "../config.js";
 import { DlGitHub, DlGitHubError, type DlCommit } from "./dl-github.js";
-import { DlApi, type DlTurnStart } from "./dl-api.js";
+import { DlApi, type DlTurnOutcome, type DlTurnStart } from "./dl-api.js";
 import { DlStore } from "./dl-store.js";
 import type { DlPushMessage } from "./dl-push.js";
 import { startServer } from "./index.js";
@@ -68,7 +68,7 @@ describe("dl server control-plane API", () => {
         },
         startTurn: (turn) => {
           turns.push(turn);
-          const text = turns.length === 1 ? "FIRST_REPLIED" : "SECOND_REPLIED";
+          const text = turns.length === 1 ? "FIRST_REPLIED" : turns.length === 2 ? "SECOND_REPLIED" : "FAILED_REPLIED";
           setTimeout(() => {
             if (text === "FIRST_REPLIED") {
               turn.publishEvent("usage", { inputTokens: 42, outputTokens: 7, costUsd: 0.001, cumulative: true });
@@ -76,7 +76,7 @@ describe("dl server control-plane API", () => {
             }
             turn.publishEvent("assistant.delta", { text });
             turn.onCellCursor?.(turn.cellEventCursor + 1);
-            turn.finish("completed");
+            turn.finish(turns.length === 3 ? "failed" : "completed", turns.length === 3 ? "cell_unreachable" : undefined);
           }, 10);
         },
         cancelRun: () => {},
@@ -171,6 +171,32 @@ describe("dl server control-plane API", () => {
       assert.equal(turns[1]!.userText, "second turn");
       assert.equal(turns[1]!.cellId, turns[0]!.cellId);
       assert.equal(turns[1]!.cellEventCursor, 1);
+      assert.doesNotMatch(secondEvents, /turn\.outcome/, "completed output does not imply ready");
+
+      const validReady: DlTurnOutcome = { kind: "ready", checksRun: [{ command: "npm test", exitCode: 0 }] };
+      // @ts-expect-error Ready is not representable without an executed passing check.
+      const unverifiedReady: DlTurnOutcome = { kind: "ready", checksRun: [] };
+      const validBlocked: DlTurnOutcome = { kind: "blocked", question: "May I access the private registry?", checksRun: [] };
+      assert.equal(validReady.kind, "ready");
+      assert.equal(unverifiedReady.kind, "ready");
+      assert.equal(validBlocked.kind, "blocked");
+
+      const failedEventsPromise = readUntil(await fetch(`${base}/api/v1/conversations/${conversation.conversationId}/events`, {
+        headers: { Authorization: `Bearer ${credential.token}`, "Last-Event-ID": String(cursor) },
+      }), "event: turn.outcome");
+      const failedTurn = await fetch(`${base}/api/v1/conversations/${conversation.conversationId}/turns`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ clientTurnId: "turn-failed", text: "third turn" }),
+      });
+      assert.equal(failedTurn.status, 202);
+      await waitForStatusAt(base, credential.token, conversation.conversationId, "failed");
+      const failedEvents = await failedEventsPromise;
+      assert.match(failedEvents, /event: turn\.outcome/);
+      assert.match(failedEvents, /\"kind\":\"failed\"/);
+      assert.match(failedEvents, /\"checksRun\":\[\]/);
+      assert.match(failedEvents, /\"reason\":\"cell_unreachable\"/);
+      assert.doesNotMatch(failedEvents, /\"kind\":\"ready\"/);
     } finally {
       await closeServer(server);
     }

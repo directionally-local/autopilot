@@ -40,6 +40,22 @@ const BASE_COMMIT_RE = /^[0-9a-f]{40}$/;
 const MAX_PATCH_CHARS = 3 * 1024 * 1024;
 const MAX_LISTED_CONVERSATIONS = 200;
 
+export interface DlTurnCheck {
+  command: string;
+  exitCode: number;
+}
+
+type DlPassingTurnCheck = Omit<DlTurnCheck, "exitCode"> & { exitCode: 0 };
+
+/** Structured task outcome. `ready` requires at least one executed check, all passing. */
+export type DlTurnOutcome =
+  | { kind: "progress"; checksRun: DlTurnCheck[]; prNumber?: number }
+  | { kind: "waiting"; checksRun: DlTurnCheck[]; prNumber?: number }
+  | { kind: "ready"; checksRun: [DlPassingTurnCheck, ...DlPassingTurnCheck[]]; prNumber?: number }
+  | { kind: "blocked"; question: string; checksRun: DlTurnCheck[]; prNumber?: number }
+  | { kind: "failed"; reason?: string; checksRun: DlTurnCheck[]; prNumber?: number }
+  | { kind: "dropped"; reason?: string; checksRun: DlTurnCheck[]; prNumber?: number };
+
 export interface DlTurnStart {
   runId: string;
   conversation: DlConversation;
@@ -1053,6 +1069,17 @@ export class DlApi {
         finish: (status, reason) => {
           const updated = store.updateConversationStatus(conversation.id, runId, status, reason ? { reason } : {});
           if (updated) store.appendEvent(conversation.id, runId, status, reason ? { reason } : {});
+          // A failed runtime status is verifiable; a normal session end is not enough to
+          // claim the task is ready, so this slice emits no success outcome.
+          if (updated && status === "failed") {
+            const outcome: DlTurnOutcome = {
+              kind: "failed",
+              checksRun: [],
+              ...(reason ? { reason } : {}),
+              ...(conversation.pullRequestNumber ? { prNumber: conversation.pullRequestNumber } : {}),
+            };
+            store.appendEvent(conversation.id, runId, "turn.outcome", outcome);
+          }
           if (updated) this.notifyTurnEnd(store, conversation.id, runId, status, reason, text, turnStartSequence);
         },
       };
