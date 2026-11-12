@@ -34,8 +34,10 @@ export const DL_PROVIDER_ID = "directionally-local" as const;
 export interface DlFreeModel {
   id: string;
   name: string;
-  /** GPT-6 Luna and DeepSeek share one pool; Sol and Astra have their own. */
+  /** GPT-6 Luna and DeepSeek shared one pool on older servers; Sol and Astra have their own. */
   pool: "luna" | "sol" | "astra";
+  /** The weekly dollar budget it spends: every GPT-6 model shares one, DeepSeek has its own. */
+  family: DlFamily;
   contextWindow: number;
   maxOutputTokens: number;
   vision: boolean;
@@ -44,10 +46,10 @@ export interface DlFreeModel {
 
 /** Every model the free tier serves. GPT-6 Luna is the default; DeepSeek is its fallback. */
 export const DL_FREE_MODELS: readonly DlFreeModel[] = [
-  { id: "gpt-6-luna", name: "GPT-6 Luna", pool: "luna", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
-  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", pool: "sol", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
-  { id: "gpt-6-astra", name: "GPT-6 Astra", pool: "astra", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
-  { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", pool: "luna", contextWindow: 1_048_576, maxOutputTokens: 65_536, vision: false, reasoning: true },
+  { id: "gpt-6-luna", name: "GPT-6 Luna", pool: "luna", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", pool: "sol", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "gpt-6-astra", name: "GPT-6 Astra", pool: "astra", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", pool: "luna", family: "deepseek", contextWindow: 1_048_576, maxOutputTokens: 65_536, vision: false, reasoning: true },
 ];
 
 /** The default free model: GPT-6 Luna. */
@@ -248,6 +250,9 @@ export interface DlErrorDetail {
   retryable?: boolean;
   /** below_bar, basic_limit: where to ask for more free tokens (/request); older servers send none. */
   request?: string;
+  /** gpt_limit: the budget that ran out ("gpt6") and the model that still has usage this week. */
+  family?: string;
+  alternative?: string;
 }
 
 // ── Plans, offers, invites and the queue (all optional: older servers send none) ──
@@ -446,6 +451,8 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const etaAt = str("etaAt", "eta_at");
   const retryable = e.retryable === true;
   const request = str("request");
+  const family = str("family");
+  const alternative = str("alternative");
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -458,6 +465,8 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(referralLink ? { referralLink } : {}),
     ...(position !== undefined && position >= 1 ? { position: Math.round(position) } : {}),
     ...(etaAt ? { etaAt } : {}),
+    ...(family ? { family } : {}),
+    ...(alternative ? { alternative } : {}),
     ...(retryable ? { retryable } : {}),
     ...(request ? { request } : {}),
   };
@@ -994,6 +1003,23 @@ export interface DlAllowance {
   spentUsdThisWeek?: number;
 }
 
+/** A weekly dollar budget: every GPT-6 model shares "gpt6"; DeepSeek has "deepseek". */
+export type DlFamily = "gpt6" | "deepseek";
+
+/** The DeepSeek model: where a GPT-6 limit points. */
+export const DL_DEEPSEEK_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+
+/**
+ * One weekly dollar budget, from /v1/me's `budgets`. `tokensThisWeek` counts every token
+ * processed (prompt tokens with cached ones, plus completion tokens), when the server says.
+ */
+export interface DlBudget {
+  /** Null: no dollar cap. */
+  usdPerWeek: number | null;
+  spentUsd: number;
+  tokensThisWeek?: number;
+}
+
 /** One weekly token pool: what a model tier has left this week. */
 export interface DlPool {
   tokensPerWeek: number;
@@ -1023,6 +1049,8 @@ export interface DlMe {
   thresholds?: DlThresholds;
   /** Each model tier's weekly allowance, when the service sends it (older servers don't). */
   pools?: Record<string, DlPool>;
+  /** The two weekly dollar budgets, GPT-6 and DeepSeek, when the service sends them (older servers have one). */
+  budgets?: Partial<Record<DlFamily, DlBudget>>;
   models?: string[];
   /** "pro" once paid; free when the service doesn't say (older servers). */
   plan?: DlPlan;
@@ -1035,6 +1063,25 @@ export interface DlMe {
   queue?: DlQueue;
   referral?: DlReferral;
   offers?: DlOffers;
+}
+
+/** One budget of /v1/me's `budgets`, kept only when well formed. */
+function parseDlBudget(raw: unknown): DlBudget | undefined {
+  if (!isRec(raw)) return undefined;
+  const usd = raw.usdPerWeek;
+  const spent = raw.spentUsd;
+  if (!(usd === null || (typeof usd === "number" && Number.isFinite(usd) && usd >= 0)) || typeof spent !== "number" || !Number.isFinite(spent)) return undefined;
+  const tokens = raw.tokensThisWeek;
+  return { usdPerWeek: usd, spentUsd: Math.max(0, spent), ...(typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? { tokensThisWeek: tokens } : {}) };
+}
+
+/** /v1/me's `budgets` (or `allowance.budgets`): both kept when well formed; undefined with neither. */
+export function parseDlBudgets(raw: unknown): Partial<Record<DlFamily, DlBudget>> | undefined {
+  if (!isRec(raw)) return undefined;
+  const gpt6 = parseDlBudget(raw.gpt6);
+  const deepseek = parseDlBudget(raw.deepseek);
+  if (!gpt6 && !deepseek) return undefined;
+  return { ...(gpt6 ? { gpt6 } : {}), ...(deepseek ? { deepseek } : {}) };
 }
 
 /** The thresholds block of /v1/me, keeping only well-formed numbers. */
@@ -1068,6 +1115,7 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
   const level = raw.level === "full" || raw.level === "starter" ? raw.level : undefined;
   const levelReason = typeof raw.levelReason === "string" ? raw.levelReason : undefined;
   const thresholds = parseDlThresholds(raw.thresholds);
+  const budgets = parseDlBudgets(raw.budgets) ?? (a ? parseDlBudgets((a as unknown as Record<string, unknown>).budgets) : undefined);
   return {
     ...(raw as unknown as DlMe),
     login: typeof raw.login === "string" ? raw.login : "",
@@ -1076,6 +1124,7 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
     ...(levelReason !== undefined ? { levelReason } : {}),
     ...(thresholds ? { thresholds } : {}),
     ...(pools ? { pools } : {}),
+    ...(budgets ? { budgets } : {}),
     plan,
     topupTokensLeft: topup !== undefined ? Math.max(0, topup) : undefined,
     topupUsdLeft: topupUsd !== undefined ? Math.max(0, topupUsd) : undefined,
@@ -1180,6 +1229,36 @@ export function dlWeekUsageText(me: Pick<DlMe, "allowance" | "plan">, o: DlTimeO
   return `this week: ${formatUsd(a.spentUsdThisWeek ?? 0)} of ${formatUsd(cap)} ${me.plan === "pro" ? "Pro" : "free"} usage`;
 }
 
+/** /usage's hint while GPT-6's week is used up and DeepSeek's isn't. */
+export const DL_GPT_LIMIT_HINT = "GPT-6 is used up this week; DeepSeek V4.1 Flash still has free usage: switch with /model.";
+
+/** The budget's name as /usage and the header show it. */
+export function dlFamilyLabel(family: DlFamily): string {
+  return family === "gpt6" ? "gpt-6" : "deepseek";
+}
+
+/** True when a budget's dollars are spent this week. */
+export function dlBudgetUsedUp(b: DlBudget): boolean {
+  return typeof b.usdPerWeek === "number" && b.spentUsd >= b.usdPerWeek;
+}
+
+/**
+ * One budget's week: "$1.20 of $8 this week · 58M tokens" (dollars first: they are the limit
+ * that binds; tokens counted the normal way, cached included), or "limit reached, resets Mon
+ * 09:00" once its dollars are spent.
+ */
+export function dlBudgetText(b: DlBudget, resetsAt: string | undefined, o: DlTimeOpts = {}): string {
+  if (dlBudgetUsedUp(b)) return `limit reached, resets ${formatLocalTime(resetsAt || nextWeekStart(o.now), o)}`;
+  const dollars = b.usdPerWeek === null ? `${formatUsd(b.spentUsd)} this week, no cap` : `${formatUsd(b.spentUsd)} of ${formatUsd(b.usdPerWeek)} this week`;
+  return b.tokensThisWeek === undefined ? dollars : `${dollars} · ${formatTokens(b.tokensThisWeek)} tokens`;
+}
+
+/** Both budgets, GPT-6 first, when the service sent both (newer servers); undefined otherwise. */
+function bothBudgets(me: Pick<DlMe, "budgets">): { gpt6: DlBudget; deepseek: DlBudget } | undefined {
+  const b = me.budgets;
+  return b?.gpt6 && b.deepseek ? { gpt6: b.gpt6, deepseek: b.deepseek } : undefined;
+}
+
 /** "$6.25 left · until Feb 10" for dollar top-ups; undefined with none left. */
 export function dlTopupUsdText(me: Pick<DlMe, "topupUsdLeft" | "topupUsdExpiresAt">, o: DlTimeOpts = {}): string | undefined {
   const left = me.topupUsdLeft ?? 0;
@@ -1207,10 +1286,24 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
     if (me.referral) lines.push(`  invites         ${me.referral.joined} joined · /invite moves you up`);
     return lines.join("\n");
   }
+  const budgets = bothBudgets(me);
   const cap = dollarCap(a);
-  const usedUp = weekUsedUp(a);
-  const pct = cap !== undefined ? Math.min(100, Math.round(((a.spentUsdThisWeek ?? 0) / cap) * 100)) : a.tokensPerWeek > 0 ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100)) : 0;
-  if (cap !== undefined) {
+  // With two budgets the week is over only when both are; the percentage is DeepSeek's (the larger one).
+  const usedUp = budgets ? dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek) : weekUsedUp(a);
+  const share = (b: DlBudget) => (typeof b.usdPerWeek === "number" && b.usdPerWeek > 0 ? Math.min(100, Math.round((b.spentUsd / b.usdPerWeek) * 100)) : 0);
+  const pct = budgets
+    ? share(budgets.deepseek)
+    : cap !== undefined
+      ? Math.min(100, Math.round(((a.spentUsdThisWeek ?? 0) / cap) * 100))
+      : a.tokensPerWeek > 0
+        ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100))
+        : 0;
+  if (budgets) {
+    // Two weekly budgets: dollars are the limit, tokens counted the normal way (cached included).
+    const resets = a.resetsAt || undefined;
+    lines.push(`  gpt-6           ${dlBudgetText(budgets.gpt6, resets, t)}`, `  deepseek        ${dlBudgetText(budgets.deepseek, resets, t)}`);
+    if (dlBudgetUsedUp(budgets.gpt6) && !dlBudgetUsedUp(budgets.deepseek)) lines.push(`  ${DL_GPT_LIMIT_HINT}`);
+  } else if (cap !== undefined) {
     // The dollar cap is what binds: show it first, and tokens only as what was used.
     lines.push(
       usedUp
@@ -1267,6 +1360,13 @@ export function dlSignedInInviteLine(me: DlMe | null, where: DlWhere = "signin")
 export function dlHeaderLine(me: DlMe | null): string | undefined {
   if (!me || me.plan === "pro" || me.queue) return undefined;
   const a = me.allowance;
+  const budgets = bothBudgets(me);
+  if (budgets) {
+    const part = (family: DlFamily, b: DlBudget) =>
+      `${dlFamilyLabel(family)} ${dlBudgetUsedUp(b) ? "limit reached" : b.usdPerWeek === null ? "no cap" : `${formatUsd(Math.max(0, b.usdPerWeek - b.spentUsd))} left`}`;
+    if (dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek)) return `free · limit reached`;
+    return `free · ${part("gpt6", budgets.gpt6)} · ${part("deepseek", budgets.deepseek)}`;
+  }
   const cap = dollarCap(a);
   if (weekUsedUp(a)) return `free · limit reached`;
   if (cap !== undefined) return `free · ${formatUsd(Math.max(0, cap - (a.spentUsdThisWeek ?? 0)))} of ${formatUsd(cap)} left`;
@@ -1279,6 +1379,9 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
  */
 export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnownDlMe()): string | undefined {
   const model = DL_FREE_MODELS.find((entry) => entry.id === modelId);
+  // Two budgets (newer servers): the model's own budget, dollars and tokens counted the normal way.
+  const budget = model && me?.budgets?.[model.family];
+  if (me && budget && bothBudgets(me)) return dlBudgetText(budget, me.allowance.resetsAt || undefined);
   const pool = model && me?.pools?.[model.pool];
   if (!me || !pool) return undefined;
   // The limit that binds: the week's dollar cap when there is one, never "36M of 50M left" once it is spent.
