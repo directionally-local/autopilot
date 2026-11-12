@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.20.1](https://github.com/directionally-local/autopilot/compare/v3.20.0...v3.20.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **gpu:** failure menu after a failed private model setup, short GPU line, vLLM reasoning ([#1249](https://github.com/directionally-local/autopilot/issues/1249)) ([4f57548](https://github.com/directionally-local/autopilot/commit/4f575484d2ec8169b0c9002d7092ea3ecfcbed81))
+
 ## [3.20.0](https://github.com/directionally-local/autopilot/compare/v3.19.0...v3.20.0) (2026-11-11)
 
 
