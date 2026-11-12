@@ -1,6 +1,6 @@
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
@@ -10,7 +10,7 @@ import { FIRST_RUN_QUESTION, firstRunChoices } from "./providers/connect.js";
 import type { ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN } from "./providers/dl-status.js";
 import { detectGpus, realProbe, type DetectedGpu } from "./gpu/detect.js";
-import { NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, WHERE_QUESTION } from "./gpu/first-run.js";
+import { gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, WHERE_QUESTION } from "./gpu/first-run.js";
 import { sentGpuTelemetry, setGpuTelemetryTransportForTesting } from "./gpu/telemetry.js";
 import { fakeModelsServer } from "./gpu/fake-models-server.test-support.js";
 
@@ -125,7 +125,7 @@ describe("GPU-aware first run", () => {
     const { view, prompts, said } = await fakeView(["yes"], { gpu: RTX4090X2, env: dl() });
     assert.equal(await view.firstRunSetup({ upgrading: false }), "model-up");
     assert.equal(prompts.length, 1, "the provider question is skipped");
-    assert.equal(prompts[0]?.payload.prompt, "Found 2x NVIDIA GeForce RTX 4090 (24 GB each). Run a private model on this GPU?");
+    assert.equal(prompts[0]?.payload.prompt, "Found 2x NVIDIA GeForce RTX 4090 · 48 GB total. Run a private model on it?");
     assert.equal(prompts[0]?.payload.default, "yes");
     assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), {
       version: 1,
@@ -156,7 +156,7 @@ describe("GPU-aware first run", () => {
   it("Nvidia under 24 GB: the usual question, plus the dl model up hint", async () => {
     const { view, prompts, said } = await fakeView([null], { gpu: RTX3060, env: dl() });
     await view.firstRunSetup({ upgrading: false });
-    assert.ok(said().includes("Found 1x NVIDIA GeForce RTX 3060 (12 GB). dl model up can run small models on it."));
+    assert.ok(said().includes("Found NVIDIA GeForce RTX 3060 · 12 GB. dl model up can run small models on it."));
     assert.equal(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
     view.dispose();
   });
@@ -165,7 +165,7 @@ describe("GPU-aware first run", () => {
     const { view, prompts, said } = await fakeView([null], { gpu: RTX4090X2, env: {} });
     await view.firstRunSetup({ upgrading: false });
     assert.equal(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
-    assert.ok(said().includes("Found 2x NVIDIA GeForce RTX 4090 (24 GB each). To run a private model on it: curl -fsSL https://dl.new | sh, then dl model up."));
+    assert.ok(said().includes("Found 2x NVIDIA GeForce RTX 4090 · 48 GB total. To run a private model on it: curl -fsSL https://dl.new | sh, then dl model up."));
     view.dispose();
   });
 
@@ -248,8 +248,8 @@ describe("GPU-aware first run", () => {
     view.dispose();
   });
 
-  it("back from a dl model up that failed: says why, doesn't offer it again this time, counts the failure", async () => {
-    const env = { ...dl(), DL_GPU_RESULT: "failed", DL_GPU_ERROR: "smoke_failed" };
+  it("back from a dl model up that failed, without dl to run it again: says why, then the usual question, counts the failure", async () => {
+    const env = { DL_GPU_RESULT: "failed", DL_GPU_ERROR: "smoke_failed" };
     const { view, prompts, said } = await fakeView([null], { gpu: RTX4090X2, env });
     reportModelUpResult(env);
     await view.firstRunSetup({ upgrading: false });
@@ -257,6 +257,111 @@ describe("GPU-aware first run", () => {
     assert.ok(said().includes("The private model didn't start (its tests failed). Pick another way for now; dl model up works any time."));
     assert.deepEqual(events()[0], { event: "result", outcome: "failed", path: "this_machine", errorType: "smoke_failed", gpuVendor: "nvidia" });
     view.dispose();
+  });
+
+  describe("back from a dl model up that failed, with dl to run it again", () => {
+    const REASON = "Chat test: the model returned no text, thinking mode used all tokens";
+    const PRO_5000: DetectedGpu = { vendor: "nvidia", model: "NVIDIA RTX PRO 5000 Blackwell", count: 1, vramGb: 48, totalVramGb: 48 };
+    const failed = async (extra: Record<string, string> = {}) => {
+      const log = join(handoffDir, "run.log");
+      await writeFile(log, [
+        "2026-11-12T03:04:05.000Z == Private model on this GPU",
+        "2026-11-12T03:04:06.000Z ok launch: port 8000",
+        "2026-11-12T03:09:06.000Z FAIL chat: only thinking, out of tokens",
+        "vLLM logs (dl-model-1, last 200 lines):",
+        ...Array.from({ length: 300 }, (_, i) => `  INFO 11-12 03:0${i % 10} engine step ${i}`),
+        "  ERROR 11-12 03:09 CUDA error: an illegal memory access was encountered while running a very long kernel name",
+        `2026-11-12T03:09:07.000Z FAILED ${REASON}`,
+      ].join("\n"));
+      return { ...dl(), DL_GPU_RESULT: "failed", DL_GPU_ERROR: "smoke_failed", DL_GPU_MODEL: "qwen-old", DL_GPU_REASON: REASON, DL_GPU_LOG: log, ...extra };
+    };
+
+    it("shows the menu: the test and reason, then Retry, See what failed, Pick another model, Continue", async () => {
+      const env = await failed();
+      const { view, prompts, options } = await fakeView(["retry"], { gpu: PRO_5000, env });
+      assert.equal(await view.firstRunSetup({ upgrading: false }), "model-up");
+      assert.equal(prompts[0]?.payload.prompt, "The private model didn't start");
+      assert.equal(prompts[0]?.payload.subtitle, REASON);
+      assert.equal(prompts[0]?.payload.default, "retry");
+      assert.deepEqual(options(0), ["retry", "details", "pick", "continue"]);
+      const rows = prompts[0]!.payload.options as Option[];
+      assert.deepEqual(rows.map((r) => r.label), ["Retry", "See what failed", "Pick another model", "Continue without a local model for now"]);
+      assert.equal(rows[0]!.description, "set up qwen-old again");
+      assert.deepEqual(JSON.parse(await readFile(env.DL_GPU_HANDOFF, "utf8")), {
+        version: 1,
+        action: "model-up",
+        gpu: { vendor: "nvidia", model: "NVIDIA RTX PRO 5000 Blackwell", count: 1, vramGb: 48 },
+        model: "qwen-old",
+      }, "Retry asks dl for the same model");
+      view.dispose();
+    });
+
+    it("See what failed: the reason, the log's path and its last lines that matter, never the raw server log; then the menu again", async () => {
+      const env = await failed();
+      const { view, prompts, splash } = await fakeView(["details", "pick"], { gpu: PRO_5000, env });
+      assert.equal(await view.firstRunSetup({ upgrading: false }), "model-up");
+      const shown = splash();
+      assert.match(shown, new RegExp(REASON));
+      assert.ok(shown.includes(`Full log: ${env.DL_GPU_LOG}`));
+      assert.match(shown, /\n  ERROR 11-12 03:09 CUDA error: an illegal memory access was encounter\w*\.\.\.\n/, "cut to fit");
+      assert.match(shown, /FAIL chat: only thinking, out of tokens/);
+      assert.doesNotMatch(shown, /engine step/, "no raw server log lines");
+      assert.ok(shown.split("\n").length < 15, "a few lines, not hundreds");
+      assert.equal(prompts.length, 2, "the menu comes back");
+      assert.deepEqual(JSON.parse(await readFile(env.DL_GPU_HANDOFF, "utf8")).pick, true, "Pick another model asks dl for its picker");
+      view.dispose();
+    });
+
+    it("Continue without a local model opens the usual choices; Esc does too", async () => {
+      for (const answer of ["continue", null]) {
+        const { view, prompts } = await fakeView([answer, null], { gpu: PRO_5000, env: await failed() });
+        assert.equal(await view.firstRunSetup({ upgrading: false }), false);
+        assert.equal(prompts[1]?.payload.prompt, FIRST_RUN_QUESTION);
+        view.dispose();
+      }
+    });
+
+    it("an older dl (no reason, model or log): the menu still works, from the error type", async () => {
+      const { view, prompts, options } = await fakeView(["retry"], { gpu: PRO_5000, env: { ...dl(), DL_GPU_RESULT: "failed", DL_GPU_ERROR: "launch_failed" } });
+      assert.equal(await view.firstRunSetup({ upgrading: false }), "model-up");
+      assert.equal(prompts[0]?.payload.subtitle, "Why: vLLM didn't start");
+      assert.deepEqual(options(0), ["retry", "details", "pick", "continue"]);
+      assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")).model, undefined);
+      view.dispose();
+    });
+
+    it("Docker missing: no Pick another model; cancelled or nothing fits: no menu", async () => {
+      const docker = await fakeView([null, null], { gpu: PRO_5000, env: { ...dl(), DL_GPU_RESULT: "failed", DL_GPU_ERROR: "no_docker" } });
+      await docker.view.firstRunSetup({ upgrading: false });
+      assert.deepEqual(docker.options(0), ["retry", "details", "continue"]);
+      docker.view.dispose();
+      for (const error of ["cancelled", "no_fit"]) {
+        const { view, prompts } = await fakeView([null], { gpu: PRO_5000, env: { ...dl(), DL_GPU_RESULT: "failed", DL_GPU_ERROR: error } });
+        await view.firstRunSetup({ upgrading: false });
+        assert.equal(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
+        view.dispose();
+      }
+    });
+
+    it("every line of the GPU screens fits 80 columns", async () => {
+      const FOUR: DetectedGpu = { vendor: "nvidia", model: "NVIDIA RTX PRO 6000 Blackwell Server Edition", count: 4, vramGb: 96, totalVramGb: 384 };
+      assert.equal(gpuSummary(PRO_5000), "NVIDIA RTX PRO 5000 · 48 GB");
+      assert.equal(gpuSummary(FOUR), "4x NVIDIA RTX PRO 6000 · 384 GB total");
+      for (const gpu of [PRO_5000, FOUR, RTX4090X2]) {
+        const menu = await fakeView(["details", null, null], { gpu, env: await failed({ DL_GPU_REASON: `${REASON} and a much longer tail that goes on and on past the edge` }) });
+        await menu.view.firstRunSetup({ upgrading: false });
+        const offer = await fakeView(["no", "gpus", null, null], { gpu, env: dl() });
+        await offer.view.firstRunSetup({ upgrading: false });
+        // The GPU screens (the provider question's own copy isn't part of them).
+        for (const p of [...menu.prompts, ...offer.prompts].filter((x) => x.payload.prompt !== FIRST_RUN_QUESTION)) {
+          for (const line of [p.payload.prompt, p.payload.subtitle].filter(Boolean)) assert.ok(String(line).length <= 76, `too long: ${line}`);
+          for (const o of (p.payload.options as Option[] | undefined) ?? []) assert.ok(`${o.label}  ${o.description ?? ""}`.length <= 72, `too long: ${o.label} ${o.description}`);
+        }
+        for (const line of menu.splash().split("\n")) assert.ok(line.length <= 80, `too long: ${line}`);
+        menu.view.dispose();
+        offer.view.dispose();
+      }
+    });
   });
 
   it("Use your own GPUs → On this machine hands over to dl model up", async () => {
