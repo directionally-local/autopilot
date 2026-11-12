@@ -4,10 +4,14 @@
  *
  * Each vendor's tool (nvidia-smi; rocm-smi and amd-smi; npu-smi) is looked up on PATH first,
  * so a machine without them (every Mac, most laptops) answers at once without starting a
- * process. A tool that is there runs with a 1 s timeout, all of them in parallel; a failure,
- * a timeout or output we can't read counts as "not found" and is never shown. The result is
- * cached for the process (`gpuDetection`), and dl passes it back on a relaunch (DL_GPU), so
- * the probes run at most once per session.
+ * process. A tool that is there gets up to 10 s (PROBE_BUDGET_MS), all of them in parallel:
+ * with persistence mode off, the first nvidia-smi after idle can take seconds while the driver
+ * wakes the cards. A tool that is there but times out or fails is tried once more; if it still
+ * doesn't answer, the GPU is likely there and the detection says which tool and why
+ * (`unanswered`), so the first run can say so instead of taking the no-GPU path. Output we
+ * can't read from a tool that succeeded counts as "not found". The result is cached for the
+ * process (`gpuDetection`), and dl passes it back on a relaunch (DL_GPU), so the probes run
+ * at most once per session.
  */
 
 import { execFile } from "node:child_process";
@@ -29,7 +33,19 @@ export interface DetectedGpu {
   totalVramGb: number;
 }
 
-export const PROBE_TIMEOUT_MS = 1_000;
+/**
+ * How long each tool gets per try (it is tried twice when it times out or fails). nvidia-smi
+ * can take several seconds on its first call after idle with persistence mode off; rocm-smi and
+ * amd-smi are Python tools that start slowly and also wake the driver; npu-smi reads the
+ * driver's state. A machine without any of them never waits.
+ */
+export const PROBE_BUDGET_MS: Readonly<Record<string, number>> = {
+  "nvidia-smi": 10_000,
+  "rocm-smi": 10_000,
+  "amd-smi": 10_000,
+  "npu-smi": 10_000,
+};
+const DEFAULT_PROBE_BUDGET_MS = 10_000;
 
 /**
  * The private-model offer needs a 24 GB Nvidia card: per GPU, not summed, because dl model up
@@ -38,8 +54,31 @@ export const PROBE_TIMEOUT_MS = 1_000;
  */
 export const PRIVATE_MODEL_MIN_MIB = 23 * 1024;
 
-/** What one probe printed (undefined: the tool isn't there, failed or timed out). */
-export type Probe = (tool: string, args: string[]) => Promise<string | undefined>;
+/** A tool that is on PATH but didn't answer: it timed out, or exited with an error. */
+export interface ProbeFailure {
+  failed: "timeout" | "error";
+  /** One short line: the tool's first line of error output, or what happened. */
+  reason: string;
+}
+
+/** What one probe printed; undefined: the tool isn't there; a ProbeFailure: it is, but didn't answer. */
+export type Probe = (tool: string, args: string[]) => Promise<string | undefined | ProbeFailure>;
+
+/** A vendor's tool that was found on PATH but didn't answer, twice. */
+export interface UnansweredTool {
+  vendor: GpuVendor;
+  tool: string;
+  timedOut: boolean;
+  reason: string;
+}
+
+/** A session's detection: the GPU found, or none; and, when none was found, a tool that is there but didn't answer. */
+export interface GpuDetection {
+  gpu: DetectedGpu | null;
+  unanswered?: UnansweredTool;
+}
+
+const isFailure = (out: unknown): out is ProbeFailure => !!out && typeof out === "object" && "failed" in out;
 
 /** Whether `tool` is an executable on PATH. Never throws. */
 export async function onPath(tool: string, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
@@ -59,18 +98,33 @@ export async function onPath(tool: string, env: NodeJS.ProcessEnv = process.env)
   return undefined;
 }
 
-/** Runs a tool found on PATH with the timeout; a missing tool returns undefined without starting anything. */
-export function realProbe(env: NodeJS.ProcessEnv = process.env, timeoutMs = PROBE_TIMEOUT_MS): Probe {
+/** One printable line of at most 100 characters. */
+function shortLine(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  const line = text.split("\n").map((l) => l.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim()).find(Boolean) ?? "";
+  return line.length > 100 ? `${line.slice(0, 97).trimEnd()}...` : line;
+}
+
+/**
+ * Runs a tool found on PATH within its budget (PROBE_BUDGET_MS, or `timeoutMs` for every tool);
+ * a missing tool returns undefined without starting anything.
+ */
+export function realProbe(env: NodeJS.ProcessEnv = process.env, timeoutMs?: number): Probe {
   return async (tool, args) => {
     const path = await onPath(tool, env);
     if (!path) return undefined;
+    const budget = timeoutMs ?? PROBE_BUDGET_MS[tool] ?? DEFAULT_PROBE_BUDGET_MS;
     return new Promise((resolve) => {
       try {
-        execFile(path, args, { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 1024 * 1024, env, windowsHide: true }, (error, stdout) => {
-          resolve(error ? undefined : String(stdout));
+        execFile(path, args, { timeout: budget, killSignal: "SIGKILL", maxBuffer: 1024 * 1024, env, windowsHide: true }, (error, stdout, stderr) => {
+          if (!error) return resolve(String(stdout));
+          const timedOut = (error as { killed?: boolean }).killed === true && (error as { signal?: string | null }).signal === "SIGKILL";
+          if (timedOut) return resolve({ failed: "timeout", reason: `no reply within ${Math.round(budget / 100) / 10} s` });
+          const code = (error as { code?: unknown }).code;
+          resolve({ failed: "error", reason: shortLine(String(stderr)) || shortLine(String(stdout)) || (typeof code === "number" ? `exit code ${code}` : shortLine(error.message) || "it failed") });
         });
-      } catch {
-        resolve(undefined);
+      } catch (error) {
+        resolve({ failed: "error", reason: shortLine((error as Error).message) || "it couldn't start" });
       }
     });
   };
@@ -170,17 +224,37 @@ export function vendorName(vendor: GpuVendor): string {
   return vendor === "nvidia" ? "Nvidia" : vendor === "amd" ? "AMD" : "Huawei Ascend";
 }
 
-/** All probes at once; the first vendor found wins, Nvidia first. Never throws. */
-export async function detectGpus(probe: Probe = realProbe()): Promise<DetectedGpu | null> {
-  const safe = (tool: string, args: string[], parse: (out: string) => DetectedGpu | undefined) =>
-    probe(tool, args).then((out) => (out ? parse(out) : undefined)).catch(() => undefined);
-  const [nvidia, rocm, amd, ascend] = await Promise.all([
-    safe("nvidia-smi", ["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"], parseNvidia),
-    safe("rocm-smi", ["--showproductname", "--showmeminfo", "vram", "--json"], parseRocmSmi),
-    safe("amd-smi", ["static", "--asic", "--vram", "--json"], parseAmdSmi),
-    safe("npu-smi", ["info"], parseNpuSmi),
+type ToolResult = { gpu?: DetectedGpu; unanswered?: UnansweredTool };
+
+/**
+ * All probes at once; the first vendor found wins, Nvidia first. A tool that is there but times
+ * out or fails is tried once more; when nothing was found, the first tool (same order) that still
+ * didn't answer is `unanswered`. A probe that throws counts as not there. Never throws.
+ */
+export async function probeGpus(probe: Probe = realProbe()): Promise<GpuDetection> {
+  const once = (tool: string, args: string[]) => probe(tool, args).catch(() => undefined);
+  const run = async (vendor: GpuVendor, tool: string, args: string[], parse: (out: string) => DetectedGpu | undefined): Promise<ToolResult> => {
+    let out = await once(tool, args);
+    if (isFailure(out)) out = await once(tool, args);
+    if (isFailure(out)) return { unanswered: { vendor, tool, timedOut: out.failed === "timeout", reason: out.reason } };
+    const gpu = typeof out === "string" && out ? parse(out) : undefined;
+    return gpu ? { gpu } : {};
+  };
+  const results = await Promise.all([
+    run("nvidia", "nvidia-smi", ["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"], parseNvidia),
+    run("amd", "rocm-smi", ["--showproductname", "--showmeminfo", "vram", "--json"], parseRocmSmi),
+    run("amd", "amd-smi", ["static", "--asic", "--vram", "--json"], parseAmdSmi),
+    run("ascend", "npu-smi", ["info"], parseNpuSmi),
   ]);
-  return nvidia ?? rocm ?? amd ?? ascend ?? null;
+  const gpu = results.find((r) => r.gpu)?.gpu;
+  if (gpu) return { gpu };
+  const unanswered = results.find((r) => r.unanswered)?.unanswered;
+  return unanswered ? { gpu: null, unanswered } : { gpu: null };
+}
+
+/** The GPU found, or null (a tool that didn't answer counts as none here; see probeGpus). Never throws. */
+export async function detectGpus(probe: Probe = realProbe()): Promise<DetectedGpu | null> {
+  return (await probeGpus(probe)).gpu;
 }
 
 /** dl's hand-back of an earlier detection (DL_GPU), when it's well-formed. */
@@ -199,16 +273,16 @@ export function gpuFromEnv(env: NodeJS.ProcessEnv = process.env): DetectedGpu | 
   }
 }
 
-let cached: Promise<DetectedGpu | null> | undefined;
+let cached: Promise<GpuDetection> | undefined;
 
 /**
  * This session's detection, started on first call (call it early: it runs in the background)
  * and shared after. dl's DL_GPU, when given, is used instead of probing.
  */
-export function gpuDetection(env: NodeJS.ProcessEnv = process.env, probe?: Probe): Promise<DetectedGpu | null> {
+export function gpuDetection(env: NodeJS.ProcessEnv = process.env, probe?: Probe): Promise<GpuDetection> {
   if (!cached) {
     const handed = gpuFromEnv(env);
-    cached = handed !== undefined ? Promise.resolve(handed) : detectGpus(probe ?? realProbe(env));
+    cached = handed !== undefined ? Promise.resolve({ gpu: handed }) : probeGpus(probe ?? realProbe(env));
   }
   return cached;
 }
