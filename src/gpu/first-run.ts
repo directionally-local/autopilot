@@ -9,11 +9,13 @@
  * - Nvidia, smaller: a one-line hint that `dl model up` can run small models.
  * - AMD or Ascend: "Support is coming. Want early access?" once, remembered. A yes may leave an
  *   email to hear when support is ready (only while telemetry is on).
+ * - A GPU tool that is there but didn't answer (twice): GPU likely present. Say so plainly and
+ *   offer the GPU paths (dl model up checks the GPU itself), never the no-GPU hint.
  * - Nothing: a one-line hint for people whose GPUs are on a server.
  */
 
 import { readState, writeState, type StateFile } from "../util/state.js";
-import { vendorName, type DetectedGpu } from "./detect.js";
+import { vendorName, type DetectedGpu, type UnansweredTool } from "./detect.js";
 import { modelUpResult, type ModelUpError, type ModelUpFailure } from "./handoff.js";
 import { sendGpuTelemetry } from "./telemetry.js";
 
@@ -64,6 +66,33 @@ export function noDlHint(gpu: DetectedGpu): string {
 }
 
 export const NO_GPU_HINT = `Have GPUs on a server? Run ${INSTALL_LINE} there.`;
+
+/** Shown while a GPU tool on PATH is still answering (nvidia-smi can take seconds after idle). */
+export const CHECKING_GPUS = "Checking for GPUs…";
+
+/** How long a detection may still run before CHECKING_GPUS shows (a PATH lookup alone takes a few ms). */
+export const CHECKING_GPUS_AFTER_MS = 150;
+
+/** A GPU tool that is there but didn't answer, twice: which and why. */
+export function unansweredTitle(tool: UnansweredTool): string {
+  const why = tool.timedOut ? `${tool.reason}, tried twice` : tool.reason.replace(/[.\s]+$/, "");
+  return `Found ${tool.tool} but it didn't answer: ${why}.`;
+}
+
+/** ...and that the GPU paths are still open. */
+export function unansweredNext(tool: UnansweredTool): string {
+  return tool.vendor === "nvidia" ? "You can still run dl model up, or pick another option." : "You can still use your own GPUs, or pick another option.";
+}
+
+export function unansweredLine(tool: UnansweredTool): string {
+  return `${unansweredTitle(tool)} ${unansweredNext(tool)}`;
+}
+
+/** The menu after an Nvidia tool that didn't answer, when dl can run the setup. */
+export const UNANSWERED_CHOICES = [
+  { value: "model-up", label: "Run dl model up", description: "dl checks the GPU itself, sets up vLLM, then opens on it" },
+  { value: "other", label: "Pick another option", description: "the usual choices, your own GPUs among them" },
+] as const;
 
 export function earlyAccessQuestion(gpu: DetectedGpu): string {
   return `Detected ${gpuDisplayName(gpu)}. Support is coming. Want early access?`;
@@ -192,11 +221,15 @@ export type GpuWhere = "this_machine" | "remote_server" | "endpoint";
 
 export const WHERE_QUESTION = "Where are your GPUs?";
 
-export function whereChoices(local: DetectedGpu | null, canModelUp: boolean): Array<{ value: GpuWhere; label: string; description: string }> {
+/** `unanswered`: an Nvidia tool on this machine that didn't answer still offers this machine. */
+export function whereChoices(local: DetectedGpu | null, canModelUp: boolean, unanswered?: UnansweredTool): Array<{ value: GpuWhere; label: string; description: string }> {
+  const setUp = canModelUp ? "dl sets it up" : "run dl model up first";
   return [
     ...(local?.vendor === "nvidia"
-      ? [{ value: "this_machine" as const, label: "On this machine", description: `${gpuSummary(local)} · ${canModelUp ? "dl sets it up" : "run dl model up first"}` }]
-      : []),
+      ? [{ value: "this_machine" as const, label: "On this machine", description: `${gpuSummary(local)} · ${setUp}` }]
+      : !local && unanswered?.vendor === "nvidia"
+        ? [{ value: "this_machine" as const, label: "On this machine", description: `${unanswered.tool} didn't answer · ${setUp}` }]
+        : []),
     { value: "remote_server", label: "Another server of mine", description: "set it up there with dl, then connect" },
     { value: "endpoint", label: "I already run vLLM or another OpenAI-compatible server", description: "enter its URL" },
   ];

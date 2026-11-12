@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,8 @@ import {
   parseNpuSmi,
   parseNvidia,
   parseRocmSmi,
+  PROBE_BUDGET_MS,
+  probeGpus,
   qualifiesForPrivateModel,
   realProbe,
   resetGpuDetectionForTesting,
@@ -82,10 +84,24 @@ describe("detectGpus", () => {
     assert.equal(await detectGpus(async () => "garbage"), null);
   });
 
+  it("a GPU found wins over another tool that didn't answer; a probe that throws counts as not there", async () => {
+    const tries: string[] = [];
+    const probe: Probe = async (tool) => {
+      tries.push(tool);
+      if (tool === "rocm-smi") return JSON.stringify({ card0: { "Card series": "AMD Instinct MI300X", "VRAM Total Memory (B)": String(192 * 1024 ** 3) } });
+      if (tool === "nvidia-smi") return { failed: "timeout", reason: "no reply within 10 s" };
+      if (tool === "npu-smi") throw new Error("boom");
+      return undefined;
+    };
+    assert.deepEqual(await probeGpus(probe), { gpu: { vendor: "amd", model: "AMD Instinct MI300X", count: 1, vramGb: 192, totalVramGb: 192 } });
+    assert.equal(tries.filter((t) => t === "nvidia-smi").length, 2, "the failing tool is tried once more");
+    assert.equal(tries.filter((t) => t === "npu-smi").length, 1, "a throw isn't retried");
+  });
+
   it("dl's hand-back (DL_GPU) is used instead of probing", async () => {
     resetGpuDetectionForTesting();
     let probed = 0;
-    const gpu = await gpuDetection({ DL_GPU: JSON.stringify({ vendor: "nvidia", model: "NVIDIA GeForce RTX 4090", count: 2, vramGb: 24 }) }, async () => { probed++; return undefined; });
+    const { gpu } = await gpuDetection({ DL_GPU: JSON.stringify({ vendor: "nvidia", model: "NVIDIA GeForce RTX 4090", count: 2, vramGb: 24 }) }, async () => { probed++; return undefined; });
     assert.deepEqual(gpu, { vendor: "nvidia", model: "NVIDIA GeForce RTX 4090", count: 2, vramGb: 24, totalVramGb: 48 });
     assert.equal(probed, 0);
     assert.equal(gpuFromEnv({ DL_GPU: "{bad" }), undefined);
@@ -136,19 +152,49 @@ describe("real probes, with fake tools on PATH", () => {
     assert.equal((await detectGpus(realProbe({ PATH: rocm })))?.model, "AMD Instinct MI300X");
   });
 
-  it("a tool that fails says nothing and finds nothing", async () => {
+  it("a tool that fails twice finds nothing, but says it is there and why (not 'no GPU')", async () => {
     const bin = join(dir, "failing");
-    await tool(bin, "nvidia-smi", "echo 'NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver' >&2; exit 9");
-    assert.equal(await detectGpus(realProbe({ PATH: bin })), null);
+    const runs = join(dir, "failing-runs");
+    await tool(bin, "nvidia-smi", `echo x >> '${runs}'; echo 'NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver' >&2; exit 9`);
+    assert.deepEqual(await probeGpus(realProbe({ PATH: bin })), {
+      gpu: null,
+      unanswered: { vendor: "nvidia", tool: "nvidia-smi", timedOut: false, reason: "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver" },
+    });
+    assert.equal((await readFile(runs, "utf8")).trim().split("\n").length, 2, "tried twice");
   });
 
-  it("a tool that hangs is given up on after 1 s", async () => {
-    const bin = join(dir, "hanging");
-    await tool(bin, "nvidia-smi", "exec /bin/sleep 10");
+  it("nvidia-smi gets 10 s per try, and so do the other vendors' tools", () => {
+    assert.deepEqual(PROBE_BUDGET_MS, { "nvidia-smi": 10_000, "rocm-smi": 10_000, "amd-smi": 10_000, "npu-smi": 10_000 });
+  });
+
+  it("a slow nvidia-smi (3 s, persistence mode off after idle) is waited for and found", async () => {
+    const bin = join(dir, "slow");
+    await tool(bin, "nvidia-smi", `/bin/sleep 3; printf '${NVIDIA_2X4090.replace(/\n/g, "\\n")}'`);
     const started = performance.now();
-    assert.equal(await detectGpus(realProbe({ PATH: bin })), null);
+    const gpu = await detectGpus(realProbe({ PATH: bin }));
+    assert.equal(gpu?.model, "NVIDIA GeForce RTX 4090");
+    assert.ok(performance.now() - started >= 2_900);
+  });
+
+  it("a tool that hangs past its budget twice is given up on, and reported as there but not answering", async () => {
+    const bin = join(dir, "hanging");
+    const runs = join(dir, "hanging-runs");
+    await tool(bin, "nvidia-smi", `echo x >> '${runs}'; exec /bin/sleep 30`);
+    const started = performance.now();
+    const detection = await probeGpus(realProbe({ PATH: bin }, 400));
     const took = performance.now() - started;
-    assert.ok(took >= 900 && took < 3_000, `timed out after ~1 s (took ${Math.round(took)} ms)`);
+    assert.deepEqual(detection, { gpu: null, unanswered: { vendor: "nvidia", tool: "nvidia-smi", timedOut: true, reason: "no reply within 0.4 s" } });
+    assert.equal((await readFile(runs, "utf8")).trim().split("\n").length, 2, "tried twice");
+    assert.ok(took >= 750 && took < 3_000, `two tries of ~0.4 s (took ${Math.round(took)} ms)`);
+  });
+
+  it("a retry that answers is found", async () => {
+    const bin = join(dir, "second-try");
+    const marker = join(dir, "second-try-marker");
+    await tool(bin, "nvidia-smi", `if [ ! -e '${marker}' ]; then : > '${marker}'; exec /bin/sleep 30; fi; printf '${NVIDIA_2X4090.replace(/\n/g, "\\n")}'`);
+    const detection = await probeGpus(realProbe({ PATH: bin }, 400));
+    assert.equal(detection.gpu?.model, "NVIDIA GeForce RTX 4090");
+    assert.equal(detection.unanswered, undefined);
   });
 
   it("no GPU tools at all (a Mac, most laptops): answers at once, without waiting for any timeout", async () => {

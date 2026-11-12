@@ -110,10 +110,10 @@ import { workerRegistry, type RunningWorker } from "./tools/worker-registry.js";
 import { CamouflageCrashed, CamouflageUnavailable, diagnoseRenderer, mountFailureReason, rendererBlocker } from "./camouflage-launch.js";
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
-import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu } from "./gpu/detect.js";
+import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu, type GpuDetection, type UnansweredTool } from "./gpu/detect.js";
 import { handoffPath, modelUpResult, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
 import { checkModelsEndpoint, normalizeBaseUrl, serverBaseUrl } from "./gpu/endpoint.js";
-import { flushGpuTelemetry, gpuProps, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
+import { detectedTelemetry, flushGpuTelemetry, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
 import {
   EARLY_ACCESS_CHOICES,
   EARLY_ACCESS_EMAIL_ERROR,
@@ -135,6 +135,12 @@ import {
   offersModelUpRetry,
   readRunLogTail,
   NO_GPU_HINT,
+  CHECKING_GPUS,
+  CHECKING_GPUS_AFTER_MS,
+  UNANSWERED_CHOICES,
+  unansweredLine,
+  unansweredNext,
+  unansweredTitle,
   noDlHint,
   PRIVATE_MODEL_CHOICES,
   PRIVATE_MODEL_SUBTITLE,
@@ -309,7 +315,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   // First run asks "How should it think?": read the free tier's status while the renderer mounts.
   if (!custom && !opts.cfg && !envKeyProvider()) {
     void dlFreeStatus();
-    // And look for GPUs in the background (cached; instant without GPU tools).
+    // And look for GPUs in the background (cached; instant without GPU tools, up to 10 s per try with them).
     void gpuDetection().catch(() => null);
   }
   // Back from dl model up (gpu/handoff.ts): count how it went, once.
@@ -550,7 +556,7 @@ export class View implements AppBridge {
   /** The free tier's public status (open on any failure, within 1.5 s). */
   freeStatus: () => Promise<DlFreeStatus> = () => dlFreeStatus();
   /** What the GPU first run calls (detection, the environment dl set, fetch for endpoints); replaced in tests. */
-  gpuCalls: { detect: () => Promise<DetectedGpu | null>; env: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {
+  gpuCalls: { detect: () => Promise<GpuDetection>; env: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {
     detect: () => gpuDetection(),
     env: process.env,
   };
@@ -1584,8 +1590,15 @@ export class View implements AppBridge {
   }): Promise<ConnectOutcome | null | "model-up"> {
     const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
     // GPU detection runs while the free tier's status loads (it's cached for the session, and
-    // instant without GPU tools), so the question below doesn't wait for it.
-    const detecting = this.gpuCalls.detect().catch(() => null);
+    // instant without GPU tools). A GPU tool that is there gets its whole budget (nvidia-smi can
+    // take seconds after idle): the question waits for it, with "Checking for GPUs…" meanwhile.
+    let detected = false;
+    const detecting = this.gpuCalls
+      .detect()
+      .catch((): GpuDetection => ({ gpu: null }))
+      .finally(() => {
+        detected = true;
+      });
     const common = { cfg: o.cfg, firstRun: o.firstRun, ...(o.upgrading ? { upgrading: true } : {}), ...(o.standalone ? { standalone: true } : {}) };
     if (o.envKey) {
       const saved = await this.connectAndPickModel({ ...common, initial: o.envKey.id, envKeyDirect: true, backReturns: true });
@@ -1594,10 +1607,18 @@ export class View implements AppBridge {
     // The renderer marks the default "✓ current", so there is one only when a provider is configured.
     const configured = o.firstRun ? undefined : o.cfg?.provider;
     const status = await this.freeTierStatus(o.cfg);
-    const gpu = await detecting;
+    // Without GPU tools the detection is done in a few ms (no process started): no line then.
+    if (!detected) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([detecting, new Promise<void>((resolve) => (timer = setTimeout(resolve, CHECKING_GPUS_AFTER_MS)))]);
+      clearTimeout(timer);
+    }
+    if (!detected) say(CHECKING_GPUS);
+    const detection = await detecting;
+    const gpu = detection.gpu;
     // Only dl started from a terminal can run dl model up; `autopilot connect` never hands over.
     const canModelUp = o.firstRun && !!handoffPath(this.gpuCalls.env);
-    if (o.firstRun && (await this.gpuPreScreen(gpu, canModelUp, say)) === "model-up") return "model-up";
+    if (o.firstRun && (await this.gpuPreScreen(detection, canModelUp, say)) === "model-up") return "model-up";
     const starter = lastKnownDlMe()?.level === "starter";
     const chosen: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : configured === "vllm" ? "gpus" : "own-key") : undefined;
     // Paused, Free can't be chosen: it is never the default (own key comes first instead).
@@ -1613,7 +1634,7 @@ export class View implements AppBridge {
       if (choice === null) return null;
       sendGpuTelemetry({ event: "option", option: choice === "own-key" ? "own_key" : choice === "gpus" ? "gpus" : "free", gpuVendor: gpu?.vendor ?? "none" }, this.gpuCalls.env);
       if (choice === "gpus") {
-        const own = await this.ownGpus({ cfg: o.cfg, firstRun: o.firstRun, standalone: !!o.standalone }, gpu, canModelUp, say);
+        const own = await this.ownGpus({ cfg: o.cfg, firstRun: o.firstRun, standalone: !!o.standalone }, gpu, canModelUp, say, detection.unanswered);
         if (own === "back") continue;
         return own;
       }
@@ -1645,18 +1666,20 @@ export class View implements AppBridge {
   /**
    * Before first run's question: what this machine's GPU means (gpu/first-run.ts). A 24 GB
    * Nvidia card, with dl to run the setup, is offered a private model ("model-up" when the
-   * answer is yes); a smaller one, AMD, Ascend or none gets its one line or question. Answers
-   * are remembered, and the detection is counted once per machine.
+   * answer is yes); a smaller one, AMD, Ascend or none gets its one line or question. A GPU
+   * tool that is there but didn't answer says so and keeps the GPU paths open. Answers are
+   * remembered, and the detection is counted once per machine.
    */
   private async gpuPreScreen(
-    gpu: DetectedGpu | null,
+    detection: GpuDetection,
     canModelUp: boolean,
     say: (message: string, severity?: "info" | "error") => void,
   ): Promise<"model-up" | undefined> {
     const env = this.gpuCalls.env;
+    const gpu = detection.gpu;
     const remembered = await readGpuState();
     if (!remembered.counted) {
-      sendGpuTelemetry({ event: "detected", ...gpuProps(gpu) } as GpuTelemetry, env);
+      sendGpuTelemetry(detectedTelemetry(detection), env);
       await rememberGpu({ counted: true });
     }
     const result = modelUpResult(env);
@@ -1697,8 +1720,31 @@ export class View implements AppBridge {
       if (yes) say(!sending ? EARLY_ACCESS_TELEMETRY_OFF : email ? EARLY_ACCESS_THANKS_EMAIL : EARLY_ACCESS_THANKS);
       return undefined;
     }
+    if (!gpu && detection.unanswered) return this.unansweredGpu(detection.unanswered, canModelUp, say);
     if (!gpu) say(NO_GPU_HINT);
     return undefined;
+  }
+
+  /**
+   * A GPU tool that is on PATH but didn't answer, twice: the GPU is likely there. Say so plainly;
+   * for Nvidia with dl able to run the setup, offer dl model up (it checks the GPU itself) or
+   * the usual choices, where "Use your own GPUs" also offers this machine. Not remembered: the
+   * tool may answer next time.
+   */
+  private async unansweredGpu(
+    tool: UnansweredTool,
+    canModelUp: boolean,
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<"model-up" | undefined> {
+    const line = unansweredLine(tool);
+    if (tool.vendor !== "nvidia" || !canModelUp) {
+      say(line);
+      return undefined;
+    }
+    const answer = await this.select(unansweredTitle(tool), UNANSWERED_CHOICES.map((c) => ({ ...c })), "model-up", unansweredNext(tool));
+    if (answer === null) return undefined;
+    sendGpuTelemetry({ event: "prompt", gpuVendor: "nvidia", answer: answer === "model-up" ? "yes" : "no" }, this.gpuCalls.env);
+    return answer === "model-up" ? this.handOverModelUp(null, say) : undefined;
   }
 
   /** The optional email after a yes to early access; asked again until it looks like one. Esc or empty skips. */
@@ -1769,10 +1815,11 @@ export class View implements AppBridge {
     gpu: DetectedGpu | null,
     canModelUp: boolean,
     say: (message: string, severity?: "info" | "error") => void,
+    unanswered?: UnansweredTool,
   ): Promise<ConnectOutcome | "model-up" | "back"> {
     const env = this.gpuCalls.env;
     for (;;) {
-      const where = await this.select(WHERE_QUESTION, whereChoices(gpu, canModelUp), undefined, "Esc to go back");
+      const where = await this.select(WHERE_QUESTION, whereChoices(gpu, canModelUp, unanswered), undefined, "Esc to go back");
       if (where === null) return "back";
       sendGpuTelemetry({ event: "option", option: where as GpuWhere, gpuVendor: gpu?.vendor ?? "none" }, env);
       if (where === "this_machine") {

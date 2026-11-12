@@ -1,6 +1,6 @@
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
@@ -9,8 +9,8 @@ import { configPath } from "./config.js";
 import { FIRST_RUN_QUESTION, firstRunChoices } from "./providers/connect.js";
 import type { ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN } from "./providers/dl-status.js";
-import { detectGpus, realProbe, type DetectedGpu } from "./gpu/detect.js";
-import { gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, WHERE_QUESTION } from "./gpu/first-run.js";
+import { probeGpus, realProbe, type DetectedGpu, type UnansweredTool } from "./gpu/detect.js";
+import { CHECKING_GPUS, gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, WHERE_QUESTION } from "./gpu/first-run.js";
 import { sentGpuTelemetry, setGpuTelemetryTransportForTesting } from "./gpu/telemetry.js";
 import { fakeModelsServer } from "./gpu/fake-models-server.test-support.js";
 
@@ -24,7 +24,7 @@ const MI300X: DetectedGpu = { vendor: "amd", model: "AMD Instinct MI300X", count
 const ASCEND: DetectedGpu = { vendor: "ascend", model: "Ascend 910B3", count: 2, vramGb: 64, totalVramGb: 128 };
 
 /** A View on a fake renderer: select prompts and forms answer from queues; GPU detection and dl's environment are given. */
-async function fakeView(select: (string | null)[], o: { gpu?: DetectedGpu | null; env?: NodeJS.ProcessEnv; forms?: FormAnswer[] } = {}) {
+async function fakeView(select: (string | null)[], o: { gpu?: DetectedGpu | null; unanswered?: UnansweredTool; env?: NodeJS.ProcessEnv; forms?: FormAnswer[] } = {}) {
   process.env.AUTOPILOT_JOBS_DB = join(await mkdtemp(join(tmpdir(), "cam-gpu-")), "jobs.db");
   const { View } = await import("./camouflage-view.js");
   const sent: Sent[] = [];
@@ -52,7 +52,7 @@ async function fakeView(select: (string | null)[], o: { gpu?: DetectedGpu | null
   view.connect(new Proxy({}, { get: () => () => undefined }) as AppActions);
   view.freeStatus = async () => DL_STATUS_OPEN;
   let detections = 0;
-  view.gpuCalls = { detect: async () => (detections++, o.gpu ?? null), env: o.env ?? {} };
+  view.gpuCalls = { detect: async () => (detections++, { gpu: o.gpu ?? null, ...(o.unanswered ? { unanswered: o.unanswered } : {}) }), env: o.env ?? {} };
   const verified: Array<{ id: ProviderId; key?: string; baseUrl?: string }> = [];
   view.providerCalls = {
     dlSignIn: async () => ({ key: "at-1" }),
@@ -445,8 +445,8 @@ describe("GPU-aware first run", () => {
 
   it("no GPU tools on this machine: the question shows as fast as before (no probe timeout waited for)", async () => {
     const empty = await mkdtemp(join(root, "no-gpu-tools-"));
-    const { view, prompts } = await fakeView([null]);
-    view.gpuCalls = { detect: () => detectGpus(realProbe({ PATH: empty })), env: dl() };
+    const { view, prompts, said } = await fakeView([null]);
+    view.gpuCalls = { detect: () => probeGpus(realProbe({ PATH: empty })), env: dl() };
     const started = performance.now();
     let shownAfter = Infinity;
     const select = (view as unknown as { select: (...a: unknown[]) => Promise<string | null> }).select.bind(view);
@@ -457,7 +457,88 @@ describe("GPU-aware first run", () => {
     await view.firstRunSetup({ upgrading: false });
     assert.equal(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
     assert.ok(shownAfter < 100, `the question showed after ${shownAfter.toFixed(1)} ms`);
+    assert.ok(!said().includes(CHECKING_GPUS), "nothing to wait for, so no checking line");
+    assert.ok(said().includes(NO_GPU_HINT));
     view.dispose();
+  });
+
+  describe("an nvidia-smi on PATH that is slow or doesn't answer (fake binaries)", () => {
+    const RTX_PRO_5000 = "NVIDIA RTX PRO 5000 Blackwell, 48935\n";
+    const fakeSmi = async (script: string) => {
+      const bin = await mkdtemp(join(root, "smi-"));
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(bin, "nvidia-smi"), `#!/bin/sh\n${script}\n`);
+      await chmod(join(bin, "nvidia-smi"), 0o755);
+      return bin;
+    };
+
+    it("answers after 3 s (persistence mode off, first call after idle): found, with Checking for GPUs… while waiting", async () => {
+      const bin = await fakeSmi(`/bin/sleep 3; printf '${RTX_PRO_5000}'`);
+      const { view, prompts, said } = await fakeView([null, null], { env: dl() });
+      view.gpuCalls = { detect: () => probeGpus(realProbe({ PATH: bin })), env: dl() };
+      const started = performance.now();
+      let shownAfter = Infinity;
+      const select = (view as unknown as { select: (...a: unknown[]) => Promise<string | null> }).select.bind(view);
+      (view as unknown as { select: (...a: unknown[]) => Promise<string | null> }).select = (...a: unknown[]) => {
+        shownAfter = Math.min(shownAfter, performance.now() - started);
+        return select(...a);
+      };
+      await view.firstRunSetup({ upgrading: false });
+      assert.ok(said().includes(CHECKING_GPUS));
+      assert.ok(shownAfter >= 2_900, `nothing was asked before the detection finished (${shownAfter.toFixed(0)} ms)`);
+      assert.equal(prompts[0]?.payload.prompt, "Found NVIDIA RTX PRO 5000 · 48 GB. Run a private model on it?");
+      assert.ok(!said().includes(NO_GPU_HINT));
+      assert.deepEqual(events()[0], { event: "detected", gpuVendor: "nvidia", gpuModel: "NVIDIA RTX PRO 5000 Blackwell", gpuVramGb: 48, gpuCount: 1 });
+      view.dispose();
+    });
+
+    it("hangs past the budget twice: says so plainly and offers dl model up, never the no-GPU hint", async () => {
+      const runs = join(await mkdtemp(join(root, "runs-")), "count");
+      const bin = await fakeSmi(`echo x >> '${runs}'; exec /bin/sleep 30`);
+      const { view, prompts, said, options } = await fakeView(["model-up"], { env: dl() });
+      view.gpuCalls = { detect: () => probeGpus(realProbe({ PATH: bin }, 300)), env: dl() };
+      assert.equal(await view.firstRunSetup({ upgrading: false }), "model-up");
+      assert.equal((await readFile(runs, "utf8")).trim().split("\n").length, 2, "tried twice");
+      assert.ok(said().includes(CHECKING_GPUS));
+      assert.ok(!said().includes(NO_GPU_HINT));
+      assert.equal(prompts[0]?.payload.prompt, "Found nvidia-smi but it didn't answer: no reply within 0.3 s, tried twice.");
+      assert.equal(prompts[0]?.payload.subtitle, "You can still run dl model up, or pick another option.");
+      assert.deepEqual(options(0), ["model-up", "other"]);
+      assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), { version: 1, action: "model-up" }, "dl model up checks the GPU itself");
+      assert.deepEqual(events().slice(0, 2), [
+        { event: "detected", gpuVendor: "nvidia", outcome: "probe_timeout" },
+        { event: "prompt", gpuVendor: "nvidia", answer: "yes" },
+      ]);
+      view.dispose();
+    });
+
+    it("fails twice without dl: the plain line, and Use your own GPUs still offers this machine", async () => {
+      const bin = await fakeSmi("echo 'NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver.' >&2; exit 9");
+      const { view, prompts, said, options } = await fakeView(["gpus", null, null]);
+      view.gpuCalls = { detect: () => probeGpus(realProbe({ PATH: bin })), env: {} };
+      await view.firstRunSetup({ upgrading: false });
+      assert.ok(
+        said().includes(
+          "Found nvidia-smi but it didn't answer: NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver. You can still run dl model up, or pick another option.",
+        ),
+      );
+      assert.ok(!said().includes(NO_GPU_HINT));
+      assert.equal(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
+      assert.equal(prompts[1]?.payload.prompt, WHERE_QUESTION);
+      assert.deepEqual(options(1), ["this_machine", "remote_server", "endpoint"]);
+      assert.equal((prompts[1]?.payload.options as Option[])[0]?.description, "nvidia-smi didn't answer · run dl model up first");
+      assert.deepEqual(events()[0], { event: "detected", gpuVendor: "nvidia", outcome: "probe_failed" });
+      view.dispose();
+    });
+
+    it("an AMD tool that didn't answer: its own line, the usual question", async () => {
+      const { view, prompts, said } = await fakeView([null], { unanswered: { vendor: "amd", tool: "amd-smi", timedOut: true, reason: "no reply within 10 s" }, env: dl() });
+      await view.firstRunSetup({ upgrading: false });
+      assert.ok(said().includes("Found amd-smi but it didn't answer: no reply within 10 s, tried twice. You can still use your own GPUs, or pick another option."));
+      assert.equal(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
+      assert.deepEqual(events()[0], { event: "detected", gpuVendor: "amd", outcome: "probe_timeout" });
+      view.dispose();
+    });
   });
 
   it("detection runs once for the whole first run", async () => {

@@ -19,7 +19,7 @@ import { dlOrigin } from "../providers/dl-endpoint.js";
 import { onShutdown, SHUTDOWN_PHASE, withDeadline } from "../util/exit.js";
 import { getUserAgent } from "../util/version.js";
 import { isAutopilotTestRun } from "../util/app-dirs.js";
-import type { DetectedGpu } from "./detect.js";
+import type { DetectedGpu, GpuDetection } from "./detect.js";
 
 export type GpuOption = "free" | "own_key" | "gpus" | "this_machine" | "remote_server" | "endpoint";
 export type GpuPath = "this_machine" | "remote_server" | "endpoint";
@@ -40,9 +40,15 @@ export type GpuErrorType =
   | "save_failed"
   | "other";
 
+/**
+ * A detection where the vendor's tool is on PATH but didn't answer (twice): it timed out, or
+ * failed. Sent as `outcome` on "detected" with that vendor, so it isn't counted as "none".
+ */
+export type GpuDetectOutcome = "probe_timeout" | "probe_failed";
+
 /** The bodies POST /v1/telemetry/gpu accepts. */
 export type GpuTelemetry =
-  | { event: "detected"; gpuVendor: "nvidia" | "amd" | "ascend" | "none"; gpuModel?: string; gpuVramGb?: number; gpuCount?: number }
+  | { event: "detected"; gpuVendor: "nvidia" | "amd" | "ascend" | "none"; gpuModel?: string; gpuVramGb?: number; gpuCount?: number; outcome?: GpuDetectOutcome }
   | { event: "prompt"; gpuVendor: "nvidia"; answer: "yes" | "no"; gpuVramGb?: number }
   | { event: "early_access"; gpuVendor: "amd" | "ascend"; answer: "yes" | "no"; gpuModel?: string; gpuVramGb?: number; email?: string }
   | { event: "option"; option: GpuOption; gpuVendor?: "nvidia" | "amd" | "ascend" | "none" }
@@ -52,6 +58,13 @@ export type GpuTelemetry =
 export function gpuProps(gpu: DetectedGpu | null): { gpuVendor: "nvidia" | "amd" | "ascend" | "none"; gpuModel?: string; gpuVramGb?: number; gpuCount?: number } {
   if (!gpu) return { gpuVendor: "none" };
   return { gpuVendor: gpu.vendor, gpuModel: gpu.model.slice(0, 64), gpuVramGb: gpu.vramGb, gpuCount: gpu.count };
+}
+
+/** The "detected" count's body: what was found, or the tool that didn't answer (never "none" then). */
+export function detectedTelemetry(detection: GpuDetection): GpuTelemetry {
+  const { gpu, unanswered } = detection;
+  if (!gpu && unanswered) return { event: "detected", gpuVendor: unanswered.vendor, outcome: unanswered.timedOut ? "probe_timeout" : "probe_failed" };
+  return { event: "detected", ...gpuProps(gpu) };
 }
 
 /** DL_NO_TELEMETRY, DO_NOT_TRACK or CI. */
