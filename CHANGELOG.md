@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.21.0](https://github.com/directionally-local/autopilot/compare/v3.20.2...v3.21.0) (2026-11-12)
+
+
+### Features
+
+* **dl:** dl Pro first when free usage runs out, dollar top-ups, honest limits ([#1253](https://github.com/directionally-local/autopilot/issues/1253)) ([5038886](https://github.com/directionally-local/autopilot/commit/50388863237b60d65c2a91ee7432eafc6e80dd70))
+
 ## [3.20.2](https://github.com/directionally-local/autopilot/compare/v3.20.1...v3.20.2) (2026-11-12)
 
 
