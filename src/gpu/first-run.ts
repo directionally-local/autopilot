@@ -14,14 +14,26 @@
 
 import { readState, writeState, type StateFile } from "../util/state.js";
 import { vendorName, type DetectedGpu } from "./detect.js";
-import { modelUpResult, type ModelUpError } from "./handoff.js";
+import { modelUpResult, type ModelUpError, type ModelUpFailure } from "./handoff.js";
 import { sendGpuTelemetry } from "./telemetry.js";
 
 export const INSTALL_LINE = "curl -fsSL https://dl.new | sh";
 
-/** "2x NVIDIA GeForce RTX 4090 (24 GB each)", "1x NVIDIA A100 80GB PCIe (80 GB)". */
+/** "NVIDIA RTX PRO 5000 Blackwell" → "NVIDIA RTX PRO 5000": the edition words don't fit a line. Same as dl's. */
+export function shortGpuName(name: string): string {
+  const short = name
+    .replace(/\s+Blackwell\b.*$/i, "")
+    .replace(/\s+(Server|Workstation)\s+Edition\b.*$/i, "")
+    .replace(/\s+Max-Q\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return short.length > 32 ? short.slice(0, 32).trimEnd() : short;
+}
+
+/** "NVIDIA RTX PRO 5000 · 48 GB", "4x NVIDIA RTX PRO 6000 · 384 GB total": short enough for one line. */
 export function gpuSummary(gpu: DetectedGpu): string {
-  return `${gpu.count}x ${gpu.model} (${gpu.vramGb} GB${gpu.count > 1 ? " each" : ""})`;
+  if (gpu.count <= 1) return `${shortGpuName(gpu.model)} · ${gpu.vramGb} GB`;
+  return `${gpu.count}x ${shortGpuName(gpu.model)} · ${gpu.totalVramGb || gpu.vramGb * gpu.count} GB total`;
 }
 
 /** The card's name with its maker, said once: "AMD Instinct MI300X", "Huawei Ascend 910B3". */
@@ -32,7 +44,7 @@ export function gpuDisplayName(gpu: DetectedGpu): string {
 }
 
 export function privateModelQuestion(gpu: DetectedGpu): string {
-  return `Found ${gpuSummary(gpu)}. Run a private model on this GPU?`;
+  return `Found ${gpuSummary(gpu)}. Run a private model on it?`;
 }
 
 export const PRIVATE_MODEL_SUBTITLE = "Your code and prompts stay on this machine · Esc to skip";
@@ -97,6 +109,77 @@ const MODEL_UP_WHY: Record<ModelUpError, string> = {
   other: "see above",
 };
 
+// ── After a private model setup that failed ─────────────────────────────────
+
+export const MODEL_UP_FAILED_TITLE = "The private model didn't start";
+
+/** The menu's line under the title: dl's reason (which test, and why), else the error type's words. */
+export function modelUpFailedSubtitle(failure: ModelUpFailure): string {
+  const reason = failure.reason ?? `Why: ${MODEL_UP_WHY[failure.error]}`;
+  return reason.length > 76 ? `${reason.slice(0, 73).trimEnd()}...` : reason;
+}
+
+export type ModelUpFailureChoice = "retry" | "details" | "pick" | "continue";
+
+/** The failure menu. Pick another model only when the model itself may be the problem. */
+export function modelUpFailureChoices(failure: ModelUpFailure): Array<{ value: ModelUpFailureChoice; label: string; description: string }> {
+  const modelProblem = failure.error === "smoke_failed" || failure.error === "launch_failed" || failure.error === "other";
+  return [
+    { value: "retry", label: "Retry", description: failure.model ? `set up ${failure.model} again` : "run the setup again" },
+    { value: "details", label: "See what failed", description: "the reason and the log file" },
+    ...(modelProblem ? [{ value: "pick" as const, label: "Pick another model", description: "from the models that fit" }] : []),
+    { value: "continue", label: "Continue without a local model for now", description: "the usual choices" },
+  ];
+}
+
+/** Whether the failure menu applies: not after a cancel, nor when nothing fits (a retry can't help). */
+export function offersModelUpRetry(failure: ModelUpFailure): boolean {
+  return failure.error !== "cancelled" && failure.error !== "no_fit";
+}
+
+/** Lines of a run log worth showing: errors and failures, the last `max`, each cut to fit. */
+export function relevantLogLines(text: string, max = 5): string[] {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s+/, "").trim();
+    if (!line || !/error|exception|traceback|fail|out of memory|cuda|no text|not ready|stopped/i.test(line)) continue;
+    const cut = line.length > 72 ? `${line.slice(0, 69).trimEnd()}...` : line;
+    if (seen.has(cut)) continue;
+    seen.add(cut);
+    lines.push(cut);
+  }
+  return lines.slice(-max);
+}
+
+/** "See what failed": the reason, where the full log is, and its last few lines that matter. */
+export function modelUpFailureDetails(failure: ModelUpFailure, logText?: string): string[] {
+  const lines = [failure.reason ?? `The private model didn't start (${MODEL_UP_WHY[failure.error]}).`];
+  if (failure.log) lines.push(`Full log: ${failure.log}`);
+  const relevant = logText ? relevantLogLines(logText) : [];
+  if (relevant.length) lines.push("Last lines that matter:", ...relevant.map((line) => `  ${line}`));
+  return lines;
+}
+
+/** The end of the run log, read for "See what failed"; undefined when it can't be read. */
+export async function readRunLogTail(path: string): Promise<string | undefined> {
+  try {
+    const { open } = await import("node:fs/promises");
+    const file = await open(path, "r");
+    try {
+      const { size } = await file.stat();
+      const length = Math.min(size, 64 * 1024);
+      const buffer = Buffer.alloc(length);
+      await file.read(buffer, 0, length, size - length);
+      return buffer.toString("utf8");
+    } finally {
+      await file.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 /** Said on the relaunch after `dl model up` didn't finish. */
 export function modelUpFailedLine(error: ModelUpError): string {
   if (error === "cancelled") return "Private model setup cancelled. Pick another way for now; dl model up works any time.";
@@ -112,7 +195,7 @@ export const WHERE_QUESTION = "Where are your GPUs?";
 export function whereChoices(local: DetectedGpu | null, canModelUp: boolean): Array<{ value: GpuWhere; label: string; description: string }> {
   return [
     ...(local?.vendor === "nvidia"
-      ? [{ value: "this_machine" as const, label: "On this machine", description: `${gpuSummary(local)}, ${canModelUp ? "dl sets up vLLM here" : "run dl model up first"}` }]
+      ? [{ value: "this_machine" as const, label: "On this machine", description: `${gpuSummary(local)} · ${canModelUp ? "dl sets it up" : "run dl model up first"}` }]
       : []),
     { value: "remote_server", label: "Another server of mine", description: "set it up there with dl, then connect" },
     { value: "endpoint", label: "I already run vLLM or another OpenAI-compatible server", description: "enter its URL" },

@@ -644,8 +644,10 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: null,
     catalog: "openai-models",
     // Tool calls are plain Chat Completions; the server needs
-    // --enable-auto-tool-choice and a --tool-call-parser for the model.
-    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEffort: false },
+    // --enable-auto-tool-choice and a --tool-call-parser for the model. Thinking models
+    // (Qwen3, GLM) send their reasoning as reasoning_content with a --reasoning-parser, and
+    // inline as <think>…</think> in the content without one: both become reasoning.
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEffort: false, thinkTags: true },
     capabilities: NO_OPENROUTER_FEATURES,
   },
 };

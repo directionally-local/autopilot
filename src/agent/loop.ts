@@ -967,6 +967,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     let iterationMadeProgress = false;
     let content = "";
     let reasoning = "";
+    let finishReason: string | null = null;
     let responseMeta: ResponseMeta | undefined;
     /** This response's own usage (lastUsage carries over from earlier responses). */
     let responseUsage: Usage | null = null;
@@ -1179,6 +1180,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
               opts.callbacks.onUsage?.(ev.usage);
               break;
             case "done":
+              finishReason = ev.finishReason;
               break;
           }
         }
@@ -1194,6 +1196,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         const discardedText = content;
         content = "";
         reasoning = "";
+        finishReason = null;
         reasoningDetails = [];
         toolCalls.length = 0;
         tr.toolsUsed.length = toolsUsedBeforeCall;
@@ -1287,6 +1290,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       await fireStopHook();
       if (finalizeReason === "loop" && loopWasThrashing) throw new AgentLoopError();
       return;
+    }
+
+    if (toolCalls.length === 0 && !content.trim() && reasoning.trim()) {
+      // A thinking model (e.g. served by vLLM) that only reasoned: not an empty answer to
+      // retry, but one to explain. The reasoning stays visible like any other.
+      logger.info("turn:reasoning_only", { sessionId: opts.sessionId, finishReason });
+      opts.callbacks.onWarning?.(reasoningOnlyLine(finishReason));
     }
 
     if (toolCalls.length === 0) {
@@ -2186,4 +2196,11 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
   });
+}
+
+/** Said when a reply was all reasoning: no text and no tool calls. */
+export function reasoningOnlyLine(finishReason: string | null): string {
+  return finishReason === "length"
+    ? "The model only thought and gave no answer: it ran out of tokens while thinking. Ask again, or ask for less at once."
+    : "The model only thought and gave no answer. Ask again.";
 }

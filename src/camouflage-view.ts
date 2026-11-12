@@ -111,7 +111,7 @@ import { CamouflageCrashed, CamouflageUnavailable, diagnoseRenderer, mountFailur
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
 import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu } from "./gpu/detect.js";
-import { handoffPath, modelUpResult, requestModelUp } from "./gpu/handoff.js";
+import { handoffPath, modelUpResult, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
 import { checkModelsEndpoint, normalizeBaseUrl, serverBaseUrl } from "./gpu/endpoint.js";
 import { flushGpuTelemetry, gpuProps, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
 import {
@@ -128,6 +128,12 @@ import {
   ENDPOINT_TITLE,
   ENDPOINT_URL_ERROR,
   modelUpFailedLine,
+  MODEL_UP_FAILED_TITLE,
+  modelUpFailedSubtitle,
+  modelUpFailureChoices,
+  modelUpFailureDetails,
+  offersModelUpRetry,
+  readRunLogTail,
   NO_GPU_HINT,
   noDlHint,
   PRIVATE_MODEL_CHOICES,
@@ -1655,7 +1661,9 @@ export class View implements AppBridge {
     }
     const result = modelUpResult(env);
     if (result && !result.ok) {
-      // Back from a dl model up that didn't finish: say so, and don't offer it again this time.
+      // Back from a dl model up that didn't finish. With dl able to run it again: the failure
+      // menu (Retry, See what failed, Pick another model, Continue). Otherwise say so, and go on.
+      if (canModelUp && offersModelUpRetry(result)) return this.modelUpFailureMenu(gpu, result, say);
       say(modelUpFailedLine(result.error), result.error === "cancelled" ? "info" : "error");
       return undefined;
     }
@@ -1708,12 +1716,39 @@ export class View implements AppBridge {
     }
   }
 
+  /**
+   * After a private model setup that failed: what failed (dl's reason) and four ways on. Retry
+   * and Pick another model hand over to dl again; See what failed shows the reason, the log's
+   * path and its last lines that matter (never the server's whole log); Continue goes on to the
+   * usual choices.
+   */
+  private async modelUpFailureMenu(
+    gpu: DetectedGpu | null,
+    failure: ModelUpFailure,
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<"model-up" | undefined> {
+    for (;;) {
+      const choice = await this.select(MODEL_UP_FAILED_TITLE, modelUpFailureChoices(failure), "retry", modelUpFailedSubtitle(failure));
+      if (choice === null || choice === "continue") return undefined;
+      if (choice === "details") {
+        this.showLines(modelUpFailureDetails(failure, failure.log ? await readRunLogTail(failure.log) : undefined));
+        continue;
+      }
+      const handed = await this.handOverModelUp(gpu, say, choice === "retry" ? (failure.model ? { model: failure.model } : {}) : { pick: true });
+      if (handed) return handed;
+    }
+  }
+
   /** Ask dl for `dl model up` (Autopilot exits next; dl starts it again on the new model). */
-  private async handOverModelUp(gpu: DetectedGpu | null, say: (message: string, severity?: "info" | "error") => void): Promise<"model-up" | undefined> {
+  private async handOverModelUp(
+    gpu: DetectedGpu | null,
+    say: (message: string, severity?: "info" | "error") => void,
+    then: { model?: string; pick?: boolean } = {},
+  ): Promise<"model-up" | undefined> {
     const path = handoffPath(this.gpuCalls.env);
     if (!path) return undefined;
     try {
-      await requestModelUp(path, gpu);
+      await requestModelUp(path, gpu, then);
     } catch (e) {
       say(`Couldn't hand over to dl model up: ${(e as Error).message}. Run dl model up in a terminal.`, "error");
       return undefined;
