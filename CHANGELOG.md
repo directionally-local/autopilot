@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.20.2](https://github.com/directionally-local/autopilot/compare/v3.20.1...v3.20.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* wait for a slow nvidia-smi on first run instead of showing the no-GPU path ([#1251](https://github.com/directionally-local/autopilot/issues/1251)) ([538557d](https://github.com/directionally-local/autopilot/commit/538557d15adf20464b418b591575a32055ac4774))
+
 ## [3.20.1](https://github.com/directionally-local/autopilot/compare/v3.20.0...v3.20.1) (2026-11-12)
 
 
