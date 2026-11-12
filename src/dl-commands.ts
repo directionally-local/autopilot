@@ -7,11 +7,14 @@
 import {
   dlInviteReport,
   dlScreenChoices,
+  dlTopupAmountLabel,
+  dlTopupQuantities,
   dlUpgradeStep,
+  parseTopupAmount,
   purchase,
   type PurchaseDeps,
 } from "./providers/dl-growth.js";
-import type { DlMe, DlProduct } from "./providers/directionally-local.js";
+import { formatUsd, isUsdTopup, type DlMe, type DlProduct } from "./providers/directionally-local.js";
 
 export interface DlCommandDeps {
   providerId: string;
@@ -19,7 +22,7 @@ export interface DlCommandDeps {
   print: (line: string) => void;
   fetchMe: () => Promise<DlMe>;
   copy: (text: string) => boolean;
-  checkout: (product: DlProduct) => Promise<string>;
+  checkout: (product: DlProduct, quantity?: number) => Promise<string>;
   portal: () => Promise<string>;
   openBrowser: (url: string) => boolean;
   /** Ask a question on the terminal; null when there is no terminal to ask on. */
@@ -86,6 +89,26 @@ export async function runUpgradeCommand(product: string | undefined, deps: DlCom
     }
     chosen = picked.value as DlProduct;
   }
+  // A dollar top-up: how much ($2, $5, $10, $20 or another amount in range); the smallest without a terminal.
+  let quantity: number | undefined;
+  const topup = step.screen.offers.topup;
+  if (chosen === "topup" && isUsdTopup(topup)) {
+    quantity = topup.minQuantity;
+    if (deps.ask) {
+      const amounts = dlTopupQuantities(topup);
+      deps.print("How much?");
+      amounts.forEach((q, i) => deps.print(`  ${i + 1}) ${dlTopupAmountLabel(topup, q)}`));
+      const range = `${formatUsd(topup.minQuantity * topup.unitPriceUsd)}–${formatUsd(topup.maxQuantity * topup.unitPriceUsd)}`;
+      const answer = (await deps.ask(`Choose 1-${amounts.length}, or type a dollar amount (${range}): `)).trim();
+      const listed = /^\d+$/.test(answer) && Number(answer) >= 1 && Number(answer) <= amounts.length ? amounts[Number(answer) - 1] : undefined;
+      const typed = listed ?? (answer.startsWith("$") ? parseTopupAmount(topup, answer) : undefined);
+      if (typed === undefined) {
+        deps.print(answer ? `Choose a listed number, or a whole-dollar amount like $7 (${range}).` : "Nothing bought.");
+        return 1;
+      }
+      quantity = typed;
+    }
+  }
   const bought = await purchase(
     chosen,
     {
@@ -103,7 +126,7 @@ export async function runUpgradeCommand(product: string | undefined, deps: DlCom
       ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
       ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
     },
-    { continuing: false },
+    { continuing: false, ...(quantity !== undefined ? { quantity } : {}) },
   );
   return bought ? 0 : 1;
 }

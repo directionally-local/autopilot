@@ -1765,7 +1765,7 @@ function App({
             // The free tier ran out or queued this account: offer the ways on (Esc shows the usual line).
             const screen =
               e instanceof DlApiError && failure.kind !== "aborted"
-                ? dlScreenFor(e.providerCode, (e.providerDetail ?? {}) as Parameters<typeof dlScreenFor>[1], lastKnownDlMe()?.referral?.link)
+                ? dlScreenFor(e.providerCode, (e.providerDetail ?? {}) as Parameters<typeof dlScreenFor>[1], lastKnownDlMe()?.referral?.link, lastKnownDlMe()?.plan)
                 : undefined;
             if (screen) {
               dlScreenErrorRef.current = failure.kind === "error" ? failure.text : failure.kind === "api_error" ? failure.message : null;
@@ -2231,6 +2231,8 @@ function App({
         dlScreenErrorRef.current = null;
         if (next.kind === "show-error") setEvents((es) => [...es, { kind: "error", key: mkKey(), text: next.text }]);
         else if (next.kind === "provider-picker") modals.setProviderSetup({});
+        // "Ask for more free usage": the /request flow.
+        else if (next.kind === "command") void handleSlash(next.command);
         // Bought Pro or a top-up: send the blocked request again.
         else if (next.kind === "retry") void processMessage(next.text, next.display, { retry: true });
       },

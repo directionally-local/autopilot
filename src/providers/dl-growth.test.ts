@@ -53,6 +53,11 @@ const NOW = Date.parse("2026-11-03T03:00:00Z");
 const RESETS = "2026-11-09T00:00:00Z";
 const LINK = "https://dl.new/r/octo42";
 const OFFERS = { pro: { priceUsdMonthly: 10, tokensPerWeek: 100_000_000 }, topup: { priceUsd: 3, tokens: 50_000_000, validDays: 30 } };
+/** What a current server sends: Pro's exact price text and value line, and a dollar top-up. */
+const PRO_OFFERS = {
+  pro: { priceUsdMonthly: 3.99, price: "$3.99/month", tokensPerWeek: 300_000_000, usdPerWeek: 10, valueLine: "About 3x the free usage every week, every model." },
+  topup: { unitPriceUsd: 1, minQuantity: 2, maxQuantity: 20, usageMultiplier: 1.25, validDays: 90 },
+};
 
 function me(over: Partial<DlMe> = {}): DlMe {
   return {
@@ -84,9 +89,9 @@ function world(o: { select?: (string | null)[]; meSeq?: DlMe[]; opened?: boolean
     say: (m) => void said.push(m),
     copy: (t) => (copied.push(t), o.copied ?? true),
     openBrowser: (url) => (opened.push(url), o.opened ?? true),
-    checkout: async (product) => {
+    checkout: async (product, quantity) => {
       if (o.checkoutError) throw o.checkoutError;
-      checkouts.push(product);
+      checkouts.push(quantity === undefined ? product : `${product}×${quantity}`);
       return `https://pay.example/${product}`;
     },
     fetchMe: async () => {
@@ -108,7 +113,7 @@ function world(o: { select?: (string | null)[]; meSeq?: DlMe[]; opened?: boolean
   return { deps, said, selects, checkouts, opened, copied, waits, polls: () => polls };
 }
 
-const quota: DlScreen = { kind: "quota", resetsAt: RESETS, offers: OFFERS, referralLink: LINK };
+const quota: DlScreen = { kind: "quota", resetsAt: RESETS, offers: PRO_OFFERS, referralLink: LINK };
 
 describe("free tier growth", () => {
   beforeEach(() => resetDlNoticeState());
@@ -120,41 +125,58 @@ describe("free tier growth", () => {
       });
       assert.deepStrictEqual(parsed, { code: "quota_exceeded", resetsAt: RESETS, referralLink: LINK, offers: OFFERS });
       // Incomplete offers are dropped rather than shown with a blank price.
-      assert.strictEqual(parseDlError({ error: { code: "quota_exceeded", offers: { pro: { priceUsdMonthly: 10 } } } })?.offers, undefined);
+      assert.strictEqual(parseDlError({ error: { code: "quota_exceeded", offers: { pro: { tokensPerWeek: 10 } } } })?.offers, undefined);
+      // A current server's offers: the exact price text, the value line and a dollar top-up.
+      assert.deepStrictEqual(parseDlError({ error: { code: "quota_exceeded", offers: PRO_OFFERS } })?.offers, PRO_OFFERS);
     });
 
-    it("offers invite, Pro, top-up and your own key, priced from the service", async () => {
+    it("puts dl Pro first and default, then a top-up, more free usage, your own key and your own GPUs", async () => {
       const w = world({ select: [null] });
       assert.strictEqual(await runDlScreen(quota, w.deps), "dismissed");
       assert.deepStrictEqual(w.selects[0], {
-        title: "You've used this week's free tokens. They're back Mon 09:00.",
-        labels: [
-          "Invite a friend — you both get +10M a week",
-          "Keep going with Pro — $10/month, 100M a week",
-          "Top up 50M tokens — $3, one time",
-          "Use my own API key",
-        ],
-        values: ["invite", "pro", "topup", "own-key"],
+        title: "You've used this week's free usage. It's back Mon 09:00.",
+        labels: ["Get dl Pro: $3.99/month", "Top up from $2", "Ask for more free usage", "Use your own key", "Run it on your own GPUs"],
+        values: ["pro", "topup", "request", "own-key", "gpus"],
         subtitle: "Enter to choose · Esc to close",
       });
-      // Other prices come straight from the service.
-      const other = dlScreenChoices("quota", { offers: { pro: { priceUsdMonthly: 12.5, tokensPerWeek: 80e6 }, topup: { priceUsd: 5, tokens: 25e6 } }, referralLink: LINK });
-      assert.deepStrictEqual(other.map((c) => c.label).slice(1, 3), ["Keep going with Pro — $12.50/month, 80M a week", "Top up 25M tokens — $5, one time"]);
+      const choices = dlScreenChoices("quota", { offers: PRO_OFFERS });
+      assert.strictEqual(choices[0]!.description, "About 3x the free usage every week, every model.", "the value line from the service");
+      assert.strictEqual(choices[1]!.description, "each $1 adds $1.25 of usage, lasts 90 days");
+      assert.deepStrictEqual(choices.slice(2).map((c) => c.description), ["/request", "/provider", "dl model up"]);
     });
 
-    it("hides Pro and top-up without offers (older server), and invite without a link", () => {
-      assert.deepStrictEqual(dlScreenChoices("quota", { referralLink: LINK }).map((c) => c.value), ["invite", "own-key"]);
-      assert.deepStrictEqual(dlScreenChoices("quota", {}).map((c) => c.value), ["own-key"]);
+    it("shows the price exactly as the service sends it, never rounded", () => {
+      const label = (pro: Record<string, unknown>) => dlScreenChoices("quota", { offers: { pro: pro as never } })[0]!.label;
+      assert.strictEqual(label({ priceUsdMonthly: 3.99, price: "$3.99/month" }), "Get dl Pro: $3.99/month");
+      assert.strictEqual(label({ priceUsdMonthly: 3.99 }), "Get dl Pro: $3.99/month", "an older server without the text: still not $4");
+      assert.strictEqual(label({ priceUsdMonthly: 12.5, tokensPerWeek: 80e6 }), "Get dl Pro: $12.50/month");
     });
 
-    it("invite copies the link (OSC 52) and shows it", async () => {
+    it("leaves Pro out without offers (older server) or when already on Pro, and the top-up out unless it is the dollar kind", () => {
+      assert.deepStrictEqual(dlScreenChoices("quota", { referralLink: LINK }).map((c) => c.value), ["request", "own-key", "gpus"]);
+      assert.deepStrictEqual(dlScreenChoices("quota", {}).map((c) => c.value), ["request", "own-key", "gpus"]);
+      assert.deepStrictEqual(dlScreenChoices("quota", { offers: PRO_OFFERS, plan: "pro" }).map((c) => c.value), ["topup", "own-key", "gpus"]);
+      assert.deepStrictEqual(dlScreenChoices("quota", { offers: OFFERS }).map((c) => c.value), ["pro", "request", "own-key", "gpus"], "an old token top-up stays in /upgrade");
+      assert.ok(!dlScreenChoices("quota", { offers: PRO_OFFERS, referralLink: LINK }).some((c) => /invite|\+10M/i.test(c.label)), "no invite promise here");
+    });
+
+    it("asks for more free usage through /request, and points to `dl model up`", async () => {
+      assert.strictEqual(await runDlScreen(quota, world({ select: ["request"] }).deps), "request");
+      assert.deepStrictEqual(dlScreenFollowUp("request", "x", null), { kind: "command", command: "/request" });
+      const gpus = world({ select: ["gpus"] });
+      assert.strictEqual(await runDlScreen(quota, gpus.deps), "handled");
+      assert.deepStrictEqual(gpus.said, ["Run it on your own GPUs: `dl model up` serves an open model on this machine's Nvidia GPU and points Autopilot at it."]);
+    });
+
+    it("the queue's invite copies the link (OSC 52) and shows it", async () => {
+      const queued: DlScreen = { kind: "queued", position: 3, offers: PRO_OFFERS, referralLink: LINK };
       const w = world({ select: ["invite"] });
-      assert.strictEqual(await runDlScreen(quota, w.deps), "handled");
+      assert.strictEqual(await runDlScreen(queued, w.deps), "handled");
       assert.deepStrictEqual(w.copied, [LINK]);
-      assert.deepStrictEqual(w.said, [`Your invite link (copied): ${LINK} — when a friend starts using dl, you both get +10M a week.`]);
+      assert.deepStrictEqual(w.said, [`Your invite link (copied): ${LINK} — each friend who starts using dl moves you up the line.`]);
       const plain = world({ select: ["invite"], copied: false });
-      await runDlScreen(quota, plain.deps);
-      assert.strictEqual(plain.said[0], `Your invite link: ${LINK} — when a friend starts using dl, you both get +10M a week.`);
+      await runDlScreen(queued, plain.deps);
+      assert.strictEqual(plain.said[0], `Your invite link: ${LINK} — each friend who starts using dl moves you up the line.`);
     });
 
     it("Pro: checkout, browser, then polls /v1/me until Pro shows, and retries", async () => {
@@ -173,11 +195,45 @@ describe("free tier growth", () => {
       assert.match(w.waits[0]!, /^Open https:\/\/pay\.example\/pro in a browser on any device to start Pro\./);
     });
 
-    it("top-up: done once more top-up tokens show than before", async () => {
-      const w = world({ select: ["topup"], meSeq: [me({ topupTokensLeft: 0 }), me({ topupTokensLeft: 0 }), me({ topupTokensLeft: 50e6 })] });
+    it("top-up: picks an amount, checks out that many $1 units, done once more top-up usage shows", async () => {
+      const w = world({ select: ["topup", "5"], meSeq: [me({ topupUsdLeft: 0 }), me({ topupUsdLeft: 0 }), me({ topupUsdLeft: 6.25 })] });
       assert.strictEqual(await runDlScreen(quota, w.deps), "retry");
+      assert.deepStrictEqual(w.selects[1], {
+        title: "How much do you want to top up?",
+        labels: ["$2 — adds $2.50 of usage", "$5 — adds $6.25 of usage", "$10 — adds $12.50 of usage", "$20 — adds $25 of usage"],
+        values: ["2", "5", "10", "20"],
+        subtitle: "each $1 adds $1.25 of usage, lasts 90 days · Enter to choose · Esc to close",
+      });
+      assert.deepStrictEqual(w.checkouts, ["topup×5"]);
+      assert.deepStrictEqual(w.said, ["✓ Top-up added: $6.25 of usage to use. Continuing."]);
+      // Esc on the amount buys nothing.
+      const esc = world({ select: ["topup", null] });
+      assert.strictEqual(await runDlScreen(quota, esc.deps), "dismissed");
+      assert.deepStrictEqual(esc.checkouts, []);
+    });
+
+    it("top-up: another amount from 2 to 20 dollars, typed", async () => {
+      const typed: string[] = [];
+      const w = world({ select: ["topup", "custom"], meSeq: [me(), me({ topupUsdLeft: 8.75 })] });
+      w.deps.input = async (title) => (typed.push(title), "$7");
+      assert.strictEqual(await runDlScreen(quota, w.deps), "retry");
+      assert.strictEqual(w.selects[1]!.labels.at(-1), "Another amount ($2–$20)");
+      assert.deepStrictEqual(typed, ["Amount in dollars, $2 to $20"]);
+      assert.deepStrictEqual(w.checkouts, ["topup×7"]);
+      for (const bad of ["1", "21", "2.5", "lots"]) {
+        const b = world({ select: ["topup", "custom"] });
+        b.deps.input = async () => bad;
+        assert.strictEqual(await runDlScreen(quota, b.deps), "dismissed", bad);
+        assert.deepStrictEqual(b.checkouts, []);
+        assert.deepStrictEqual(b.said, ["Choose a whole-dollar amount from $2 to $20."]);
+      }
+    });
+
+    it("an old token top-up offer still checks out once, without an amount", async () => {
+      const w = world({ select: ["topup"], meSeq: [me({ topupTokensLeft: 0 }), me({ topupTokensLeft: 0 }), me({ topupTokensLeft: 50e6 })] });
+      assert.strictEqual(await runDlScreen({ kind: "upgrade", offers: OFFERS }, w.deps), "handled");
       assert.deepStrictEqual(w.checkouts, ["topup"]);
-      assert.deepStrictEqual(w.said, ["✓ Top-up added: 50M tokens to use. Continuing."]);
+      assert.deepStrictEqual(w.said, ["✓ Top-up added: 50M tokens to use."]);
     });
 
     it("stops after 10 minutes without the payment, and on Esc", async () => {
@@ -200,11 +256,12 @@ describe("free tier growth", () => {
     it("own key opens the provider picker; Esc keeps the usual line", async () => {
       assert.strictEqual(await runDlScreen(quota, world({ select: ["own-key"] }).deps), "own-key");
       assert.strictEqual(await runDlScreen(quota, world({ select: [null] }).deps), "dismissed");
-      assert.match(describeDlError("quota_exceeded", { resetsAt: RESETS, timeZone: TZ, now: NOW })!, /^You've used this week's free tokens\. They're back Mon 09:00\. To keep going now: \/provider/);
+      assert.match(describeDlError("quota_exceeded", { resetsAt: RESETS, timeZone: TZ, now: NOW })!, /^You've used this week's free usage\. It's back Mon 09:00\. To keep going now: \/provider/);
     });
 
     it("builds the screen from the error, with the last known link when the error has none", () => {
       assert.deepStrictEqual(dlScreenFor("quota_exceeded", { resetsAt: RESETS }, LINK), { kind: "quota", resetsAt: RESETS, referralLink: LINK });
+      assert.deepStrictEqual(dlScreenFor("quota_exceeded", { resetsAt: RESETS }, undefined, "pro"), { kind: "quota", resetsAt: RESETS, plan: "pro" });
       assert.strictEqual(dlScreenFor("rate_limited", {}), undefined);
     });
 
@@ -217,16 +274,21 @@ describe("free tier growth", () => {
       assert.deepStrictEqual(dlScreenFollowUp("retry", "x", null), { kind: "none" });
     });
 
-    it("headless: one plain line with the link and `autopilot upgrade`", () => {
+    it("headless: one plain line ending with dl Pro when the service offers it", () => {
       const err = new ApiError("autopilot: …", undefined, 402);
       err.providerCode = "quota_exceeded";
-      err.providerDetail = { resetsAt: RESETS, referralLink: LINK };
+      err.providerDetail = { resetsAt: RESETS, referralLink: LINK, offers: PRO_OFFERS };
       assert.strictEqual(
         dlHeadlessMessage(err, { now: NOW, timeZone: TZ }),
-        `You've used this week's free tokens. They're back Mon 09:00. Invite a friend and you both get +10M a week: ${LINK} · Keep going now: \`autopilot upgrade\`, or your own key: \`autopilot connect\`.`,
+        "You've used this week's free usage. It's back Mon 09:00. To keep going now, use your own key: `autopilot connect`. Get dl Pro for $3.99/month: `autopilot upgrade`",
       );
-      err.providerDetail = {};
-      assert.doesNotMatch(dlHeadlessMessage(err, { now: NOW, timeZone: TZ })!, /\n|Invite/);
+      assert.strictEqual(
+        dlHeadlessMessage(err, { now: NOW, timeZone: TZ, plan: "pro" }),
+        "You've used this week's Pro usage. It's back Mon 09:00. To keep going now, use your own key: `autopilot connect`.",
+        "already on Pro",
+      );
+      err.providerDetail = { resetsAt: RESETS, referralLink: LINK };
+      assert.doesNotMatch(dlHeadlessMessage(err, { now: NOW, timeZone: TZ })!, /\n|Invite|\+10M|Pro/, "no offers: no Pro, and never the invite promise");
       const other = new ApiError("x", undefined, 500);
       assert.strictEqual(dlHeadlessMessage(other), undefined);
     });
@@ -242,7 +304,7 @@ describe("free tier growth", () => {
       assert.strictEqual(await runDlScreen(screen, w.deps), "dismissed");
       assert.deepStrictEqual(w.selects[0], {
         title: "You're #214 in line for free tokens (about 3 days, by Fri). Each friend who starts using dl moves you up.",
-        labels: ["Invite a friend — you both get +10M a week", "Keep going with Pro — $10/month, 100M a week", "Use my own API key now"],
+        labels: ["Invite a friend (moves you up the line)", "Get dl Pro: $10/month", "Use my own API key now"],
         values: ["invite", "pro", "own-key"],
         subtitle: `Your invite link: ${LINK} · Enter to choose · Esc to close`,
       });
@@ -327,7 +389,11 @@ describe("free tier growth", () => {
       assert.strictEqual(step.kind, "screen");
       const w = world({ select: [null] });
       await runDlScreen((step as { screen: DlScreen }).screen, w.deps);
-      assert.deepStrictEqual(w.selects[0]!.labels, ["Pro — $10/month, 100M a week", "Top up 50M tokens — $3, one time"]);
+      assert.deepStrictEqual(w.selects[0]!.labels, ["dl Pro: $10/month", "Top up 50M tokens — $3, one time"]);
+      const current = await dlUpgradeStep({ ...base, providerId: "directionally-local", fetchMe: async () => me({ offers: PRO_OFFERS }) });
+      const w2 = world({ select: [null] });
+      await runDlScreen((current as { screen: DlScreen }).screen, w2.deps);
+      assert.deepStrictEqual(w2.selects[0]!.labels, ["dl Pro: $3.99/month", "Top up from $2"]);
       assert.strictEqual(w.selects[0]!.title, "Upgrade Directionally Local");
       assert.deepStrictEqual(await dlUpgradeStep({ ...base, providerId: "directionally-local", fetchMe: async () => me({ offers: undefined }) }), {
         kind: "text",
@@ -361,7 +427,7 @@ describe("free tier growth", () => {
         ask: async (q) => (asked.push(q), "2"),
       });
       assert.strictEqual(code, 0);
-      assert.deepStrictEqual(printed2.slice(0, 3), ["Upgrade Directionally Local", "  1) Pro — $10/month, 100M a week", "  2) Top up 50M tokens — $3, one time (lasts 30 days)"]);
+      assert.deepStrictEqual(printed2.slice(0, 3), ["Upgrade Directionally Local", "  1) dl Pro: $10/month", "  2) Top up 50M tokens — $3, one time (lasts 30 days)"]);
       assert.deepStrictEqual(asked, ["Choose 1-2 (Enter to cancel): "]);
       assert.strictEqual(printed2.at(-1), "✓ Top-up added: 50M tokens to use.");
       const printed3: string[] = [];
@@ -374,51 +440,41 @@ describe("free tier growth", () => {
     const free = (over: Partial<DlMe> = {}) => me({ plan: "free", allowance: { tokensPerWeek: 50e6, usedThisWeek: 100_000, remaining: 49_900_000, resetsAt: RESETS }, ...over });
     const maxed = { link: LINK, joined: 6, activeThisWeek: 5, bonusTokensPerWeek: 50_000_000, bonusCapPerWeek: 50_000_000 };
 
-    it("says under the sign-in line that inviting gets you both more", () => {
-      assert.strictEqual(dlSignedInInviteLine(free()), `Invite friends and you both get +10M tokens a week: ${LINK} (/invite)`);
-      assert.strictEqual(dlSignedInInviteLine(free(), "cli"), `Invite friends and you both get +10M tokens a week: ${LINK} (\`autopilot invite\`)`);
+    it("shows the invite link under the sign-in line, without promising tokens", () => {
+      assert.strictEqual(dlSignedInInviteLine(free()), `Your invite link: ${LINK} (/invite)`);
+      assert.strictEqual(dlSignedInInviteLine(free(), "cli"), `Your invite link: ${LINK} (\`autopilot invite\`)`);
       assert.strictEqual(dlSignedInInviteLine(free({ plan: "pro" })), undefined, "not on Pro");
       assert.strictEqual(dlSignedInInviteLine(free({ referral: undefined })), undefined, "not without a link");
       assert.strictEqual(dlSignedInInviteLine(free({ referral: maxed })), undefined, "not once the bonus is maxed");
-      const { bonusCapPerWeek: _cap, ...noCap } = maxed;
-      assert.strictEqual(dlSignedInInviteLine(free({ referral: noCap })), undefined, "the cap is +50M when the service doesn't say");
       assert.strictEqual(dlSignedInInviteLine(null), undefined);
     });
 
-    it("shows what's left in the header, with the hint while invites add more", () => {
-      assert.strictEqual(dlHeaderLine(free()), "free · 49.9M left · /invite for more");
-      assert.strictEqual(dlHeaderLine(free({ referral: maxed })), "free · 49.9M left");
+    it("shows what's left in the header, in dollars when the week has a dollar cap", () => {
+      assert.strictEqual(dlHeaderLine(free()), "free · 49.9M left");
+      assert.strictEqual(dlHeaderLine(free({ allowance: { tokensPerWeek: 50e6, usedThisWeek: 1e6, remaining: 49e6, resetsAt: RESETS, usdPerWeek: 3, spentUsdThisWeek: 1.2 } })), "free · $1.80 of $3 left");
+      assert.strictEqual(dlHeaderLine(free({ allowance: { tokensPerWeek: 50e6, usedThisWeek: 14e6, remaining: 36e6, resetsAt: RESETS, usdPerWeek: 3, spentUsdThisWeek: 9.13 } })), "free · limit reached");
       assert.strictEqual(dlHeaderLine(free({ plan: "pro" })), undefined);
       assert.strictEqual(dlHeaderLine(free({ queue: { position: 3 } })), undefined);
       assert.strictEqual(dlHeaderLine(null), undefined);
     });
 
-    it("ends /usage with how to get more, until the bonus is maxed", () => {
-      assert.strictEqual(renderDlUsage(free(), NOW, TZ).split("\n").at(-1), "  Get more: /invite (you both get +10M a week)");
-      assert.doesNotMatch(renderDlUsage(free({ referral: maxed }), NOW, TZ), /Get more/);
-      assert.doesNotMatch(renderDlUsage(free({ plan: "pro" }), NOW, TZ), /Get more/);
-      assert.doesNotMatch(renderDlUsage(free({ referral: undefined }), NOW, TZ), /Get more/);
+    it("never ends /usage with the invite promise", () => {
+      for (const account of [free(), free({ referral: maxed }), free({ plan: "pro" })]) assert.doesNotMatch(renderDlUsage(account, NOW, TZ), /Get more|\+10M a week\)/);
     });
 
-    it("adds the invite to the 80% notice once the account is known to be on the free tier", async () => {
+    it("never adds the invite promise to the 80% notice; offers dl Pro once the account is known", async () => {
       resetDlNoticeState();
       const h = (resets: string) => new Headers({ "x-dl-tokens-remaining": "9000000", "x-dl-quota-resets-at": resets });
-      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-09T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite/, "unknown account: no invite");
+      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-09T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite|Pro/, "unknown account");
       const read = (body: DlMe) => fetchDlMe({ token: "t", fetchImpl: (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch });
-      await read(free());
+      await read(free({ offers: PRO_OFFERS }));
       assert.match(
         quotaNoticeFromHeaders(h("2026-11-16T00:00:00.000Z"), { now: NOW, timeZone: TZ })!,
-        /^You've used 82% of this week's free Directionally Local tokens \(9M left, resets .+\); \/usage has details\. Invite a friend for \+10M a week: \/invite$/,
+        /^You've used 82% of this week's free Directionally Local tokens \(9M left, resets .+\); \/usage has details\. Get dl Pro for \$3\.99\/month: \/upgrade$/,
       );
-      await read(free({ plan: "pro" }));
-      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-23T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite/, "not on Pro");
-      await read(free({ referral: maxed }));
-      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-30T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite/, "not once maxed");
+      await read(free({ plan: "pro", offers: PRO_OFFERS }));
+      assert.doesNotMatch(quotaNoticeFromHeaders(h("2026-11-23T00:00:00.000Z"), { now: NOW, timeZone: TZ })!, /Invite|Get dl Pro/, "not on Pro");
       resetDlNoticeState();
-    });
-
-    it("keeps the invite first on the limit screen", () => {
-      assert.strictEqual(dlScreenChoices("quota", { offers: OFFERS, referralLink: LINK })[0]?.value, "invite");
     });
   });
 
@@ -487,7 +543,7 @@ describe("free tier growth", () => {
       assert.strictEqual(await inviteTipAfterWin({ providerId: "directionally-local", enabled: true, fetchMe: async () => me({ referral: undefined }), statePath }), undefined);
       assert.strictEqual(
         await inviteTipAfterWin({ providerId: "directionally-local", enabled: true, fetchMe, statePath }),
-        `Nice. Know someone who'd like this? ${LINK} gives you both +10M a week.`,
+        `Nice. Know someone who'd like this? Share your invite link: ${LINK}`,
       );
       assert.match(await readFile(statePath, "utf8"), /shownAt/);
       assert.strictEqual(await inviteTipAfterWin({ providerId: "directionally-local", enabled: true, fetchMe, statePath }), undefined, "never again");

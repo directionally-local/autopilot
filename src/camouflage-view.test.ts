@@ -646,12 +646,12 @@ describe("Camouflage free-tier limit screen", () => {
     view.sync(baseSnapshot({ dlScreen: { kind: "quota", resetsAt: "2026-11-09T00:00:00Z", offers, referralLink: "https://dl.new/r/x" } }));
     await settle();
     const pick = prompts.find((p) => p.type === "select")!.payload;
-    assert.match(String(pick.prompt), /^You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\.$/);
+    assert.match(String(pick.prompt), /^You've used this week's free usage\. It's back \w{3} \d\d:\d\d\.$/);
     assert.deepStrictEqual((pick.options as { label: string }[]).map((o) => o.label), [
-      "Invite a friend — you both get +10M a week",
-      "Keep going with Pro — $10/month, 100M a week",
-      "Top up 50M tokens — $3, one time",
-      "Use my own API key",
+      "Get dl Pro: $10/month",
+      "Ask for more free usage",
+      "Use your own key",
+      "Run it on your own GPUs",
     ]);
     assert.deepStrictEqual(checkouts, ["pro"]);
     const said = sent.filter((s) => s.type === "RuntimeError").map((s) => String(s.payload.message));

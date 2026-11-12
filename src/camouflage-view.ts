@@ -279,7 +279,7 @@ export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed" |
 
 /**
  * The header's detail lines; first run has no model yet. `free` is the free
- * tier's line ("free · 49.9M left · /invite for more"), shown third.
+ * tier's line ("free · $1.80 of $3 left", or "free · 49.9M left" without a dollar cap), shown third.
  */
 export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null, free?: string): string[] {
   if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run"];
@@ -568,7 +568,7 @@ export class View implements AppBridge {
   };
   /** What the free tier's limit, queue and /upgrade screens call; replaced in tests. */
   dlScreenCalls: Pick<DlScreenDeps, "checkout" | "fetchMe" | "openBrowser" | "copy" | "sleep" | "now"> = {
-    checkout: (product) => dlCheckout(product),
+    checkout: (product, quantity) => dlCheckout(product, quantity !== undefined ? { quantity } : {}),
     fetchMe: () => fetchDlMe(),
     openBrowser: (url) => openBrowser(url),
     copy: (text) => copyWithOsc52(text),
@@ -2062,6 +2062,14 @@ export class View implements AppBridge {
       ...this.dlScreenCalls,
       say,
       select: (title, options, subtitle) => this.select(title, options, undefined, subtitle),
+      input: async (title, placeholder) => {
+        const f = await this.sdk.form(this.cam, {
+          id: `dl-topup-amount-${Date.now()}`,
+          title,
+          fields: [{ name: "amount", label: "Amount in dollars", ...(placeholder ? { placeholder } : {}) }],
+        });
+        return f.cancelled ? null : (f.values?.amount?.trim() ?? null);
+      },
       wait: async (text, cancel) => {
         // Esc (cancelRequested) and typed input go to the wait, as during a sign-in.
         const ctrl = new AbortController();
