@@ -3,6 +3,7 @@ import assert from "node:assert";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { assembleTurn, describeSubagentGuidance, lastUserText, resolveTurnPolicy } from "./session-core.js";
+import { resetPrivateHttpWarnings } from "../providers/resolve.js";
 import type { ToolSpec } from "../tools/registry.js";
 
 const tool = (name: string): ToolSpec => ({ name, description: name, parameters: { type: "object" }, needsPermission: false, run: async () => "" });
@@ -93,6 +94,20 @@ describe("assembleTurn", () => {
     assert.strictEqual(opts.model, "deepseek-flash");
     assert.strictEqual(opts.intentClassification, policy.classification);
     assert.deepStrictEqual(opts.tools.map((t) => t.name), ["read"]);
+  });
+
+  it("routes the key-travel warning to the host's onWarning channel", async () => {
+    const cfg = { provider: "custom" as const, baseUrl: "http://192.168.1.5/v1", apiKey: "k", model: "m" };
+    const policy = await resolveTurnPolicy({ cfg, prompt: "hi", tools: TOOLS });
+    resetPrivateHttpWarnings();
+    const warnings: string[] = [];
+    assembleTurn({
+      cfg,
+      policy,
+      host: { model: "m", messages: [], executor: {} as never, cwd: "/tmp", signal: new AbortController().signal, callbacks: { askPermission: async () => "allow", onWarning: (m) => warnings.push(m) } },
+    });
+    assert.strictEqual(warnings.length, 1);
+    assert.match(warnings[0]!, /192\.168\.1\.5/);
   });
 
   it("routes light turns to the configured fast model, but never past a host-picked model", async () => {

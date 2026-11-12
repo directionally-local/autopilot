@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert";
 import {
   credentialLabel,
@@ -10,7 +10,9 @@ import {
   PROVIDER_CHOICES,
   providerRows,
   switchedMessage,
+  verifyProvider,
 } from "./connect.js";
+import { resetPrivateHttpWarnings } from "./resolve.js";
 import { PROVIDER_IDS } from "./presets.js";
 import type { AutopilotConfig } from "../config.js";
 
@@ -77,6 +79,24 @@ describe("planConnect", () => {
   it("existing credentials: from the environment or the config file", () => {
     assert.deepStrictEqual(planConnect("openai", null, { OPENAI_API_KEY: "sk-env" } as NodeJS.ProcessEnv), { kind: "ready", key: "sk-env", source: "env" });
     assert.deepStrictEqual(planConnect("gemini", { providers: { gemini: { apiKey: "g-1" } } } as Partial<AutopilotConfig>, env), { kind: "ready", key: "g-1", source: "config" });
+  });
+});
+
+describe("verifyProvider", () => {
+  it("routes the key-travel warning to the caller's channel without a pre-installed handler", async () => {
+    resetPrivateHttpWarnings();
+    const warnings: string[] = [];
+    const fetchSpy = mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    try {
+      const res = await verifyProvider("custom", "sk-test-key-123", "key", "http://192.168.1.5/v1", (m) => warnings.push(m));
+      assert.strictEqual(res.ok, true);
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0]!, /192\.168\.1\.5/);
+    } finally {
+      fetchSpy.mock.restore();
+    }
   });
 });
 

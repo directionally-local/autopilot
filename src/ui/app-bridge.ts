@@ -66,6 +66,8 @@ export interface AppSnapshot {
   /** Plan/edit/auto modes are on (off by default: every turn is auto). */
   modesEnabled: boolean;
   model: string;
+  /** The host the active provider's key is sent to, for the status line. */
+  providerHost?: string;
   usage: Usage | null;
   sessionUsage: DailyUsage | null;
   /** The model's context window, for the context-used percentage. */
