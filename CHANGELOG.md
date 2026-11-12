@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.22.0](https://github.com/directionally-local/autopilot/compare/v3.21.0...v3.22.0) (2026-11-12)
+
+
+### Features
+
+* two free-tier budgets and the GPT-6 limit's switch to DeepSeek ([#1255](https://github.com/directionally-local/autopilot/issues/1255)) ([36db155](https://github.com/directionally-local/autopilot/commit/36db1551134d6d97414a7090a20a9e9469415a72))
+
 ## [3.21.0](https://github.com/directionally-local/autopilot/compare/v3.20.2...v3.21.0) (2026-11-12)
 
 
