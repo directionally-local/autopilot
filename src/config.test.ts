@@ -101,6 +101,8 @@ describe("loadConfig", () => {
     "AUTOPILOT_AUTO_COMPACT_CAP_TOKENS",
     "KIMIFLARE_AUTO_COMPACT_CAP_TOKENS",
     "AUTOPILOT_DL_FREE_TOKEN",
+    "AUTOPILOT_CODE_MODE",
+    "KIMIFLARE_CODE_MODE",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   let configHome: string;
@@ -162,6 +164,18 @@ describe("loadConfig", () => {
     delete process.env.AUTOPILOT_MEMORY_ENABLED;
     process.env.AUTOPILOT_MEMORY_ENABLED = "1";
     assert.strictEqual((await loadConfig())?.memoryEnabled, true, "env on is an explicit opt-in");
+  });
+
+  it("honors persisted Code Mode off and lets AUTOPILOT_CODE_MODE=0 override on", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    assert.strictEqual((await loadConfig())?.codeMode, true, "default stays on");
+
+    await writeConfigFile({ codeMode: false });
+    assert.strictEqual((await loadConfig())?.codeMode, false, "persisted off binds");
+
+    await writeConfigFile({ codeMode: true });
+    process.env.AUTOPILOT_CODE_MODE = "0";
+    assert.strictEqual((await loadConfig())?.codeMode, false, "env off wins over persisted on");
   });
 
   it("caps compaction thresholds at 150k by default; env/file override, 0 opts out", async () => {
