@@ -16,6 +16,7 @@ import type { AgentCallbacks } from "../agent/loop.js";
 import { statePath } from "../util/app-dirs.js";
 import { createsGhPr } from "../util/pr-footer.js";
 import {
+  DL_DEEPSEEK_MODEL,
   DL_INVITE_BONUS_TOKENS,
   DL_SWITCH_HINT,
   dlCheckout,
@@ -50,6 +51,18 @@ export const DL_CHECKOUT_POLL_MS = 5_000;
 export const DL_CHECKOUT_TIMEOUT_MS = 10 * 60_000;
 
 // ── Copy ─────────────────────────────────────────────────────────────────
+
+/**
+ * The GPT-6 limit (402 gpt_limit): GPT-6's week is used up, DeepSeek's isn't. One line, with the
+ * way on; it resets with the week.
+ */
+export function dlGptLimitTitle(resetsAt: string | undefined, o: DlTimeOpts & { plan?: DlPlan } = {}): string {
+  const free = o.plan === "pro" ? "" : " free";
+  return `You've used this week's GPT-6 allowance (back ${formatLocalTime(resetsAt ?? nextWeekStart(o.now), o)}). DeepSeek V4.1 Flash still has${free} usage this week.`;
+}
+
+/** The GPT-6 limit's first choice: one keypress to DeepSeek and the blocked request goes again. */
+export const DL_SWITCH_DEEPSEEK_LABEL = "Switch to DeepSeek V4.1 Flash and continue";
 
 /** "You've used this week's free usage. It's back Mon 09:00." ("Pro usage" on Pro.) */
 export function dlLimitTitle(resetsAt: string | undefined, o: DlTimeOpts & { plan?: DlPlan } = {}): string {
@@ -88,7 +101,7 @@ export function topupDescription(t: DlTopupOffer): string | undefined {
 /** Said after choosing "Run it on your own GPUs". */
 export const DL_GPU_LINE = "Run it on your own GPUs: `dl model up` serves an open model on this machine's Nvidia GPU and points Autopilot at it.";
 
-export type DlChoice = "pro" | "topup" | "request" | "own-key" | "gpus" | "invite";
+export type DlChoice = "pro" | "topup" | "request" | "own-key" | "gpus" | "invite" | "deepseek";
 export interface DlChoiceOption {
   value: DlChoice;
   label: string;
@@ -118,6 +131,15 @@ export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; 
     if (o.plan !== "pro") out.push({ value: "request", label: "Ask for more free usage", description: "/request" });
     out.push({ value: "own-key", label: "Use your own key", description: "/provider" });
     out.push({ value: "gpus", label: "Run it on your own GPUs", description: "dl model up" });
+    return out;
+  }
+  if (kind === "gpt") {
+    // GPT-6 used up, DeepSeek not: DeepSeek first (Enter), then the paid ways and your own key.
+    out.push({ value: "deepseek", label: DL_SWITCH_DEEPSEEK_LABEL, description: "/model" });
+    const p = proOption("Get dl Pro");
+    if (p) out.push(p);
+    if (isUsdTopup(topup)) out.push(topupOption(topup));
+    out.push({ value: "own-key", label: "Use your own key", description: "/provider" });
     return out;
   }
   if (kind === "queued") {
@@ -202,6 +224,9 @@ export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & {
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     const pro = d.offers?.pro && o.plan !== "pro" ? ` Get dl Pro for ${dlProPrice(d.offers.pro)}: \`${DL_UPGRADE_COMMAND}\`` : "";
     return `${dlLimitTitle(d.resetsAt, o)} To keep going now, use your own key: \`autopilot connect\`.${pro}`;
+  }
+  if (code === "gpt_limit") {
+    return `${dlGptLimitTitle(d.resetsAt, o)} Run with \`-m ${typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL}\` to use it.`;
   }
   if (code === "free_tier_queued") {
     return `${dlQueuePlace(d.position, d.etaAt, o)} Each friend who starts using dl moves you up${link ? `: ${link}` : ""}. Start now: \`${DL_UPGRADE_COMMAND}\`, or your own key: \`autopilot connect\`.`;
@@ -337,6 +362,7 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 /** A screen the session shows: out of tokens, queued, or /upgrade. */
 export type DlScreen =
   | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan }
+  | { kind: "gpt"; resetsAt?: string; alternative: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   | { kind: "queued"; position?: number; etaAt?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   | { kind: "upgrade"; offers: DlOffers; plan?: DlPlan };
 
@@ -346,7 +372,7 @@ export type DlScreen =
  * Esc (the session then says what it always said), or `handled` (nothing
  * more to do).
  */
-export type DlScreenOutcome = "retry" | "own-key" | "request" | "dismissed" | "handled";
+export type DlScreenOutcome = "retry" | "own-key" | "request" | "dismissed" | "handled" | "deepseek";
 
 export interface DlScreenDeps extends PurchaseDeps {
   select: (title: string, options: DlChoiceOption[], subtitle?: string) => Promise<string | null>;
@@ -364,6 +390,10 @@ export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallback
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...common };
   }
+  if (code === "gpt_limit") {
+    const alternative = typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL;
+    return { kind: "gpt", alternative, ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...common };
+  }
   if (code === "free_tier_queued") return { kind: "queued", ...(d.position ? { position: d.position } : {}), ...(d.etaAt ? { etaAt: d.etaAt } : {}), ...common };
   return undefined;
 }
@@ -376,7 +406,9 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
   const title =
     screen.kind === "quota"
       ? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
-      : screen.kind === "queued"
+      : screen.kind === "gpt"
+        ? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
+        : screen.kind === "queued"
         ? dlQueueTitle(screen.position, screen.etaAt, t)
         : "Upgrade Directionally Local";
   const hint = "Enter to choose · Esc to close";
@@ -385,6 +417,7 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
   if (choice === null) return "dismissed";
   if (choice === "own-key") return "own-key";
   if (choice === "request") return "request";
+  if (choice === "deepseek") return "deepseek";
   if (choice === "gpus") {
     deps.say(DL_GPU_LINE);
     return "handled";
@@ -428,6 +461,8 @@ export type DlFollowUp =
   | { kind: "provider-picker" }
   | { kind: "command"; command: string }
   | { kind: "retry"; text: string; display: string }
+  /** Switch to this model, then send the blocked request again (when there is one). */
+  | { kind: "switch-model"; model: string; retry?: { text: string; display: string } }
   | { kind: "none" };
 
 /**
@@ -444,6 +479,7 @@ export function dlScreenFollowUp(
   if (outcome === "own-key") return { kind: "provider-picker" };
   if (outcome === "request") return { kind: "command", command: "/request" };
   if (outcome === "retry" && lastPrompt) return { kind: "retry", ...lastPrompt };
+  if (outcome === "deepseek") return { kind: "switch-model", model: DL_DEEPSEEK_MODEL, ...(lastPrompt ? { retry: lastPrompt } : {}) };
   return { kind: "none" };
 }
 

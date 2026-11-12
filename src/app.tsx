@@ -293,6 +293,8 @@ function App({
   // The free tier's limit / queue / upgrade screen, and what it needs: the
   // prompt to retry once Pro or a top-up is bought, and the error line Esc shows.
   const [dlScreen, setDlScreen] = useState<DlScreen | null>(null);
+  /** A blocked request to send again once the model switch it waits for is in `cfg` (the GPT-6 limit's DeepSeek choice). */
+  const [dlRetryOn, setDlRetryOn] = useState<{ model: string; text: string; display: string } | null>(null);
   const lastTurnPromptRef = useRef<{ text: string; display: string } | null>(null);
   /** Wall-clock end of the last turn — the idle gap before the next turn. */
   const lastTurnEndAtRef = useRef<number | null>(null);
@@ -1797,6 +1799,14 @@ function App({
     [cfg, handleSlash, updateAssistant, updateTool, saveSessionSafe, updateResponseMeta, setShowPlanCompletePicker, runUserShellCommand, ensureTraceStarted, updateTaskTracking],
   );
 
+  // The GPT-6 limit's DeepSeek choice: once `cfg` holds the new model, send the blocked request again.
+  useEffect(() => {
+    if (!dlRetryOn || cfg?.model !== dlRetryOn.model) return;
+    const { text, display } = dlRetryOn;
+    setDlRetryOn(null);
+    void processMessage(text, display, { retry: true });
+  }, [dlRetryOn, cfg?.model, processMessage]);
+
   useEffect(() => {
     if (canDrainQueue({
       busy,
@@ -2235,6 +2245,18 @@ function App({
         else if (next.kind === "command") void handleSlash(next.command);
         // Bought Pro or a top-up: send the blocked request again.
         else if (next.kind === "retry") void processMessage(next.text, next.display, { retry: true });
+        // GPT-6's week used up: switch to DeepSeek, then send the blocked request again on it.
+        else if (next.kind === "switch-model") {
+          const previous = cfg?.model ?? "the current model";
+          setCfg((c) => {
+            if (!c) return c;
+            const updated = pickedModel(c, next.model);
+            void saveConfig(updated).catch(() => {});
+            return updated;
+          });
+          setEvents((es) => [...es, { kind: "info", key: mkKey(), text: `model switched: ${previous} → ${next.model}. Conversation history is kept.` }]);
+          if (next.retry) setDlRetryOn({ model: next.model, ...next.retry });
+        }
       },
       starAskDone: () => setStarAsk(null),
       feedbackDone: (line: FeedbackLine) => {
