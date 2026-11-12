@@ -652,7 +652,7 @@ async function dlCommandDeps(): Promise<import("./dl-commands.js").DlCommandDeps
     print: (line) => console.log(line),
     fetchMe: () => dl.fetchDlMe(),
     copy: (text) => copyWithOsc52(text),
-    checkout: (product) => dl.dlCheckout(product),
+    checkout: (product, quantity) => dl.dlCheckout(product, quantity !== undefined ? { quantity } : {}),
     portal: () => dl.dlBillingPortal(),
     openBrowser: (url) => openBrowser(url),
     ask: tty

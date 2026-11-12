@@ -330,20 +330,22 @@ describe("the /request hint on free tier refusals", () => {
     assert.deepStrictEqual(dlScreenFor("starter_limit", { request: "/v1/access-request" }), { kind: "quota", request: "/v1/access-request" });
   });
 
-  it("basic_limit opens the weekly limit screen, which shows the hint only with `request`", async () => {
+  it("basic_limit opens the weekly limit screen, with asking for more free usage as a choice", async () => {
     assert.deepStrictEqual(dlScreenFor("basic_limit", { request }), { kind: "quota", request });
     assert.deepStrictEqual(dlScreenFor("basic_limit", {}), { kind: "quota" });
     assert.ok(dlHeadlessLine("basic_limit", {})?.length);
     const subtitles: (string | undefined)[] = [];
+    const labels: string[][] = [];
     const screenDeps = {
-      select: async (_t: string, _o: unknown, subtitle?: string) => (subtitles.push(subtitle), null),
+      select: async (_t: string, o: { label: string }[], subtitle?: string) => (subtitles.push(subtitle), labels.push(o.map((x) => x.label)), null),
       copy: () => false,
       now: () => Date.parse("2026-11-10T00:00:00Z"),
       timeZone: "UTC",
     } as unknown as DlScreenDeps;
     await runDlScreen({ kind: "quota", request }, screenDeps);
     await runDlScreen({ kind: "quota" }, screenDeps);
-    assert.deepStrictEqual(subtitles, [`${ACCESS_REQUEST_HINT} · Enter to choose · Esc to close`, "Enter to choose · Esc to close"]);
+    assert.deepStrictEqual(subtitles, ["Enter to choose · Esc to close", "Enter to choose · Esc to close"]);
+    assert.ok(labels.every((l) => l.includes("Ask for more free usage")));
   });
 });
 

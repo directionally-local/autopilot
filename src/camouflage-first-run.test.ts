@@ -132,7 +132,7 @@ describe("first run: one question", () => {
     const lines = said();
     const at = lines.findIndex((l) => l.startsWith("✓ Signed in as @octo"));
     assert.ok(at >= 0);
-    assert.strictEqual(lines[at + 1], "Invite friends and you both get +10M tokens a week: https://dl.new/r/octo42 (/invite)");
+    assert.strictEqual(lines[at + 1], "Your invite link: https://dl.new/r/octo42 (/invite)");
     view.dispose();
   });
 
