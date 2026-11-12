@@ -476,6 +476,11 @@ describe("statusSegments", () => {
     assert.strictEqual(statusSegments(baseSnapshot()).code, "");
   });
 
+  it("shows the provider destination host", () => {
+    assert.strictEqual(statusSegments(baseSnapshot({ providerHost: "api.example.com" })).provider, "api.example.com");
+    assert.strictEqual(statusSegments(baseSnapshot()).provider, "");
+  });
+
   it("shows the memory state: on/off, count, and last write (#1077)", () => {
     assert.strictEqual(statusSegments(baseSnapshot()).memory, "memory off");
     const empty = statusSegments(baseSnapshot({ memoryEnabled: true }));

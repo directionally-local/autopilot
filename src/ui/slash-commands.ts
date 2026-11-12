@@ -883,7 +883,7 @@ const handleKey: Handler = async (ctx, rest) => {
       return true;
     }
     info(`checking key with ${preset.name}…`);
-    const res = await checkProviderKey(id, candidate, active.baseUrl);
+    const res = await checkProviderKey(id, candidate, active.baseUrl, undefined, (m) => info(m));
     if (!res.ok) {
       info(res.reason === "invalid" ? `${preset.name} rejected that key — nothing was saved` : `couldn't verify the key: ${res.message}`, "error");
       return true;
@@ -931,7 +931,7 @@ const handleKey: Handler = async (ctx, rest) => {
     info(parts.join(" · "));
     return true;
   }
-  const res = await checkProviderKey(id, key, active.baseUrl);
+  const res = await checkProviderKey(id, key, active.baseUrl, undefined, (m) => info(m));
   info(res.ok ? `${preset.name} key ${masked} (${source}) · valid` : `${preset.name} key ${masked} (${source}): ${res.message}`, res.ok ? "info" : "error");
   return true;
 };

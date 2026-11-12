@@ -1,9 +1,11 @@
-import { describe, it, before, after, beforeEach } from "node:test";
+import { describe, it, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "./keys.js";
+import { resetPrivateHttpWarnings } from "./resolve.js";
+import { logger } from "../util/logger.js";
 import { loadConfig } from "../config.js";
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -33,6 +35,36 @@ describe("checkProviderKey", () => {
     assert.strictEqual(looksLikeProviderKey("openai", "sk-proj-abc12345"), true);
     const res = await checkProviderKey("openrouter", "sk-proj-abc12345", undefined, (async () => { throw new Error("no request expected"); }) as unknown as typeof fetch);
     assert.ok(!res.ok && res.reason === "format");
+  });
+
+  it("refuses a cleartext setup base URL before any request", async () => {
+    // The stub throws if called: reaching it would surface as a network error,
+    // not the guard's refusal, so the assertion proves the guard fired first.
+    const res = await checkProviderKey("custom", "sk-test-key-123", "http://example.com/v1", (async () => {
+      throw new Error("no request expected");
+    }) as unknown as typeof fetch);
+    assert.ok(!res.ok && res.reason === "http");
+    assert.match(res.message, /base URL must use https \(got http:\/\/example\.com\)/);
+  });
+
+  it("accepts a private setup base URL and warns on the caller's channel when a key travels", async () => {
+    resetPrivateHttpWarnings();
+    const warnings: string[] = [];
+    const spy = mock.method(logger, "warn");
+    let called = false;
+    try {
+      const res = await checkProviderKey("custom", "sk-test-key-123", "http://192.168.1.5/v1", (async () => {
+        called = true;
+        return json(200, { data: [] });
+      }) as unknown as typeof fetch, (m) => warnings.push(m));
+      assert.deepStrictEqual(res, { ok: true });
+      assert.ok(called, "the request ran (the guard accepted the private host)");
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0]!, /192\.168\.1\.5/);
+      assert.strictEqual(spy.mock.calls.filter((c) => c.arguments[0] === "provider:http_key_travel").length, 1, "the logger record is secondary");
+    } finally {
+      spy.mock.restore();
+    }
   });
 });
 

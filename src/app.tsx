@@ -84,6 +84,7 @@ import { isExitCommand } from "./ui/exit-command.js";
 import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
 import { switchedMessage } from "./providers/connect.js";
+import { providerDestinationLabel, resolveActiveProvider } from "./providers/resolve.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt } from "./hooks/prompt-submit.js";
 import type { ProviderId } from "./providers/presets.js";
@@ -560,7 +561,7 @@ function App({
       const ctrl = new AbortController();
       tourAbortRef.current = ctrl;
       const info = (text: string) => setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
-      void buildTour({ cwd: process.cwd(), force, enabled: cfg.projectTour !== false, ask: tourAskModel(cfg), signal: ctrl.signal })
+      void buildTour({ cwd: process.cwd(), force, enabled: cfg.projectTour !== false, ask: tourAskModel(cfg), signal: ctrl.signal, providerHost: cfg ? providerDestinationLabel(resolveActiveProvider(cfg)) : undefined })
         .then((r) => {
           if (ctrl.signal.aborted) return;
           tourAbortRef.current = null;
@@ -2290,6 +2291,7 @@ function App({
       workers: runningSubagents,
       mode,
       model: cfg?.model ?? "",
+      providerHost: cfg ? providerDestinationLabel(resolveActiveProvider(cfg)) : "",
       usage,
       sessionUsage,
       contextLimit: modelContextLimit,
