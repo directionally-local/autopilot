@@ -64,11 +64,10 @@ describe("resolveActiveProvider", () => {
     assert.ok(isProviderUsable(p), "Ollama needs no key");
   });
 
-  it("refuses a cleartext base URL to a LAN host (the documented trade-off)", () => {
-    assert.throws(
-      () => resolveActiveProvider({ provider: "ollama", providers: { ollama: { baseUrl: "http://gpu-box:11434/v1" } } }, {}),
-      /base URL must use https \(got http:\/\/gpu-box:11434\)/,
-    );
+  it("accepts a dotless LAN host for Ollama", () => {
+    const p = resolveActiveProvider({ provider: "ollama", providers: { ollama: { baseUrl: "http://gpu-box:11434/v1" } } }, {});
+    assert.strictEqual(p.baseUrl, "http://gpu-box:11434/v1");
+    assert.strictEqual(p.baseUrlRefusal, undefined);
   });
 
   it("routes a preset through AUTOPILOT_BASE_URL when AUTOPILOT_PROVIDER names it (a gateway in front of the provider)", () => {
@@ -100,11 +99,11 @@ describe("base URL scheme guard (T3-F2 re-scope)", () => {
     }
   });
 
-  it("refuses http to a non-loopback host and names it", () => {
-    assert.throws(
-      () => resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://example.com/v1", AUTOPILOT_API_KEY: "k" }),
-      /base URL must use https \(got http:\/\/example\.com\)/,
-    );
+  it("marks public http for request-time refusal without throwing from resolution", () => {
+    const p = resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://example.com/v1", AUTOPILOT_API_KEY: "k" });
+    assert.strictEqual(p.baseUrl, "http://example.com/v1");
+    assert.strictEqual(p.baseUrlRefusal, "base URL must use https (got http://example.com) — use https or an ssh tunnel to 127.0.0.1");
+    assert.strictEqual(providerDestinationLabel(p), "example.com");
   });
 
   it("does not allowlist hosts: any https host is accepted", () => {
@@ -113,11 +112,7 @@ describe("base URL scheme guard (T3-F2 re-scope)", () => {
 
   it("does not treat a 127.* DNS name as loopback (T1-01)", () => {
     for (const url of ["http://127.0.0.1.evil.com/v1", "http://127.1.evil.com/v1"]) {
-      assert.throws(
-        () => resolveActiveProvider(null, { AUTOPILOT_BASE_URL: url, AUTOPILOT_API_KEY: "k" }),
-        /base URL must use https/,
-        url,
-      );
+      assert.match(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: url, AUTOPILOT_API_KEY: "k" }).baseUrlRefusal ?? "", /base URL must use https/, url);
     }
   });
 
@@ -143,6 +138,7 @@ describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)"
   it("accepts http to each private range", () => {
     for (const url of ["http://192.168.1.5/v1", "http://10.0.0.7/v1", "http://172.16.0.9/v1", "http://100.64.1.2/v1"]) {
       assert.strictEqual(resolve(url).baseUrl, url, url);
+      assert.strictEqual(resolve(url).baseUrlRefusal, undefined, url);
     }
   });
 
@@ -150,7 +146,8 @@ describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)"
     const accepted = ["http://172.16.255.255/v1", "http://172.31.255.255/v1", "http://100.64.0.0/v1", "http://100.127.255.255/v1", "http://192.168.255.255/v1", "http://10.255.255.255/v1"];
     for (const url of accepted) assert.strictEqual(resolve(url).baseUrl, url, url);
     const refused = ["http://172.15.0.1/v1", "http://172.32.0.1/v1", "http://100.128.0.1/v1", "http://192.169.0.1/v1", "http://11.0.0.1/v1"];
-    for (const url of refused) assert.throws(() => resolve(url), /base URL must use https/, url);
+    for (const url of refused) assert.match(resolve(url).baseUrlRefusal ?? "", /base URL must use https/, url);
+    for (const url of accepted) assert.strictEqual(resolve(url).baseUrlRefusal, undefined, url);
   });
 
   it("accepts .local names, case-insensitively", () => {
@@ -159,8 +156,34 @@ describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)"
     }
   });
 
-  it("still refuses a dotless bare hostname (the ruling names .local only)", () => {
-    assert.throws(() => resolve("http://gpu-box:11434/v1"), /base URL must use https \(got http:\/\/gpu-box:11434\)/);
+  it("accepts IPv6 ULA and link-local, stripping brackets and respecting boundaries", () => {
+    for (const host of ["fc00::1", "fd00::1", "fdff:ffff::1", "fe80::1", "febf:ffff::1"]) {
+      const url = `http://[${host}]:11434/v1`;
+      assert.strictEqual(classifyHttpHost(`[${host}]`), "private", host);
+      assert.strictEqual(resolve(url).baseUrlRefusal, undefined, host);
+    }
+    for (const host of ["fbff::1", "fe00::1", "fe7f::1", "fec0::1", "2001:db8::1", "::"]) {
+      assert.strictEqual(classifyHttpHost(host), "public", host);
+      assert.match(resolve(`http://[${host}]/v1`).baseUrlRefusal ?? "", /base URL must use https/, host);
+    }
+  });
+
+  it("accepts dotless names with a once-per-host key warning, not dotted public names", () => {
+    resetPrivateHttpWarnings();
+    const warnings: string[] = [];
+    setPrivateHttpWarningHandler((message) => warnings.push(message));
+    try {
+      assert.strictEqual(resolve("http://gpu-box:11434/v1", "").baseUrlRefusal, undefined);
+      assert.strictEqual(warnings.length, 0);
+      assert.strictEqual(resolve("http://gpu-box:11434/v1").baseUrlRefusal, undefined);
+      resolve("http://GPU-BOX:11434/v1");
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0]!, /gpu-box/);
+      assert.match(resolve("http://gpu-box.example.com/v1").baseUrlRefusal ?? "", /base URL must use https/);
+    } finally {
+      setPrivateHttpWarningHandler(undefined);
+      resetPrivateHttpWarnings();
+    }
   });
 
   it("warns once per host on the user-visible channel when a key travels, and stays silent without one", () => {
@@ -183,6 +206,26 @@ describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)"
     } finally {
       spy.mock.restore();
       setPrivateHttpWarningHandler(undefined);
+    }
+  });
+
+  it("keeps warnings pending without a visible channel, including when a channel throws", () => {
+    resetPrivateHttpWarnings();
+    setPrivateHttpWarningHandler(undefined);
+    const warnings: string[] = [];
+    try {
+      resolve("http://192.168.1.5/v1");
+      resolve("http://192.168.1.5/v1");
+      setPrivateHttpWarningHandler(() => { throw new Error("channel unavailable"); });
+      assert.throws(() => resolve("http://192.168.1.5/v1"), /channel unavailable/);
+      setPrivateHttpWarningHandler((message) => warnings.push(message));
+      resolve("http://192.168.1.5/v1");
+      resolve("http://192.168.1.5/v1");
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0]!, /192\.168\.1\.5/);
+    } finally {
+      setPrivateHttpWarningHandler(undefined);
+      resetPrivateHttpWarnings();
     }
   });
 

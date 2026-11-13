@@ -1,9 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
+import { configPath, loadConfig } from "../config.js";
 import { assembleTurn, describeSubagentGuidance, lastUserText, resolveTurnPolicy } from "./session-core.js";
-import { resetPrivateHttpWarnings } from "../providers/resolve.js";
+import { resetPrivateHttpWarnings, setPrivateHttpWarningHandler } from "../providers/resolve.js";
 import type { ToolSpec } from "../tools/registry.js";
 
 const tool = (name: string): ToolSpec => ({ name, description: name, parameters: { type: "object" }, needsPermission: false, run: async () => "" });
@@ -96,19 +98,48 @@ describe("assembleTurn", () => {
     assert.deepStrictEqual(opts.tools.map((t) => t.name), ["read"]);
   });
 
-  it("routes the key-travel warning to the host's onWarning channel", async () => {
-    const cfg = { provider: "custom" as const, baseUrl: "http://192.168.1.5/v1", apiKey: "k", model: "m" };
-    const policy = await resolveTurnPolicy({ cfg, prompt: "hi", tools: TOOLS });
-    resetPrivateHttpWarnings();
-    const warnings: string[] = [];
-    assembleTurn({
-      cfg,
-      policy,
-      host: { model: "m", messages: [], executor: {} as never, cwd: "/tmp", signal: new AbortController().signal, callbacks: { askPermission: async () => "allow", onWarning: (m) => warnings.push(m) } },
+  for (const hostname of ["192.168.1.5", "gpu-box"]) {
+    it(`delivers exactly one warning for saved keyed ${hostname}: loadConfig → resolveTurnPolicy → assembleTurn`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "ap-private-http-lifecycle-"));
+      const savedEnv = { ...process.env };
+      resetPrivateHttpWarnings();
+      setPrivateHttpWarningHandler(undefined);
+      const warnings: string[] = [];
+      try {
+        for (const key of Object.keys(process.env)) {
+          if (/^(AUTOPILOT_|KIMIFLARE_|KIMI_|OPENROUTER_API_KEY$|REQUESTY_API_KEY$)/.test(key)) delete process.env[key];
+        }
+        process.env.XDG_CONFIG_HOME = join(root, "config");
+        process.env.XDG_STATE_HOME = join(root, "state");
+        process.env.XDG_DATA_HOME = join(root, "data");
+        await mkdir(dirname(configPath()), { recursive: true });
+        await writeFile(configPath(), JSON.stringify({ provider: "custom", baseUrl: `http://${hostname}/v1`, apiKey: "test-only", model: "m" }));
+
+        const cfg = await loadConfig();
+        assert.ok(cfg, "the saved keyed endpoint loads");
+        const policy = await resolveTurnPolicy({ cfg, prompt: "hi", tools: TOOLS });
+        assert.strictEqual(warnings.length, 0, "startup has not installed a visible channel yet");
+        // No warning reset between production stages: startup must not consume delivery.
+        const turn = {
+          cfg, policy,
+          host: { model: "m", messages: [], executor: {} as never, cwd: root, signal: new AbortController().signal, callbacks: { askPermission: async () => "allow" as const, onWarning: (m: string) => warnings.push(m) } },
+        };
+        assembleTurn(turn);
+        assert.strictEqual(warnings.length, 1, "first turn delivers the pending warning");
+        assert.ok(warnings[0]!.includes(hostname));
+        assert.match(warnings[0]!, /API key over cleartext http/);
+        const nextPolicy = await resolveTurnPolicy({ cfg, prompt: "hi again", tools: TOOLS });
+        assembleTurn({ ...turn, policy: nextPolicy });
+        assert.strictEqual(warnings.length, 1, "later policy and turn resolution do not repeat delivery");
+      } finally {
+        setPrivateHttpWarningHandler(undefined);
+        resetPrivateHttpWarnings();
+        for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+        Object.assign(process.env, savedEnv);
+        await rm(root, { recursive: true, force: true });
+      }
     });
-    assert.strictEqual(warnings.length, 1);
-    assert.match(warnings[0]!, /192\.168\.1\.5/);
-  });
+  }
 
   it("routes light turns to the configured fast model, but never past a host-picked model", async () => {
     const cfg = { ...deepseek, subagentPolicy: "off" as const, modelRouting: { light: "deepseek-flash" } };
