@@ -106,11 +106,18 @@ describe("request body per provider", () => {
         tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }],
       },
       { role: "tool", tool_call_id: "call_1", content: "file" },
+      {
+        role: "assistant", content: null,
+        reasoning_details: [{ type: "reasoning.encrypted", data: "opaque" }],
+        tool_calls: [{ id: "call_2", type: "function", function: { name: "read", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call_2", content: "file" },
     ];
     const { body } = await send("directionally-local", "deepseek/deepseek-v4.1-flash-1017", undefined, messages);
     const sent = body.messages as ChatMessage[];
     const toolCallAssistants = sent.filter((m) => m.role === "assistant" && (m.tool_calls?.length ?? 0) > 0);
-    assert.ok(toolCallAssistants.length > 0, "request carries a tool-call assistant turn");
+    assert.strictEqual(toolCallAssistants.length, 2);
+    assert.deepStrictEqual(toolCallAssistants.map((m) => m.reasoning_content), ["why", ""]);
     for (const m of toolCallAssistants) {
       assert.ok("reasoning_content" in m, "tool-call assistant message carries reasoning_content");
     }
@@ -175,12 +182,17 @@ describe("stripReasoningEcho", () => {
       {
         role: "assistant",
         content: null,
-        reasoning_details: [{ type: "reasoning.text", text: "why" }],
+        reasoning_details: [
+          { type: "reasoning.text", text: "why" },
+          { type: "reasoning.encrypted", data: "opaque" },
+          { type: "reasoning.summary", summary: " then how" },
+        ],
         tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
       },
     ];
     const out = stripReasoningEcho(messages, PROVIDER_PRESETS["directionally-local"].compat);
-    assert.strictEqual(out[0]!.reasoning_content, "why");
+    assert.strictEqual(out[0]!.reasoning_content, "why then how");
+    assert.strictEqual("reasoning_content" in messages[0]!, false, "history is not mutated");
   });
 
   it("synthesizes an empty reasoning_content when details carry no text (DL compat)", () => {
@@ -194,6 +206,18 @@ describe("stripReasoningEcho", () => {
     ];
     const out = stripReasoningEcho(messages, PROVIDER_PRESETS["directionally-local"].compat);
     assert.strictEqual(out[0]!.reasoning_content, "");
+  });
+
+  it("preserves an existing reasoning_content instead of replacing it with details", () => {
+    for (const content of ["original", ""]) {
+      const messages: ChatMessage[] = [{
+        role: "assistant", content: null, reasoning_content: content,
+        reasoning_details: [{ type: "reasoning.text", text: "different" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      }];
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS["directionally-local"].compat);
+      assert.strictEqual(out[0]!.reasoning_content, content);
+    }
   });
 
   it("does not add reasoning_content to tool-call-free assistant turns", () => {

@@ -1,4 +1,25 @@
 import type { ChatMessage } from "./messages.js";
+import type { ProviderCompat } from "../providers/presets.js";
+import { readEnv, type EnvLike } from "../util/env.js";
+
+/** One gate per process: echoing presets ignore the opt-in and warn only once. */
+export function createReasoningStripGate() {
+  let warned = false;
+  return (
+    compat: ProviderCompat,
+    onWarning: (message: string) => void = console.warn,
+    env: EnvLike = process.env,
+  ): boolean => {
+    const requested = (readEnv("STRIP_REASONING", env) ?? env.STRIP_REASONING) === "1";
+    if (!requested) return false;
+    if (!compat.reasoningEcho.content) return true;
+    if (!warned) {
+      warned = true;
+      onWarning("STRIP_REASONING=1 is ignored: this provider requires reasoning_content on tool-call turns.");
+    }
+    return false;
+  };
+}
 
 export interface StripReasoningOpts {
   /** Number of most-recent assistant messages to preserve reasoning on. Default 1. */
