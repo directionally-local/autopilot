@@ -51,6 +51,7 @@ import type { UpdateCheckResult } from "./util/update-check.js";
 import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, pickedModel, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, startMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
+import { resolveTurnCodeMode } from "./agent/turn-code-mode.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
 import { getMemoryDb } from "./memory/db.js";
 import {
@@ -1445,7 +1446,7 @@ function App({
       }
 
       const reasoningEffort = turnReasoningEffort(classification.tier, overrideEffort, effortRef.current);
-      const effectiveCodeMode = classification.tier === "heavy";
+      const effectiveCodeMode = resolveTurnCodeMode(cfg?.codeMode, classification.tier);
       setCodeMode(effectiveCodeMode);
 
       const turnScope = sessionScopeRef.current.createChild();
