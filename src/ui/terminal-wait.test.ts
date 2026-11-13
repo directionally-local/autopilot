@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { EventEmitter } from "node:events";
-import { isCancelKey, readKeyWithoutInput, waitWithoutInput } from "./terminal-wait.js";
+import { isCancelKey, readKeyWithoutInput, screenWithoutInput, waitWithoutInput } from "./terminal-wait.js";
 
 function fakeIo(tty = true) {
   const stdin = Object.assign(new EventEmitter(), {
@@ -89,5 +89,39 @@ describe("textRows", () => {
     assert.strictEqual(textRows("x".repeat(80), 80), 1);
     assert.strictEqual(textRows(`${"x".repeat(81)}\nwaiting`, 80), 3);
     assert.strictEqual(textRows("\n", 80), 2);
+  });
+});
+
+describe("screenWithoutInput", () => {
+  it("redraws over the last screen on each key, then erases it and gives the terminal back", async () => {
+    const { io, stdin, written } = fakeIo();
+    (io.stdout as unknown as { columns: number }).columns = 80;
+    const calls: string[] = [];
+    let page = 0;
+    const done = screenWithoutInput(
+      () => `\x1b[1mpage ${page}\x1b[22m\nbody\n\nfooter`,
+      (k) => {
+        if (k === "q") return true;
+        page++;
+        return false;
+      },
+      { suspend: async () => (calls.push("suspend"), true), resume: () => calls.push("resume") },
+      io,
+    );
+    await new Promise((r) => setImmediate(r));
+    assert.ok(written.join("").includes("page 0"));
+    stdin.emit("data", Buffer.from("l"));
+    // Four rows drawn (styling takes no columns): up three, clear, draw the next page.
+    assert.ok(written.at(-1)!.startsWith("\r\x1b[3A\x1b[J"), JSON.stringify(written.at(-1)));
+    assert.ok(written.at(-1)!.includes("page 1"));
+    stdin.emit("data", Buffer.from("q"));
+    assert.strictEqual(await done, true);
+    assert.strictEqual(written.at(-1), "\r\x1b[3A\x1b[J", "erased: nothing is left printed");
+    assert.deepStrictEqual(calls, ["suspend", "resume"]);
+    assert.strictEqual(stdin.listenerCount("data"), 0);
+  });
+
+  it("is false when the terminal can't be lent", async () => {
+    assert.strictEqual(await screenWithoutInput(() => "x", () => true, { suspend: async () => true, resume: () => undefined }, fakeIo(false).io), false);
   });
 });

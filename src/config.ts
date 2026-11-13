@@ -203,7 +203,7 @@ export interface AutopilotConfig {
    *  (see `tuiMemoryEnabled`), while SDK/print/remote sessions stay
    *  opt-in. Set explicitly with `/memory on|off` or AUTOPILOT_MEMORY_ENABLED. */
   memoryEnabled?: boolean;
-  /** The TUI showed the first-run memory disclosure (one-time notice). */
+  /** Older versions showed a one-time memory disclosure at startup and set this; unused now (/memory and /tour explain memory). */
   memoryDisclosureShown?: boolean;
   /** Path to memory database. Defaults to .autopilot/memory.db in repo root (an existing .kimiflare/memory.db is still used), or ~/.local/share/autopilot/memory.db. */
   memoryDbPath?: string;
@@ -242,7 +242,7 @@ export interface AutopilotConfig {
   costAttribution?: boolean;
   /** Enable @ file mention picker in chat input. Default: true. */
   filePicker?: boolean;
-  /** Show the project summary and three starter tasks on the first session in a git repository (and on /tour). Default: true. Env: AUTOPILOT_PROJECT_TOUR. */
+  /** Show the project summary and three starter tasks on the first session in a git repository (/ideas shows them any time). Default: false. Env: AUTOPILOT_PROJECT_TOUR. */
   projectTour?: boolean;
   /** On macOS, bring the terminal running Autopilot back to the front when a browser sign-in completes. Default: true. Env: AUTOPILOT_REFOCUS_TERMINAL. */
   refocusTerminal?: boolean;
@@ -553,7 +553,7 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     lspServers: persisted.lspServers,
     costAttribution: parseBooleanEnv(process.env.KIMI_COST_ATTRIBUTION) ?? persisted.costAttribution ?? true,
     filePicker: readBooleanEnv("FILE_PICKER") ?? persisted.filePicker ?? true,
-    projectTour: readBooleanEnv("PROJECT_TOUR") ?? persisted.projectTour ?? true,
+    projectTour: readBooleanEnv("PROJECT_TOUR") ?? persisted.projectTour ?? false,
     refocusTerminal: readBooleanEnv("REFOCUS_TERMINAL") ?? persisted.refocusTerminal ?? true,
     prFooter: readBooleanEnv("PR_FOOTER") ?? persisted.prFooter ?? true,
     inviteTip: persisted.inviteTip ?? true,

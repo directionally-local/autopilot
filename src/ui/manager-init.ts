@@ -35,6 +35,12 @@ interface CommonDeps {
   modeRef: React.MutableRefObject<Mode>;
   mcpToolsRef: React.MutableRefObject<ToolSpec[]>;
   lspToolsRef: React.MutableRefObject<ToolSpec[]>;
+  /**
+   * Say when it's ready ("MCP connected — …", "LSP ready — …"). Off at
+   * startup, which stays quiet (/mcp list and /lsp list show them); on for
+   * /mcp reload and /lsp reload. Failures are always said.
+   */
+  announce?: boolean;
 }
 
 export interface InitMcpDeps extends CommonDeps {
@@ -124,7 +130,7 @@ export async function initMcp(deps: InitMcpDeps): Promise<void> {
         }),
       };
     }
-    if (totalTools > 0) {
+    if (totalTools > 0 && deps.announce !== false) {
       setEvents((e) => [
         ...e,
         {
@@ -182,7 +188,7 @@ export async function initLsp(deps: InitLspDeps): Promise<void> {
     if (lspInitRef.current) return;
     if (!cfg.lspEnabled) {
       return;
-    } else if (!cfg.lspServers || Object.keys(cfg.lspServers).length === 0) {
+    } else if ((!cfg.lspServers || Object.keys(cfg.lspServers).length === 0) && deps.announce !== false) {
       setEvents((es) => [
         ...es,
         { kind: "info", key: mkKey(), text: "LSP reload complete — no servers configured." },
@@ -238,10 +244,12 @@ export async function initLsp(deps: InitLspDeps): Promise<void> {
         }),
       };
     }
-    setEvents((e) => [
-      ...e,
-      { kind: "info", key: mkKey(), text: `LSP ready — ${totalServers} server${totalServers === 1 ? "" : "s"} active` },
-    ]);
+    if (deps.announce !== false) {
+      setEvents((e) => [
+        ...e,
+        { kind: "info", key: mkKey(), text: `LSP ready — ${totalServers} server${totalServers === 1 ? "" : "s"} active` },
+      ]);
+    }
   } else {
     setEvents((e) => [
       ...e,

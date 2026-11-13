@@ -141,7 +141,8 @@ export const CATEGORIES: Category[] = [
     label: "Config",
     commands: [
       { command: "/init", description: "scan this repo and write an AGENTS.md" },
-      { command: "/tour", description: "summarize this project and suggest three tasks to start with" },
+      { command: "/tour", description: "a quick tour of what's different about dl" },
+      { command: "/ideas", description: "summarize this project and suggest three tasks to start with" },
       { command: "/setup-import", description: "show what's used from your other coding agents (CLAUDE.md, MCP servers, …)" },
       { command: "/settings", description: "show feature settings" },
       { command: "/settings pr-footer off", description: "stop ending the agent's pull requests with \"Opened with dl\"" },

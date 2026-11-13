@@ -164,8 +164,10 @@ export interface SlashContext {
   initMcp: () => Promise<void> | void;
   initLsp: () => Promise<void> | void;
   ensureSessionId: () => unknown;
-  /** Show the project tour now (`/tour`), even if it was shown before or is turned off. */
+  /** Show the project summary and starter tasks now (`/ideas`), even if shown before or turned off. */
   startTour?: (force: boolean) => void;
+  /** Open the product tour (`/tour`): the view runs it (ui/product-tour.ts). */
+  openProductTour?: () => void;
 
   // Refs
   lspManagerRef: React.MutableRefObject<LspManager>;
@@ -796,9 +798,9 @@ const SETTINGS: Record<string, { key: "modesEnabled" | "postEditDiagnostics" | "
     key: "postEditDiagnostics",
     describe: "append LSP/syntax diagnostics to edit and write results",
   },
-  tour: {
+  ideas: {
     key: "projectTour",
-    describe: "project summary and three starter tasks on a repository's first session (/tour any time)",
+    describe: "project summary and three starter tasks on a repository's first session (off by default; /ideas any time)",
   },
   refocus: {
     key: "refocusTerminal",
@@ -854,9 +856,16 @@ const handleSettings: Handler = (ctx, rest) => {
   return true;
 };
 
-/** /tour — the project summary and three starter tasks, again. */
-const handleTour: Handler = (ctx) => {
+/** /ideas — the project summary and three starter tasks. */
+const handleIdeas: Handler = (ctx) => {
   if (ctx.startTour) ctx.startTour(true);
+  else ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text: "/ideas isn't available in this session." }]);
+  return true;
+};
+
+/** /tour — a step-by-step tour of what's different about dl (ui/product-tour.ts). */
+const handleTour: Handler = (ctx) => {
+  if (ctx.openProductTour) ctx.openProductTour();
   else ctx.setEvents((e) => [...e, { kind: "info", key: ctx.mkKey(), text: "/tour isn't available in this session." }]);
   return true;
 };
@@ -2207,6 +2216,7 @@ const handlers: Record<string, Handler> = {
   "/provider": handleProvider,
   "/settings": handleSettings,
   "/tour": handleTour,
+  "/ideas": handleIdeas,
   "/mode": handleMode,
   "/plan": handlePlan,
   "/auto": handleAuto,

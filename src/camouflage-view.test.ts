@@ -829,3 +829,24 @@ describe("Camouflage GitHub access at the first pull request", () => {
     view.dispose();
   });
 });
+
+describe("Camouflage /tour", () => {
+  it("waits for the turn, steps through lists where the terminal can't be lent, closes quietly and remembers it was opened", async () => {
+    const { productTourSeen } = await import("./ui/product-tour.js");
+    const { view, sent, prompts, calls } = await fakeView({ select: ["next", "back", null] });
+    view.sync(baseSnapshot({ productTour: true, turnRunning: true }));
+    await settle();
+    assert.strictEqual(prompts.length, 0, "not while a turn runs");
+    view.sync(baseSnapshot({ productTour: true }));
+    await settle();
+    const titles = prompts.map((p) => String(p.payload.prompt));
+    assert.strictEqual(titles.length, 3);
+    assert.match(titles[0]!, /^what autopilot is · 1 of 7$/);
+    assert.match(titles[1]!, /^the free tier and models · 2 of 7$/);
+    assert.match(titles[2]!, /· 1 of 7$/);
+    assert.deepStrictEqual(calls, [["productTourDone", undefined]]);
+    assert.ok(!sent.some((s) => s.type === "RuntimeError" || s.type === "Splash"), "nothing printed on close");
+    assert.strictEqual(await productTourSeen(), true);
+    view.dispose();
+  });
+});

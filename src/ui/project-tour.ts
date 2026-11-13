@@ -16,7 +16,8 @@
  * it fails or is slow, local suggestions are shown instead.
  *
  * Shown once per project — remembered in Autopilot's state directory, never
- * in the repo — and again on `/tour`. `/settings tour off` turns it off.
+ * in the repo — and again on `/ideas`. Off by default (`/settings ideas on`
+ * turns it on); `/tour` is the product tour (ui/product-tour.ts).
  */
 
 import { execFile } from "node:child_process";
@@ -398,7 +399,7 @@ export function summaryLine(f: ProjectFacts): string {
 /** The tour as printed: summary, three numbered tasks, how to pick. */
 export function renderTour(f: ProjectFacts, tasks: string[], o: { firstTime?: boolean } = {}): string {
   const lines = [`  ${summaryLine(f)}`, ...tasks.map((t, i) => `  ${i + 1}  ${t}`), `  ${TOUR_PROMPT}`];
-  if (o.firstTime) lines.push("  /tour shows this again · /settings tour off turns it off");
+  if (o.firstTime) lines.push("  /ideas shows this again · /settings ideas off turns it off");
   return lines.join("\n");
 }
 
@@ -447,9 +448,9 @@ export async function markTourShown(root: string, file = tourStatePath(), now = 
 
 export interface TourDeps {
   cwd: string;
-  /** `/tour`: show it even when already shown or turned off. */
+  /** `/ideas`: show it even when already shown or turned off. */
   force?: boolean;
-  /** The projectTour setting (default on). */
+  /** The projectTour setting (default off). */
   enabled: boolean;
   ask: AskModel | null;
   /** Aborted when the person types before the tour is ready: nothing is shown then. */
