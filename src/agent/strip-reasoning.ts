@@ -1,4 +1,25 @@
 import type { ChatMessage } from "./messages.js";
+import type { ProviderCompat } from "../providers/presets.js";
+import { readEnv, type EnvLike } from "../util/env.js";
+
+/** One gate per process: echoing presets ignore the opt-in and warn only once. */
+export function createReasoningStripGate() {
+  let warned = false;
+  return (
+    compat: ProviderCompat,
+    onWarning: (message: string) => void = console.warn,
+    env: EnvLike = process.env,
+  ): boolean => {
+    const requested = (readEnv("STRIP_REASONING", env) ?? env.STRIP_REASONING) === "1";
+    if (!requested) return false;
+    if (!compat.reasoningEcho.content) return true;
+    if (!warned) {
+      warned = true;
+      onWarning("STRIP_REASONING=1 is ignored: this provider requires reasoning_content on tool-call turns.");
+    }
+    return false;
+  };
+}
 
 export interface StripReasoningOpts {
   /** Number of most-recent assistant messages to preserve reasoning on. Default 1. */
@@ -14,10 +35,10 @@ const SUBSTANTIVE_TEXT_THRESHOLD = 200;
  * Rules:
  * - Keep reasoning_content on the N most recent assistant messages (default N=1).
  * - On older assistant messages:
- *   - Delete reasoning_content key entirely.
- *   - If the message has both text content and tool_calls, replace text with "".
- *   - If the message has only text (no tool_calls), preserve it only when text
- *     length > SUBSTANTIVE_TEXT_THRESHOLD chars; otherwise replace with "".
+ *   - Keep reasoning_content on messages that have tool_calls (thinking mode
+ *     requires it on replayed tool-call turns); replace their text with "".
+ *   - On messages without tool_calls, delete reasoning_content and preserve
+ *     text only when it is longer than SUBSTANTIVE_TEXT_THRESHOLD chars.
  * - tool, system, and user messages are never modified.
  */
 export function stripHistoricalReasoning(
@@ -46,10 +67,8 @@ export function stripHistoricalReasoning(
 
     const next: ChatMessage = { ...m };
 
-    // Delete reasoning_content entirely.
-    delete (next as unknown as Record<string, unknown>).reasoning_content;
-
-    // Strip narration text when tool_calls are present.
+    // Tool-call turns must keep reasoning_content: DeepSeek/Kimi thinking mode
+    // rejects a replayed tool-call turn without it. Narration text is still stripped.
     if (next.tool_calls && next.tool_calls.length > 0) {
       if (typeof next.content === "string") {
         next.content = "";
@@ -60,6 +79,9 @@ export function stripHistoricalReasoning(
       }
       return next;
     }
+
+    // Delete reasoning_content entirely on non-tool-call turns.
+    delete (next as unknown as Record<string, unknown>).reasoning_content;
 
     // No tool_calls — decide whether text is substantive.
     const textLen =

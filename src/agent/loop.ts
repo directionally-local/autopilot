@@ -20,7 +20,7 @@ import type { HybridResult } from "../memory/schema.js";
 import { hasRecalledMemory } from "../memory/recall-inject.js";
 import { logTurnDebug, logTurnOutcome, analyzePrompt, type TurnOutcome } from "../cost-debug.js";
 import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extractors.js";
-import { stripHistoricalReasoning } from "./strip-reasoning.js";
+import { createReasoningStripGate, stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
 import type { SandboxReadCursor } from "../code-mode/index.js";
 import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
@@ -49,6 +49,8 @@ import { readEnv } from "../util/env.js";
 import type { GithubAccessAsker } from "../github-access.js";
 import { isTransientModelError, ModelHostError, modelRetryCount, modelRetryDelay, modelRetryLine, retryAfterOf, shouldRetryModelCall, type ModelRetryInfo } from "./model-retry.js";
 import { DL_PROVIDER_ID } from "../providers/directionally-local.js";
+
+const shouldStripReasoning = createReasoningStripGate();
 
 export interface AgentCallbacks {
   onAssistantStart?: () => void;
@@ -975,7 +977,10 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     tr.partialText = "";
     opts.callbacks.onAssistantStart?.();
 
-    const stripReasoning = readEnv("STRIP_REASONING") === "1";
+    const stripReasoning = shouldStripReasoning(
+      providerPresetOf(llmAuthOf(opts)).compat,
+      opts.callbacks.onWarning,
+    );
     const shadowStrip = readEnv("SHADOW_STRIP") === "1";
     const keepLastRaw = readEnv("REASONING_KEEP_LAST");
     const keepLast = keepLastRaw ? parseInt(keepLastRaw, 10) : 1;
