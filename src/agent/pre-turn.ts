@@ -164,6 +164,7 @@ export async function prepareTurn(opts: AgentTurnOpts): Promise<PreTurnResult> {
           mode: opts.mode,
           skillContext: skillResult.skillContext,
           preferPullRequests: opts.preferPullRequests,
+          ...(opts.headless ? { headless: true } : {}),
         }),
       };
     } else {
@@ -176,6 +177,7 @@ export async function prepareTurn(opts: AgentTurnOpts): Promise<PreTurnResult> {
           mode: opts.mode,
           skillContext: skillResult.skillContext,
           preferPullRequests: opts.preferPullRequests,
+          ...(opts.headless ? { headless: true } : {}),
         }),
       };
     }

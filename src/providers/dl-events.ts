@@ -7,7 +7,7 @@
  * contract's allowlist (turns, toolCalls, durationMs, model, provider,
  * exitReason, errorCode, autopilotVersion, os, repoHash). Never prompts,
  * completions, code, file paths or file contents; the repository is a
- * sha256 of its remote URL.
+ * SHA-256 of the canonical remote identity, not the URL.
  *
  * Delivery is batched and fire-and-forget: events queue in memory, a short
  * unref'd timer (or session end, or shutdown) posts them to /v1/events, one
@@ -87,9 +87,43 @@ export function sanitizeProps(props: Record<string, unknown>): DlEventProps {
   return out as DlEventProps;
 }
 
-/** sha256 of the remote URL (never the URL itself). */
+/**
+ * Canonicalize a Git remote to its repository identity before hashing. This
+ * makes SSH/HTTPS and credential-bearing URLs for the same repo correlate,
+ * without sending the URL or its embedded credentials.
+ */
+function canonicalRemote(url: string): string {
+  const raw = url.trim();
+  let host: string;
+  let path: string;
+
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:", "ssh:", "git+ssh:", "git:"].includes(parsed.protocol)) return raw;
+    host = parsed.hostname.toLowerCase();
+    // Default ports and transport are not part of a repository's identity.
+    const port = parsed.port && !((parsed.protocol === "https:" && parsed.port === "443") || (parsed.protocol === "http:" && parsed.port === "80") || ((parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:") && parsed.port === "22"))
+      ? `:${parsed.port}`
+      : "";
+    host += port;
+    path = parsed.pathname;
+  } catch {
+    // Git's scp-like form (git@host:owner/repo.git) is not a URL. Don't
+    // reinterpret a malformed URI's scheme colon as an scp-style separator.
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw)) return raw;
+    const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(raw);
+    if (!scp) return raw;
+    host = scp[1]!.toLowerCase();
+    path = scp[2]!;
+  }
+
+  path = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+  return `${host}/${path}`;
+}
+
+/** SHA-256 of the canonical repository identity (never the remote URL). */
 export function hashRemote(url: string): string {
-  return createHash("sha256").update(url.trim()).digest("hex");
+  return createHash("sha256").update(canonicalRemote(url)).digest("hex");
 }
 
 /** The repo hash for `cwd`'s origin remote, or undefined outside a git repo. Never throws. */

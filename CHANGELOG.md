@@ -1,5 +1,68 @@
 # Changelog
 
+## [3.22.0](https://github.com/directionally-local/autopilot/compare/v3.21.0...v3.22.0) (2026-11-12)
+
+
+### Features
+
+* two free-tier budgets and the GPT-6 limit's switch to DeepSeek ([#1255](https://github.com/directionally-local/autopilot/issues/1255)) ([36db155](https://github.com/directionally-local/autopilot/commit/36db1551134d6d97414a7090a20a9e9469415a72))
+
+## [3.21.0](https://github.com/directionally-local/autopilot/compare/v3.20.2...v3.21.0) (2026-11-12)
+
+
+### Features
+
+* **dl:** dl Pro first when free usage runs out, dollar top-ups, honest limits ([#1253](https://github.com/directionally-local/autopilot/issues/1253)) ([5038886](https://github.com/directionally-local/autopilot/commit/50388863237b60d65c2a91ee7432eafc6e80dd70))
+
+## [3.20.2](https://github.com/directionally-local/autopilot/compare/v3.20.1...v3.20.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* wait for a slow nvidia-smi on first run instead of showing the no-GPU path ([#1251](https://github.com/directionally-local/autopilot/issues/1251)) ([538557d](https://github.com/directionally-local/autopilot/commit/538557d15adf20464b418b591575a32055ac4774))
+
+## [3.20.1](https://github.com/directionally-local/autopilot/compare/v3.20.0...v3.20.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **gpu:** failure menu after a failed private model setup, short GPU line, vLLM reasoning ([#1249](https://github.com/directionally-local/autopilot/issues/1249)) ([4f57548](https://github.com/directionally-local/autopilot/commit/4f575484d2ec8169b0c9002d7092ea3ecfcbed81))
+
+## [3.20.0](https://github.com/directionally-local/autopilot/compare/v3.19.0...v3.20.0) (2026-11-11)
+
+
+### Features
+
+* optional email after a yes to GPU early access ([#1245](https://github.com/directionally-local/autopilot/issues/1245)) ([fa5709b](https://github.com/directionally-local/autopilot/commit/fa5709bf32974a294dea9e221822888dcfe3a21e))
+
+## [3.19.0](https://github.com/directionally-local/autopilot/compare/v3.18.0...v3.19.0) (2026-11-11)
+
+
+### Features
+
+* GPU-aware first run and "Use your own GPUs" ([#1244](https://github.com/directionally-local/autopilot/issues/1244)) ([baa98c4](https://github.com/directionally-local/autopilot/commit/baa98c49462bc8854315b3b90b93d2311492dfb7))
+
+
+### Bug Fixes
+
+* remember the free tier's picked model across sessions ([#1242](https://github.com/directionally-local/autopilot/issues/1242)) ([75838ec](https://github.com/directionally-local/autopilot/commit/75838ecf28b59aa9fd26893714ee4b6737a7840f))
+
+## [3.18.0](https://github.com/directionally-local/autopilot/compare/v3.17.0...v3.18.0) (2026-11-11)
+
+
+### Features
+
+* add typed failed outcomes to dl server turns ([#1235](https://github.com/directionally-local/autopilot/issues/1235)) ([623d5e9](https://github.com/directionally-local/autopilot/commit/623d5e998e14c2802ddb805d9a506ccf11e498be))
+
+
+### Bug Fixes
+
+* normalize repository hashes in usage telemetry ([#1234](https://github.com/directionally-local/autopilot/issues/1234)) ([0255c4f](https://github.com/directionally-local/autopilot/commit/0255c4fec793f198b3148ca864f25f6c9c72259a))
+* print mode denies credentials reads unless a rule names the exact path ([#1238](https://github.com/directionally-local/autopilot/issues/1238)) ([082ad0f](https://github.com/directionally-local/autopilot/commit/082ad0f7d37ecf92718e5bc91934f731c5a3af6e))
+* print mode denies credentials writes unless a rule names the exact path ([#1239](https://github.com/directionally-local/autopilot/issues/1239)) ([6024c6c](https://github.com/directionally-local/autopilot/commit/6024c6ca0a244678a7aaa72c9deaf5649d85d1f2))
+* print mode follows the interactive permission policy and exits 45 when a run didn't finish ([#1233](https://github.com/directionally-local/autopilot/issues/1233)) ([ea6c0f0](https://github.com/directionally-local/autopilot/commit/ea6c0f080a72a26d79c0fb24311a57db49c9693c))
+* **security:** make a DL auth failure survivable ([#1236](https://github.com/directionally-local/autopilot/issues/1236)) ([9ed5a81](https://github.com/directionally-local/autopilot/commit/9ed5a819fc55b38ec07232025d40a698479a4586))
+
 ## [3.17.0](https://github.com/directionally-local/autopilot/compare/v3.16.0...v3.17.0) (2026-11-10)
 
 

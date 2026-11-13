@@ -78,4 +78,10 @@ describe("exit handlers (child process)", () => {
     assert.match(res.stderr, /nope/);
     assert.equal(res.status, 1);
   });
+
+  it("prints the crash after the renderer's cleanup", () => {
+    const res = run(`installExitHandlers({ crashes: true }); onShutdown("renderer", () => { process.stderr.write("cleanup\\n"); }); setTimeout(() => { throw new Error("kaboom"); }, 10);`);
+    assert.match(res.stderr, /cleanup\n[\s\S]*kaboom/);
+    assert.equal(res.status, 1);
+  });
 });

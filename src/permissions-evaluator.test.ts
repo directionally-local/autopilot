@@ -1,10 +1,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { evaluatePermissionRules } from "./permissions-evaluator.js";
+import { evaluatePermissionRules, matchPermissionRule } from "./permissions-evaluator.js";
 import type { PermissionRules } from "./config.js";
 
 describe("evaluatePermissionRules", () => {
   const cwd = "/home/user/project";
+
+  it("matchPermissionRule tells an explicit ask rule apart from no rule", () => {
+    assert.strictEqual(matchPermissionRule({ tool: "bash", args: { command: "ls" }, cwd }, {}), null);
+    assert.strictEqual(matchPermissionRule({ tool: "bash", args: { command: "ls" }, cwd }, { bash: { "npm test": "allow" } }), null);
+    assert.strictEqual(matchPermissionRule({ tool: "bash", args: { command: "ls" }, cwd }, { bash: { "**": "ask" } }), "ask");
+    assert.strictEqual(matchPermissionRule({ tool: "write", args: { path: "a.ts" }, cwd }, { write: { "**": "deny" } }), "deny");
+  });
 
   it("returns ask when no rules are defined", () => {
     const result = evaluatePermissionRules(

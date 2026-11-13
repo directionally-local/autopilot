@@ -19,6 +19,8 @@ import { costNote } from "../usage-tracker.js";
 import {
   describeDlError,
   dlAccessToken,
+  dlAuthPrompt,
+  isDlAuthError,
   DL_DENIALS,
   dlDenialLine,
   dlDenialOf,
@@ -126,6 +128,17 @@ function me(over: Partial<DlMe["allowance"]> = {}): DlMe {
 
 const NOW = Date.parse("2026-11-04T00:00:00.000Z");
 const noSleep = async () => {};
+
+describe("isDlAuthError", () => {
+  it("recognizes the sign-in codes and ignores transient ones", () => {
+    assert.strictEqual(isDlAuthError(new DlError("invalid_grant", "expired")), true);
+    assert.strictEqual(isDlAuthError(new DlError("invalid_token", "bad")), true);
+    assert.strictEqual(isDlAuthError(new DlError("signed_out", "out")), true);
+    assert.strictEqual(isDlAuthError(new DlError("network", "down")), false);
+    assert.strictEqual(isDlAuthError(new Error("x")), false);
+    assert.match(dlAuthPrompt(new DlError("invalid_grant", "expired")), /expired/);
+  });
+});
 
 describe("Directionally Local free tier", () => {
   let home: string;
@@ -485,7 +498,7 @@ describe("Directionally Local free tier", () => {
       assert.match(renderDlUsage(me(), NOW, "America/Los_Angeles"), /resets {10}Sun 16:00 PST \(in 5 days\)$/, "local time, not UTC");
       assert.match(
         renderDlUsage(me({ usedThisWeek: 50_000_000, remaining: 0 }), NOW, "Asia/Tokyo"),
-        /\n  You've used this week's free tokens\. They're back Mon 09:00\. To keep going now: \/provider to use your own key\.$/,
+        /\n  You've used this week's free usage\. It's back Mon 09:00\. To keep going now: \/provider to use your own key\.$/,
       );
     });
 
@@ -496,9 +509,8 @@ describe("Directionally Local free tier", () => {
         [
           "Directionally Local free tier · signed in as @octo",
           "  plan            Free",
-          "  used this week  32.2k of 50M tokens (0%)",
-          "  left            50M tokens",
-          "  spending limit  spent $0.01 of $5",
+          "  this week       $0.01 of $5 free usage (0%)",
+          "  tokens          32.2k used",
           "  resets          Mon 00:00 UTC (in 5 days 15 h)",
         ].join("\n"),
       );
@@ -557,7 +569,7 @@ describe("Directionally Local free tier", () => {
       assert.strictEqual(dlModelAllowanceLine("gpt-6-luna", me), "49M of 50M left this week");
       assert.strictEqual(dlModelAllowanceLine("deepseek/deepseek-v4.1-flash-1017", me), "49M of 50M left this week", "Luna and DeepSeek share one pool");
       assert.strictEqual(dlModelAllowanceLine("gpt-6.1-sol", me), "10M of 10M left this week");
-      assert.strictEqual(dlModelAllowanceLine("gpt-6-astra", me), "0 of 3M left this week");
+      assert.match(dlModelAllowanceLine("gpt-6-astra", me)!, /^limit reached, resets \w{3} \d\d:\d\d$/, "never \"0 of 3M left\"");
       assert.strictEqual(dlModelAllowanceLine("openai/gpt-5", me), undefined, "not a free model");
       assert.strictEqual(dlModelAllowanceLine("gpt-6-luna", null), undefined, "no account read yet");
     });
@@ -592,7 +604,7 @@ describe("Directionally Local free tier", () => {
   describe("error messages", () => {
     it("has a plain sentence for each service error, with /provider as the way on", () => {
       const tokyo = { now: NOW, timeZone: "Asia/Tokyo" };
-      const quota = "You've used this week's free tokens. They're back Mon 09:00. To keep going now: /provider to use your own key.";
+      const quota = "You've used this week's free usage. It's back Mon 09:00. To keep going now: /provider to use your own key.";
       assert.strictEqual(describeDlError("quota_exceeded", { resetsAt: "2026-11-09T00:00:00.000Z", ...tokyo }), quota);
       // The token and the spending allowance read the same.
       assert.strictEqual(describeDlError("quota_exceeded", { reason: "tokens", resetsAt: "2026-11-09T00:00:00.000Z", ...tokyo }), quota);
@@ -695,8 +707,8 @@ describe("Directionally Local free tier", () => {
     });
 
     const cases: Array<[number, unknown, RegExp, number]> = [
-      [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "tokens" } }, /You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\. To keep going now: \/provider to use your own key\.$/, 1],
-      [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "spend" } }, /You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\./, 1],
+      [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "tokens" } }, /You've used this week's free usage\. It's back \w{3} \d\d:\d\d\. To keep going now: \/provider to use your own key\.$/, 1],
+      [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "spend" } }, /You've used this week's free usage\. It's back \w{3} \d\d:\d\d\./, 1],
       [403, { error: { code: "not_invited" } }, /isn't on the free tier.*\/provider$/, 1],
       [403, { error: { code: "suspended" } }, /account is suspended/, 1],
       [403, { error: { code: "dl_only", message: "Free tokens work inside dl only. Run dl to keep using them, or use your own API key in any tool." } }, /^autopilot: Free tokens work inside dl only\. Run dl to keep using them, or use your own API key in any tool\.$/, 1],
@@ -720,14 +732,14 @@ describe("Directionally Local free tier", () => {
 
     it("/usage says the week's free tokens are used, whichever limit was hit", async () => {
       const resetsAt = "2026-11-09T00:00:00.000Z";
-      const used = /\n  You've used this week's free tokens\. They're back Mon 09:00\. To keep going now: \/provider to use your own key\.$/;
+      const used = /\n  You've used this week's free usage\. It's back Mon 09:00\. To keep going now: \/provider to use your own key\.$/;
       assert.match(renderDlUsage(me({ usedThisWeek: 50_000_000, remaining: 0 }), NOW, "Asia/Tokyo"), used);
       assert.match(renderDlUsage(me({ usdPerWeek: 5, spentUsdThisWeek: 5 }), NOW, "Asia/Tokyo"), used);
       assert.ok(!/free tokens\./.test(renderDlUsage(me({ usdPerWeek: 5, spentUsdThisWeek: 1 }), NOW)));
       // A 402 with reason "spend" seen this week shows up in /usage too.
       await writeCfg({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at", expiresAt: Date.now() + 3_600_000 } } });
       stub.chatReplies = [{ status: 402, body: { error: { code: "quota_exceeded", resetsAt, reason: "spend" } } }];
-      await assert.rejects(drain(llmAuthFromConfig(await readCfg())), /this week's free tokens/);
+      await assert.rejects(drain(llmAuthFromConfig(await readCfg())), /this week's free usage/);
       assert.match(renderDlUsage(me(), NOW, "Asia/Tokyo"), used);
       assert.ok(!/They're back/.test(renderDlUsage(me({ resetsAt: "2026-11-16T00:00:00.000Z" }), NOW)), "not after the week resets");
     });

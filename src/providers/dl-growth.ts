@@ -1,6 +1,6 @@
 /**
- * The free tier's ways on when it runs out: invite a friend, Pro, a top-up,
- * or your own key. What each screen and command says, the checkout (open the
+ * The free tier's ways on when it runs out: dl Pro first, a top-up, asking
+ * for more free usage, your own key, or your own GPUs. What each screen and command says, the checkout (open the
  * payment page, then watch /v1/me until the plan or top-up shows), and the
  * one-time invite tip after a first win. Renderer-free so it can be tested:
  * the Camouflage view and the CLI supply the prompts, the browser and the
@@ -16,11 +16,14 @@ import type { AgentCallbacks } from "../agent/loop.js";
 import { statePath } from "../util/app-dirs.js";
 import { createsGhPr } from "../util/pr-footer.js";
 import {
+  DL_DEEPSEEK_MODEL,
   DL_INVITE_BONUS_TOKENS,
-  DL_REQUEST_HINT,
   DL_SWITCH_HINT,
   dlCheckout,
+  dlProPrice,
   dlQueuePlace,
+  isUsdTopup,
+  lastKnownDlMe,
   fetchDlMe,
   formatLocalTime,
   formatTokens,
@@ -30,10 +33,12 @@ import {
   type DlErrorDetail,
   type DlMe,
   type DlOffers,
+  type DlPlan,
   type DlProduct,
   type DlProOffer,
   type DlTimeOpts,
   type DlTopupOffer,
+  type DlUsdTopupOffer,
   type DlWhere,
 } from "./directionally-local.js";
 
@@ -47,9 +52,21 @@ export const DL_CHECKOUT_TIMEOUT_MS = 10 * 60_000;
 
 // ── Copy ─────────────────────────────────────────────────────────────────
 
-/** "You've used this week's free tokens. They're back Mon 09:00." */
-export function dlLimitTitle(resetsAt: string | undefined, o: DlTimeOpts = {}): string {
-  return `You've used this week's free tokens. They're back ${formatLocalTime(resetsAt ?? nextWeekStart(o.now), o)}.`;
+/**
+ * The GPT-6 limit (402 gpt_limit): GPT-6's week is used up, DeepSeek's isn't. One line, with the
+ * way on; it resets with the week.
+ */
+export function dlGptLimitTitle(resetsAt: string | undefined, o: DlTimeOpts & { plan?: DlPlan } = {}): string {
+  const free = o.plan === "pro" ? "" : " free";
+  return `You've used this week's GPT-6 allowance (back ${formatLocalTime(resetsAt ?? nextWeekStart(o.now), o)}). DeepSeek V4.1 Flash still has${free} usage this week.`;
+}
+
+/** The GPT-6 limit's first choice: one keypress to DeepSeek and the blocked request goes again. */
+export const DL_SWITCH_DEEPSEEK_LABEL = "Switch to DeepSeek V4.1 Flash and continue";
+
+/** "You've used this week's free usage. It's back Mon 09:00." ("Pro usage" on Pro.) */
+export function dlLimitTitle(resetsAt: string | undefined, o: DlTimeOpts & { plan?: DlPlan } = {}): string {
+  return `You've used this week's ${o.plan === "pro" ? "Pro" : "free"} usage. It's back ${formatLocalTime(resetsAt ?? nextWeekStart(o.now), o)}.`;
 }
 
 /** "You're #214 in line for free tokens (about 3 days, by Fri). Each friend who starts using dl moves you up." */
@@ -57,19 +74,34 @@ export function dlQueueTitle(position: number | undefined, etaAt: string | undef
   return `${dlQueuePlace(position, etaAt, o)} Each friend who starts using dl moves you up.`;
 }
 
-export function inviteLabel(bonus = DL_REFERRAL_BONUS_TOKENS): string {
-  return `Invite a friend — you both get +${formatTokens(bonus)} a week`;
+/** The queue's invite choice: a friend who starts using dl moves you up the line. */
+export function inviteLabel(): string {
+  return "Invite a friend (moves you up the line)";
 }
 
-export function proLabel(pro: DlProOffer, lead = "Keep going with Pro"): string {
-  return `${lead} — ${formatUsd(pro.priceUsdMonthly)}/month, ${formatTokens(pro.tokensPerWeek)} a week`;
+/** "Get dl Pro: $3.99/month" (the price exactly as the service sends it). */
+export function proLabel(pro: DlProOffer, lead = "Get dl Pro"): string {
+  return `${lead}: ${dlProPrice(pro)}`;
 }
 
+/** "Top up from $2" for dollar top-ups; the old token kind: "Top up 50M tokens — $3, one time". */
 export function topupLabel(t: DlTopupOffer): string {
-  return `Top up ${formatTokens(t.tokens)} tokens — ${formatUsd(t.priceUsd)}, one time`;
+  if (isUsdTopup(t)) return `Top up from ${formatUsd(t.unitPriceUsd * t.minQuantity)}`;
+  return `Top up ${formatTokens(t.tokens ?? 0)} tokens — ${formatUsd(t.priceUsd ?? 0)}, one time`;
 }
 
-export type DlChoice = "invite" | "pro" | "topup" | "own-key";
+/** "each $1 adds $1.25 of usage, lasts 90 days" (dollar top-ups); "lasts 30 days" (the token kind). */
+export function topupDescription(t: DlTopupOffer): string | undefined {
+  const days = t.validDays ? `lasts ${t.validDays} days` : undefined;
+  if (!isUsdTopup(t)) return days;
+  const each = `each ${formatUsd(t.unitPriceUsd)} adds ${formatUsd(t.unitPriceUsd * t.usageMultiplier)} of usage`;
+  return days ? `${each}, ${days}` : each;
+}
+
+/** Said after choosing "Run it on your own GPUs". */
+export const DL_GPU_LINE = "Run it on your own GPUs: `dl model up` serves an open model on this machine's Nvidia GPU and points Autopilot at it.";
+
+export type DlChoice = "pro" | "topup" | "request" | "own-key" | "gpus" | "invite" | "deepseek";
 export interface DlChoiceOption {
   value: DlChoice;
   label: string;
@@ -77,25 +109,80 @@ export interface DlChoiceOption {
 }
 
 /**
- * The choices on a screen, in order: invite (with a link), Pro and top-up
- * (with offers; the queue offers no top-up), and your own key. `upgrade` is
- * /upgrade: Pro and top-up only.
+ * The choices on a screen, in order. Out of free usage: dl Pro first (when
+ * the service offers it and the account isn't on it), a dollar top-up, ask
+ * for more free usage, your own key, your own GPUs. Queued: invite (with a
+ * link), Pro, your own key. `upgrade` is /upgrade: Pro and the top-up.
  */
-export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; referralLink?: string }): DlChoiceOption[] {
+export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; referralLink?: string; plan?: DlPlan }): DlChoiceOption[] {
   const out: DlChoiceOption[] = [];
-  if (kind !== "upgrade" && o.referralLink) out.push({ value: "invite", label: inviteLabel() });
-  if (o.offers?.pro) out.push({ value: "pro", label: proLabel(o.offers.pro, kind === "upgrade" ? "Pro" : "Keep going with Pro") });
-  if (o.offers?.topup && kind !== "queued") {
-    const days = o.offers.topup.validDays;
-    out.push({ value: "topup", label: topupLabel(o.offers.topup), ...(days ? { description: `lasts ${days} days` } : {}) });
+  const pro = o.offers?.pro && o.plan !== "pro" ? o.offers.pro : undefined;
+  const proOption = (lead: string): DlChoiceOption | undefined =>
+    pro ? { value: "pro", label: proLabel(pro, lead), ...(pro.valueLine ? { description: pro.valueLine } : {}) } : undefined;
+  const topup = o.offers?.topup;
+  const topupOption = (t: DlTopupOffer): DlChoiceOption => {
+    const description = topupDescription(t);
+    return { value: "topup", label: topupLabel(t), ...(description ? { description } : {}) };
+  };
+  if (kind === "quota") {
+    const p = proOption("Get dl Pro");
+    if (p) out.push(p);
+    if (isUsdTopup(topup)) out.push(topupOption(topup));
+    if (o.plan !== "pro") out.push({ value: "request", label: "Ask for more free usage", description: "/request" });
+    out.push({ value: "own-key", label: "Use your own key", description: "/provider" });
+    out.push({ value: "gpus", label: "Run it on your own GPUs", description: "dl model up" });
+    return out;
   }
-  if (kind !== "upgrade") out.push({ value: "own-key", label: kind === "queued" ? "Use my own API key now" : "Use my own API key" });
+  if (kind === "gpt") {
+    // GPT-6 used up, DeepSeek not: DeepSeek first (Enter), then the paid ways and your own key.
+    out.push({ value: "deepseek", label: DL_SWITCH_DEEPSEEK_LABEL, description: "/model" });
+    const p = proOption("Get dl Pro");
+    if (p) out.push(p);
+    if (isUsdTopup(topup)) out.push(topupOption(topup));
+    out.push({ value: "own-key", label: "Use your own key", description: "/provider" });
+    return out;
+  }
+  if (kind === "queued") {
+    if (o.referralLink) out.push({ value: "invite", label: inviteLabel() });
+    const p = proOption("Get dl Pro");
+    if (p) out.push(p);
+    out.push({ value: "own-key", label: "Use my own API key now" });
+    return out;
+  }
+  const p = proOption("dl Pro");
+  if (p) out.push(p);
+  if (topup) out.push(topupOption(topup));
   return out;
+}
+
+/** The amounts /upgrade offers for a dollar top-up ($2, $5, $10, $20 within the range), as quantities. */
+export function dlTopupQuantities(t: DlUsdTopupOffer): number[] {
+  const out = [2, 5, 10, 20].map((usd) => Math.round(usd / t.unitPriceUsd)).filter((q) => q >= t.minQuantity && q <= t.maxQuantity);
+  if (!out.includes(t.minQuantity)) out.unshift(t.minQuantity);
+  return [...new Set(out)].sort((a, b) => a - b);
+}
+
+/** "$5 — adds $6.25 of usage". */
+export function dlTopupAmountLabel(t: DlUsdTopupOffer, quantity: number): string {
+  return `${formatUsd(quantity * t.unitPriceUsd)} — adds ${formatUsd(quantity * t.unitPriceUsd * t.usageMultiplier)} of usage`;
+}
+
+/** A typed amount in dollars ("7", "$7", "7.00") as a quantity in range; undefined when it isn't one. */
+export function parseTopupAmount(t: DlUsdTopupOffer, raw: string): number | undefined {
+  const usd = Number(raw.trim().replace(/^\$/, ""));
+  if (!Number.isFinite(usd) || usd <= 0) return undefined;
+  const quantity = usd / t.unitPriceUsd;
+  return Number.isInteger(quantity) && quantity >= t.minQuantity && quantity <= t.maxQuantity ? quantity : undefined;
+}
+
+/** "Another amount ($2–$20)". */
+export function dlTopupCustomLabel(t: DlUsdTopupOffer): string {
+  return `Another amount (${formatUsd(t.minQuantity * t.unitPriceUsd)}–${formatUsd(t.maxQuantity * t.unitPriceUsd)})`;
 }
 
 /** Said after choosing to invite: the link, and whether it was copied. */
 export function dlInviteShareLine(link: string, copied: boolean): string {
-  return `Your invite link${copied ? " (copied)" : ""}: ${link} — when a friend starts using dl, you both get +${formatTokens(DL_REFERRAL_BONUS_TOKENS)} a week.`;
+  return `Your invite link${copied ? " (copied)" : ""}: ${link} — each friend who starts using dl moves you up the line.`;
 }
 
 /** `/invite` and `autopilot invite`: the link, who joined, and the bonus earned. */
@@ -125,19 +212,21 @@ export function dlInviteUnavailable(o: { providerId: string; providerName: strin
 
 /** The one-time line after a first win on the free tier. */
 export function dlWinLine(link: string): string {
-  return `Nice. Know someone who'd like this? ${link} gives you both +${formatTokens(DL_REFERRAL_BONUS_TOKENS)} a week.`;
+  return `Nice. Know someone who'd like this? Share your invite link: ${link}`;
 }
 
 /**
  * `-p` and other headless runs: one plain line for running out or being
  * queued, with the invite link and `autopilot upgrade`.
  */
-export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts = {}): string | undefined {
+export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & { plan?: DlPlan } = {}): string | undefined {
   const link = d.referralLink;
-  const ways = `Keep going now: \`${DL_UPGRADE_COMMAND}\`, or your own key: \`autopilot connect\`.`;
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
-    const invite = link ? `Invite a friend and you both get +${formatTokens(DL_REFERRAL_BONUS_TOKENS)} a week: ${link} · ` : "";
-    return `${dlLimitTitle(d.resetsAt, o)} ${invite}${ways}`;
+    const pro = d.offers?.pro && o.plan !== "pro" ? ` Get dl Pro for ${dlProPrice(d.offers.pro)}: \`${DL_UPGRADE_COMMAND}\`` : "";
+    return `${dlLimitTitle(d.resetsAt, o)} To keep going now, use your own key: \`autopilot connect\`.${pro}`;
+  }
+  if (code === "gpt_limit") {
+    return `${dlGptLimitTitle(d.resetsAt, o)} Run with \`-m ${typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL}\` to use it.`;
   }
   if (code === "free_tier_queued") {
     return `${dlQueuePlace(d.position, d.etaAt, o)} Each friend who starts using dl moves you up${link ? `: ${link}` : ""}. Start now: \`${DL_UPGRADE_COMMAND}\`, or your own key: \`autopilot connect\`.`;
@@ -146,10 +235,11 @@ export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts = {
 }
 
 /** The headless line for an error from a request, when it is the free tier running out or queueing. */
-export function dlHeadlessMessage(err: unknown, o: DlTimeOpts = {}): string | undefined {
+export function dlHeadlessMessage(err: unknown, o: DlTimeOpts & { plan?: DlPlan } = {}): string | undefined {
   const e = err as { providerCode?: unknown; providerDetail?: unknown } | null;
   if (typeof e?.providerCode !== "string") return undefined;
-  return dlHeadlessLine(e.providerCode, (e.providerDetail ?? {}) as DlErrorDetail, o);
+  const plan = o.plan ?? lastKnownDlMe()?.plan;
+  return dlHeadlessLine(e.providerCode, (e.providerDetail ?? {}) as DlErrorDetail, { ...o, ...(plan ? { plan } : {}) });
 }
 
 /** What the checkout says while it waits for the payment. */
@@ -163,6 +253,7 @@ export function dlCheckoutWaitingText(url: string, opened: boolean, product: DlP
 export function dlPurchasedLine(product: DlProduct, me: DlMe, continuing: boolean): string {
   const then = continuing ? " Continuing." : "";
   if (product === "pro") return `✓ Pro active.${then}`;
+  if ((me.topupUsdLeft ?? 0) > 0) return `✓ Top-up added: ${formatUsd(me.topupUsdLeft ?? 0)} of usage to use.${then}`;
   return `✓ Top-up added: ${formatTokens(me.topupTokensLeft ?? 0)} tokens to use.${then}`;
 }
 
@@ -172,10 +263,10 @@ export const DL_PORTAL_LINE = "Manage or cancel your plan";
 
 // ── Checkout ─────────────────────────────────────────────────────────────
 
-/** True once /v1/me shows what was bought: Pro, or more top-up tokens than before. */
+/** True once /v1/me shows what was bought: Pro, or more top-up usage (or tokens) than before. */
 export function purchaseShows(product: DlProduct, before: DlMe | null, me: DlMe): boolean {
   if (product === "pro") return me.plan === "pro";
-  return (me.topupTokensLeft ?? 0) > (before?.topupTokensLeft ?? 0);
+  return (me.topupUsdLeft ?? 0) > (before?.topupUsdLeft ?? 0) || (me.topupTokensLeft ?? 0) > (before?.topupTokensLeft ?? 0);
 }
 
 export type PurchaseWait = { kind: "done"; me: DlMe } | { kind: "timeout" } | { kind: "cancelled" };
@@ -214,7 +305,8 @@ export async function waitForPurchase(
 
 export interface PurchaseDeps {
   say: (message: string, severity?: "info" | "error") => void;
-  checkout: (product: DlProduct) => Promise<string>;
+  /** Start the checkout; `quantity` is a dollar top-up's number of $1 units. */
+  checkout: (product: DlProduct, quantity?: number) => Promise<string>;
   fetchMe: () => Promise<DlMe>;
   /** Open the URL in a browser here; false when none can (the link is then printed for another device). */
   openBrowser: (url: string) => boolean;
@@ -232,11 +324,11 @@ export interface PurchaseDeps {
  * it), and wait for /v1/me to show it. True once it does (the line saying so
  * is said); false when it failed, timed out or was cancelled (said too).
  */
-export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { continuing: boolean }): Promise<boolean> {
+export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { continuing: boolean; quantity?: number }): Promise<boolean> {
   const before = await deps.fetchMe().catch(() => null);
   let url: string;
   try {
-    url = await deps.checkout(product);
+    url = o.quantity !== undefined ? await deps.checkout(product, o.quantity) : await deps.checkout(product);
   } catch (e) {
     deps.say((e as Error).message || "Couldn't start the checkout; try again.", "error");
     return false;
@@ -269,30 +361,38 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 
 /** A screen the session shows: out of tokens, queued, or /upgrade. */
 export type DlScreen =
-  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string }
-  | { kind: "queued"; position?: number; etaAt?: string; offers?: DlOffers; referralLink?: string }
-  | { kind: "upgrade"; offers: DlOffers };
+  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan }
+  | { kind: "gpt"; resetsAt?: string; alternative: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
+  | { kind: "queued"; position?: number; etaAt?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
+  | { kind: "upgrade"; offers: DlOffers; plan?: DlPlan };
 
 /**
  * How a screen ended: `retry` the blocked request (bought), open the
- * provider picker (`own-key`), `dismissed` with Esc (the session then says
- * what it always said), or `handled` (nothing more to do).
+ * provider picker (`own-key`), start /request (`request`), `dismissed` with
+ * Esc (the session then says what it always said), or `handled` (nothing
+ * more to do).
  */
-export type DlScreenOutcome = "retry" | "own-key" | "dismissed" | "handled";
+export type DlScreenOutcome = "retry" | "own-key" | "request" | "dismissed" | "handled" | "deepseek";
 
 export interface DlScreenDeps extends PurchaseDeps {
   select: (title: string, options: DlChoiceOption[], subtitle?: string) => Promise<string | null>;
   /** Copy to the clipboard (OSC 52); true when sent. */
   copy: (text: string) => boolean;
+  /** Ask for one line of text (a top-up's custom amount); null when cancelled. Without it, no custom amount is offered. */
+  input?: (title: string, placeholder?: string) => Promise<string | null>;
   timeZone?: string;
 }
 
 /** The screen for a free-tier error, when it has one (quota_exceeded or basic_limit, free_tier_queued). */
-export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallbackLink?: string): DlScreen | undefined {
+export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallbackLink?: string, plan?: DlPlan): DlScreen | undefined {
   const referralLink = d.referralLink ?? fallbackLink;
-  const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}) };
+  const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}), ...(plan ? { plan } : {}) };
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...common };
+  }
+  if (code === "gpt_limit") {
+    const alternative = typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL;
+    return { kind: "gpt", alternative, ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...common };
   }
   if (code === "free_tier_queued") return { kind: "queued", ...(d.position ? { position: d.position } : {}), ...(d.etaAt ? { etaAt: d.etaAt } : {}), ...common };
   return undefined;
@@ -305,33 +405,64 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
   const choices = dlScreenChoices(screen.kind, screen);
   const title =
     screen.kind === "quota"
-      ? dlLimitTitle(screen.resetsAt, t)
-      : screen.kind === "queued"
+      ? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
+      : screen.kind === "gpt"
+        ? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
+        : screen.kind === "queued"
         ? dlQueueTitle(screen.position, screen.etaAt, t)
         : "Upgrade Directionally Local";
   const hint = "Enter to choose · Esc to close";
-  const subtitle =
-    screen.kind === "queued" && link
-      ? `Your invite link: ${link} · ${hint}`
-      : screen.kind === "quota" && screen.request
-        ? `${DL_REQUEST_HINT} · ${hint}`
-        : hint;
+  const subtitle = screen.kind === "queued" && link ? `Your invite link: ${link} · ${hint}` : hint;
   const choice = (await deps.select(title, choices, subtitle)) as DlChoice | null;
   if (choice === null) return "dismissed";
   if (choice === "own-key") return "own-key";
+  if (choice === "request") return "request";
+  if (choice === "deepseek") return "deepseek";
+  if (choice === "gpus") {
+    deps.say(DL_GPU_LINE);
+    return "handled";
+  }
   if (choice === "invite") {
     if (link) deps.say(dlInviteShareLine(link, deps.copy(link)));
     return "handled";
   }
-  const bought = await purchase(choice, deps, { continuing: screen.kind !== "upgrade" });
+  let quantity: number | undefined;
+  const topup = screen.offers?.topup;
+  if (choice === "topup" && isUsdTopup(topup)) {
+    const picked = await pickTopupQuantity(topup, deps);
+    if (picked === null) return "dismissed";
+    quantity = picked;
+  }
+  const bought = await purchase(choice, deps, { continuing: screen.kind !== "upgrade", ...(quantity !== undefined ? { quantity } : {}) });
   return bought && screen.kind !== "upgrade" ? "retry" : "handled";
+}
+
+/** Choose how much to top up: $2, $5, $10, $20 or another amount in range. Null when cancelled. */
+export async function pickTopupQuantity(t: DlUsdTopupOffer, deps: Pick<DlScreenDeps, "select" | "input" | "say">): Promise<number | null> {
+  const options = dlTopupQuantities(t).map((q) => ({ value: String(q) as DlChoice, label: dlTopupAmountLabel(t, q) }));
+  if (deps.input) options.push({ value: "custom" as DlChoice, label: dlTopupCustomLabel(t) });
+  const about = topupDescription(t);
+  const picked = await deps.select("How much do you want to top up?", options, `${about ? `${about} · ` : ""}Enter to choose · Esc to close`);
+  if (picked === null) return null;
+  if (picked !== "custom") return Number(picked);
+  const raw = await deps.input!(`Amount in dollars, ${formatUsd(t.minQuantity * t.unitPriceUsd)} to ${formatUsd(t.maxQuantity * t.unitPriceUsd)}`, String(t.minQuantity * t.unitPriceUsd));
+  if (raw === null) return null;
+  const quantity = parseTopupAmount(t, raw);
+  if (quantity === undefined) {
+    deps.say(`Choose a whole-dollar amount from ${formatUsd(t.minQuantity * t.unitPriceUsd)} to ${formatUsd(t.maxQuantity * t.unitPriceUsd)}.`, "error");
+    return null;
+  }
+  return quantity;
 }
 
 /** What the session does once a screen ends. */
 export type DlFollowUp =
   | { kind: "show-error"; text: string }
   | { kind: "provider-picker" }
+  | { kind: "command"; command: string }
   | { kind: "retry"; text: string; display: string }
+  /** Switch to this model, then send the blocked request again (when there is one). */
+  | { kind: "switch-model"; model: string; retry?: { text: string; display: string } }
   | { kind: "none" };
 
 /**
@@ -346,7 +477,9 @@ export function dlScreenFollowUp(
 ): DlFollowUp {
   if (outcome === "dismissed") return errorLine ? { kind: "show-error", text: errorLine } : { kind: "none" };
   if (outcome === "own-key") return { kind: "provider-picker" };
+  if (outcome === "request") return { kind: "command", command: "/request" };
   if (outcome === "retry" && lastPrompt) return { kind: "retry", ...lastPrompt };
+  if (outcome === "deepseek") return { kind: "switch-model", model: DL_DEEPSEEK_MODEL, ...(lastPrompt ? { retry: lastPrompt } : {}) };
   return { kind: "none" };
 }
 
@@ -461,7 +594,7 @@ export async function inviteTipAfterWin(o: {
 }
 
 /** The real checkout call, for callers that don't inject one. */
-export const realCheckout = (product: DlProduct): Promise<string> => dlCheckout(product);
+export const realCheckout = (product: DlProduct, quantity?: number): Promise<string> => dlCheckout(product, quantity !== undefined ? { quantity } : {});
 
 // ── /invite and /upgrade (also `autopilot invite` / `autopilot upgrade`) ──
 
@@ -526,5 +659,5 @@ export async function dlUpgradeStep(o: {
     }
   }
   if (!me.offers) return { kind: "text", text: "Pro and top-ups aren't available from this Directionally Local server yet." };
-  return { kind: "screen", screen: { kind: "upgrade", offers: me.offers }, me };
+  return { kind: "screen", screen: { kind: "upgrade", offers: me.offers, ...(me.plan ? { plan: me.plan } : {}) }, me };
 }

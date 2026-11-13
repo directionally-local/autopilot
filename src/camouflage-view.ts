@@ -30,7 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlCheckout, dlHeaderLine, dlModelAllowanceLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlHeaderLine, dlModelAllowanceLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
@@ -110,6 +110,54 @@ import { workerRegistry, type RunningWorker } from "./tools/worker-registry.js";
 import { CamouflageCrashed, CamouflageUnavailable, diagnoseRenderer, mountFailureReason, rendererBlocker } from "./camouflage-launch.js";
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
+import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu, type GpuDetection, type UnansweredTool } from "./gpu/detect.js";
+import { handoffPath, modelUpResult, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
+import { checkModelsEndpoint, normalizeBaseUrl, serverBaseUrl } from "./gpu/endpoint.js";
+import { detectedTelemetry, flushGpuTelemetry, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
+import {
+  EARLY_ACCESS_CHOICES,
+  EARLY_ACCESS_EMAIL_ERROR,
+  EARLY_ACCESS_EMAIL_TITLE,
+  EARLY_ACCESS_SUBTITLE,
+  EARLY_ACCESS_TELEMETRY_OFF,
+  EARLY_ACCESS_THANKS,
+  EARLY_ACCESS_THANKS_EMAIL,
+  earlyAccessEmailSubtitle,
+  earlyAccessQuestion,
+  looksLikeEmail,
+  ENDPOINT_TITLE,
+  ENDPOINT_URL_ERROR,
+  modelUpFailedLine,
+  MODEL_UP_FAILED_TITLE,
+  modelUpFailedSubtitle,
+  modelUpFailureChoices,
+  modelUpFailureDetails,
+  offersModelUpRetry,
+  readRunLogTail,
+  NO_GPU_HINT,
+  CHECKING_GPUS,
+  CHECKING_GPUS_AFTER_MS,
+  UNANSWERED_CHOICES,
+  unansweredLine,
+  unansweredNext,
+  unansweredTitle,
+  noDlHint,
+  PRIVATE_MODEL_CHOICES,
+  PRIVATE_MODEL_SUBTITLE,
+  privateModelQuestion,
+  readGpuState,
+  reportModelUpResult,
+  REMOTE_SERVER_STEPS,
+  REMOTE_SERVER_TITLE,
+  rememberGpu,
+  remoteTunnelHint,
+  servedLine,
+  smallNvidiaHint,
+  THIS_MACHINE_WITHOUT_DL,
+  WHERE_QUESTION,
+  whereChoices,
+  type GpuWhere,
+} from "./gpu/first-run.js";
 // The SDK's lifecycle types — imported, never re-declared, so this glue can't
 // drift from camouflage-tui (2.12.0+).
 import type { StreamHandle, ToolHandle, Turn } from "camouflage-tui";
@@ -226,11 +274,12 @@ export interface CamouflageSessionViewOpts {
 }
 
 /** How the session ended: normally, or before it began because first-run setup was cancelled or failed. */
-export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed";
+/** "setup-model-up": first run handed over to dl model up (gpu/handoff.ts); exit so dl can run it. */
+export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed" | "setup-model-up";
 
 /**
  * The header's detail lines; first run has no model yet. `free` is the free
- * tier's line ("free · 49.9M left · /invite for more"), shown third.
+ * tier's line ("free · $1.80 of $3 left", or "free · 49.9M left" without a dollar cap), shown third.
  */
 export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null, free?: string): string[] {
   if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run"];
@@ -264,7 +313,13 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   const onFreeTier = (cfg: Cfg | null) => !custom && !!cfg && resolveActiveProvider(cfg).id === DL_PROVIDER_ID;
   const meSoon: Promise<DlMe | null> = onFreeTier(opts.cfg) ? fetchDlMe().catch(() => null) : Promise.resolve(null);
   // First run asks "How should it think?": read the free tier's status while the renderer mounts.
-  if (!custom && !opts.cfg && !envKeyProvider()) void dlFreeStatus();
+  if (!custom && !opts.cfg && !envKeyProvider()) {
+    void dlFreeStatus();
+    // And look for GPUs in the background (cached; instant without GPU tools, up to 10 s per try with them).
+    void gpuDetection().catch(() => null);
+  }
+  // Back from dl model up (gpu/handoff.ts): count how it went, once.
+  reportModelUpResult();
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
   try {
@@ -438,6 +493,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
     throw new CamouflageCrashed(`renderer exited (${c.signal ?? `code ${c.code}`})`, view.sessionId);
   }
   const outcome = setup as FirstRunOutcome | null;
+  if (outcome?.kind === "model-up") return "setup-model-up";
   if (outcome?.kind === "cancelled") {
     process.stdout.write(`${onboardingCancelledMessage()}\n`);
     return "setup-cancelled";
@@ -452,6 +508,26 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
 }
 
 /** Translates App snapshots into renderer events, sending only what changed. Exported for tests. */
+/**
+ * Run a provider call, turning an expired sign-in into a prompt instead of a
+ * rejection. The crash log names the error and the exit, not the caller, so
+ * every detached `fetchDlMe`/`dlAccessToken` call goes through here.
+ */
+export async function catchDlAuth<T>(
+  work: () => Promise<T>,
+  say: (message: string, severity?: "info" | "error") => void,
+): Promise<T | undefined> {
+  try {
+    return await work();
+  } catch (e) {
+    if (isDlAuthError(e)) {
+      say(dlAuthPrompt(e), "error");
+      return undefined;
+    }
+    throw e;
+  }
+}
+
 export class View implements AppBridge {
   actions: AppActions | null = null;
   /** Prompts the renderer already printed when the user submitted them. */
@@ -479,6 +555,11 @@ export class View implements AppBridge {
   providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
   /** The free tier's public status (open on any failure, within 1.5 s). */
   freeStatus: () => Promise<DlFreeStatus> = () => dlFreeStatus();
+  /** What the GPU first run calls (detection, the environment dl set, fetch for endpoints); replaced in tests. */
+  gpuCalls: { detect: () => Promise<GpuDetection>; env: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {
+    detect: () => gpuDetection(),
+    env: process.env,
+  };
   /** What /feedback calls (the free tier token, and fetch); replaced in tests. */
   feedbackCalls: { token: () => Promise<string | undefined>; fetchImpl?: typeof fetch } = { token: () => dlAccessToken() };
   /** What /request calls (the free tier token, refreshed on `force`, and fetch); replaced in tests. */
@@ -487,7 +568,7 @@ export class View implements AppBridge {
   };
   /** What the free tier's limit, queue and /upgrade screens call; replaced in tests. */
   dlScreenCalls: Pick<DlScreenDeps, "checkout" | "fetchMe" | "openBrowser" | "copy" | "sleep" | "now"> = {
-    checkout: (product) => dlCheckout(product),
+    checkout: (product, quantity) => dlCheckout(product, quantity !== undefined ? { quantity } : {}),
     fetchMe: () => fetchDlMe(),
     openBrowser: (url) => openBrowser(url),
     copy: (text) => copyWithOsc52(text),
@@ -1486,9 +1567,10 @@ export class View implements AppBridge {
    * account id/token Workers AI can reuse). True once a provider and model
    * are saved; false when the user backs out of the first-run question.
    */
-  async firstRunSetup(o: { upgrading: boolean; envKey?: { id: ProviderId; envVar: string } }): Promise<boolean> {
+  async firstRunSetup(o: { upgrading: boolean; envKey?: { id: ProviderId; envVar: string } }): Promise<boolean | "model-up"> {
     const persisted = await readPersistedConfig().catch(() => null);
-    return (await this.howToThink({ cfg: persisted, firstRun: true, upgrading: o.upgrading, ...(o.envKey ? { envKey: o.envKey } : {}) })) !== null;
+    const outcome = await this.howToThink({ cfg: persisted, firstRun: true, upgrading: o.upgrading, ...(o.envKey ? { envKey: o.envKey } : {}) });
+    return outcome === "model-up" ? outcome : outcome !== null;
   }
 
   /**
@@ -1505,8 +1587,18 @@ export class View implements AppBridge {
     upgrading?: boolean;
     standalone?: boolean;
     envKey?: { id: ProviderId; envVar: string };
-  }): Promise<ConnectOutcome | null> {
+  }): Promise<ConnectOutcome | null | "model-up"> {
     const say = (message: string, severity: "info" | "error" = "info") => void this.cam.send("RuntimeError", { message, severity });
+    // GPU detection runs while the free tier's status loads (it's cached for the session, and
+    // instant without GPU tools). A GPU tool that is there gets its whole budget (nvidia-smi can
+    // take seconds after idle): the question waits for it, with "Checking for GPUs…" meanwhile.
+    let detected = false;
+    const detecting = this.gpuCalls
+      .detect()
+      .catch((): GpuDetection => ({ gpu: null }))
+      .finally(() => {
+        detected = true;
+      });
     const common = { cfg: o.cfg, firstRun: o.firstRun, ...(o.upgrading ? { upgrading: true } : {}), ...(o.standalone ? { standalone: true } : {}) };
     if (o.envKey) {
       const saved = await this.connectAndPickModel({ ...common, initial: o.envKey.id, envKeyDirect: true, backReturns: true });
@@ -1515,8 +1607,20 @@ export class View implements AppBridge {
     // The renderer marks the default "✓ current", so there is one only when a provider is configured.
     const configured = o.firstRun ? undefined : o.cfg?.provider;
     const status = await this.freeTierStatus(o.cfg);
+    // Without GPU tools the detection is done in a few ms (no process started): no line then.
+    if (!detected) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([detecting, new Promise<void>((resolve) => (timer = setTimeout(resolve, CHECKING_GPUS_AFTER_MS)))]);
+      clearTimeout(timer);
+    }
+    if (!detected) say(CHECKING_GPUS);
+    const detection = await detecting;
+    const gpu = detection.gpu;
+    // Only dl started from a terminal can run dl model up; `autopilot connect` never hands over.
+    const canModelUp = o.firstRun && !!handoffPath(this.gpuCalls.env);
+    if (o.firstRun && (await this.gpuPreScreen(detection, canModelUp, say)) === "model-up") return "model-up";
     const starter = lastKnownDlMe()?.level === "starter";
-    const chosen: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : "own-key") : undefined;
+    const chosen: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : configured === "vllm" ? "gpus" : "own-key") : undefined;
     // Paused, Free can't be chosen: it is never the default (own key comes first instead).
     const current = chosen === "free" && !freeChoosable(status) ? undefined : chosen;
     let ownKeyIntroShown = false;
@@ -1528,6 +1632,12 @@ export class View implements AppBridge {
         firstRunSubtitle(status, o.firstRun ? "Esc to quit" : "Esc to cancel", starter),
       );
       if (choice === null) return null;
+      sendGpuTelemetry({ event: "option", option: choice === "own-key" ? "own_key" : choice === "gpus" ? "gpus" : "free", gpuVendor: gpu?.vendor ?? "none" }, this.gpuCalls.env);
+      if (choice === "gpus") {
+        const own = await this.ownGpus({ cfg: o.cfg, firstRun: o.firstRun, standalone: !!o.standalone }, gpu, canModelUp, say, detection.unanswered);
+        if (own === "back") continue;
+        return own;
+      }
       if (choice === "free" && !freeChoosable(status)) {
         // The select can't disable a row: say why and ask again.
         say(dlPausedLine(status));
@@ -1551,6 +1661,283 @@ export class View implements AppBridge {
       const saved = await this.commitChoice(free.connection, DL_FREE_MODEL, { firstRun: o.firstRun, standalone: !!o.standalone }, say);
       if (saved) return saved;
     }
+  }
+
+  /**
+   * Before first run's question: what this machine's GPU means (gpu/first-run.ts). A 24 GB
+   * Nvidia card, with dl to run the setup, is offered a private model ("model-up" when the
+   * answer is yes); a smaller one, AMD, Ascend or none gets its one line or question. A GPU
+   * tool that is there but didn't answer says so and keeps the GPU paths open. Answers are
+   * remembered, and the detection is counted once per machine.
+   */
+  private async gpuPreScreen(
+    detection: GpuDetection,
+    canModelUp: boolean,
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<"model-up" | undefined> {
+    const env = this.gpuCalls.env;
+    const gpu = detection.gpu;
+    const remembered = await readGpuState();
+    if (!remembered.counted) {
+      sendGpuTelemetry(detectedTelemetry(detection), env);
+      await rememberGpu({ counted: true });
+    }
+    const result = modelUpResult(env);
+    if (result && !result.ok) {
+      // Back from a dl model up that didn't finish. With dl able to run it again: the failure
+      // menu (Retry, See what failed, Pick another model, Continue). Otherwise say so, and go on.
+      if (canModelUp && offersModelUpRetry(result)) return this.modelUpFailureMenu(gpu, result, say);
+      say(modelUpFailedLine(result.error), result.error === "cancelled" ? "info" : "error");
+      return undefined;
+    }
+    if (gpu && qualifiesForPrivateModel(gpu)) {
+      if (!canModelUp) {
+        say(noDlHint(gpu));
+        return undefined;
+      }
+      if (remembered.privateModel === "no") return undefined;
+      const answer = await this.select(privateModelQuestion(gpu), PRIVATE_MODEL_CHOICES.map((c) => ({ ...c })), "yes", PRIVATE_MODEL_SUBTITLE);
+      if (answer === null) return undefined;
+      sendGpuTelemetry({ event: "prompt", gpuVendor: "nvidia", answer: answer === "yes" ? "yes" : "no", gpuVramGb: gpu.vramGb }, env);
+      if (answer === "yes") return this.handOverModelUp(gpu, say);
+      await rememberGpu({ privateModel: "no" });
+      return undefined;
+    }
+    if (gpu?.vendor === "nvidia") {
+      say(smallNvidiaHint(gpu));
+      return undefined;
+    }
+    if (gpu && (gpu.vendor === "amd" || gpu.vendor === "ascend")) {
+      if (remembered.earlyAccess?.[gpu.vendor]) return undefined;
+      const answer = await this.select(earlyAccessQuestion(gpu), EARLY_ACCESS_CHOICES.map((c) => ({ ...c })), "no", EARLY_ACCESS_SUBTITLE);
+      if (answer === null) return undefined;
+      const yes = answer === "yes";
+      // A yes may leave an email, sent with the count; with telemetry off nothing is sent, so none is asked for.
+      const sending = gpuTelemetrySends(env);
+      const email = yes && sending ? await this.earlyAccessEmail(gpu, say) : undefined;
+      sendGpuTelemetry({ event: "early_access", gpuVendor: gpu.vendor, answer: yes ? "yes" : "no", gpuModel: gpu.model, gpuVramGb: gpu.vramGb, ...(email ? { email } : {}) }, env);
+      await rememberGpu({ earlyAccess: { [gpu.vendor]: yes ? "yes" : "no" } });
+      if (yes) say(!sending ? EARLY_ACCESS_TELEMETRY_OFF : email ? EARLY_ACCESS_THANKS_EMAIL : EARLY_ACCESS_THANKS);
+      return undefined;
+    }
+    if (!gpu && detection.unanswered) return this.unansweredGpu(detection.unanswered, canModelUp, say);
+    if (!gpu) say(NO_GPU_HINT);
+    return undefined;
+  }
+
+  /**
+   * A GPU tool that is on PATH but didn't answer, twice: the GPU is likely there. Say so plainly;
+   * for Nvidia with dl able to run the setup, offer dl model up (it checks the GPU itself) or
+   * the usual choices, where "Use your own GPUs" also offers this machine. Not remembered: the
+   * tool may answer next time.
+   */
+  private async unansweredGpu(
+    tool: UnansweredTool,
+    canModelUp: boolean,
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<"model-up" | undefined> {
+    const line = unansweredLine(tool);
+    if (tool.vendor !== "nvidia" || !canModelUp) {
+      say(line);
+      return undefined;
+    }
+    const answer = await this.select(unansweredTitle(tool), UNANSWERED_CHOICES.map((c) => ({ ...c })), "model-up", unansweredNext(tool));
+    if (answer === null) return undefined;
+    sendGpuTelemetry({ event: "prompt", gpuVendor: "nvidia", answer: answer === "model-up" ? "yes" : "no" }, this.gpuCalls.env);
+    return answer === "model-up" ? this.handOverModelUp(null, say) : undefined;
+  }
+
+  /** The optional email after a yes to early access; asked again until it looks like one. Esc or empty skips. */
+  private async earlyAccessEmail(gpu: DetectedGpu, say: (message: string, severity?: "info" | "error") => void): Promise<string | undefined> {
+    for (;;) {
+      const f = await this.sdk.form(this.cam, {
+        id: `early-access-email-${Date.now()}`,
+        title: EARLY_ACCESS_EMAIL_TITLE,
+        fields: [{ name: "email", label: earlyAccessEmailSubtitle(gpu), placeholder: "you@example.com" }],
+      });
+      const email = f.cancelled ? "" : (f.values?.email?.trim() ?? "");
+      if (!email) return undefined;
+      if (looksLikeEmail(email)) return email;
+      say(EARLY_ACCESS_EMAIL_ERROR, "error");
+    }
+  }
+
+  /**
+   * After a private model setup that failed: what failed (dl's reason) and four ways on. Retry
+   * and Pick another model hand over to dl again; See what failed shows the reason, the log's
+   * path and its last lines that matter (never the server's whole log); Continue goes on to the
+   * usual choices.
+   */
+  private async modelUpFailureMenu(
+    gpu: DetectedGpu | null,
+    failure: ModelUpFailure,
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<"model-up" | undefined> {
+    for (;;) {
+      const choice = await this.select(MODEL_UP_FAILED_TITLE, modelUpFailureChoices(failure), "retry", modelUpFailedSubtitle(failure));
+      if (choice === null || choice === "continue") return undefined;
+      if (choice === "details") {
+        this.showLines(modelUpFailureDetails(failure, failure.log ? await readRunLogTail(failure.log) : undefined));
+        continue;
+      }
+      const handed = await this.handOverModelUp(gpu, say, choice === "retry" ? (failure.model ? { model: failure.model } : {}) : { pick: true });
+      if (handed) return handed;
+    }
+  }
+
+  /** Ask dl for `dl model up` (Autopilot exits next; dl starts it again on the new model). */
+  private async handOverModelUp(
+    gpu: DetectedGpu | null,
+    say: (message: string, severity?: "info" | "error") => void,
+    then: { model?: string; pick?: boolean } = {},
+  ): Promise<"model-up" | undefined> {
+    const path = handoffPath(this.gpuCalls.env);
+    if (!path) return undefined;
+    try {
+      await requestModelUp(path, gpu, then);
+    } catch (e) {
+      say(`Couldn't hand over to dl model up: ${(e as Error).message}. Run dl model up in a terminal.`, "error");
+      return undefined;
+    }
+    await flushGpuTelemetry();
+    return "model-up";
+  }
+
+  /**
+   * "Use your own GPUs": where they are. This machine hands over to `dl model up`; another
+   * server of yours shows the two commands to run there, then takes its address; a vLLM (or
+   * other OpenAI-compatible) server you run takes its URL and an optional key. Either is
+   * checked with /v1/models, a model picked, and saved as the vLLM provider. "back" returns
+   * to the question.
+   */
+  private async ownGpus(
+    o: { cfg: Partial<Cfg> | null; firstRun: boolean; standalone: boolean },
+    gpu: DetectedGpu | null,
+    canModelUp: boolean,
+    say: (message: string, severity?: "info" | "error") => void,
+    unanswered?: UnansweredTool,
+  ): Promise<ConnectOutcome | "model-up" | "back"> {
+    const env = this.gpuCalls.env;
+    for (;;) {
+      const where = await this.select(WHERE_QUESTION, whereChoices(gpu, canModelUp, unanswered), undefined, "Esc to go back");
+      if (where === null) return "back";
+      sendGpuTelemetry({ event: "option", option: where as GpuWhere, gpuVendor: gpu?.vendor ?? "none" }, env);
+      if (where === "this_machine") {
+        if (!canModelUp) {
+          say(THIS_MACHINE_WITHOUT_DL);
+          continue;
+        }
+        if ((await this.handOverModelUp(gpu, say)) === "model-up") return "model-up";
+        continue;
+      }
+      const saved = where === "remote_server" ? await this.remoteGpuServer(o, say) : await this.ownEndpoint(o, say);
+      if (saved) return saved;
+    }
+  }
+
+  /** Another server of yours: the two commands for it, then its address and port. Null = back. */
+  private async remoteGpuServer(
+    o: { cfg: Partial<Cfg> | null; firstRun: boolean; standalone: boolean },
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<ConnectOutcome | null> {
+    this.showLines(REMOTE_SERVER_STEPS);
+    let address = "";
+    let port = "8000";
+    for (;;) {
+      const f = await this.sdk.form(this.cam, {
+        id: `gpu-server-${Date.now()}`,
+        title: REMOTE_SERVER_TITLE,
+        fields: [
+          { name: "address", label: "Address (host name or IP)", placeholder: "gpu.example.com", required: true, ...(address ? { default: address } : {}) },
+          { name: "port", label: "Port", default: port },
+        ],
+      });
+      if (f.cancelled) return null;
+      address = f.values?.address?.trim() ?? "";
+      port = f.values?.port?.trim() || "8000";
+      const baseUrl = serverBaseUrl(address, port);
+      if (!baseUrl) {
+        say("Enter a host name or IP, and a port from 1 to 65535.", "error");
+        continue;
+      }
+      const saved = await this.connectGpuEndpoint(o, baseUrl, undefined, "remote_server", say);
+      if (saved === "failed") {
+        say(remoteTunnelHint(port));
+        continue;
+      }
+      return saved;
+    }
+  }
+
+  /** A vLLM or other OpenAI-compatible server you run: its URL and an optional key. Null = back. */
+  private async ownEndpoint(
+    o: { cfg: Partial<Cfg> | null; firstRun: boolean; standalone: boolean },
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<ConnectOutcome | null> {
+    let url = "";
+    for (;;) {
+      const f = await this.sdk.form(this.cam, {
+        id: `gpu-endpoint-${Date.now()}`,
+        title: ENDPOINT_TITLE,
+        fields: [
+          { name: "url", label: "Base URL", placeholder: "http://10.0.0.5:8000/v1", required: true, ...(url ? { default: url } : {}) },
+          { name: "key", label: "API key (optional)", kind: "password" },
+        ],
+      });
+      if (f.cancelled) return null;
+      url = f.values?.url?.trim() ?? "";
+      const baseUrl = normalizeBaseUrl(url);
+      if (!baseUrl) {
+        say(ENDPOINT_URL_ERROR, "error");
+        continue;
+      }
+      const key = f.values?.key?.trim() || undefined;
+      const saved = await this.connectGpuEndpoint(o, baseUrl, key, "endpoint", say);
+      if (saved === "failed") continue;
+      return saved;
+    }
+  }
+
+  /**
+   * Check <base>/models, pick one of its models (the only one is picked for you), and save it
+   * as the vLLM provider. "failed" when the check or save failed (said, and counted), null when
+   * the person backed out of the model list.
+   */
+  private async connectGpuEndpoint(
+    o: { cfg: Partial<Cfg> | null; firstRun: boolean; standalone: boolean },
+    baseUrl: string,
+    key: string | undefined,
+    path: "remote_server" | "endpoint",
+    say: (message: string, severity?: "info" | "error") => void,
+  ): Promise<ConnectOutcome | null | "failed"> {
+    const env = this.gpuCalls.env;
+    const fail = (errorType: GpuErrorType) => {
+      sendGpuTelemetry({ event: "result", outcome: "failed", path, errorType }, env);
+      return "failed" as const;
+    };
+    say(`Checking ${baseUrl}/models…`);
+    const check = await checkModelsEndpoint(baseUrl, key, this.gpuCalls.fetchImpl);
+    if (!check.ok) {
+      say(check.message, "error");
+      return fail(check.error);
+    }
+    say(servedLine(baseUrl, check.models.length));
+    const model =
+      check.models.length === 1
+        ? check.models[0]!
+        : await this.select("Pick a model", check.models.map((id) => ({ value: id, label: id })), undefined, `Served by ${baseUrl} · switch any time with /model`);
+    if (model === null) return null;
+    // Loads the catalog for the model list and /model (and checks the address once more).
+    const verified = await this.providerCalls.verify("vllm", key, key ? "key" : "none", baseUrl);
+    if (!verified.ok) {
+      say(verified.message, "error");
+      return fail("unreachable");
+    }
+    const connection: Connection = { ...verified.connection, baseUrl, ...(key ? { key } : {}) };
+    const saved = await this.commitChoice(connection, model, { firstRun: o.firstRun, standalone: o.standalone }, say);
+    if (!saved) return fail("save_failed");
+    sendGpuTelemetry({ event: "result", outcome: "ok", path }, env);
+    return saved;
   }
 
   /**
@@ -1597,7 +1984,7 @@ export class View implements AppBridge {
         say(res.message, "error");
         return { kind: "failed" };
       }
-      const me = await this.providerCalls.dlMe().catch(() => null);
+      const me = (await catchDlAuth(() => this.providerCalls.dlMe(), say)) ?? null;
       say(dlSignedInLine(me));
       const invite = dlSignedInInviteLine(me);
       if (invite) say(invite);
@@ -1675,6 +2062,14 @@ export class View implements AppBridge {
       ...this.dlScreenCalls,
       say,
       select: (title, options, subtitle) => this.select(title, options, undefined, subtitle),
+      input: async (title, placeholder) => {
+        const f = await this.sdk.form(this.cam, {
+          id: `dl-topup-amount-${Date.now()}`,
+          title,
+          fields: [{ name: "amount", label: "Amount in dollars", ...(placeholder ? { placeholder } : {}) }],
+        });
+        return f.cancelled ? null : (f.values?.amount?.trim() ?? null);
+      },
       wait: async (text, cancel) => {
         // Esc (cancelRequested) and typed input go to the wait, as during a sign-in.
         const ctrl = new AbortController();
@@ -1702,7 +2097,7 @@ export class View implements AppBridge {
     return runFeedback(req.inline ? { inline: req.inline } : {}, {
       providerId: req.providerId,
       autopilotVersion: getAppVersion(),
-      token: this.feedbackCalls.token,
+      token: () => catchDlAuth(() => this.feedbackCalls.token(), say),
       ...(this.feedbackCalls.fetchImpl ? { fetchImpl: this.feedbackCalls.fetchImpl } : {}),
       status: say,
       askMessage: async ({ problem, draft }) => {
@@ -1842,7 +2237,10 @@ export class View implements AppBridge {
   async connectSetup(o: { exclude?: ReadonlySet<ProviderId>; initial?: ProviderId } = {}): Promise<ConnectOutcome | null> {
     const cfg = (await loadConfig().catch(() => null)) ?? (await readPersistedConfig().catch(() => null));
     // With the free tier on offer, the same one question as first run; without it (--state-file), the provider list.
-    if (!o.initial && !o.exclude?.has("directionally-local")) return this.howToThink({ cfg, firstRun: false, standalone: true });
+    if (!o.initial && !o.exclude?.has("directionally-local")) {
+      const outcome = await this.howToThink({ cfg, firstRun: false, standalone: true });
+      return outcome === "model-up" ? null : outcome;
+    }
     return this.connectAndPickModel({ cfg, firstRun: false, standalone: true, title: "Connect a model provider", ...o });
   }
 

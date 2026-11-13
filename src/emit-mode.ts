@@ -432,13 +432,16 @@ export async function runEmitMode(opts: EmitModeOpts): Promise<void> {
           severity: "error",
         });
         // Recoverable from the user's POV: don't abort multi-turn sessions
-        // on a single bad API call; let them try a different prompt.
+        // on a single bad API call; let them try a different prompt. A
+        // one-shot run failed, though: exit 1, as print mode does.
+        if (!opts.multiTurn) exitCode = 1;
       } else {
         emit("RuntimeError", {
           message: err instanceof Error ? err.message : String(err),
           kind: "generic",
           severity: "error",
         });
+        if (!opts.multiTurn && !aborted) exitCode = 1;
       }
     }
   }

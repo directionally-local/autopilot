@@ -23,7 +23,9 @@ import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extract
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
 import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
 import type { SandboxReadCursor } from "../code-mode/index.js";
-import { estimatePromptTokens } from "./artifact-compaction.js";
+import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
+import { resolveCustomEndpoint } from "./custom-endpoint.js";
+import { localContextLength, localContextMessage, localProviderOf, servedPromptLimit } from "../models/local-context.js";
 import { logger } from "../util/logger.js";
 import { prepareTurn } from "./pre-turn.js";
 import type { SemanticSkillRoutingResult } from "../skills/types.js";
@@ -68,6 +70,9 @@ export interface AgentCallbacks {
   onUsageFinal?: (usage: Usage, responseMeta?: ResponseMeta) => void;
   onResponseMeta?: (meta: ResponseMeta) => void;
   onAssistantFinal?: (msg: ChatMessage) => void;
+  /** Once, when the turn returns normally: why it ended. "complete" is a
+   *  plain finish; "guardrail" means a limit stopped it before it finished. */
+  onTurnEnd?: (reason: TurnEndReason) => void;
   onToolResult?: (result: ToolResult) => void;
   onTasks?: (tasks: Task[]) => void;
   onPlanOptions?: (options: PlanOption[]) => void;
@@ -190,6 +195,8 @@ export interface AgentTurnOpts extends LlmAuth {
   allowDirectPush?: boolean;
   /** When true (default), the system prompt instructs the model to prefer PRs over direct pushes. */
   preferPullRequests?: boolean;
+  /** Print mode: keep the headless section when the system prompt is rebuilt. */
+  headless?: boolean;
   /** Re-inject the live `tasks_set` plan on every request (#950). Default: true. */
   planReminder?: boolean;
   /** Remind the model when a whole step went to bookkeeping alone (tasks_set /
@@ -490,6 +497,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
     await runAgentTurnInner(opts, tr);
     endTurn(tr.endReason ?? "complete", tr.finalText);
     dlTurnEnd(tr.endReason ?? "complete");
+    opts.callbacks.onTurnEnd?.(tr.endReason ?? "complete");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       endTurn("aborted", tr.partialText || tr.finalText);
@@ -959,6 +967,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
     let iterationMadeProgress = false;
     let content = "";
     let reasoning = "";
+    let finishReason: string | null = null;
     let responseMeta: ResponseMeta | undefined;
     /** This response's own usage (lastUsage carries over from earlier responses). */
     let responseUsage: Usage | null = null;
@@ -1015,9 +1024,15 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
 
     let apiMessages = buildApiMessages();
     let promptTokens = estimatePromptTokens(apiMessages);
+    // A local server's own context, asked once per process (models/local-context.ts):
+    // the budget below then uses it, and the tool definitions it counts too.
+    const llmAuth = llmAuthOf(opts);
+    const localEndpoint = llmAuth.customEndpoint ?? resolveCustomEndpoint(); // as runKimi resolves it
+    const servedContext = await localContextLength(localEndpoint, opts.model);
+    const toolTokens = servedContext ? approxTokens(JSON.stringify(toolDefs ?? []).length) : 0;
     // The API rejects when `input + max_completion_tokens > ctxWindow`, so the
     // budget comes from those exact terms plus a margin for estimator drift.
-    const maxPromptTokens = effectiveInputBudget(opts.model, opts.maxCompletionTokens);
+    const maxPromptTokens = Math.max(1, effectiveInputBudget(opts.model, opts.maxCompletionTokens) - toolTokens);
     if (promptTokens > maxPromptTokens && opts.compaction) {
       // One bounded pass: archive older complete turns (raw content stays in
       // the artifact store), keep the active turn, then re-estimate.
@@ -1059,8 +1074,25 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           );
       }
     }
-    if (promptTokens > maxPromptTokens) {
-      logger.warn("context:irreducible", { sessionId: opts.sessionId, promptTokens, budgetTokens: maxPromptTokens });
+    // Past the compaction budget, a local server still takes the prompt while
+    // it leaves room for a reply (the client lowers max_tokens to fit).
+    const promptLimit = servedContext ? Math.max(maxPromptTokens, servedPromptLimit(servedContext) - toolTokens) : maxPromptTokens;
+    if (promptTokens > promptLimit) {
+      logger.warn("context:irreducible", { sessionId: opts.sessionId, promptTokens, budgetTokens: promptLimit });
+      if (servedContext) {
+        throw new ContextBudgetError(
+          promptTokens,
+          promptLimit,
+          servedContext,
+          localContextMessage({
+            promptTokens: promptTokens + toolTokens,
+            contextLength: servedContext,
+            model: opts.model,
+            providerId: localProviderOf(localEndpoint),
+            providerName: providerPresetOf(llmAuth).name,
+          }),
+        );
+      }
       throw new ContextBudgetError(promptTokens, maxPromptTokens, getModelOrInfer(opts.model).contextWindow);
     }
 
@@ -1148,6 +1180,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
               opts.callbacks.onUsage?.(ev.usage);
               break;
             case "done":
+              finishReason = ev.finishReason;
               break;
           }
         }
@@ -1163,6 +1196,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         const discardedText = content;
         content = "";
         reasoning = "";
+        finishReason = null;
         reasoningDetails = [];
         toolCalls.length = 0;
         tr.toolsUsed.length = toolsUsedBeforeCall;
@@ -1256,6 +1290,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       await fireStopHook();
       if (finalizeReason === "loop" && loopWasThrashing) throw new AgentLoopError();
       return;
+    }
+
+    if (toolCalls.length === 0 && !content.trim() && reasoning.trim()) {
+      // A thinking model (e.g. served by vLLM) that only reasoned: not an empty answer to
+      // retry, but one to explain. The reasoning stays visible like any other.
+      logger.info("turn:reasoning_only", { sessionId: opts.sessionId, finishReason });
+      opts.callbacks.onWarning?.(reasoningOnlyLine(finishReason));
     }
 
     if (toolCalls.length === 0) {
@@ -2155,4 +2196,11 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
   });
+}
+
+/** Said when a reply was all reasoning: no text and no tool calls. */
+export function reasoningOnlyLine(finishReason: string | null): string {
+  return finishReason === "length"
+    ? "The model only thought and gave no answer: it ran out of tokens while thinking. Ask again, or ask for less at once."
+    : "The model only thought and gave no answer. Ask again.";
 }

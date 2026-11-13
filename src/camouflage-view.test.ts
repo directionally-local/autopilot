@@ -3,12 +3,12 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, permissionDetail, toolSummary, validateCommandName, View, walkFiles } from "./camouflage-view.js";
+import { catchDlAuth, helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, permissionDetail, toolSummary, validateCommandName, View, walkFiles } from "./camouflage-view.js";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/view-types.js";
 import { listModels, registerProviderModels } from "./models/registry.js";
-import { DL_PROVIDER_ID, dlFreeModelEntries, normalizeDlMe, setLastKnownDlMe } from "./providers/directionally-local.js";
+import { DL_PROVIDER_ID, DlError, dlFreeModelEntries, normalizeDlMe, setLastKnownDlMe } from "./providers/directionally-local.js";
 import { bashTool } from "./tools/bash.js";
 import { jobStartTool } from "./tools/jobs.js";
 
@@ -275,6 +275,55 @@ async function fakeView(answers: { permission?: { choice: "allow_once" | "allow_
   view.connect(new Proxy({}, { get: (_t, name) => record(String(name)) }) as AppActions);
   return { view, sent, prompts, calls, cam };
 }
+
+describe("Camouflage: an expired sign-in is a prompt, not a rejection", () => {
+  it("catchDlAuth: a detached DlError at the feedbackCalls.token/dlMe sites is caught, not an unhandled rejection", async () => {
+    // The crash log named the error and the exit, not the caller; this pins
+    // the two detached provider-token sites the spec names and reproduces the class.
+    const said: string[] = [];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const p = catchDlAuth(() => Promise.reject(new DlError("invalid_grant", "sign-in expired")), (m) => said.push(m));
+      await p;
+      await new Promise((r) => setTimeout(r, 10));
+      assert.deepStrictEqual(unhandled, []);
+      assert.deepStrictEqual(said, ["sign-in expired"]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("feedbackCalls.token: shows the sign-in prompt instead of rejecting", async () => {
+    const { view, sent } = await fakeView({ form: [{ values: { email: "a@b.co" }, cancelled: false }] });
+    view.feedbackCalls = {
+      token: () => Promise.reject(new DlError("invalid_grant", "Your Directionally Local sign-in expired; sign in again.")),
+      fetchImpl: (async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
+    };
+    const line = await view.feedback({ inline: "hello", providerId: "directionally-local" });
+    assert.match(String(sent.find((s) => s.type === "RuntimeError")?.payload.message), /sign-in expired/);
+    assert.strictEqual(line.severity, "info");
+    view.dispose();
+  });
+
+  it("dlMe: shows the sign-in prompt instead of rejecting", async () => {
+    const { view } = await fakeView({ select: ["use"] });
+    view.providerCalls = {
+      ...view.providerCalls,
+      verify: (async () => ({ ok: true, connection: { id: "directionally-local", source: "config" } })) as never,
+      dlMe: () => Promise.reject(new DlError("invalid_grant", "Your Directionally Local sign-in expired; sign in again.")),
+    };
+    const said: string[] = [];
+    const result = await (view as unknown as { freeTierSignIn: (cfg: unknown, say: (m: string) => void) => Promise<{ kind: string }> }).freeTierSignIn(
+      { provider: "directionally-local", providers: { "directionally-local": { apiKey: "tok" } } },
+      (m) => said.push(m),
+    );
+    assert.match(said.join("\n"), /sign-in expired/);
+    assert.strictEqual(result.kind, "connected");
+    view.dispose();
+  });
+});
 
 const settle = () => new Promise((r) => setTimeout(r, 120));
 const permission = { tool: { name: "bash", description: "", parameters: {}, needsPermission: true, run: async () => "" } as never, args: { command: "rm -rf build" } };
@@ -597,12 +646,12 @@ describe("Camouflage free-tier limit screen", () => {
     view.sync(baseSnapshot({ dlScreen: { kind: "quota", resetsAt: "2026-11-09T00:00:00Z", offers, referralLink: "https://dl.new/r/x" } }));
     await settle();
     const pick = prompts.find((p) => p.type === "select")!.payload;
-    assert.match(String(pick.prompt), /^You've used this week's free tokens\. They're back \w{3} \d\d:\d\d\.$/);
+    assert.match(String(pick.prompt), /^You've used this week's free usage\. It's back \w{3} \d\d:\d\d\.$/);
     assert.deepStrictEqual((pick.options as { label: string }[]).map((o) => o.label), [
-      "Invite a friend — you both get +10M a week",
-      "Keep going with Pro — $10/month, 100M a week",
-      "Top up 50M tokens — $3, one time",
-      "Use my own API key",
+      "Get dl Pro: $10/month",
+      "Ask for more free usage",
+      "Use your own key",
+      "Run it on your own GPUs",
     ]);
     assert.deepStrictEqual(checkouts, ["pro"]);
     const said = sent.filter((s) => s.type === "RuntimeError").map((s) => String(s.payload.message));

@@ -49,7 +49,7 @@ On OpenRouter you also get:
 
 - **Up to 1M+ context** (model-dependent) — Read entire modules, large configs, and full stack traces without the model losing track.
 - **Image understanding** — Drop image paths (PNG, JPG, WebP, GIF, BMP up to 5 MB) into any prompt. Great for UI reviews, diagrams, and screenshots.
-- **Plan / Edit / Auto modes (opt-in)** — Modes are off by default: every interactive turn runs in `auto` until you turn them on with `/settings modes on` (`/settings modes off` turns them off again). With modes on, the session starts in `edit` and `Shift+Tab` or `/mode` switches between them. SDK sessions always have modes and start in `edit`. `plan` is a whitelist-only research mode: only read-only tools (read, glob, grep, web search, GitHub read-only, browser fetch) are allowed. Writes, edits, mutating bash, MCP tools, and LSP renames are all blocked. `edit` prompts per mutating call. `auto` approves everything for trusted tasks. In `plan` and `edit`, reading a credentials file (`~/.ssh`, `~/.aws`, Autopilot's own config with your provider keys, `.env`, `/proc/*/environ`) also asks first, so a prompt injection cannot quietly read a key and send it out with `web_fetch`. Likewise `web_fetch` and `browser_fetch` ask before reaching a local or private network address (localhost, `127.0.0.1`, `10.x`/`192.168.x`, cloud metadata at `169.254.169.254`, including names and redirects that resolve there), approved per origin, so a prompt injection cannot read metadata credentials or local services.
+- **Plan / Edit / Auto modes (opt-in)** — Modes are off by default: every interactive turn runs in `auto` until you turn them on with `/settings modes on` (`/settings modes off` turns them off again). With modes on, the session starts in `edit` and `Shift+Tab` or `/mode` switches between them. SDK sessions always have modes and start in `edit`. `plan` is a whitelist-only research mode: only read-only tools (read, glob, grep, web search, GitHub read-only, browser fetch) are allowed. Writes, edits, mutating bash, MCP tools, and LSP renames are all blocked. `edit` prompts per mutating call. `auto` approves everything for trusted tasks. In `plan` and `edit`, reading a credentials file (`~/.ssh`, `~/.aws`, Autopilot's own config with your provider keys, `.env`, `/proc/*/environ`) also asks first (print mode denies it unless a rule names the exact path), so a prompt injection cannot quietly read a key and send it out with `web_fetch`. Likewise `web_fetch` and `browser_fetch` ask before reaching a local or private network address (localhost, `127.0.0.1`, `10.x`/`192.168.x`, cloud metadata at `169.254.169.254`, including names and redirects that resolve there), approved per origin, so a prompt injection cannot read metadata credentials or local services.
 - **Guardrails and `/undo`** — Irreversible actions always ask, even in `auto`, under `--dangerously-allow-all`, or under a broad allow rule: deleting untracked work, `git reset --hard`, force pushes, dropping a database. A production-looking target needs its name typed, not just Enter. Before a destructive file or git action Autopilot saves a recovery point outside the repo, and `/undo` restores the latest one. `/audit` reports what the agent could destroy from here and what would save you.
 - **Setup import from other coding agents** — On first run Autopilot finds your `CLAUDE.md`, `GEMINI.md`, Cursor rules, Copilot instructions, Claude Code commands and MCP servers and uses them in place; `/setup-import` shows the checklist again. Nothing is copied into the repo or sent anywhere.
 - **Subagents** — By default, the coordinator assesses substantial tasks for independent research and may delegate without special phrasing. Worker calls still go through permission checks and need a configured backend. See the [subagents guide](docs/subagents.md) for examples, controls, limits, and setup.
@@ -251,9 +251,57 @@ autopilot -p "..." -m openai/gpt-4o-mini
 
 ```sh
 autopilot -p "summarize PLAN.md"                    # stream answer to stdout
-autopilot -p "..." --dangerously-allow-all          # auto-approve mutating tools (for scripts)
+autopilot -p "fix the failing test"                 # edits files and runs commands, as the TUI does
+autopilot -p "..." --dangerously-allow-all          # also approve what would need a person
 autopilot -p "..." --reasoning                      # include chain-of-thought in stderr
 ```
+
+**Permissions.** Print mode (`-p`) follows the interactive TUI's policy. What the TUI approves
+without asking, print mode approves: edits, writes (except to credentials paths, below), and safe or recoverable commands, with the
+same recovery points for `/undo`. What the TUI would stop and ask a person about is denied,
+because no one can answer:
+
+| Tool call in print mode | Without `--dangerously-allow-all` | With it |
+| --- | --- | --- |
+| Read-only tools | run | run |
+| Edits, writes, safe and recoverable commands, other tools that ask | **approved** (recovery point first when something is lost) | approved |
+| Matches a config `deny` rule | denied | approved (the flag overrides rules and hooks, as before) |
+| Matches a config `allow` rule | approved | approved |
+| Matches a config `ask` rule, or a `PreToolUse` hook answers `ask` | denied, unless a `PermissionRequest` hook allows it | approved |
+| A `PermissionRequest` hook answers | the hook decides | approved |
+| Reading or writing credentials (`read`/`grep`, or `write`/`edit`, on `~/.ssh` incl. `authorized_keys`, `~/.aws`, Autopilot's config, `.env`, `/proc/*/environ`, …; the TUI's auto mode approves these). Bash commands that write there (`>> ~/.ssh/authorized_keys`) aren't recognised yet | denied, unless an `allow` rule for that tool names that exact path (`"read": { "~/.aws/credentials": "allow" }`, `"write": { ".env": "allow" }`); broad rules and hooks don't count | approved |
+| Irreversible action (guardrails: `git reset --hard`, `terraform destroy`, force push, …) | denied, unless a rule names that exact action | same: the flag doesn't cover it |
+
+With the modes feature flag on (`modesEnabled`), the TUI starts in `edit` mode and asks before
+mutating tools, so print mode denies them too unless a rule, a hook or the flag approves.
+
+The model is told the run is headless: no one can answer questions, so it shouldn't ask for
+permission or confirmation, and after a denial it should find another way or finish and report
+what's left.
+
+To keep the old read-only behaviour (earlier versions denied every mutating call in print mode
+without the flag), add deny rules to `~/.config/autopilot/config.json`:
+
+```json
+{ "permissions": { "write": { "**": "deny" }, "edit": { "**": "deny" }, "bash": { "**": "deny" } } }
+```
+
+**Exit codes.**
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The run finished. |
+| `1` | API error (after retries). |
+| `42` | `--max-input-tokens` budget exhausted. |
+| `43` | Agent loop detected (repeated blocked calls). |
+| `44` | A `UserPromptSubmit` hook blocked the prompt. |
+| `45` | The run didn't finish: a tool call was denied, the final reply asks a question, the model offered plan options to choose from, or a limit stopped the turn. |
+
+For `45`, the reason goes to stderr in `text` mode, to an `unfinished` field in `json`, and to an
+`unfinished` event (with `reasons`, `denied`, `question`) before `done` in `stream-json`. The
+question check is deliberately narrow: the last non-empty line of the final reply, outside a code
+block and ignoring trailing markdown, quotes and closing brackets, ends with `?`. A reply that
+ends with a statement, such as "Let me know if you need anything else.", counts as finished.
 
 ### Run tasks on your own server
 
@@ -425,7 +473,7 @@ autopilot
 | `/settings` | List feature settings; `/settings modes on\|off` turns plan/edit/auto modes on or off (off by default), `/settings diagnostics on\|off` toggles post-edit diagnostics, `/settings tour on\|off` the project tour, `/settings refocus on\|off` bringing the terminal back after a browser sign-in (macOS), `/settings pr-footer on\|off` the line "Opened with [dl](https://dl.new), a free coding agent." at the end of pull requests the agent opens (on by default, every provider; never added to commits; also `prFooter: false` in config.json or `AUTOPILOT_PR_FOOTER=0`), `/settings invite-tip on\|off` the one-time invite line after your first opened PR or passing tests on the free tier |
 | `/usage` | Directionally Local: your plan (Free or Pro), tokens used and left this week, top-up tokens left, invite bonus, place in line when queued, and when the week resets |
 | `/invite` | Free tier: your invite link (copied to the clipboard where the terminal allows it), how many joined, how many were active this week, and the bonus earned; each friend who starts using dl gives you both +10M tokens a week. Also `autopilot invite` |
-| `/upgrade` | Directionally Local: buy Pro or a one-time top-up (opens the payment page, then waits up to 10 minutes for it to show); on Pro, opens the page to manage or cancel your plan. Also `autopilot upgrade [pro\|topup]`. When the free tier runs out mid-session, the same choice (plus inviting a friend and using your own key) appears on its own and the blocked request continues once the purchase shows |
+| `/upgrade` | Directionally Local: buy dl Pro or a one-time top-up (choose an amount; opens the payment page, then waits up to 10 minutes for it to show); on Pro, opens the page to manage or cancel your plan. Also `autopilot upgrade [pro\|topup]`. When free usage runs out mid-session, a screen offers dl Pro first (at the price the service sends), then a top-up, asking for more free usage (`/request`), your own key (`/provider`) and your own GPUs (`dl model up`); the blocked request continues once a purchase shows |
 | `/tour` | Summarize this project (name, kind, file count, test command, open GitHub issues when `gh` is signed in) and suggest three tasks; type 1–3 to start one. Shown automatically on the first session in each git repository (remembered in `~/.local/state/autopilot/project-tour.json`, never in the repo); one small model call words the tasks (capped at 200 output tokens, local suggestions after 4 s) |
 | `/mode edit\|plan\|auto` | Switch permission mode (needs modes on) |
 | `/shell auto\|bash\|cmd\|powershell` | Show or set the shell for the bash tool |
@@ -658,8 +706,8 @@ A `PreToolUse` hook that exits `0` can instead print a JSON decision:
 
 - `deny` blocks, with `permissionDecisionReason` as the reason.
 - `ask` sends the call through the normal permission prompt, even for
-  tools that don't usually ask. Hosts with no one to ask answer as they
-  already do (`--print` denies unless `--dangerously-allow-all`).
+  tools that don't usually ask. Hosts with no one to ask deny it
+  (`--print` denies unless `--dangerously-allow-all`).
 - `allow` means the hook doesn't object; it does **not** bypass your own
   permission rules or mode.
 
@@ -708,7 +756,8 @@ events.
 `PermissionRequest` fires when Autopilot is about to ask you to approve a
 tool call — after plan mode, `--dangerously-allow-all` and config
 permission rules have had their say, so it never fires for calls those
-already settled. The payload has `tool`, `args`, `tool_call_id`,
+already settled. In print mode it fires for every such call, before print
+mode's own default (approve what the TUI approves without asking). The payload has `tool`, `args`, `tool_call_id`,
 `mode` (`edit`, `plan`, …; also `$AUTOPILOT_HOOK_MODE`), plus Claude Code's `tool_name`,
 `tool_input`, `tool_use_id` and `permission_mode`; `matcher` matches the
 tool name. The hook decides like a `PreToolUse` hook:
@@ -721,7 +770,8 @@ tool name. The hook decides like a `PreToolUse` hook:
   (an `allow` there still shows the prompt) or a config deny rule (those
   calls never reach the hook).
 - `"ask"`, no JSON, or a hook that fails open: the normal prompt.
-  Hosts with no one to ask answer as before (`--print` denies).
+  Hosts with no one to ask follow their own policy (`--print` approves
+  what the TUI would approve without asking and denies the rest).
 
 Claude Code's form, `{"hookSpecificOutput": {"decision": {"behavior": "allow"|"deny", "message": "..."}}}`,
 works too.

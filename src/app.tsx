@@ -48,8 +48,8 @@ import { setTerminalTitle } from "./ui/terminal-title.js";
 import { syncHerdrFromTui } from "./util/herdr.js";
 import { checkForUpdate, updateNotice } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
-import { nextMode, type Mode } from "./mode.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, pickedModel, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { nextMode, startMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
 import { getMemoryDb } from "./memory/db.js";
@@ -293,6 +293,8 @@ function App({
   // The free tier's limit / queue / upgrade screen, and what it needs: the
   // prompt to retry once Pro or a top-up is bought, and the error line Esc shows.
   const [dlScreen, setDlScreen] = useState<DlScreen | null>(null);
+  /** A blocked request to send again once the model switch it waits for is in `cfg` (the GPT-6 limit's DeepSeek choice). */
+  const [dlRetryOn, setDlRetryOn] = useState<{ model: string; text: string; display: string } | null>(null);
   const lastTurnPromptRef = useRef<{ text: string; display: string } | null>(null);
   /** Wall-clock end of the last turn — the idle gap before the next turn. */
   const lastTurnEndAtRef = useRef<number | null>(null);
@@ -322,7 +324,7 @@ function App({
   // Plan/edit/auto modes are behind a feature flag (cfg.modesEnabled, off by
   // default): with it off every session runs in auto and the mode UI is hidden.
   const modesEnabled = cfg?.modesEnabled === true;
-  const [mode, setMode] = useState<Mode>(initialCfg?.modesEnabled ? "edit" : "auto");
+  const [mode, setMode] = useState<Mode>(startMode(initialCfg));
   useEffect(() => {
     // Toggling the flag from /settings: off → back to auto; on → start in edit.
     setMode((m) => (modesEnabled ? (m === "auto" ? "edit" : m) : "auto"));
@@ -989,7 +991,7 @@ function App({
       const previousModel = cfg?.model ?? "the current model";
       setCfg((c) => {
         if (!c) return c;
-        const updated = { ...c, model: picked.id };
+        const updated = pickedModel(c, picked.id);
         void saveConfig(updated).catch(() => {});
         return updated;
       });
@@ -1765,7 +1767,7 @@ function App({
             // The free tier ran out or queued this account: offer the ways on (Esc shows the usual line).
             const screen =
               e instanceof DlApiError && failure.kind !== "aborted"
-                ? dlScreenFor(e.providerCode, (e.providerDetail ?? {}) as Parameters<typeof dlScreenFor>[1], lastKnownDlMe()?.referral?.link)
+                ? dlScreenFor(e.providerCode, (e.providerDetail ?? {}) as Parameters<typeof dlScreenFor>[1], lastKnownDlMe()?.referral?.link, lastKnownDlMe()?.plan)
                 : undefined;
             if (screen) {
               dlScreenErrorRef.current = failure.kind === "error" ? failure.text : failure.kind === "api_error" ? failure.message : null;
@@ -1796,6 +1798,14 @@ function App({
     },
     [cfg, handleSlash, updateAssistant, updateTool, saveSessionSafe, updateResponseMeta, setShowPlanCompletePicker, runUserShellCommand, ensureTraceStarted, updateTaskTracking],
   );
+
+  // The GPT-6 limit's DeepSeek choice: once `cfg` holds the new model, send the blocked request again.
+  useEffect(() => {
+    if (!dlRetryOn || cfg?.model !== dlRetryOn.model) return;
+    const { text, display } = dlRetryOn;
+    setDlRetryOn(null);
+    void processMessage(text, display, { retry: true });
+  }, [dlRetryOn, cfg?.model, processMessage]);
 
   useEffect(() => {
     if (canDrainQueue({
@@ -2231,8 +2241,22 @@ function App({
         dlScreenErrorRef.current = null;
         if (next.kind === "show-error") setEvents((es) => [...es, { kind: "error", key: mkKey(), text: next.text }]);
         else if (next.kind === "provider-picker") modals.setProviderSetup({});
+        // "Ask for more free usage": the /request flow.
+        else if (next.kind === "command") void handleSlash(next.command);
         // Bought Pro or a top-up: send the blocked request again.
         else if (next.kind === "retry") void processMessage(next.text, next.display, { retry: true });
+        // GPT-6's week used up: switch to DeepSeek, then send the blocked request again on it.
+        else if (next.kind === "switch-model") {
+          const previous = cfg?.model ?? "the current model";
+          setCfg((c) => {
+            if (!c) return c;
+            const updated = pickedModel(c, next.model);
+            void saveConfig(updated).catch(() => {});
+            return updated;
+          });
+          setEvents((es) => [...es, { kind: "info", key: mkKey(), text: `model switched: ${previous} → ${next.model}. Conversation history is kept.` }]);
+          if (next.retry) setDlRetryOn({ model: next.model, ...next.retry });
+        }
       },
       starAskDone: () => setStarAsk(null),
       feedbackDone: (line: FeedbackLine) => {

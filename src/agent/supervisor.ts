@@ -14,6 +14,8 @@
 import { runAgentTurn } from "./loop.js";
 import type { AgentTurnOpts } from "./loop.js";
 import { logger } from "../util/logger.js";
+import { ApiError } from "../util/errors.js";
+import { dlAuthPrompt, isDlAuthError } from "../providers/directionally-local.js";
 
 export type TurnPhase = "idle" | "preparing" | "streaming" | "executing" | "compacting" | "error";
 
@@ -70,7 +72,12 @@ export class TurnSupervisor {
           error: err.message ?? String(err),
           name: err.name,
         });
-        await callbacks?.onError?.(err);
+        // An expired sign-in is a prompt, not a crash: surface it as the
+        // provider error the UI already knows how to show.
+        const surfaced = isDlAuthError(error)
+          ? Object.assign(new ApiError(dlAuthPrompt(error), undefined, error.status ?? 401), { providerCode: error.code })
+          : err;
+        await callbacks?.onError?.(surfaced);
       })
       .finally(() => {
         this.currentTurn = null;

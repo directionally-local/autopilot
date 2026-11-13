@@ -263,6 +263,9 @@ export interface PermissionDecisionResult {
    *  (`PermissionRequest.destructive`) and got a yes, or matched a rule
    *  naming that exact action. Without it, an irreversible call is denied. */
   irreversibleConfirmed?: boolean;
+  /** Set by a host with no one to ask (print mode) on a deny: what the model
+   *  hears instead of "Permission denied by user … ask the user". */
+  message?: string;
 }
 
 /**
@@ -290,6 +293,9 @@ export interface PermissionRequest {
    *  prompt is forced (even for tools that skip it) and this is the hook's
    *  `permissionDecisionReason`, if it gave one. */
   hookAskReason?: string;
+  /** True when a PreToolUse hook answered `permissionDecision: "ask"`, with
+   *  or without a reason: the hook wants a person to decide. */
+  hookAsked?: boolean;
   /** Set when a tool that normally skips the prompt needs it for this call
    *  (ToolSpec.permissionReason), e.g. reading a credentials file. Hosts
    *  must not auto-allow such a request on the strength of
@@ -385,6 +391,10 @@ export interface ToolResult {
   guardrail?: boolean;
   /** Durable wait signal that ends the current agent turn after persisting state. */
   waitRequest?: RunWaitRequest;
+  /** True when the call never ran because it was denied: a permission rule,
+   *  a hook, the guardrails or the host's answer. Print mode exits non-zero
+   *  after a run with any denied call. */
+  denied?: boolean;
 }
 
 /** Cap on `result.content` bytes carried in the PostToolUse hook
@@ -602,6 +612,7 @@ export class ToolExecutor {
           ok: false,
           errorCode: "policy_rejection",
           recoverable: false,
+          denied: true,
           suggestion: "the user has a hook that blocks this call — try a different approach",
         };
         // PostToolUse does NOT fire on a vetoed call. The action never
@@ -631,6 +642,7 @@ export class ToolExecutor {
         ok: false,
         errorCode: "policy_rejection",
         recoverable: false,
+        denied: true,
         suggestion: "the user's Claude Code settings deny this call — try a different approach",
       };
       this.firePostToolUse(call, args, denied, ctx);
@@ -665,6 +677,7 @@ export class ToolExecutor {
           tool,
           args,
           sessionKey,
+          ...(hookForcesAsk ? { hookAsked: true } : {}),
           ...(hookForcesAsk && hookAskReason ? { hookAskReason } : {}),
           ...(sensitiveReason ? { sensitiveReason } : {}),
           ...(destructive ? { destructive } : {}),
@@ -684,6 +697,7 @@ export class ToolExecutor {
                 ok: false,
                 errorCode: "policy_rejection",
                 recoverable: false,
+                denied: true,
                 suggestion: "tell the user what you wanted to run and why",
               }
             : byHook
@@ -694,16 +708,18 @@ export class ToolExecutor {
                 ok: false,
                 errorCode: "policy_rejection",
                 recoverable: false,
+                denied: true,
                 suggestion: "the user has a hook that denies this call — try a different approach",
               }
             : {
                 tool_call_id: call.id,
                 name: call.name,
-                content: `Permission denied by user. Do not retry this exact call; ask the user what they want to do differently.`,
+                content: result.message ?? `Permission denied by user. Do not retry this exact call; ask the user what they want to do differently.`,
                 ok: false,
                 errorCode: "permission_denied",
                 recoverable: false,
-                suggestion: "ask the user what they want to do differently",
+                denied: true,
+                suggestion: result.message ? "do the task another way, or finish and report what's left" : "ask the user what they want to do differently",
               };
           this.firePostToolUse(call, args, denied, ctx);
           return denied;

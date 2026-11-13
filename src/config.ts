@@ -773,6 +773,24 @@ function stripUndefined<T extends object>(obj: T): T {
 }
 
 /**
+ * A model this process uses in place of the saved one (the free tier's
+ * fallback when the saved model has no tokens left this week). saveConfig()
+ * keeps the saved model on disk while the session runs on `used`.
+ */
+let sessionModelFallback: { provider: ProviderId; saved: string; used: string } | null = null;
+
+/** Run this session on `used` while `saved` stays the saved choice. */
+export function setSessionModelFallback(f: { provider: ProviderId; saved: string; used: string } | null): void {
+  sessionModelFallback = f;
+}
+
+/** The config with a model the person picked (/model or the picker): an explicit pick ends a session fallback. */
+export function pickedModel<T extends { model?: string }>(cfg: T, model: string): T {
+  sessionModelFallback = null;
+  return { ...cfg, model };
+}
+
+/**
  * Side-call models that loadConfig() filled in from the active provider's
  * preset are not user choices: persisting them would pin one provider's ids
  * into the file and leak them into the next provider after a switch.
@@ -790,6 +808,18 @@ async function forSaving(cfg: AutopilotConfig, path: string): Promise<AutopilotC
   // When another provider is active only for this run (AUTOPILOT_PROVIDER),
   // its model goes under providers.<id>.model and the file's own model stays.
   const owner = isProviderId(cfg.provider) ? cfg.provider : resolveProviderId({ ...cfg, provider: undefined }, {});
+  // A model used only for this session (the free tier's fallback) is not a choice: keep the saved one.
+  const fallback = sessionModelFallback;
+  if (fallback && active.id === fallback.provider && cfg.model === fallback.used) out.model = fallback.saved;
+  // providers.<id>.model wins over the top-level model on load, so the
+  // active provider's entry must follow the model being saved — otherwise a
+  // model picked with /model is shadowed by the one the entry was given at
+  // sign-in or on a switch (the free tier always has one) and every new
+  // session starts on that one again. A KIMI_MODEL override is not a choice.
+  const envModel = process.env.KIMI_MODEL || undefined;
+  if (owner === active.id && out.model && out.model !== envModel) {
+    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: out.model } };
+  }
   if (owner !== active.id) {
     let onDisk: Partial<AutopilotConfig> = {};
     try {
@@ -797,7 +827,7 @@ async function forSaving(cfg: AutopilotConfig, path: string): Promise<AutopilotC
     } catch {
       /* no file yet */
     }
-    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: cfg.model } };
+    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: out.model } };
     if (onDisk.model) out.model = onDisk.model;
     else delete (out as Partial<AutopilotConfig>).model;
   }

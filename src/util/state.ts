@@ -11,6 +11,15 @@ export interface StateFile {
   hooksExitCodeNoticeShown?: boolean;
   /** The free tier's default moved from DeepSeek to GPT-6 Luna; say so at the next session start. */
   freeDefaultLunaNoticePending?: boolean;
+  /** The GPU first run's remembered answers (src/gpu/first-run.ts). */
+  gpuFirstRun?: {
+    /** "no" to "Run a private model on this GPU?": not asked again. */
+    privateModel?: "no";
+    /** The early-access answer per vendor: asked once. */
+    earlyAccess?: Partial<Record<"amd" | "ascend", "yes" | "no">>;
+    /** This machine's detection was counted once. */
+    counted?: boolean;
+  };
 }
 
 function statePath(): string {

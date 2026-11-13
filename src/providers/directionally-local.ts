@@ -19,7 +19,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { configPath, patchPersistedConfig, type AutopilotConfig } from "../config.js";
+import { configPath, patchPersistedConfig, setSessionModelFallback, type AutopilotConfig } from "../config.js";
 import { getUserAgent } from "../util/version.js";
 import type { ProviderSettings } from "./resolve.js";
 import type { ModelEntry } from "../models/registry.js";
@@ -34,8 +34,10 @@ export const DL_PROVIDER_ID = "directionally-local" as const;
 export interface DlFreeModel {
   id: string;
   name: string;
-  /** GPT-6 Luna and DeepSeek share one pool; Sol and Astra have their own. */
+  /** GPT-6 Luna and DeepSeek shared one pool on older servers; Sol and Astra have their own. */
   pool: "luna" | "sol" | "astra";
+  /** The weekly dollar budget it spends: every GPT-6 model shares one, DeepSeek has its own. */
+  family: DlFamily;
   contextWindow: number;
   maxOutputTokens: number;
   vision: boolean;
@@ -44,10 +46,10 @@ export interface DlFreeModel {
 
 /** Every model the free tier serves. GPT-6 Luna is the default; DeepSeek is its fallback. */
 export const DL_FREE_MODELS: readonly DlFreeModel[] = [
-  { id: "gpt-6-luna", name: "GPT-6 Luna", pool: "luna", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
-  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", pool: "sol", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
-  { id: "gpt-6-astra", name: "GPT-6 Astra", pool: "astra", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
-  { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", pool: "luna", contextWindow: 1_048_576, maxOutputTokens: 65_536, vision: false, reasoning: true },
+  { id: "gpt-6-luna", name: "GPT-6 Luna", pool: "luna", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", pool: "sol", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "gpt-6-astra", name: "GPT-6 Astra", pool: "astra", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
+  { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", pool: "luna", family: "deepseek", contextWindow: 1_048_576, maxOutputTokens: 65_536, vision: false, reasoning: true },
 ];
 
 /** The default free model: GPT-6 Luna. */
@@ -213,6 +215,19 @@ export class DlError extends Error {
   }
 }
 
+/** The codes that mean the sign-in must be renewed (not a transient failure). */
+const DL_AUTH_CODES = new Set(["invalid_grant", "invalid_token", "signed_out", "expired_token"]);
+
+/** True when `err` is a Directionally Local auth failure that needs a new sign-in. */
+export function isDlAuthError(err: unknown): err is DlError {
+  return err instanceof DlError && DL_AUTH_CODES.has(err.code);
+}
+
+/** The sign-in prompt for an auth failure (the error's own sentence, or a default). */
+export function dlAuthPrompt(err?: unknown): string {
+  return err instanceof DlError ? err.message : "Your Directionally Local sign-in expired. Run `autopilot auth directionally-local` to sign in again.";
+}
+
 /** The fields of the service's `{error:{…}}` this client reads. */
 export interface DlErrorDetail {
   message?: string;
@@ -235,6 +250,9 @@ export interface DlErrorDetail {
   retryable?: boolean;
   /** below_bar, basic_limit: where to ask for more free tokens (/request); older servers send none. */
   request?: string;
+  /** gpt_limit: the budget that ran out ("gpt6") and the model that still has usage this week. */
+  family?: string;
+  alternative?: string;
 }
 
 // ── Plans, offers, invites and the queue (all optional: older servers send none) ──
@@ -242,15 +260,43 @@ export interface DlErrorDetail {
 /** Pro: a monthly plan with a bigger weekly allowance. */
 export interface DlProOffer {
   priceUsdMonthly: number;
-  tokensPerWeek: number;
+  /** The price exactly as the service wants it shown ("$3.99/month"); newer servers send it. */
+  price?: string;
+  /** Pro's weekly tokens, when the service says. */
+  tokensPerWeek?: number;
+  /** Pro's weekly dollar ceiling; null: tokens only. */
+  usdPerWeek?: number | null;
+  /** One short sentence about what Pro gives, from the service. */
+  valueLine?: string;
 }
 
-/** A one-time top-up of tokens. */
+/**
+ * A one-time top-up. Newer servers sell usage dollars: `quantity` units of
+ * `unitPriceUsd` (from `minQuantity` to `maxQuantity`), each adding
+ * `usageMultiplier` times its price. Older servers sold tokens
+ * (`priceUsd` for `tokens`).
+ */
 export interface DlTopupOffer {
-  priceUsd: number;
-  tokens: number;
-  /** How long bought tokens last, when the service says. */
+  unitPriceUsd?: number;
+  minQuantity?: number;
+  maxQuantity?: number;
+  usageMultiplier?: number;
+  priceUsd?: number;
+  tokens?: number;
+  /** How long a top-up lasts, when the service says. */
   validDays?: number;
+}
+
+/** A dollar top-up offer (usage dollars, a quantity of $1 units), as opposed to the old token kind. */
+export type DlUsdTopupOffer = DlTopupOffer & { unitPriceUsd: number; minQuantity: number; maxQuantity: number; usageMultiplier: number };
+
+export function isUsdTopup(t: DlTopupOffer | undefined): t is DlUsdTopupOffer {
+  return !!t && t.unitPriceUsd !== undefined && t.minQuantity !== undefined && t.maxQuantity !== undefined && t.usageMultiplier !== undefined;
+}
+
+/** Pro's price as the service says to show it ("$3.99/month"), never rounded here. */
+export function dlProPrice(pro: DlProOffer): string {
+  return pro.price ?? `${formatUsd(pro.priceUsdMonthly)}/month`;
 }
 
 export interface DlOffers {
@@ -289,15 +335,33 @@ export function parseDlOffers(raw: unknown): DlOffers | undefined {
   const out: DlOffers = {};
   if (isRec(raw.pro)) {
     const price = numOf(raw.pro, "priceUsdMonthly", "price_usd_monthly");
+    const label = strOf(raw.pro, "price");
     const tokens = numOf(raw.pro, "tokensPerWeek", "tokens_per_week");
-    if (price !== undefined && price > 0 && tokens !== undefined && tokens > 0) out.pro = { priceUsdMonthly: price, tokensPerWeek: tokens };
+    const usd = numOf(raw.pro, "usdPerWeek", "usd_per_week");
+    const valueLine = strOf(raw.pro, "valueLine", "value_line");
+    if (price !== undefined && price > 0) {
+      out.pro = {
+        priceUsdMonthly: price,
+        ...(label && label.length <= 40 ? { price: label.trim() } : {}),
+        ...(tokens !== undefined && tokens > 0 ? { tokensPerWeek: tokens } : {}),
+        ...(usd !== undefined && usd > 0 ? { usdPerWeek: usd } : raw.pro.usdPerWeek === null ? { usdPerWeek: null } : {}),
+        ...(valueLine && valueLine.length <= 120 ? { valueLine: valueLine.trim() } : {}),
+      };
+    }
   }
   if (isRec(raw.topup)) {
+    const days = numOf(raw.topup, "validDays", "valid_days");
+    const valid = days !== undefined && days > 0 ? { validDays: days } : {};
+    const unit = numOf(raw.topup, "unitPriceUsd", "unit_price_usd");
+    const min = numOf(raw.topup, "minQuantity", "min_quantity");
+    const max = numOf(raw.topup, "maxQuantity", "max_quantity");
+    const multiplier = numOf(raw.topup, "usageMultiplier", "usage_multiplier");
     const price = numOf(raw.topup, "priceUsd", "price_usd");
     const tokens = numOf(raw.topup, "tokens");
-    const days = numOf(raw.topup, "validDays", "valid_days");
-    if (price !== undefined && price > 0 && tokens !== undefined && tokens > 0) {
-      out.topup = { priceUsd: price, tokens, ...(days !== undefined && days > 0 ? { validDays: days } : {}) };
+    if (unit !== undefined && unit > 0 && min !== undefined && max !== undefined && Number.isInteger(min) && Number.isInteger(max) && min >= 1 && max >= min && multiplier !== undefined && multiplier > 0) {
+      out.topup = { unitPriceUsd: unit, minQuantity: min, maxQuantity: max, usageMultiplier: multiplier, ...valid };
+    } else if (price !== undefined && price > 0 && tokens !== undefined && tokens > 0) {
+      out.topup = { priceUsd: price, tokens, ...valid };
     }
   }
   return out.pro || out.topup ? out : undefined;
@@ -387,6 +451,8 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const etaAt = str("etaAt", "eta_at");
   const retryable = e.retryable === true;
   const request = str("request");
+  const family = str("family");
+  const alternative = str("alternative");
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -399,6 +465,8 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(referralLink ? { referralLink } : {}),
     ...(position !== undefined && position >= 1 ? { position: Math.round(position) } : {}),
     ...(etaAt ? { etaAt } : {}),
+    ...(family ? { family } : {}),
+    ...(alternative ? { alternative } : {}),
     ...(retryable ? { retryable } : {}),
     ...(request ? { request } : {}),
   };
@@ -500,11 +568,25 @@ export function dlDenialLine(denial: DlDenial, extra: DlErrorExtra = {}): string
   }
 }
 
-/** "You've used this week's free tokens. They're back Mon 09:00. To keep going now: /provider to use your own key." */
-export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere } = {}): string {
+/**
+ * "Get dl Pro for $3.99/month: /upgrade" when the service offers Pro and the
+ * account isn't on it (`autopilot upgrade` outside a session). Undefined otherwise.
+ */
+export function dlProLine(offers: DlOffers | undefined, o: { where?: DlWhere; plan?: DlPlan } = {}): string | undefined {
+  if (!offers?.pro || o.plan === "pro") return undefined;
+  return `Get dl Pro for ${dlProPrice(offers.pro)}: ${o.where === "cli" ? "`autopilot upgrade`" : "/upgrade"}`;
+}
+
+/**
+ * "You've used this week's free usage. It's back Mon 09:00. To keep going now: /provider to use
+ * your own key. Get dl Pro for $3.99/month: /upgrade" (the last sentence only when the service
+ * offers Pro and the account isn't on it). On Pro, "this week's Pro usage".
+ */
+export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere; offers?: DlOffers; plan?: DlPlan } = {}): string {
   const back = formatLocalTime(resetsAt ?? nextWeekStart(o.now), o);
   const next = o.where === "cli" ? "To keep going now, use your own key: `autopilot connect`." : `To keep going now: ${DL_SWITCH_HINT} to use your own key.`;
-  return `You've used this week's free tokens. They're back ${back}. ${next}`;
+  const pro = dlProLine(o.offers, { ...(o.where ? { where: o.where } : {}), ...(o.plan ? { plan: o.plan } : {}) });
+  return `You've used this week's ${o.plan === "pro" ? "Pro" : "free"} usage. It's back ${back}. ${next}${pro ? ` ${pro}` : ""}`;
 }
 
 /**
@@ -574,12 +656,12 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
         ? `The free tier didn't accept your sign-in. ${DL_FREE_SIGN_IN_AGAIN}`
         : `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
     case "quota_exceeded":
-      // The token and the spending allowance read the same: both are "this week's free tokens".
-      return dlQuotaLine(extra.resetsAt, { ...extra, where });
+      // The token and the spending allowance read the same: both are "this week's free usage".
+      return dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe) });
     case "basic_limit":
     case "starter_limit":
       // A basic or starter account used its smaller weekly allowance: the same line, and where to ask for more.
-      return withRequestHint(dlQuotaLine(extra.resetsAt, { ...extra, where }), extra, where);
+      return withRequestHint(dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe) }), extra, where);
     case "upstream_busy":
       return "The free tier is busy right now; try again shortly.";
     case "upstream_unavailable":
@@ -921,6 +1003,23 @@ export interface DlAllowance {
   spentUsdThisWeek?: number;
 }
 
+/** A weekly dollar budget: every GPT-6 model shares "gpt6"; DeepSeek has "deepseek". */
+export type DlFamily = "gpt6" | "deepseek";
+
+/** The DeepSeek model: where a GPT-6 limit points. */
+export const DL_DEEPSEEK_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+
+/**
+ * One weekly dollar budget, from /v1/me's `budgets`. `tokensThisWeek` counts every token
+ * processed (prompt tokens with cached ones, plus completion tokens), when the server says.
+ */
+export interface DlBudget {
+  /** Null: no dollar cap. */
+  usdPerWeek: number | null;
+  spentUsd: number;
+  tokensThisWeek?: number;
+}
+
 /** One weekly token pool: what a model tier has left this week. */
 export interface DlPool {
   tokensPerWeek: number;
@@ -950,15 +1049,39 @@ export interface DlMe {
   thresholds?: DlThresholds;
   /** Each model tier's weekly allowance, when the service sends it (older servers don't). */
   pools?: Record<string, DlPool>;
+  /** The two weekly dollar budgets, GPT-6 and DeepSeek, when the service sends them (older servers have one). */
+  budgets?: Partial<Record<DlFamily, DlBudget>>;
   models?: string[];
   /** "pro" once paid; free when the service doesn't say (older servers). */
   plan?: DlPlan;
-  /** Bought top-up tokens not used yet. */
+  /** Bought top-up tokens not used yet (the old token top-ups). */
   topupTokensLeft?: number;
+  /** Dollar top-ups: usage dollars left, and when the soonest-expiring one with usage left ends. */
+  topupUsdLeft?: number;
+  topupUsdExpiresAt?: string;
   /** A place in line for free tokens; undefined when not queued. */
   queue?: DlQueue;
   referral?: DlReferral;
   offers?: DlOffers;
+}
+
+/** One budget of /v1/me's `budgets`, kept only when well formed. */
+function parseDlBudget(raw: unknown): DlBudget | undefined {
+  if (!isRec(raw)) return undefined;
+  const usd = raw.usdPerWeek;
+  const spent = raw.spentUsd;
+  if (!(usd === null || (typeof usd === "number" && Number.isFinite(usd) && usd >= 0)) || typeof spent !== "number" || !Number.isFinite(spent)) return undefined;
+  const tokens = raw.tokensThisWeek;
+  return { usdPerWeek: usd, spentUsd: Math.max(0, spent), ...(typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? { tokensThisWeek: tokens } : {}) };
+}
+
+/** /v1/me's `budgets` (or `allowance.budgets`): both kept when well formed; undefined with neither. */
+export function parseDlBudgets(raw: unknown): Partial<Record<DlFamily, DlBudget>> | undefined {
+  if (!isRec(raw)) return undefined;
+  const gpt6 = parseDlBudget(raw.gpt6);
+  const deepseek = parseDlBudget(raw.deepseek);
+  if (!gpt6 && !deepseek) return undefined;
+  return { ...(gpt6 ? { gpt6 } : {}), ...(deepseek ? { deepseek } : {}) };
 }
 
 /** The thresholds block of /v1/me, keeping only well-formed numbers. */
@@ -984,12 +1107,15 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
   const allowance: DlAllowance = a ?? { tokensPerWeek: 0, usedThisWeek: 0, remaining: 0, resetsAt: "" };
   const plan = raw.plan === "pro" || raw.plan === "free" ? raw.plan : undefined;
   const topup = numOf(raw, "topupTokensLeft", "topup_tokens_left");
+  const topupUsd = numOf(raw, "topupUsdLeft", "topup_usd_left");
+  const topupUsdExpiresAt = strOf(raw, "topupUsdExpiresAt", "topup_usd_expires_at");
   const referral = parseDlReferral(raw.referral);
   const offers = parseDlOffers(raw.offers);
   const pools = parseDlPools(raw.pools);
   const level = raw.level === "full" || raw.level === "starter" ? raw.level : undefined;
   const levelReason = typeof raw.levelReason === "string" ? raw.levelReason : undefined;
   const thresholds = parseDlThresholds(raw.thresholds);
+  const budgets = parseDlBudgets(raw.budgets) ?? (a ? parseDlBudgets((a as unknown as Record<string, unknown>).budgets) : undefined);
   return {
     ...(raw as unknown as DlMe),
     login: typeof raw.login === "string" ? raw.login : "",
@@ -998,8 +1124,11 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
     ...(levelReason !== undefined ? { levelReason } : {}),
     ...(thresholds ? { thresholds } : {}),
     ...(pools ? { pools } : {}),
+    ...(budgets ? { budgets } : {}),
     plan,
     topupTokensLeft: topup !== undefined ? Math.max(0, topup) : undefined,
+    topupUsdLeft: topupUsd !== undefined ? Math.max(0, topupUsd) : undefined,
+    topupUsdExpiresAt: topupUsdExpiresAt && Number.isFinite(Date.parse(topupUsdExpiresAt)) ? topupUsdExpiresAt : undefined,
     queue,
     referral,
     offers,
@@ -1008,6 +1137,11 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
 
 /** The account last read from /v1/me in this process (for the invite and limit screens). */
 let lastMe: DlMe | null = null;
+
+/** `{plan}` from an account read, for the limit lines (nothing when unknown). */
+function planOf(me: Pick<DlMe, "plan"> | null | undefined): { plan?: DlPlan } {
+  return me?.plan ? { plan: me.plan } : {};
+}
 export function lastKnownDlMe(): DlMe | null {
   return lastMe;
 }
@@ -1071,47 +1205,135 @@ export function dlInviteCanAdd(me: DlMe | null | undefined): me is DlMe & { refe
   return me.referral.bonusTokensPerWeek < (me.referral.bonusCapPerWeek ?? DL_INVITE_BONUS_CAP_TOKENS);
 }
 
-/** `/usage`: plan, used and left this week, top-up, invite bonus, queue, and when it resets (in local time). */
+/** The weekly dollar cap when the service sends one (a positive number); undefined otherwise. */
+function dollarCap(a: DlAllowance | undefined): number | undefined {
+  return a && typeof a.usdPerWeek === "number" && a.usdPerWeek > 0 ? a.usdPerWeek : undefined;
+}
+
+/**
+ * True when this week's allowance is used up: its dollar cap is spent, its tokens are gone, or
+ * a 402 this week (same reset) said so.
+ */
+function weekUsedUp(a: DlAllowance): boolean {
+  const cap = dollarCap(a);
+  const seen = lastQuota && (!lastQuota.resetsAt || lastQuota.resetsAt === a.resetsAt) ? lastQuota : null;
+  return a.remaining <= 0 || (cap !== undefined && (a.spentUsdThisWeek ?? 0) >= cap) || seen?.reason === "spend";
+}
+
+/** "this week: $1.20 of $3 free usage", or "limit reached, resets Mon 09:00" once it is used up. */
+export function dlWeekUsageText(me: Pick<DlMe, "allowance" | "plan">, o: DlTimeOpts = {}): string | undefined {
+  const a = me.allowance;
+  const cap = dollarCap(a);
+  if (weekUsedUp(a)) return `limit reached, resets ${formatLocalTime(a.resetsAt || nextWeekStart(o.now), o)}`;
+  if (cap === undefined) return undefined;
+  return `this week: ${formatUsd(a.spentUsdThisWeek ?? 0)} of ${formatUsd(cap)} ${me.plan === "pro" ? "Pro" : "free"} usage`;
+}
+
+/** /usage's hint while GPT-6's week is used up and DeepSeek's isn't. */
+export const DL_GPT_LIMIT_HINT = "GPT-6 is used up this week; DeepSeek V4.1 Flash still has free usage: switch with /model.";
+
+/** The budget's name as /usage and the header show it. */
+export function dlFamilyLabel(family: DlFamily): string {
+  return family === "gpt6" ? "gpt-6" : "deepseek";
+}
+
+/** True when a budget's dollars are spent this week. */
+export function dlBudgetUsedUp(b: DlBudget): boolean {
+  return typeof b.usdPerWeek === "number" && b.spentUsd >= b.usdPerWeek;
+}
+
+/**
+ * One budget's week: "$1.20 of $8 this week · 58M tokens" (dollars first: they are the limit
+ * that binds; tokens counted the normal way, cached included), or "limit reached, resets Mon
+ * 09:00" once its dollars are spent.
+ */
+export function dlBudgetText(b: DlBudget, resetsAt: string | undefined, o: DlTimeOpts = {}): string {
+  if (dlBudgetUsedUp(b)) return `limit reached, resets ${formatLocalTime(resetsAt || nextWeekStart(o.now), o)}`;
+  const dollars = b.usdPerWeek === null ? `${formatUsd(b.spentUsd)} this week, no cap` : `${formatUsd(b.spentUsd)} of ${formatUsd(b.usdPerWeek)} this week`;
+  return b.tokensThisWeek === undefined ? dollars : `${dollars} · ${formatTokens(b.tokensThisWeek)} tokens`;
+}
+
+/** Both budgets, GPT-6 first, when the service sent both (newer servers); undefined otherwise. */
+function bothBudgets(me: Pick<DlMe, "budgets">): { gpt6: DlBudget; deepseek: DlBudget } | undefined {
+  const b = me.budgets;
+  return b?.gpt6 && b.deepseek ? { gpt6: b.gpt6, deepseek: b.deepseek } : undefined;
+}
+
+/** "$6.25 left · until Feb 10" for dollar top-ups; undefined with none left. */
+export function dlTopupUsdText(me: Pick<DlMe, "topupUsdLeft" | "topupUsdExpiresAt">, o: DlTimeOpts = {}): string | undefined {
+  const left = me.topupUsdLeft ?? 0;
+  if (left <= 0) return undefined;
+  const t = me.topupUsdExpiresAt ? Date.parse(me.topupUsdExpiresAt) : NaN;
+  const until = Number.isFinite(t) ? ` · until ${new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", ...(o.timeZone ? { timeZone: o.timeZone } : {}) })}` : "";
+  return `${formatUsd(left)} left${until}`;
+}
+
+/** `/usage`: plan, this week's usage against the limit that binds, top-ups, invite bonus, queue, and when it resets (in local time). */
 export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): string {
   const a = me.allowance;
   const tz = timeZone ? { timeZone } : {};
+  const t: DlTimeOpts = { now, ...tz };
   const pro = me.plan === "pro";
   const lines = [
     `Directionally Local ${pro ? "Pro" : "free tier"}${me.login ? ` · signed in as @${me.login}` : ""}`,
     `  plan            ${dlPlanName(me)}`,
   ];
+  const topupUsd = dlTopupUsdText(me, t);
   if (me.queue) {
-    lines.push(`  queue           ${dlQueuePlace(me.queue.position, me.queue.etaAt, { now, ...tz }).replace(/^You're /, "").replace(/\.$/, "")}`);
+    lines.push(`  queue           ${dlQueuePlace(me.queue.position, me.queue.etaAt, t).replace(/^You're /, "").replace(/\.$/, "")}`);
+    if (topupUsd) lines.push(`  top-up          ${topupUsd}`);
     if (me.topupTokensLeft && me.topupTokensLeft > 0) lines.push(`  top-up left     ${formatTokens(me.topupTokensLeft)} tokens`);
     if (me.referral) lines.push(`  invites         ${me.referral.joined} joined · /invite moves you up`);
     return lines.join("\n");
   }
-  const pct = a.tokensPerWeek > 0 ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100)) : 0;
-  lines.push(
-    `  used this week  ${formatTokens(a.usedThisWeek)} of ${formatTokens(a.tokensPerWeek)} tokens (${pct}%)`,
-    `  left            ${formatTokens(Math.max(0, a.remaining))} tokens`,
-  );
+  const budgets = bothBudgets(me);
+  const cap = dollarCap(a);
+  // With two budgets the week is over only when both are; the percentage is DeepSeek's (the larger one).
+  const usedUp = budgets ? dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek) : weekUsedUp(a);
+  const share = (b: DlBudget) => (typeof b.usdPerWeek === "number" && b.usdPerWeek > 0 ? Math.min(100, Math.round((b.spentUsd / b.usdPerWeek) * 100)) : 0);
+  const pct = budgets
+    ? share(budgets.deepseek)
+    : cap !== undefined
+      ? Math.min(100, Math.round(((a.spentUsdThisWeek ?? 0) / cap) * 100))
+      : a.tokensPerWeek > 0
+        ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100))
+        : 0;
+  if (budgets) {
+    // Two weekly budgets: dollars are the limit, tokens counted the normal way (cached included).
+    const resets = a.resetsAt || undefined;
+    lines.push(`  gpt-6           ${dlBudgetText(budgets.gpt6, resets, t)}`, `  deepseek        ${dlBudgetText(budgets.deepseek, resets, t)}`);
+    if (dlBudgetUsedUp(budgets.gpt6) && !dlBudgetUsedUp(budgets.deepseek)) lines.push(`  ${DL_GPT_LIMIT_HINT}`);
+  } else if (cap !== undefined) {
+    // The dollar cap is what binds: show it first, and tokens only as what was used.
+    lines.push(
+      usedUp
+        ? `  this week       ${dlWeekUsageText(me, t)}`
+        : `  this week       ${formatUsd(a.spentUsdThisWeek ?? 0)} of ${formatUsd(cap)} ${pro ? "Pro" : "free"} usage (${pct}%)`,
+      `  tokens          ${formatTokens(a.usedThisWeek)} used`,
+    );
+  } else {
+    lines.push(`  used this week  ${formatTokens(a.usedThisWeek)} of ${formatTokens(a.tokensPerWeek)} tokens (${pct}%)`);
+    lines.push(usedUp ? `  left            limit reached, resets ${formatLocalTime(a.resetsAt || nextWeekStart(now), t)}` : `  left            ${formatTokens(Math.max(0, a.remaining))} tokens`);
+    // An older server that doesn't send the dollar cap: the free tier's usual one ($5); null means none.
+    const limit = a.usdPerWeek === undefined && !pro ? DL_FREE_WEEKLY_USD : undefined;
+    if (limit !== undefined) {
+      const spent = typeof a.spentUsdThisWeek === "number" ? a.spentUsdThisWeek : undefined;
+      lines.push(`  spending limit  ${spent === undefined ? `${formatUsd(limit)} a week` : `spent ${formatUsd(spent)} of ${formatUsd(limit)}`}`);
+    }
+  }
+  if (topupUsd) lines.push(`  top-up          ${topupUsd}`);
   if (me.topupTokensLeft !== undefined && me.topupTokensLeft > 0) lines.push(`  top-up left     ${formatTokens(me.topupTokensLeft)} tokens`);
   if (me.referral && (me.referral.bonusTokensPerWeek > 0 || me.referral.joined > 0)) {
     lines.push(`  invite bonus    ${referralBonusText(me.referral)} (${me.referral.joined} joined, ${me.referral.activeThisWeek} active this week)`);
   }
-  // The weekly spending limit counts too ($5 unless the service says otherwise; null from the service means none). Not on Pro.
-  const limit = a.usdPerWeek === undefined ? (pro ? null : DL_FREE_WEEKLY_USD) : a.usdPerWeek;
-  if (typeof limit === "number" && limit > 0) {
-    const spent = typeof a.spentUsdThisWeek === "number" ? a.spentUsdThisWeek : undefined;
-    lines.push(`  spending limit  ${spent === undefined ? `${formatUsd(limit)} a week` : `spent ${formatUsd(spent)} of ${formatUsd(limit)}`}`);
-  }
   lines.push(`  resets          ${formatReset(a.resetsAt || undefined, now, timeZone)}`);
-  // A 402 from this week (same reset) still counts when /v1/me rounds it differently.
-  const seen = lastQuota && (!lastQuota.resetsAt || lastQuota.resetsAt === a.resetsAt) ? lastQuota : null;
-  const spendHit =
-    (typeof a.usdPerWeek === "number" && a.usdPerWeek > 0 && typeof a.spentUsdThisWeek === "number" && a.spentUsdThisWeek >= a.usdPerWeek) ||
-    seen?.reason === "spend";
-  const topupLeft = (me.topupTokensLeft ?? 0) > 0;
-  // The token and the spending allowance read the same: either way this week's free tokens are used.
-  if ((a.remaining <= 0 || spendHit) && !topupLeft) lines.push(`  ${dlQuotaLine(a.resetsAt || undefined, { now, ...tz })}`);
-  else if (pct >= 80 && !topupLeft) lines.push(`  You've used ${pct}% of this week's tokens.`);
-  if (dlInviteCanAdd(me)) lines.push(`  Get more: /invite (you both get +${formatTokens(DL_INVITE_BONUS_TOKENS)} a week)`);
+  const topupLeft = (me.topupTokensLeft ?? 0) > 0 || (me.topupUsdLeft ?? 0) > 0;
+  if (usedUp && !topupLeft) lines.push(`  ${dlQuotaLine(a.resetsAt || undefined, { ...t, ...(me.offers ? { offers: me.offers } : {}), ...planOf(me) })}`);
+  else if (pct >= 80 && !usedUp && !topupLeft) lines.push(`  You've used ${pct}% of this week's ${pro ? "Pro" : "free"} usage.`);
+  else if (!usedUp && !pro) {
+    const proLine = dlProLine(me.offers, planOf(me));
+    if (proLine && pct >= 50) lines.push(`  ${proLine}`);
+  }
   return lines.join("\n");
 }
 
@@ -1122,13 +1344,12 @@ export function dlSignedInLine(me: DlMe | null, o: DlTimeOpts = {}): string {
 }
 
 /**
- * Under the sign-in line on the free tier: "Invite friends and you both get
- * +10M tokens a week: <link> (/invite)". Undefined on Pro, without a link, or
- * once invites can't add more.
+ * Under the sign-in line on the free tier: "Your invite link: <link>
+ * (/invite)". Undefined on Pro, without a link, or once invites can't add more.
  */
 export function dlSignedInInviteLine(me: DlMe | null, where: DlWhere = "signin"): string | undefined {
   if (!dlInviteCanAdd(me)) return undefined;
-  return `Invite friends and you both get +${formatTokens(DL_INVITE_BONUS_TOKENS)} tokens a week: ${me.referral.link} (${where === "cli" ? "`autopilot invite`" : "/invite"})`;
+  return `Your invite link: ${me.referral.link} (${where === "cli" ? "`autopilot invite`" : "/invite"})`;
 }
 
 /**
@@ -1138,8 +1359,18 @@ export function dlSignedInInviteLine(me: DlMe | null, where: DlWhere = "signin")
  */
 export function dlHeaderLine(me: DlMe | null): string | undefined {
   if (!me || me.plan === "pro" || me.queue) return undefined;
-  const left = `free · ${formatTokens(Math.max(0, me.allowance.remaining))} left`;
-  return dlInviteCanAdd(me) ? `${left} · /invite for more` : left;
+  const a = me.allowance;
+  const budgets = bothBudgets(me);
+  if (budgets) {
+    const part = (family: DlFamily, b: DlBudget) =>
+      `${dlFamilyLabel(family)} ${dlBudgetUsedUp(b) ? "limit reached" : b.usdPerWeek === null ? "no cap" : `${formatUsd(Math.max(0, b.usdPerWeek - b.spentUsd))} left`}`;
+    if (dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek)) return `free · limit reached`;
+    return `free · ${part("gpt6", budgets.gpt6)} · ${part("deepseek", budgets.deepseek)}`;
+  }
+  const cap = dollarCap(a);
+  if (weekUsedUp(a)) return `free · limit reached`;
+  if (cap !== undefined) return `free · ${formatUsd(Math.max(0, cap - (a.spentUsdThisWeek ?? 0)))} of ${formatUsd(cap)} left`;
+  return `free · ${formatTokens(Math.max(0, a.remaining))} left`;
 }
 
 /**
@@ -1148,9 +1379,49 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
  */
 export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnownDlMe()): string | undefined {
   const model = DL_FREE_MODELS.find((entry) => entry.id === modelId);
+  // Two budgets (newer servers): the model's own budget, dollars and tokens counted the normal way.
+  const budget = model && me?.budgets?.[model.family];
+  if (me && budget && bothBudgets(me)) return dlBudgetText(budget, me.allowance.resetsAt || undefined);
   const pool = model && me?.pools?.[model.pool];
-  if (!pool) return undefined;
+  if (!me || !pool) return undefined;
+  // The limit that binds: the week's dollar cap when there is one, never "36M of 50M left" once it is spent.
+  if (weekUsedUp(me.allowance) || pool.remaining <= 0) return `limit reached, resets ${formatLocalTime(pool.resetsAt || me.allowance.resetsAt || nextWeekStart())}`;
+  const dollars = dlWeekUsageText(me);
+  if (dollars) return dollars;
   return `${formatTokens(Math.max(0, pool.remaining))} of ${formatTokens(pool.tokensPerWeek)} left this week`;
+}
+
+/**
+ * The free model to run this session on when the saved one has nothing left:
+ * its pool is empty this week (or the service no longer offers it) while
+ * GPT-6 Luna's isn't. Returns the config for this session and a one-line
+ * notice, and records the fallback so saving the config keeps the saved
+ * model for later sessions. Null when the saved model is fine, isn't a free
+ * model, or /v1/me didn't say enough to tell.
+ */
+export function freeModelFallback<T extends { model?: string }>(
+  cfg: T,
+  me: Pick<DlMe, "pools" | "models" | "topupTokensLeft"> | null,
+): { cfg: T; notice: string } | null {
+  const saved = cfg.model;
+  const model = DL_FREE_MODELS.find((entry) => entry.id === saved);
+  const luna = DL_FREE_MODELS.find((entry) => entry.id === DL_FREE_MODEL)!;
+  if (!me || !saved || !model || model.pool === luna.pool) return null;
+  // Bought tokens cover an empty pool.
+  if ((me.topupTokensLeft ?? 0) > 0) return null;
+  const pool = me.pools?.[model.pool];
+  const notOffered = Array.isArray(me.models) && me.models.length > 0 && !me.models.includes(saved);
+  const empty = !!pool && pool.remaining <= 0;
+  if (!notOffered && !empty) return null;
+  // Nothing gained when Luna has nothing left either: the service's own limit message says why.
+  const lunaPool = me.pools?.[luna.pool];
+  if (lunaPool && lunaPool.remaining <= 0) return null;
+  setSessionModelFallback({ provider: DL_PROVIDER_ID, saved, used: luna.id });
+  const why = empty ? `has no free tokens left this week` : `isn't available on your account`;
+  return {
+    cfg: { ...cfg, model: luna.id },
+    notice: `${model.name} ${why}, so this session runs on ${luna.name}. ${model.name} stays your saved model for later sessions.`,
+  };
 }
 
 /**
@@ -1198,9 +1469,8 @@ export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: 
   if (noticeShownFor === resetsAt) return undefined;
   noticeShownFor = resetsAt;
   const used = Math.min(100, Math.max(80, Math.floor(((total - remaining) / total) * 100)));
-  // The invite hint only when the account is known to be on the free tier with room for more.
-  const invite = dlInviteCanAdd(lastMe) ? ` Invite a friend for +${formatTokens(DL_INVITE_BONUS_TOKENS)} a week: /invite` : "";
-  return `You've used ${used}% of this week's free Directionally Local tokens (${formatTokens(Math.max(0, remaining))} left, resets ${formatReset(resetsAt || undefined, opts.now, opts.timeZone)}); /usage has details.${invite}`;
+  const pro = dlProLine(lastMe?.offers, planOf(lastMe));
+  return `You've used ${used}% of this week's free Directionally Local tokens (${formatTokens(Math.max(0, remaining))} left, resets ${formatReset(resetsAt || undefined, opts.now, opts.timeZone)}); /usage has details.${pro ? ` ${pro}` : ""}`;
 }
 
 /** Test hook: forget the shown notice and the cached weekly grant. */
@@ -1279,9 +1549,13 @@ function urlFrom(body: unknown, what: string): string {
   return url;
 }
 
-/** POST /v1/billing/checkout: the payment page for Pro or a top-up. */
-export async function dlCheckout(product: DlProduct, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
-  return urlFrom(await dlAuthedPost("/v1/billing/checkout", { product }, opts, "Starting the checkout"), "the checkout");
+/** POST /v1/billing/checkout: the payment page for Pro or a top-up (`quantity`: a dollar top-up's $1 units). */
+export async function dlCheckout(
+  product: DlProduct,
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; quantity?: number } = {},
+): Promise<string> {
+  const body = product === "topup" && opts.quantity !== undefined ? { product, quantity: opts.quantity } : { product };
+  return urlFrom(await dlAuthedPost("/v1/billing/checkout", body, opts, "Starting the checkout"), "the checkout");
 }
 
 /** POST /v1/billing/portal: where a Pro plan is managed or cancelled. */
