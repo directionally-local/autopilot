@@ -1,7 +1,8 @@
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert";
-import { detectEnvProviders, isProviderUsable, resolveActiveProvider, resolveProviderId } from "./resolve.js";
+import { classifyHttpHost, detectEnvProviders, isProviderUsable, providerDestinationLabel, resetPrivateHttpWarnings, resolveActiveProvider, resolveProviderId, setPrivateHttpWarningHandler } from "./resolve.js";
 import { PROVIDER_IDS, PROVIDER_PRESETS } from "./presets.js";
+import { logger } from "../util/logger.js";
 
 describe("AUTOPILOT_* env names (#911)", () => {
   it("AUTOPILOT_BASE_URL + AUTOPILOT_API_KEY select the custom endpoint, winning over the KIMIFLARE_* names", () => {
@@ -57,30 +58,179 @@ describe("resolveActiveProvider", () => {
     assert.strictEqual(p.baseUrl, "https://api.openai.com/v1");
   });
 
-  it("honours a base URL override (e.g. Ollama on another host)", () => {
-    const p = resolveActiveProvider({ provider: "ollama", providers: { ollama: { baseUrl: "http://gpu-box:11434/v1" } } }, {});
-    assert.strictEqual(p.baseUrl, "http://gpu-box:11434/v1");
+  it("honours a loopback base URL override (e.g. Ollama on this machine)", () => {
+    const p = resolveActiveProvider({ provider: "ollama", providers: { ollama: { baseUrl: "http://localhost:11434/v1" } } }, {});
+    assert.strictEqual(p.baseUrl, "http://localhost:11434/v1");
     assert.ok(isProviderUsable(p), "Ollama needs no key");
   });
 
+  it("accepts a dotless LAN host for Ollama", () => {
+    const p = resolveActiveProvider({ provider: "ollama", providers: { ollama: { baseUrl: "http://gpu-box:11434/v1" } } }, {});
+    assert.strictEqual(p.baseUrl, "http://gpu-box:11434/v1");
+    assert.strictEqual(p.baseUrlRefusal, undefined);
+  });
+
   it("routes a preset through AUTOPILOT_BASE_URL when AUTOPILOT_PROVIDER names it (a gateway in front of the provider)", () => {
-    const env = { AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "http://gw:4752/deepseek", DEEPSEEK_API_KEY: "egress-token" };
+    const env = { AUTOPILOT_PROVIDER: "deepseek", AUTOPILOT_BASE_URL: "https://gw:4752/deepseek", DEEPSEEK_API_KEY: "egress-token" };
     const p = resolveActiveProvider({ provider: "openai", providers: { deepseek: { baseUrl: "https://api.deepseek.com" } } }, env);
     assert.strictEqual(p.id, "deepseek");
-    assert.strictEqual(p.baseUrl, "http://gw:4752/deepseek", "the env URL wins over config and the preset");
+    assert.strictEqual(p.baseUrl, "https://gw:4752/deepseek", "the env URL wins over config and the preset");
     assert.strictEqual(p.apiKey, "egress-token");
     assert.ok(isProviderUsable(p));
     // The legacy spelling works too; a keyless preset needs no key behind the gateway.
-    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "ollama", KIMIFLARE_BASE_URL: "http://gw:4752/ollama/v1" }).baseUrl, "http://gw:4752/ollama/v1");
-    assert.ok(isProviderUsable(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "ollama", AUTOPILOT_BASE_URL: "http://gw:4752/ollama/v1" })));
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "ollama", KIMIFLARE_BASE_URL: "https://gw:4752/ollama/v1" }).baseUrl, "https://gw:4752/ollama/v1");
+    assert.ok(isProviderUsable(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "ollama", AUTOPILOT_BASE_URL: "https://gw:4752/ollama/v1" })));
     // Without AUTOPILOT_PROVIDER the URL still means a custom endpoint, and without the URL the preset's own base holds.
-    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://gw:4752/deepseek" }).id, "custom");
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "https://gw:4752/deepseek" }).id, "custom");
     assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "deepseek" }).baseUrl, "https://api.deepseek.com");
   });
 
   it("is unusable when a provider that needs a key has none", () => {
     assert.strictEqual(isProviderUsable(resolveActiveProvider({ provider: "deepseek" }, {})), false);
     assert.strictEqual(isProviderUsable(resolveActiveProvider({ provider: "custom" }, {})), false);
+  });
+});
+
+describe("base URL scheme guard (T3-F2 re-scope)", () => {
+  it("accepts https and loopback http", () => {
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "https://api.example.com/v1", AUTOPILOT_API_KEY: "k" }).baseUrl, "https://api.example.com/v1");
+    for (const url of ["http://localhost:11434/v1", "http://127.0.0.1:11434/v1", "http://[::1]:11434/v1"]) {
+      assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: url, AUTOPILOT_API_KEY: "k" }).baseUrl, url);
+    }
+  });
+
+  it("marks public http for request-time refusal without throwing from resolution", () => {
+    const p = resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://example.com/v1", AUTOPILOT_API_KEY: "k" });
+    assert.strictEqual(p.baseUrl, "http://example.com/v1");
+    assert.strictEqual(p.baseUrlRefusal, "base URL must use https (got http://example.com) — use https or an ssh tunnel to 127.0.0.1");
+    assert.strictEqual(providerDestinationLabel(p), "example.com");
+  });
+
+  it("does not allowlist hosts: any https host is accepted", () => {
+    assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "https://any-host.example/v1", AUTOPILOT_API_KEY: "k" }).baseUrl, "https://any-host.example/v1");
+  });
+
+  it("does not treat a 127.* DNS name as loopback (T1-01)", () => {
+    for (const url of ["http://127.0.0.1.evil.com/v1", "http://127.1.evil.com/v1"]) {
+      assert.match(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: url, AUTOPILOT_API_KEY: "k" }).baseUrlRefusal ?? "", /base URL must use https/, url);
+    }
+  });
+
+  it("labels the destination host, or <preset> when the module owns the URL", () => {
+    assert.strictEqual(providerDestinationLabel(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "https://api.example.com/v1", AUTOPILOT_API_KEY: "k" })), "api.example.com");
+    assert.strictEqual(providerDestinationLabel(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://localhost:11434/v1", AUTOPILOT_API_KEY: "k" })), "localhost");
+    assert.strictEqual(providerDestinationLabel(resolveActiveProvider(null, { AUTOPILOT_OPENROUTER_KEY: "sk-or" })), "<preset>");
+  });
+});
+
+describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)", () => {
+  const resolve = (url: string, key = "k") => resolveActiveProvider(null, { AUTOPILOT_BASE_URL: url, AUTOPILOT_API_KEY: key });
+
+  it("classifies hosts without treating lookalike DNS names as addresses", () => {
+    assert.strictEqual(classifyHttpHost("127.0.0.1"), "loopback");
+    assert.strictEqual(classifyHttpHost("192.168.1.5"), "private");
+    assert.strictEqual(classifyHttpHost("ollama-box.local"), "private");
+    assert.strictEqual(classifyHttpHost("127.0.0.1.evil.com"), "public");
+    assert.strictEqual(classifyHttpHost("notlocal.example"), "public");
+    assert.strictEqual(classifyHttpHost("example.com"), "public");
+  });
+
+  it("accepts http to each private range", () => {
+    for (const url of ["http://192.168.1.5/v1", "http://10.0.0.7/v1", "http://172.16.0.9/v1", "http://100.64.1.2/v1"]) {
+      assert.strictEqual(resolve(url).baseUrl, url, url);
+      assert.strictEqual(resolve(url).baseUrlRefusal, undefined, url);
+    }
+  });
+
+  it("accepts exactly within the CIDR ranges and refuses the edges", () => {
+    const accepted = ["http://172.16.255.255/v1", "http://172.31.255.255/v1", "http://100.64.0.0/v1", "http://100.127.255.255/v1", "http://192.168.255.255/v1", "http://10.255.255.255/v1"];
+    for (const url of accepted) assert.strictEqual(resolve(url).baseUrl, url, url);
+    const refused = ["http://172.15.0.1/v1", "http://172.32.0.1/v1", "http://100.128.0.1/v1", "http://192.169.0.1/v1", "http://11.0.0.1/v1"];
+    for (const url of refused) assert.match(resolve(url).baseUrlRefusal ?? "", /base URL must use https/, url);
+    for (const url of accepted) assert.strictEqual(resolve(url).baseUrlRefusal, undefined, url);
+  });
+
+  it("accepts .local names, case-insensitively", () => {
+    for (const url of ["http://ollama-box.local:11434/v1", "http://NAS.LOCAL/v1"]) {
+      assert.strictEqual(resolve(url).baseUrl, url, url);
+    }
+  });
+
+  it("accepts IPv6 ULA and link-local, stripping brackets and respecting boundaries", () => {
+    for (const host of ["fc00::1", "fd00::1", "fdff:ffff::1", "fe80::1", "febf:ffff::1"]) {
+      const url = `http://[${host}]:11434/v1`;
+      assert.strictEqual(classifyHttpHost(`[${host}]`), "private", host);
+      assert.strictEqual(resolve(url).baseUrlRefusal, undefined, host);
+    }
+    for (const host of ["fbff::1", "fe00::1", "fe7f::1", "fec0::1", "2001:db8::1", "::"]) {
+      assert.strictEqual(classifyHttpHost(host), "public", host);
+      assert.match(resolve(`http://[${host}]/v1`).baseUrlRefusal ?? "", /base URL must use https/, host);
+    }
+  });
+
+  it("accepts dotless names with a once-per-host key warning, not dotted public names", () => {
+    resetPrivateHttpWarnings();
+    const warnings: string[] = [];
+    setPrivateHttpWarningHandler((message) => warnings.push(message));
+    try {
+      assert.strictEqual(resolve("http://gpu-box:11434/v1", "").baseUrlRefusal, undefined);
+      assert.strictEqual(warnings.length, 0);
+      assert.strictEqual(resolve("http://gpu-box:11434/v1").baseUrlRefusal, undefined);
+      resolve("http://GPU-BOX:11434/v1");
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0]!, /gpu-box/);
+      assert.match(resolve("http://gpu-box.example.com/v1").baseUrlRefusal ?? "", /base URL must use https/);
+    } finally {
+      setPrivateHttpWarningHandler(undefined);
+      resetPrivateHttpWarnings();
+    }
+  });
+
+  it("warns once per host on the user-visible channel when a key travels, and stays silent without one", () => {
+    resetPrivateHttpWarnings();
+    const warnings: string[] = [];
+    setPrivateHttpWarningHandler((m) => warnings.push(m));
+    const spy = mock.method(logger, "warn");
+    try {
+      resolve("http://192.168.1.5/v1");
+      resolve("http://192.168.1.5/v1");
+      assert.strictEqual(warnings.length, 1, "warned once for the host");
+      assert.match(warnings[0]!, /192\.168\.1\.5/);
+      assert.strictEqual(spy.mock.calls.filter((c) => c.arguments[0] === "provider:http_key_travel").length, 1, "the logger record is secondary");
+      resetPrivateHttpWarnings();
+      warnings.length = 0;
+      spy.mock.resetCalls();
+      resolve("http://10.0.0.7/v1", "");
+      assert.strictEqual(warnings.length, 0, "keyless stays silent");
+      assert.strictEqual(spy.mock.calls.filter((c) => c.arguments[0] === "provider:http_key_travel").length, 0);
+    } finally {
+      spy.mock.restore();
+      setPrivateHttpWarningHandler(undefined);
+    }
+  });
+
+  it("keeps warnings pending without a visible channel, including when a channel throws", () => {
+    resetPrivateHttpWarnings();
+    setPrivateHttpWarningHandler(undefined);
+    const warnings: string[] = [];
+    try {
+      resolve("http://192.168.1.5/v1");
+      resolve("http://192.168.1.5/v1");
+      setPrivateHttpWarningHandler(() => { throw new Error("channel unavailable"); });
+      assert.throws(() => resolve("http://192.168.1.5/v1"), /channel unavailable/);
+      setPrivateHttpWarningHandler((message) => warnings.push(message));
+      resolve("http://192.168.1.5/v1");
+      resolve("http://192.168.1.5/v1");
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0]!, /192\.168\.1\.5/);
+    } finally {
+      setPrivateHttpWarningHandler(undefined);
+      resetPrivateHttpWarnings();
+    }
+  });
+
+  it("labels a private host", () => {
+    assert.strictEqual(providerDestinationLabel(resolve("http://192.168.1.5/v1")), "192.168.1.5");
   });
 });
 

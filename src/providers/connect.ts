@@ -204,6 +204,8 @@ export async function verifyProvider(
   key: string | undefined,
   source: KeySource,
   baseUrl?: string,
+  /** The caller's user-visible channel for the key-travel warning (the connect screens' say). */
+  onWarning?: (message: string) => void,
 ): Promise<VerifyResult> {
   const preset = getPreset(id);
   const connection: Connection = { id, source, ...(key ? { key } : {}), ...(baseUrl ? { baseUrl } : {}) };
@@ -219,7 +221,7 @@ export async function verifyProvider(
     }
     connection.openRouter = res.info;
   } else {
-    const res = await checkProviderKey(id, key, baseUrl ?? preset.baseUrl);
+    const res = await checkProviderKey(id, key, baseUrl ?? preset.baseUrl, undefined, onWarning);
     if (!res.ok) return { ok: false, message: res.message };
     if (res.detail) connection.detail = res.detail;
   }

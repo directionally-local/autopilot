@@ -194,11 +194,11 @@ describe("Directionally Local free tier", () => {
       assert.strictEqual(p.keysUrl, undefined);
       assert.strictEqual(dlApiBase({ AUTOPILOT_DL_FREE_URL: "http://x:9/" }), "http://x:9/v1");
       assert.strictEqual(dlApiBase({}), "https://free.directionallylocal.com/v1");
-      const active = resolveActiveProvider({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at" } } }, { AUTOPILOT_DL_FREE_URL: "http://stub:1" });
-      assert.deepStrictEqual([active.id, active.baseUrl, active.apiKey], ["directionally-local", "http://stub:1/v1", "at"]);
+      const active = resolveActiveProvider({ provider: "directionally-local", providers: { "directionally-local": { apiKey: "at" } } }, { AUTOPILOT_DL_FREE_URL: "https://stub:1" });
+      assert.deepStrictEqual([active.id, active.baseUrl, active.apiKey], ["directionally-local", "https://stub:1/v1", "at"]);
       // A sandbox's Hotcell route: AUTOPILOT_PROVIDER + AUTOPILOT_BASE_URL, token in the env.
-      const cell = resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "directionally-local", AUTOPILOT_BASE_URL: "http://gw/directionally-local/v1", AUTOPILOT_DL_FREE_TOKEN: "egress" });
-      assert.deepStrictEqual([cell.baseUrl, cell.apiKey], ["http://gw/directionally-local/v1", "egress"]);
+      const cell = resolveActiveProvider(null, { AUTOPILOT_PROVIDER: "directionally-local", AUTOPILOT_BASE_URL: "https://gw/directionally-local/v1", AUTOPILOT_DL_FREE_TOKEN: "egress" });
+      assert.deepStrictEqual([cell.baseUrl, cell.apiKey], ["https://gw/directionally-local/v1", "egress"]);
       assert.ok(PROVIDER_PRESETS["directionally-local"]);
       assert.match(costNote(p) ?? "", /weekly free allowance/);
     });

@@ -4,7 +4,7 @@ import { activeOpenRouterKey, hasLlmAuth, llmAuthFromConfig } from "./llm-auth.j
 
 describe("llmAuthFromConfig", () => {
   // Provider keys in the developer's environment would otherwise win over the configs under test.
-  const ENV = ["KIMIFLARE_BASE_URL", "KIMIFLARE_API_KEY", "AUTOPILOT_PROVIDER", "OPENROUTER_API_KEY", "KIMIFLARE_OPENROUTER_KEY", "REQUESTY_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_API_KEY"];
+  const ENV = ["AUTOPILOT_BASE_URL", "AUTOPILOT_API_KEY", "KIMIFLARE_BASE_URL", "KIMIFLARE_API_KEY", "AUTOPILOT_PROVIDER", "OPENROUTER_API_KEY", "KIMIFLARE_OPENROUTER_KEY", "REQUESTY_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_API_KEY"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
   beforeEach(() => {
     for (const k of ENV) delete process.env[k];
@@ -23,6 +23,24 @@ describe("llmAuthFromConfig", () => {
   it("resolves a custom endpoint from the config file, not only the env", () => {
     const auth = llmAuthFromConfig({ baseUrl: "https://broker.example/v1", apiKey: "host" });
     assert.deepStrictEqual(auth.customEndpoint, { baseUrl: "https://broker.example/v1", apiKey: "host" });
+  });
+
+  it("refuses public http at the request layer with the destination and fix", () => {
+    for (const baseUrl of ["http://example.com/v1", "http://[2001:db8::1]/v1", "http://gpu-box.example.com/v1"]) {
+      const host = new URL(baseUrl).host;
+      assert.throws(() => llmAuthFromConfig({ baseUrl, apiKey: "k" }), {
+        message: `base URL must use https (got http://${host}) — use https or an ssh tunnel to 127.0.0.1`,
+      });
+    }
+    assert.throws(() => llmAuthFromConfig({ provider: "ollama", providers: { ollama: { baseUrl: "http://example.com/v1" } } }), /base URL must use https/);
+    process.env.AUTOPILOT_BASE_URL = "http://example.com/v1";
+    assert.throws(() => llmAuthFromConfig(null), /base URL must use https/);
+  });
+
+  it("accepts private IPv6 and dotless endpoints at the request layer", () => {
+    for (const baseUrl of ["http://[fd00::1]:11434/v1", "http://[fe80::1]:11434/v1", "http://gpu-box:11434/v1"]) {
+      assert.strictEqual(llmAuthFromConfig({ baseUrl }).customEndpoint?.baseUrl, baseUrl);
+    }
   });
 
   it("lets KIMIFLARE_BASE_URL win over the config file", () => {

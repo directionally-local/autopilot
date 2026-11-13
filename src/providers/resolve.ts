@@ -13,10 +13,12 @@
  *   5. openrouter (onboarding will ask for a key)
  */
 
+import { isIPv4, isIPv6 } from "node:net";
 import { getPreset, isProviderId, type ProviderId, type ProviderPreset } from "./presets.js";
 import { vertexBase, vertexLocation, vertexProject } from "./vertex.js";
 import { bedrockAuth, bedrockBase, bedrockRegion } from "./bedrock.js";
 import { readEnv } from "../util/env.js";
+import { logger } from "../util/logger.js";
 import { dlApiBase } from "./dl-endpoint.js";
 
 /** Per-provider settings persisted under `providers.<id>` in config.json. */
@@ -59,6 +61,8 @@ export interface ActiveProvider {
   preset: ProviderPreset;
   /** Resolved base URL; undefined for OpenRouter and Requesty (their modules own the URL). */
   baseUrl?: string;
+  /** Request-time refusal; display/config resolution must remain non-throwing. */
+  baseUrlRefusal?: string;
   /** Resolved key; undefined when none is configured. */
   apiKey?: string;
 }
@@ -66,6 +70,73 @@ export interface ActiveProvider {
 function nonEmpty(v: string | undefined): string | undefined {
   const t = v?.trim();
   return t ? t : undefined;
+}
+
+const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/** True for a loopback name or a literal IPv4 address in 127.0.0.0/8. Mirrors src/server/index.ts:141. */
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return LOOPBACK_NAMES.has(h) || (isIPv4(h) && h.startsWith("127."));
+}
+
+export type HttpHostClass = "loopback" | "private" | "public";
+
+/**
+ * Classify an http base URL's host. Loopback is silent; private ranges,
+ * IPv6 ULA/link-local, `.local` and single-label names are accepted with a
+ * key-travel warning; everything else is refused. The CIDR checks are `isIPv4`-gated so a DNS name that merely looks
+ * like an address (`127.0.0.1.evil.com`) is never treated as one.
+ */
+export function classifyHttpHost(host: string): HttpHostClass {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (isLoopbackHost(h)) return "loopback";
+  if (isIPv4(h)) {
+    const octets = h.split(".").map(Number);
+    const a = octets[0];
+    const b = octets[1];
+    if (a === 10) return "private"; // 10.0.0.0/8
+    if (a === 172 && b !== undefined && b >= 16 && b <= 31) return "private"; // 172.16.0.0/12
+    if (a === 192 && b === 168) return "private"; // 192.168.0.0/16
+    if (a === 100 && b !== undefined && b >= 64 && b <= 127) return "private"; // 100.64.0.0/10 (tailscale)
+  }
+  if (isIPv6(h)) {
+    const prefix = Number.parseInt(h.split(":")[0]!, 16);
+    if ((prefix & 0xfe00) === 0xfc00 || (prefix & 0xffc0) === 0xfe80) return "private";
+    return "public";
+  }
+  if (h.endsWith(".local") || /^[a-z0-9_-]+$/i.test(h)) return "private";
+  return "public";
+}
+
+// Only visible delivery consumes the once-guard. Resolutions without a channel
+// remain pending (eligible on the next resolution), including loadConfig/status.
+const warnedPrivateHttpHosts = new Set<string>();
+
+/** The host's user-visible warning channel (the same one the large-body warning uses). */
+let privateHttpWarningHandler: ((message: string) => void) | undefined;
+
+/** Route the key-travel warning to the host's user-visible warning channel. */
+export function setPrivateHttpWarningHandler(handler: ((message: string) => void) | undefined): void {
+  privateHttpWarningHandler = handler;
+}
+
+/** A pending warning becomes delivered only after a visible channel accepts it. */
+function privateHttpKeyTravelWarning(host: string, onWarning: ((message: string) => void) | undefined): string | undefined {
+  const key = host.toLowerCase();
+  if (warnedPrivateHttpHosts.has(key)) return undefined;
+  const message = `Sending your API key over cleartext http to ${host}. Use https if the host supports it.`;
+  if (onWarning) {
+    onWarning(message);
+    warnedPrivateHttpHosts.add(key);
+    logger.warn("provider:http_key_travel", { host });
+  }
+  return message;
+}
+
+/** Test seam: forget which hosts have been warned. */
+export function resetPrivateHttpWarnings(): void {
+  warnedPrivateHttpHosts.clear();
 }
 
 export function resolveProviderId(cfg: ProviderConfigFields | null | undefined, env: NodeJS.ProcessEnv = process.env): ProviderId {
@@ -123,7 +194,53 @@ export function resolveActiveProvider(
     const envBaseUrl = isProviderId(nonEmpty(env.AUTOPILOT_PROVIDER)?.toLowerCase()) ? nonEmpty(readEnv("BASE_URL", env)) : undefined;
     baseUrl = fillPlaceholders(envBaseUrl ?? nonEmpty(cfg?.providers?.[id]?.baseUrl) ?? preset.baseUrl, cfg, env);
   }
-  return { id, preset, ...(baseUrl ? { baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
+  const baseUrlRefusal = baseUrl ? publicHttpBaseUrlRefusal(baseUrl) : undefined;
+  if (baseUrl && !baseUrlRefusal) assertHttpsBaseUrl(baseUrl, { hasKey: !!apiKey });
+  return { id, preset, ...(baseUrl ? { baseUrl } : {}), ...(baseUrlRefusal ? { baseUrlRefusal } : {}), ...(apiKey ? { apiKey } : {}) };
+}
+
+/** The shared refusal predicate, without throwing from display/config paths. */
+function publicHttpBaseUrlRefusal(baseUrl: string): string | undefined {
+  try {
+    const url = new URL(baseUrl);
+    if (url.protocol === "http:" && classifyHttpHost(url.hostname) === "public") {
+      return `base URL must use https (got http://${url.host}) — use https or an ssh tunnel to 127.0.0.1`;
+    }
+  } catch {
+    // A malformed URL fails later, at request time.
+  }
+  return undefined;
+}
+
+/**
+ * Refuse a cleartext base URL to a public host; accept loopback silently and
+ * private/.local hosts with a one-time key-travel warning when a key is present.
+ */
+export function assertHttpsBaseUrl(baseUrl: string, opts: { hasKey?: boolean; onWarning?: (message: string) => void } = {}): string | undefined {
+  const refusal = publicHttpBaseUrlRefusal(baseUrl);
+  if (refusal) throw new Error(refusal);
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return undefined; // a malformed URL fails later, at request time
+  }
+  if (url.protocol !== "http:") return undefined;
+  const kind = classifyHttpHost(url.hostname);
+  if (kind === "private" && opts.hasKey) {
+    return privateHttpKeyTravelWarning(url.hostname, opts.onWarning ?? privateHttpWarningHandler);
+  }
+  return undefined;
+}
+
+/** The host the API key will be sent to, for the banner and status line. */
+export function providerDestinationLabel(p: ActiveProvider): string {
+  if (!p.baseUrl) return "<preset>";
+  try {
+    return new URL(p.baseUrl).hostname;
+  } catch {
+    return p.baseUrl;
+  }
 }
 
 let lastLoaded: ProviderId | null = null;

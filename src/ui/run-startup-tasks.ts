@@ -58,7 +58,17 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
 
   // An `.autopilot/` folder from an earlier version may lack its own .gitignore.
   for (const root of new Set([resolveRepoRoot(process.cwd()), process.cwd()])) ignoreProjectDir(projectDir(root));
-  const auth = llmAuthFromConfig(cfg);
+  let auth: ReturnType<typeof llmAuthFromConfig> | undefined;
+  let embeddingAuth: ReturnType<typeof embeddingAuthFromConfig> | undefined;
+  try {
+    auth = llmAuthFromConfig(cfg);
+    embeddingAuth = embeddingAuthFromConfig(cfg);
+  } catch (error) {
+    // Saved endpoints may be refused for requests, but must not prevent the UI
+    // from starting so the person can repair their provider configuration.
+    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: error instanceof Error ? error.message : String(error), tone: "warn" }]);
+    auth = undefined;
+  }
 
   // Started in the home folder: say once that a project folder works better.
   const homeNotice = homeFolderNoticeOnce();
@@ -111,7 +121,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   });
 
   // Initialize memory manager if enabled (on by default in the TUI, #1077)
-  if (tuiMemoryEnabled(cfg)) {
+  if (auth && embeddingAuth && tuiMemoryEnabled(cfg)) {
     const repoRoot = resolveRepoRoot(process.cwd());
     const dbPath = cfg.memoryDbPath ?? projectPath(repoRoot, "memory.db");
     const manager = new MemoryManager({
@@ -122,7 +132,7 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
       extractionModel: cfg.memoryExtractionModel,
       extraction: cfg.memoryExtraction,
       embeddingModel: cfg.memoryEmbeddingModel,
-      embeddingAuth: embeddingAuthFromConfig(cfg),
+      embeddingAuth,
       maxAgeDays: cfg.memoryMaxAgeDays ?? RETENTION.memoryMaxAgeDays,
       maxEntries: cfg.memoryMaxEntries ?? RETENTION.memoryMaxEntries,
     });
@@ -187,27 +197,29 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   }
 
   // Initialize skills index (independent of memory feature flag)
-  const skillDbPath = cfg.memoryDbPath ?? projectPath(resolveRepoRoot(process.cwd()), "memory.db");
-  const skillDb = getMemoryDb() ?? openMemoryDb(skillDbPath);
-  initSkillsSchema(skillDb);
-  void indexSkills({
-    cwd: process.cwd(),
-    db: skillDb,
-    ...embeddingAuthFromConfig(cfg),
-    embeddingModel: cfg.memoryEmbeddingModel,
-  }).then((result) => {
-    if (result.indexed > 0) {
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: `indexed ${result.indexed} skill${result.indexed === 1 ? "" : "s"}` },
-      ]);
-    }
-    if (result.errors.length > 0) {
-      for (const err of result.errors) {
-        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `skill index error: ${err}` }]);
+  if (embeddingAuth) {
+    const skillDbPath = cfg.memoryDbPath ?? projectPath(resolveRepoRoot(process.cwd()), "memory.db");
+    const skillDb = getMemoryDb() ?? openMemoryDb(skillDbPath);
+    initSkillsSchema(skillDb);
+    void indexSkills({
+      cwd: process.cwd(),
+      db: skillDb,
+      ...embeddingAuth,
+      embeddingModel: cfg.memoryEmbeddingModel,
+    }).then((result) => {
+      if (result.indexed > 0) {
+        setEvents((e) => [
+          ...e,
+          { kind: "info", key: mkKey(), text: `indexed ${result.indexed} skill${result.indexed === 1 ? "" : "s"}` },
+        ]);
       }
-    }
-  });
+      if (result.errors.length > 0) {
+        for (const err of result.errors) {
+          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `skill index error: ${err}` }]);
+        }
+      }
+    });
+  }
 
   // Setup from other coding agents (#1126): the checklist the first time
   // anything is found on this machine, then at most one line per session.

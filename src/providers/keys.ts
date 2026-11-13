@@ -11,7 +11,7 @@ import { checkOpenRouterKey, looksLikeOpenRouterKey } from "../models/openrouter
 import { checkRequestyKey } from "../models/requesty.js";
 import { getPreset, keyHeaders, PROVIDER_IDS, type ProviderId } from "./presets.js";
 import { anthropicHeaders } from "../agent/protocols/anthropic.js";
-import { resolveActiveProvider, resolveProviderKey, type ProviderSettings } from "./resolve.js";
+import { assertHttpsBaseUrl, resolveActiveProvider, resolveProviderKey, type ProviderSettings } from "./resolve.js";
 import { DL_FREE_MODELS } from "./directionally-local.js";
 
 export type ProviderKeyCheck =
@@ -34,6 +34,8 @@ export async function checkProviderKey(
   key: string | undefined,
   baseUrl?: string,
   fetchImpl: typeof fetch = fetch,
+  /** The caller's user-visible channel for the key-travel warning (the connect screens' say). */
+  onWarning?: (message: string) => void,
 ): Promise<ProviderKeyCheck> {
   const preset = getPreset(id);
   if (key && !looksLikeProviderKey(id, key)) {
@@ -106,6 +108,13 @@ export async function checkProviderKey(
   }
   const base = (baseUrl ?? preset.baseUrl)?.replace(/\/+$/, "");
   if (!base) return { ok: false, reason: "http", message: "No base URL configured." };
+  // The setup path verifies a key with a live GET /models; refuse a cleartext
+  // non-loopback URL before the request carries the key.
+  try {
+    assertHttpsBaseUrl(base, { hasKey: !!key, onWarning });
+  } catch (e) {
+    return { ok: false, reason: "http", message: e instanceof Error ? e.message : String(e) };
+  }
   if (!key && preset.keyRequired) return { ok: false, reason: "invalid", message: `A ${preset.name} API key is required.` };
   let res: Response;
   try {

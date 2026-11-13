@@ -396,8 +396,9 @@ export function summaryLine(f: ProjectFacts): string {
 }
 
 /** The tour as printed: summary, three numbered tasks, how to pick. */
-export function renderTour(f: ProjectFacts, tasks: string[], o: { firstTime?: boolean } = {}): string {
+export function renderTour(f: ProjectFacts, tasks: string[], o: { firstTime?: boolean; providerHost?: string } = {}): string {
   const lines = [`  ${summaryLine(f)}`, ...tasks.map((t, i) => `  ${i + 1}  ${t}`), `  ${TOUR_PROMPT}`];
+  if (o.providerHost) lines.push(`  provider: ${o.providerHost}`);
   if (o.firstTime) lines.push("  /tour shows this again · /settings tour off turns it off");
   return lines.join("\n");
 }
@@ -454,6 +455,8 @@ export interface TourDeps {
   ask: AskModel | null;
   /** Aborted when the person types before the tour is ready: nothing is shown then. */
   signal?: AbortSignal;
+  /** The host the active provider's key is sent to, shown in the banner. */
+  providerHost?: string;
   run?: RunCommand;
   statePath?: string;
   modelTimeoutMs?: number;
@@ -497,5 +500,5 @@ export async function buildTour(d: TourDeps): Promise<TourResult> {
   });
   if (d.signal?.aborted) return { kind: "skipped", reason: "typed" };
   if (!seen) await markTourShown(root, file);
-  return { kind: "shown", text: renderTour(facts, tasks, { firstTime: !seen }), tasks, source, facts };
+  return { kind: "shown", text: renderTour(facts, tasks, { firstTime: !seen, ...(d.providerHost ? { providerHost: d.providerHost } : {}) }), tasks, source, facts };
 }

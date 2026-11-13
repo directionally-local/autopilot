@@ -837,7 +837,7 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", 
           const { patchPersistedConfig } = await import("./config.js");
           await patchPersistedConfig({ accountId });
         }
-        const res = await checkProviderKey(id, key, cmdOpts.baseUrl);
+        const res = await checkProviderKey(id, key, cmdOpts.baseUrl, undefined, (m) => console.error(m));
         if (!res.ok) {
           console.error(res.message);
           process.exit(1);

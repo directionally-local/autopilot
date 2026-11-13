@@ -11,8 +11,9 @@ import type { AskModel } from "./project-tour.js";
 
 export function tourAskModel(cfg: Pick<Cfg, "model"> & Parameters<typeof llmAuthFromConfig>[0]): AskModel | null {
   if (!cfg?.model) return null;
-  const auth = llmAuthFromConfig(cfg);
   return async ({ system, user, maxTokens, signal }) => {
+    // Resolve credentials only for the request, not while constructing the startup tour.
+    const auth = llmAuthFromConfig(cfg);
     let text = "";
     for await (const ev of runKimi({
       ...auth,
