@@ -307,6 +307,9 @@ function App({
   const [feedback, setFeedback] = useState<FeedbackRequest | null>(null);
   // /request's inputs, while open (the view runs the flow; see access-request.ts).
   const [accessRequest, setAccessRequest] = useState<AccessRequestOpen | null>(null);
+  // /tour is open (the view runs it; see ui/product-tour.ts).
+  const [productTour, setProductTour] = useState(false);
+  const openProductTour = useCallback(() => setProductTour(true), []);
   // A push or pull request without GitHub access: the question, and the tool call waiting on it.
   const [githubAccess, setGithubAccess] = useState<GithubAccessRequest | null>(null);
   const githubAccessResolveRef = useRef<((outcome: GithubAccessOutcome) => void) | null>(null);
@@ -570,7 +573,7 @@ function App({
             tourTasksRef.current = r.tasks;
             info(r.text);
           } else if (force && r.reason === "not-a-repo") {
-            info("/tour works inside a git repository.");
+            info("/ideas works inside a git repository.");
           }
         })
         .catch(() => {
@@ -693,9 +696,10 @@ function App({
     return () => clearInterval(id);
   }, [cfg]);
 
-  const initMcp = useCallback(async () => {
+  const initMcp = useCallback(async (announce = true) => {
     if (!cfg) return;
     await initMcpImpl({
+      announce,
       cfg,
       setEvents,
       mkKey,
@@ -710,9 +714,10 @@ function App({
     });
   }, [cfg]);
 
-  const initLsp = useCallback(async () => {
+  const initLsp = useCallback(async (announce = true) => {
     if (!cfg) return;
     await initLspImpl({
+      announce,
       cfg,
       setEvents,
       mkKey,
@@ -728,11 +733,12 @@ function App({
   }, [cfg]);
 
   useEffect(() => {
+    // Quiet at startup: only failures are said.
     if (cfg && !mcpInitRef.current) {
-      void initMcp();
+      void initMcp(false);
     }
     if (cfg && !lspInitRef.current) {
-      void initLsp();
+      void initLsp(false);
     }
   }, [cfg, initMcp, initLsp]);
 
@@ -1095,6 +1101,7 @@ function App({
     openDlScreen: setDlScreen,
     openFeedback: setFeedback,
     openAccessRequest: setAccessRequest,
+    openProductTour,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage,
@@ -2259,6 +2266,7 @@ function App({
         }
       },
       starAskDone: () => setStarAsk(null),
+      productTourDone: () => setProductTour(false),
       feedbackDone: (line: FeedbackLine) => {
         setFeedback(null);
         setEvents((es) => [...es, { kind: line.severity, key: mkKey(), text: line.text }]);
@@ -2345,6 +2353,7 @@ function App({
       githubAccess,
       feedback,
       accessRequest,
+      productTour,
       lsp: {
         servers: cfg?.lspServers ?? {},
         scope: lspScope,

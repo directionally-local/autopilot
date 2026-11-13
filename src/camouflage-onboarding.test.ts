@@ -2,7 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import type { AutopilotConfig } from "./config.js";
 import { firstRunIntro, onboardingCancelledMessage, ownKeyIntro, runFirstRun, UPGRADE_NOTICE, type FirstRunDeps } from "./camouflage-onboarding.js";
-import { sessionHeaderDetail } from "./camouflage-view.js";
+import { freeHeaderLine, sessionHeaderDetail } from "./camouflage-view.js";
+import { normalizeDlMe } from "./providers/directionally-local.js";
 
 function deps(over: Partial<FirstRunDeps> & { calls?: string[] } = {}): FirstRunDeps & { shown: string[][]; calls: string[] } {
   const shown: string[][] = [];
@@ -147,17 +148,41 @@ describe("sessionHeaderDetail", () => {
     assert.strictEqual(d[1], "First run");
   });
 
-  it("names the model once configured", () => {
-    const d = sessionHeaderDetail({ model: "moonshotai/kimi-k2", modesEnabled: true }, process.cwd(), null);
+  it("names the model once configured, and nothing else by default", () => {
+    const d = sessionHeaderDetail({ model: "moonshotai/kimi-k2" }, process.cwd(), null);
     assert.match(d[0]!, /kimi-k2/);
-    assert.match(d[1]!, /shift\+tab/);
+    assert.strictEqual(d.length, 1, "no command hints, folder notices or other startup text");
   });
 
-  it("adds the free tier's line third, when there is one", () => {
-    const cfg = { model: "deepseek/deepseek-v4.1-flash-1017", modesEnabled: false };
-    const d = sessionHeaderDetail(cfg, process.cwd(), null, "free · 49.9M left · /invite for more");
-    assert.strictEqual(d.length, 3);
-    assert.strictEqual(d[2], "free · 49.9M left · /invite for more");
-    assert.strictEqual(sessionHeaderDetail(cfg, process.cwd(), null, undefined).length, 2);
+  it("adds the /tour hint and the free tier's line when given", () => {
+    const cfg = { model: "deepseek/deepseek-v4.1-flash-1017" };
+    const free = "free · DeepSeek 49.9M left this week · invite friends: dl.new/r/abc (2 joined)";
+    const d = sessionHeaderDetail(cfg, process.cwd(), null, { tourHint: "/tour · what's different about dl", free });
+    assert.deepStrictEqual(d.slice(1), ["/tour · what's different about dl", free]);
+    assert.strictEqual(sessionHeaderDetail(cfg, process.cwd(), null, { free }).length, 2, "no hint once /tour was opened");
+    assert.strictEqual(sessionHeaderDetail(cfg, process.cwd(), null, {}).length, 1);
+  });
+});
+
+describe("freeHeaderLine", () => {
+  const me = normalizeDlMe({
+    login: "octo",
+    plan: "free",
+    allowance: { tokensPerWeek: 50e6, usedThisWeek: 1e6, remaining: 49e6, resetsAt: "2026-11-16T00:00:00.000Z" },
+    referral: { link: "https://dl.new/r/abc", joined: 2 },
+  });
+  const model = "deepseek/deepseek-v4.1-flash-1017";
+  const cfg = (c: Partial<AutopilotConfig>) => ({ model, ...c }) as AutopilotConfig;
+
+  it("shows only for the free tier provider, with an account read", () => {
+    assert.strictEqual(freeHeaderLine(cfg({ provider: "directionally-local" }), me, {}), "free · DeepSeek 49M left this week · invite friends: dl.new/r/abc (2 joined)");
+  });
+
+  it("hides when /v1/me is unavailable, and for every other provider", () => {
+    assert.strictEqual(freeHeaderLine(cfg({ provider: "directionally-local" }), null, {}), undefined);
+    assert.strictEqual(freeHeaderLine(cfg({ provider: "openrouter", openrouterApiKey: "sk-or-x" }), me, {}), undefined, "own key");
+    assert.strictEqual(freeHeaderLine(cfg({ provider: "vllm" as AutopilotConfig["provider"] }), me, {}), undefined, "local GPU server");
+    assert.strictEqual(freeHeaderLine(cfg({ provider: "directionally-local" }), me, { AUTOPILOT_PROVIDER: "deepseek" }), undefined, "provider from the environment");
+    assert.strictEqual(freeHeaderLine(null, me, {}), undefined, "first run");
   });
 });
