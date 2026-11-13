@@ -26,7 +26,7 @@
 curl -fsSL https://dl.new | sh
 ```
 
-That installs **dl** ([Directionally Local](https://directionallylocal.com)'s installer), which installs and runs Autopilot. Under dl, Autopilot shows dl's name and version (`dl 0.15.0`, "Ask dl anything") and `dl --version` names both. dl keeps Autopilot on a version it has tested and updates them together, so use dl's update command, not npm, to update.
+That installs **dl** ([Directionally Local](https://directionallylocal.com)'s installer), which installs and runs Autopilot. Under dl, Autopilot shows dl's name and version (`dl 0.30.1`, "Ask dl anything") and `dl --version` names both. dl keeps Autopilot on a version it has tested and updates them together, so use dl's update command, not npm, to update.
 
 Autopilot on its own, without dl: `npm i -g autopilot-ai` and run `autopilot`.
 
@@ -81,7 +81,21 @@ npm install -g autopilot-ai
 autopilot
 ```
 
-On first run, autopilot asks **"How should it think?"**: choose **Free — sign in with GitHub** (no credit card) or **Use my own API key** to pick a provider such as OpenRouter, then pick a model. A provider key already in your environment skips the question and is used as-is. That's it.
+On first run, autopilot asks **"How should it think?"**: choose **Free — sign in with GitHub** (no credit card), **Use my own API key** to pick a provider such as OpenRouter and then a model, or **Use your own GPUs** (see [Your own GPUs](#your-own-gpus)). A provider key already in your environment skips the question and is used as-is. That's it.
+
+The free tier gives free tokens every week. When they run out, `/upgrade` offers dl Pro or a one-time top-up, and you can always switch to your own key or your own GPUs.
+
+### Your own GPUs
+
+Before that question, the first run looks for GPUs on this machine. With an Nvidia card of 24 GB or more and Autopilot started by dl, it asks **"Run a private model on it?"**: yes hands over to `dl model up`, which sets up vLLM on the GPU, tests it and opens Autopilot on it; no is remembered. A smaller Nvidia card gets a one-line hint that `dl model up` can run small models on it. If the setup fails, a menu offers to retry, see what failed (the reason and the log file), pick another model, or carry on without a local model.
+
+**Use your own GPUs** asks where they are:
+
+- **On this machine**: hands over to `dl model up`, as above.
+- **Another server of mine**: run `curl -fsSL https://dl.new | sh` and then `dl model up` on that server, then enter its address. `dl model up` serves on that server's `127.0.0.1`, so to reach it from here keep an SSH tunnel open (`ssh -N -L 8000:127.0.0.1:8000 you@that-server`) and enter `127.0.0.1` and port 8000.
+- **I already run vLLM or another OpenAI-compatible server**: enter its URL and an optional key.
+
+Either way Autopilot checks the server with `/v1/models`, you pick a model, and it is saved as the `vllm` provider. Your code and prompts stay on your hardware. What `dl model` does on the GPU is in [dl's README](https://github.com/directionally-local/installer#on-your-own-gpus).
 
 Or install with Homebrew on macOS or Linux (Homebrew installs Node.js for you):
 
@@ -132,7 +146,7 @@ To continue a Claude Code conversation (say it stopped on a usage limit), run `a
 | Azure OpenAI | `azure` | `AZURE_API_KEY` + `AZURE_RESOURCE_NAME` (or `autopilot auth azure --resource <name>`) | v1 API over Responses; model ids are your deployment names, discovered from the resource. Entra ID sign-in isn't supported yet — use a key |
 | Ollama (local) | `ollama` | none | installed models are discovered; `providers.ollama.baseUrl` for another host |
 | LM Studio (local) | `lmstudio` | none | |
-| vLLM (local) | `vllm` | none | your own GPUs; `dl model up` sets it up, tests it and connects autopilot on Nvidia GPUs, or run `vllm serve` yourself with `--enable-auto-tool-choice --tool-call-parser <name>` for tool calls |
+| vLLM (local) | `vllm` | none | your own GPUs; `dl model up` sets it up on one Nvidia GPU, tests it and connects autopilot (see [Your own GPUs](#your-own-gpus)), or run `vllm serve` yourself with `--enable-auto-tool-choice --tool-call-parser <name>` for tool calls |
 | Requesty | `requesty` | `REQUESTY_API_KEY` | |
 | Any OpenAI-compatible endpoint | `custom` | `AUTOPILOT_API_KEY` (optional) | `AUTOPILOT_BASE_URL` — LiteLLM, vLLM, llama.cpp, a company gateway |
 
@@ -472,7 +486,7 @@ autopilot
 |---------|--------|
 | `/settings` | List feature settings; `/settings modes on\|off` turns plan/edit/auto modes on or off (off by default), `/settings diagnostics on\|off` toggles post-edit diagnostics, `/settings tour on\|off` the project tour, `/settings refocus on\|off` bringing the terminal back after a browser sign-in (macOS), `/settings pr-footer on\|off` the line "Opened with [dl](https://dl.new), a free coding agent." at the end of pull requests the agent opens (on by default, every provider; never added to commits; also `prFooter: false` in config.json or `AUTOPILOT_PR_FOOTER=0`), `/settings invite-tip on\|off` the one-time invite line after your first opened PR or passing tests on the free tier |
 | `/usage` | Directionally Local: your plan (Free or Pro), tokens used and left this week, top-up tokens left, invite bonus, place in line when queued, and when the week resets |
-| `/invite` | Free tier: your invite link (copied to the clipboard where the terminal allows it), how many joined, how many were active this week, and the bonus earned; each friend who starts using dl gives you both +10M tokens a week. Also `autopilot invite` |
+| `/invite` | Free tier: your invite link (copied to the clipboard where the terminal allows it), how many joined, how many were active this week, and the bonus earned; each friend who starts using dl gives you both extra free tokens every week. Also `autopilot invite` |
 | `/upgrade` | Directionally Local: buy dl Pro or a one-time top-up (choose an amount; opens the payment page, then waits up to 10 minutes for it to show); on Pro, opens the page to manage or cancel your plan. Also `autopilot upgrade [pro\|topup]`. When free usage runs out mid-session, a screen offers dl Pro first (at the price the service sends), then a top-up, asking for more free usage (`/request`), your own key (`/provider`) and your own GPUs (`dl model up`); the blocked request continues once a purchase shows |
 | `/tour` | Summarize this project (name, kind, file count, test command, open GitHub issues when `gh` is signed in) and suggest three tasks; type 1–3 to start one. Shown automatically on the first session in each git repository (remembered in `~/.local/state/autopilot/project-tour.json`, never in the repo); one small model call words the tasks (capped at 200 output tokens, local suggestions after 4 s) |
 | `/mode edit\|plan\|auto` | Switch permission mode (needs modes on) |
