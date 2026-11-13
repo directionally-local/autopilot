@@ -36,6 +36,7 @@ export function llmAuthFromConfig(
   forced?: ProviderId,
 ): LlmAuth {
   const active = resolveActiveProvider(cfg ?? null, process.env, forced);
+  if (active.baseUrlRefusal) throw new Error(active.baseUrlRefusal);
   switch (active.id) {
     case "openrouter":
       return {

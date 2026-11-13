@@ -110,13 +110,11 @@ export async function checkProviderKey(
   if (!base) return { ok: false, reason: "http", message: "No base URL configured." };
   // The setup path verifies a key with a live GET /models; refuse a cleartext
   // non-loopback URL before the request carries the key.
-  let warning: string | undefined;
   try {
-    warning = assertHttpsBaseUrl(base, { hasKey: !!key });
+    assertHttpsBaseUrl(base, { hasKey: !!key, onWarning });
   } catch (e) {
     return { ok: false, reason: "http", message: e instanceof Error ? e.message : String(e) };
   }
-  if (warning) onWarning?.(warning);
   if (!key && preset.keyRequired) return { ok: false, reason: "invalid", message: `A ${preset.name} API key is required.` };
   let res: Response;
   try {

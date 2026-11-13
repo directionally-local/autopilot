@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "./keys.js";
-import { resetPrivateHttpWarnings } from "./resolve.js";
+import { resetPrivateHttpWarnings, resolveActiveProvider, setPrivateHttpWarningHandler } from "./resolve.js";
 import { logger } from "../util/logger.js";
 import { loadConfig } from "../config.js";
 
@@ -49,6 +49,9 @@ describe("checkProviderKey", () => {
 
   it("accepts a private setup base URL and warns on the caller's channel when a key travels", async () => {
     resetPrivateHttpWarnings();
+    setPrivateHttpWarningHandler(undefined);
+    // A startup/display resolution must not consume the setup caller's warning.
+    resolveActiveProvider({ provider: "custom", baseUrl: "http://192.168.1.5/v1", apiKey: "sk-test-key-123" }, {});
     const warnings: string[] = [];
     const spy = mock.method(logger, "warn");
     let called = false;
@@ -62,8 +65,15 @@ describe("checkProviderKey", () => {
       assert.strictEqual(warnings.length, 1);
       assert.match(warnings[0]!, /192\.168\.1\.5/);
       assert.strictEqual(spy.mock.calls.filter((c) => c.arguments[0] === "provider:http_key_travel").length, 1, "the logger record is secondary");
+      await checkProviderKey("custom", "sk-test-key-123", "http://192.168.1.5/v1", (async () => {
+        assert.strictEqual(warnings.length, 1, "warning is visible before the request and does not repeat");
+        return json(200, { data: [] });
+      }) as unknown as typeof fetch, (m) => warnings.push(m));
+      assert.strictEqual(warnings.length, 1);
     } finally {
       spy.mock.restore();
+      setPrivateHttpWarningHandler(undefined);
+      resetPrivateHttpWarnings();
     }
   });
 });
