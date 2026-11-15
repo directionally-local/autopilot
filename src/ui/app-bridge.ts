@@ -124,6 +124,8 @@ export interface AppSnapshot {
   feedback?: FeedbackRequest | null;
   /** `/request` is open: the active provider (see access-request.ts). */
   accessRequest?: AccessRequestOpen | null;
+  /** `/tour` is open: the view shows it once no turn is running (see ui/product-tour.ts). */
+  productTour?: boolean;
 }
 
 export interface AppActions {
@@ -172,6 +174,8 @@ export interface AppActions {
   githubAccessDone?: (outcome: GithubAccessOutcome) => void;
   /** `/feedback` ended: the line to add to the transcript (sent, not sent, or why not). */
   feedbackDone?: (line: FeedbackLine) => void;
+  /** `/tour` closed (finished or Esc). Nothing is printed. */
+  productTourDone?: () => void;
   /** `/request` ended: the line to add to the transcript (sent, already in, cancelled, or why not). */
   accessRequestDone?: (line: AccessRequestLine) => void;
   exit: () => void;

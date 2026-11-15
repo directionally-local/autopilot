@@ -314,6 +314,12 @@ export interface DlReferral {
   bonusTokensPerWeek: number;
   /** The most bonus tokens a week invites can earn. */
   bonusCapPerWeek?: number;
+  /**
+   * What inviting earns, worded by the service (`referral.offer` in /v1/me), e.g. a credit on
+   * a model. Shown as sent; without it the client shows only the link and the count, never a
+   * reward of its own.
+   */
+  offer?: string;
 }
 
 /** A place in line for free tokens. */
@@ -374,6 +380,8 @@ export function parseDlReferral(raw: unknown): DlReferral | undefined {
   if (!link) return undefined;
   const code = strOf(raw, "code");
   const cap = numOf(raw, "bonusCapPerWeek", "bonus_cap_per_week");
+  // Plain text only (no control characters reach the terminal), and short enough for one line.
+  const offer = strOf(raw, "offer")?.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
   return {
     ...(code ? { code } : {}),
     link,
@@ -381,6 +389,7 @@ export function parseDlReferral(raw: unknown): DlReferral | undefined {
     activeThisWeek: Math.max(0, numOf(raw, "activeThisWeek", "active_this_week") ?? 0),
     bonusTokensPerWeek: Math.max(0, numOf(raw, "bonusTokensPerWeek", "bonus_tokens_per_week") ?? 0),
     ...(cap !== undefined && cap > 0 ? { bonusCapPerWeek: cap } : {}),
+    ...(offer && offer.length <= 80 ? { offer } : {}),
   };
 }
 
@@ -1371,6 +1380,48 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
   if (weekUsedUp(a)) return `free · limit reached`;
   if (cap !== undefined) return `free · ${formatUsd(Math.max(0, cap - (a.spentUsdThisWeek ?? 0)))} of ${formatUsd(cap)} left`;
   return `free · ${formatTokens(Math.max(0, a.remaining))} left`;
+}
+
+/**
+ * The session header's free-tier line at startup: what's left this week for the session's
+ * model, then the invite link and how many joined, and the service's own offer wording when
+ * it sends one (`referral.offer`), e.g.
+ *
+ *   free · DeepSeek 850M left this week · invite friends: dl.new/r/abc (2 joined)
+ *
+ * Undefined without an account read, on Pro, or in the queue: nothing rather than a placeholder.
+ */
+export function dlStartLine(me: DlMe | null | undefined, modelId?: string): string | undefined {
+  if (!me || me.plan === "pro" || me.queue) return undefined;
+  const parts = ["free", dlLeftThisWeek(me, modelId)];
+  const r = me.referral;
+  if (r?.link) {
+    parts.push(`invite friends: ${r.link.replace(/^https?:\/\//, "")} (${r.joined} joined)`);
+    if (r.offer) parts.push(r.offer);
+  }
+  return parts.join(" · ");
+}
+
+/** "DeepSeek 850M left this week", "$1.80 of $3 left this week" or "limit reached this week". */
+function dlLeftThisWeek(me: DlMe, modelId?: string): string {
+  const a = me.allowance;
+  const model = DL_FREE_MODELS.find((entry) => entry.id === modelId);
+  const label = model ? (model.family === "deepseek" ? "DeepSeek" : model.name) : undefined;
+  const named = (text: string) => (label ? `${label} ${text}` : text);
+  const budgets = bothBudgets(me);
+  if (budgets) {
+    const b = model ? budgets[model.family] : undefined;
+    if (b) {
+      if (dlBudgetUsedUp(b)) return named("limit reached this week");
+      return b.usdPerWeek === null ? named("no cap this week") : named(`${formatUsd(Math.max(0, b.usdPerWeek - b.spentUsd))} left this week`);
+    }
+    if (dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek)) return "limit reached this week";
+  }
+  const pool = model ? me.pools?.[model.pool] : undefined;
+  if (weekUsedUp(a) || (pool && pool.remaining <= 0)) return named("limit reached this week");
+  const cap = dollarCap(a);
+  if (cap !== undefined) return `${formatUsd(Math.max(0, cap - (a.spentUsdThisWeek ?? 0)))} of ${formatUsd(cap)} left this week`;
+  return named(`${formatTokens(Math.max(0, pool ? pool.remaining : a.remaining))} left this week`);
 }
 
 /**

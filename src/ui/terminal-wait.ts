@@ -29,7 +29,8 @@ export interface WaitIo {
 /** Rows `text` takes on a terminal `columns` wide, each line soft-wrapping. */
 export function textRows(text: string, columns: number): number {
   const cols = Math.max(1, columns);
-  return text.split("\n").reduce((rows, l) => rows + Math.max(1, Math.ceil([...l].length / cols)), 0);
+  // SGR styling (bold, dim) takes no columns.
+  return text.split("\n").reduce((rows, l) => rows + Math.max(1, Math.ceil([...l.replace(/\x1b\[[0-9;]*m/g, "")].length / cols)), 0);
 }
 
 /**
@@ -67,18 +68,55 @@ export async function readKeyWithoutInput(
   return pressed;
 }
 
+/**
+ * Lend the terminal for a small screen of several pages (e.g. `/tour`): draw
+ * `draw()`, pass each key to `onKey`, redraw after it, and end when `onKey`
+ * returns true, erasing the screen and giving the terminal back. Resolves
+ * true then, or false at once when the terminal couldn't be lent.
+ */
+export async function screenWithoutInput(
+  draw: () => string,
+  onKey: (chunk: string) => boolean,
+  lender: TerminalLender,
+  io: WaitIo = { stdin: process.stdin, stdout: process.stdout },
+): Promise<boolean> {
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => (finish = resolve));
+  let shown = draw();
+  let closed = false;
+  const end = await lendTerminal(shown, (chunk) => {
+    if (closed) return;
+    if (onKey(chunk)) {
+      closed = true;
+      finish();
+      return;
+    }
+    const next = draw();
+    if (next === shown) return;
+    // Back over every row the last screen took, then draw the new one.
+    const up = textRows(shown, io.stdout.columns || 80) - 1;
+    io.stdout.write(`\r${up > 0 ? `\x1b[${up}A` : ""}\x1b[J${next.split("\n").join("\r\n")}`);
+    shown = next;
+  }, lender, io, { wrap: false, rows: () => shown });
+  if (!end) return false;
+  await finished;
+  end();
+  return true;
+}
+
 /** Lend the terminal, draw `line`, and pass each key chunk to `onKey` until the returned function ends it. */
 async function lendTerminal(
   line: string,
   onKey: (chunk: string) => void,
   lender: TerminalLender,
   io: WaitIo,
+  o: { wrap?: boolean; rows?: () => string } = {},
 ): Promise<(() => void) | null> {
   const { stdin, stdout } = io;
   if (!stdin.isTTY || !stdout.isTTY || typeof stdin.setRawMode !== "function") return null;
   if (!(await lender.suspend().catch(() => false))) return null;
   // Wrapped at word boundaries, like the renderer's own lines, not mid-word by the terminal.
-  const text = wrapText(line, terminalWrapWidth(stdout)).join("\n");
+  const text = o.wrap === false ? line : wrapText(line, terminalWrapWidth(stdout)).join("\n");
   const wasRaw = stdin.isRaw;
   const onData = (chunk: Buffer | string) => onKey(typeof chunk === "string" ? chunk : chunk.toString("latin1"));
   try {
@@ -92,11 +130,11 @@ async function lendTerminal(
     return null;
   }
   // Erased by going back up over every row it took (long lines wrap).
-  const up = textRows(text, stdout.columns || 80) - 1;
   let done = false;
   return () => {
     if (done) return;
     done = true;
+    const up = textRows(o.rows ? o.rows() : text, stdout.columns || 80) - 1;
     stdin.off("data", onData);
     try {
       stdin.setRawMode(wasRaw);

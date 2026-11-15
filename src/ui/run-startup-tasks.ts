@@ -1,16 +1,18 @@
 /**
  * Startup-time bookkeeping previously inlined in the App component's main
- * cfg-driven useEffect: local-history size hint, log retention, creator welcome,
+ * cfg-driven useEffect: local-history size hint, log retention,
  * memory manager init + cleanup + backfill + KIMI.md drift check,
  * skill indexing, and custom-command load.
  *
- * All operations are fire-and-forget — they surface info events via
- * `setEvents` and otherwise don't block startup. Identical behavior to
- * the prior in-component implementation.
+ * All operations are fire-and-forget and don't block startup. The start is
+ * kept nearly silent: the only lines added here are rare and actionable now
+ * (the free tier's model fallback, the history-size hint) or caused by the
+ * user's own files (a skill that doesn't parse, a custom command shadowed by
+ * a built-in). Everything else is explained by its slash command and `/tour`.
  */
 import { embeddingAuthFromConfig, llmAuthFromConfig } from "../agent/llm-auth.js";
 import { resolveActiveProvider } from "../providers/resolve.js";
-import { patchPersistedConfig, takeFreeDefaultLunaNotice, tuiMemoryEnabled } from "../config.js";
+import { tuiMemoryEnabled } from "../config.js";
 import React from "react";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -20,7 +22,6 @@ import type { ChatEvent } from "./view-types.js";
 import type { CustomCommand } from "../commands/types.js";
 import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
 import { loadCustomCommands } from "../commands/loader.js";
-import { sessionStartNotice } from "../import/setup.js";
 import { MemoryManager } from "../memory/manager.js";
 import { getMemoryDb, openMemoryDb } from "../memory/db.js";
 import { resolveRepoRoot } from "../memory/repo-root.js";
@@ -29,8 +30,7 @@ import { indexSkills, initSkillsSchema } from "../skills/index.js";
 import { RETENTION } from "../storage-limits.js";
 import type { HybridResult } from "../memory/schema.js";
 import { ignoreProjectDir, projectDir, projectPath } from "../util/app-dirs.js";
-import { productName } from "../util/dl-identity.js";
-import { homeFolderNoticeOnce } from "../home-folder-notice.js";
+import { logger } from "../util/logger.js";
 
 type SetEvents = React.Dispatch<React.SetStateAction<ChatEvent[]>>;
 
@@ -60,15 +60,9 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   for (const root of new Set([resolveRepoRoot(process.cwd()), process.cwd()])) ignoreProjectDir(projectDir(root));
   const auth = llmAuthFromConfig(cfg);
 
-  // Started in the home folder: say once that a project folder works better.
-  const homeNotice = homeFolderNoticeOnce();
-  if (homeNotice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: homeNotice }]);
-
-  // The free tier's default moved to GPT-6 Luna (loadConfig's one-time
-  // migration): say so once; taking the notice clears it.
-  void takeFreeDefaultLunaNotice().then((notice) => {
-    if (notice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
-  });
+  // Not said at startup any more (/tour covers them): the home-folder
+  // notice, the free tier's default-model note, the memory disclosure, the
+  // setup-import checklist, and counts of what was indexed or cleaned up.
 
   // On the free tier, a saved model with no tokens left this week runs this
   // session on GPT-6 Luna (said once); the saved choice stays for later.
@@ -129,23 +123,13 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
     manager.open();
     memoryManagerRef.current = manager;
 
-    // Run cleanup and backfill on startup
+    // Run cleanup and backfill on startup, quietly (/memory doctor shows health).
     void manager.cleanup(repoRoot).then((result) => {
       const total = result.oldDeleted + result.excessDeleted + result.duplicatesMerged;
-      if (total > 0) {
-        setEvents((e) => [
-          ...e,
-          { kind: "memory", key: mkKey(), text: `memory cleanup: removed ${total} stale entries` },
-        ]);
-      }
+      if (total > 0) logger.info("memory.cleanup", { removed: total });
     });
     void manager.backfill(repoRoot).then((fixed) => {
-      if (fixed > 0) {
-        setEvents((e) => [
-          ...e,
-          { kind: "memory", key: mkKey(), text: `memory: indexed ${fixed} entr${fixed === 1 ? "y" : "ies"} for ${manager.embeddingModel ?? "vector recall"}` },
-        ]);
-      }
+      if (fixed > 0) logger.info("memory.backfill", { indexed: fixed });
     });
 
     // Defer session-start recall until the first turn so it can query with the
@@ -164,23 +148,6 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
         setKimiMdStale(true);
       }
     }
-
-    // First-run disclosure (#1077): memory is on by default now, so say so
-    // once — where the data lands and how to turn it off — and never again.
-    if (cfg.memoryDisclosureShown !== true) {
-      setEvents((e) => [
-        ...e,
-        {
-          kind: "memory",
-          key: mkKey(),
-          text:
-            `memory is on — ${productName()} remembers project facts across sessions in ${dbPath} (repo-scoped, secrets redacted). ` +
-            `/memory off to disable · /memory doctor for health · /memory export to back up.`,
-        },
-      ]);
-      setCfg({ ...cfg, memoryDisclosureShown: true });
-      void patchPersistedConfig({ memoryDisclosureShown: true }).catch(() => {});
-    }
   } else {
     memoryManagerRef.current?.close();
     memoryManagerRef.current = null;
@@ -196,27 +163,14 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
     ...embeddingAuthFromConfig(cfg),
     embeddingModel: cfg.memoryEmbeddingModel,
   }).then((result) => {
-    if (result.indexed > 0) {
-      setEvents((e) => [
-        ...e,
-        { kind: "info", key: mkKey(), text: `indexed ${result.indexed} skill${result.indexed === 1 ? "" : "s"}` },
-      ]);
-    }
-    if (result.errors.length > 0) {
-      for (const err of result.errors) {
-        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `skill index error: ${err}` }]);
-      }
+    // Quiet on success (/skills list shows them). A skill file that doesn't
+    // parse is the user's to fix, so that is said; a failed embedding call
+    // falls back to keyword search and is only logged.
+    for (const err of result.errors) {
+      if (err.startsWith("Failed to parse")) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `skill index error: ${err}` }]);
+      else logger.warn("skills.index", { error: err });
     }
   });
-
-  // Setup from other coding agents (#1126): the checklist the first time
-  // anything is found on this machine, then at most one line per session.
-  try {
-    const notice = sessionStartNotice(process.cwd(), { configuredMcp: Object.keys(cfg.mcpServers ?? {}) });
-    if (notice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
-  } catch {
-    // Best effort: never in the way of starting.
-  }
 
   void loadCustomCommands(process.cwd()).then(({ commands, warnings }) => {
     customCommandsRef.current = commands;

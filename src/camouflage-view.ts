@@ -30,7 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlHeaderLine, dlModelAllowanceLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlModelAllowanceLine, dlStartLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
@@ -87,7 +87,8 @@ import { headerTitle, productName } from "./util/dl-identity.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { BUG_REPORT_LINE } from "./ui/bug-report.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
-import { readKeyWithoutInput, waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
+import { readKeyWithoutInput, screenWithoutInput, waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
+import { markProductTourSeen, runProductTour, tourHintUntilSeen, tourSteps } from "./ui/product-tour.js";
 import { runStarAsk } from "./star-ask.js";
 import { runGithubAccess, type GithubAccessOutcome } from "./github-access.js";
 import { ghAuthLogin, runGh, type GhLogin, type GhRun } from "./util/gh-cli.js";
@@ -278,16 +279,33 @@ export interface CamouflageSessionViewOpts {
 export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed" | "setup-model-up";
 
 /**
- * The header's detail lines; first run has no model yet. `free` is the free
- * tier's line ("free · $1.80 of $3 left", or "free · 49.9M left" without a dollar cap), shown third.
+ * The header's detail lines, kept nearly silent: the model (with the folder
+ * and branch), the `/tour` hint until the tour has been opened once, and on
+ * the free tier one line with what's left this week and the invite link
+ * (see dlStartLine). First run has no model yet.
  */
-export function sessionHeaderDetail(cfg: Pick<Cfg, "model" | "modesEnabled"> | null, cwd: string, branch: string | null, free?: string): string[] {
+export function sessionHeaderDetail(
+  cfg: Pick<Cfg, "model"> | null,
+  cwd: string,
+  branch: string | null,
+  o: { free?: string; tourHint?: string } = {},
+): string[] {
   if (!cfg) return [[shortPath(cwd), branch].filter(Boolean).join(" · "), "First run"];
   return [
     [shortModel(cfg.model), shortPath(cwd), branch].filter(Boolean).join(" · "),
-    `/ for commands · @ to mention files${cfg.modesEnabled ? " · shift+tab to switch modes" : ""}`,
-    ...(free ? [free] : []),
+    ...(o.tourHint ? [o.tourHint] : []),
+    ...(o.free ? [o.free] : []),
   ];
+}
+
+/**
+ * The header's free-tier line: only when the active provider is the free tier
+ * (signed in; not an own key, a local GPU server or any other provider), and
+ * only with an account read; nothing rather than a placeholder otherwise.
+ */
+export function freeHeaderLine(cfg: Cfg | null, me: DlMe | null, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!cfg || resolveActiveProvider(cfg, env).id !== DL_PROVIDER_ID) return undefined;
+  return dlStartLine(me, cfg.model);
 }
 
 /** How long the header waits for /v1/me after the renderer mounts, for the free tier's line. */
@@ -345,17 +363,24 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
 
   const cwd = process.cwd();
   const branch = gitBranch(cwd);
+  // The /tour hint shows until the tour has been opened once.
+  const tourLine = custom ? undefined : await tourHintUntilSeen();
   const startSession = (cfg: Cfg | null, me: DlMe | null) =>
     cam.send("SessionStarted", {
       title: custom ? custom.header.title : headerTitle(opts.version),
-      detail: custom ? custom.header.detail : sessionHeaderDetail(cfg, cwd, branch, onFreeTier(cfg) ? dlHeaderLine(me) : undefined),
+      detail: custom
+        ? custom.header.detail
+        : sessionHeaderDetail(cfg, cwd, branch, { tourHint: tourLine, free: freeHeaderLine(cfg, me) }),
       accent: "orange",
       assistant_label: productName(),
     });
-  // A slow account read doesn't hold the session up: the header goes without the line.
+  // A slow account read doesn't hold the session up: the header goes without the line
+  // (an account already read in this process is used as is).
   startSession(
     opts.cfg,
-    onFreeTier(opts.cfg) ? await Promise.race([meSoon, new Promise<null>((r) => setTimeout(r, FREE_HEADER_WAIT_MS, null).unref())]) : null,
+    onFreeTier(opts.cfg)
+      ? lastKnownDlMe() ?? (await Promise.race([meSoon, new Promise<null>((r) => setTimeout(r, FREE_HEADER_WAIT_MS, null).unref())]))
+      : null,
   );
   const files = listFiles(cwd);
   if (files.length > 0) {
@@ -1167,6 +1192,12 @@ export class View implements AppBridge {
       return want("starAsk", async () => {
         await this.starAsk(line).catch(() => undefined);
         a.starAskDone?.();
+      });
+    }
+    if (s.productTour && !s.turnRunning) {
+      return want("productTour", async () => {
+        await this.productTour().catch(() => undefined);
+        a.productTourDone?.();
       });
     }
     if (s.dlScreen) {
@@ -2174,6 +2205,33 @@ export class View implements AppBridge {
       openBrowser: this.githubCalls.openBrowser,
       gh: this.githubCalls.gh,
     });
+  }
+
+  /**
+   * `/tour` (ui/product-tour.ts): one screen per step with the chat input
+   * out of the way; where the terminal can't be lent, one list per step.
+   * Opening it once stops the startup hint.
+   */
+  async productTour(): Promise<void> {
+    void markProductTourSeen();
+    const io = this.terminalIo ?? { stdout: process.stdout };
+    await runProductTour(
+      tourSteps(),
+      {
+        screen: (draw, onKey) =>
+          screenWithoutInput(
+            draw,
+            onKey,
+            {
+              suspend: async () => (this.sdk.suspendTerminal ? (await this.sdk.suspendTerminal(this.cam)).supported : false),
+              resume: () => this.sdk.resumeTerminal?.(this.cam),
+            },
+            this.terminalIo,
+          ),
+        select: (title, options, subtitle) => this.select(title, options, undefined, subtitle),
+      },
+      () => terminalWrapWidth(io.stdout),
+    );
   }
 
   /**

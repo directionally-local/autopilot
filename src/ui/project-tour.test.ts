@@ -225,7 +225,7 @@ describe("when a session gets the tour", () => {
 describe("buildTour", () => {
   const ask: AskModel = async () => "Fix the failing test in cart.spec.ts\nExplain how checkout works\nAdd a coupon test";
 
-  it("shows on the first session in a project, then only with /tour", async () => {
+  it("shows on the first session in a project, then only with /ideas", async () => {
     const root = repo({ "package.json": JSON.stringify({ name: "shop", scripts: { test: "jest" }, dependencies: { next: "15" } }) });
     const first = await buildTour({ cwd: root, enabled: true, ask, statePath, run: withGh([]) });
     assert.strictEqual(first.kind, "shown");
@@ -238,7 +238,7 @@ describe("buildTour", () => {
           "  2  Explain how checkout works",
           "  3  Add a coupon test",
           "  Press 1–3 and Enter, or type anything.",
-          "  /tour shows this again · /settings tour off turns it off",
+          "  /ideas shows this again · /settings ideas off turns it off",
         ].join("\n"),
       );
     }
@@ -250,10 +250,10 @@ describe("buildTour", () => {
     assert.deepStrictEqual(await buildTour({ cwd: root, enabled: true, ask, statePath, run: withGh([]) }), { kind: "skipped", reason: "already-shown" });
     const again = await buildTour({ cwd: join(root), enabled: true, force: true, ask, statePath, run: withGh([]) });
     assert.strictEqual(again.kind, "shown");
-    if (again.kind === "shown") assert.ok(!again.text.includes("/tour shows this again"));
+    if (again.kind === "shown") assert.ok(!again.text.includes("/ideas shows this again"));
   });
 
-  it("respects the off setting (but /tour still works)", async () => {
+  it("respects the off setting (but /ideas still works)", async () => {
     const root = repo({ "a.txt": "" });
     assert.deepStrictEqual(await buildTour({ cwd: root, enabled: false, ask, statePath, run: withGh([]) }), { kind: "skipped", reason: "off" });
     assert.ok(!existsSync(statePath));
