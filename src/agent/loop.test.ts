@@ -1,5 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
+import { getEventListeners } from "node:events";
 import { readFileSync } from "node:fs";
 import { dataPath } from "../util/app-dirs.js";
 import { runAgentTurn, BOOKKEEPING_RESULT_NOTE } from "./loop.js";
@@ -1511,5 +1512,151 @@ describe("runAgentTurn", () => {
     assert.ok(outcome, "a turn-outcome row was written");
     assert.equal(outcome!.outcome, "completed");
     assert.equal(typeof outcome!.durationMs, "number");
+  });
+});
+
+describe("runAgentTurn abort listeners", () => {
+  it("keeps the turn signal's abort listener count bounded over a long, tool-heavy turn", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { ALL_TOOLS } = await import("../tools/executor.js");
+    const dir = mkdtempSync(join(tmpdir(), "abort-listeners-"));
+    writeFileSync(join(dir, "a.txt"), "hello\nworld\n".repeat(20));
+    const controller = new AbortController();
+    const originalFetch = globalThis.fetch;
+    const counts: number[] = [];
+    let requests = 0;
+    globalThis.fetch = async () => {
+      counts.push(getEventListeners(controller.signal, "abort").length);
+      requests++;
+      const i = requests;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          if (i <= 25) {
+            const calls = [
+              { name: "read", args: { path: "a.txt", offset: 1 + (i % 5), limit: 3 } },
+              { name: "grep", args: { pattern: `hello${i}`, path: "." } },
+              { name: "glob", args: { pattern: `*${i}*` } },
+            ];
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls.map((call, j) => ({ index: j, id: `c${i}_${j}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.args) } })) } }] })}\n\n`));
+            // A real stream arrives in many small chunks: one read each.
+            for (let k = 0; k < 100; k++) c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "" } }] })}\n\n`));
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ finish_reason: "tool_calls" }] })}\n\n`));
+          } else {
+            for (let k = 0; k < 100; k++) c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "." } }] })}\n\n`));
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ finish_reason: "stop" }] })}\n\n`));
+          }
+          c.enqueue(encoder.encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    try {
+      await runAgentTurn({
+        openrouterApiKey: "sk-or-test",
+        model: "test/model",
+        messages: [{ role: "system", content: "test" }, { role: "user", content: "go" }],
+        tools: ALL_TOOLS,
+        executor: new RealToolExecutor(ALL_TOOLS),
+        cwd: dir,
+        signal: controller.signal,
+        callbacks: { askPermission: async () => "allow" },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(requests, 26);
+    // Per-turn listeners only: the count must not grow with requests or chunks.
+    assert.ok(Math.max(...counts) <= counts[0]! + 2, `listener counts grew: ${counts.join(",")}`);
+    assert.ok(getEventListeners(controller.signal, "abort").length <= counts[0]! + 2);
+  });
+});
+
+describe("runAgentTurn Code Mode sandbox crashes", () => {
+  it("fails only the crashed execute_code calls and switches to direct tools after repeated crashes", async (t) => {
+    if (sandboxUnavailableReason) {
+      t.skip(`requires secure Code Mode: ${sandboxUnavailableReason}`);
+      return;
+    }
+    const sandbox = await import("../code-mode/sandbox.js");
+    sandbox.setSandboxHostTestHooks(true);
+    sandbox.resetSandboxCrashesForTesting();
+    // SIGKILL and exit(1) take the same parent path as a SIGSEGV without leaving core dumps behind.
+    sandbox.queueSandboxRunTestHooks("sigkill", "exit1");
+    const sessionId = `code-mode-crash-${process.pid}`;
+    const originalFetch = globalThis.fetch;
+    const toolNamesPerRequest: string[][] = [];
+    let requests = 0;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String((init as RequestInit).body)) as { tools?: Array<{ function: { name: string } }> };
+      toolNamesPerRequest.push((body.tools ?? []).map((tool) => tool.function.name));
+      requests++;
+      const events = requests <= 2
+        ? [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: `call_code_${requests}`, type: "function", function: { name: "execute_code", arguments: JSON.stringify({ code: `console.log(${requests})` }) } }] } }] },
+            { choices: [{ finish_reason: "tool_calls" }] },
+          ]
+        : [{ choices: [{ delta: { content: "Done." } }] }, { choices: [{ finish_reason: "stop" }] }];
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const event of events) c.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          c.enqueue(encoder.encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const readTool: ToolSpec = {
+      name: "read",
+      description: "Read a file",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+      needsPermission: false,
+      isReadOnly: true,
+      run: async () => "contents",
+    };
+    const warnings: string[] = [];
+    const run = (messages: ChatMessage[]) =>
+      runAgentTurn({
+        openrouterApiKey: "sk-or-test",
+        model: "test/model",
+        messages,
+        tools: [readTool],
+        executor: new RealToolExecutor([readTool]),
+        cwd: process.cwd(),
+        signal: new AbortController().signal,
+        codeMode: true,
+        sessionId,
+        callbacks: { askPermission: async () => "allow", onWarning: (w) => warnings.push(w) },
+      });
+    try {
+      const messages: ChatMessage[] = [{ role: "system", content: "test" }, { role: "user", content: "go" }];
+      await run(messages);
+      assert.equal(requests, 3);
+      assert.ok(toolNamesPerRequest[0]!.includes("execute_code"));
+      assert.ok(toolNamesPerRequest[1]!.includes("execute_code"));
+      assert.ok(!toolNamesPerRequest[2]!.includes("execute_code"), "the rest of the turn uses direct tools");
+      assert.ok(toolNamesPerRequest[2]!.includes("read"));
+      const crashResults = messages.filter((m) => m.role === "tool").map((m) => String(m.content));
+      assert.equal(crashResults.length, 2);
+      assert.match(crashResults[0]!, /The code sandbox crashed \(SIGKILL\); run the steps as separate tool calls\./);
+      assert.match(crashResults[1]!, /The code sandbox crashed \(exit code 1\); run the steps as separate tool calls\./);
+      assert.deepEqual(warnings, [
+        "Code Mode's sandbox crashed (SIGKILL). Only that execute_code call failed; Autopilot kept running.",
+        "Code Mode is off for the rest of this session: the Code Mode sandbox crashed 2 times in this session. Tools are called directly instead.",
+      ]);
+      // The next turn in the same session starts with direct tools and no repeated notice.
+      requests = 2;
+      await run([{ role: "system", content: "test" }, { role: "user", content: "again" }]);
+      assert.ok(!toolNamesPerRequest[3]!.includes("execute_code"));
+      assert.equal(warnings.length, 2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      sandbox.setSandboxHostTestHooks(false);
+      sandbox.queueSandboxRunTestHooks();
+      sandbox.disposeAllSandboxHosts();
+    }
   });
 });

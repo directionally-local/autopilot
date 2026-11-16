@@ -27,18 +27,19 @@ export async function* readSSE(
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
+  // Called once per chunk read, so its abort listener must be removed when
+  // the read settles: a `{ once: true }` listener stays on a signal that never
+  // fires, and a long streamed turn piled up thousands of them on the turn's
+  // signal (MaxListenersExceededWarning).
   const abortRace = <T>(promise: Promise<T>): Promise<T> => {
     if (!signal) return promise;
-    return Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        if (signal.aborted) {
-          reject(new DOMException("aborted", "AbortError"));
-          return;
-        }
-        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-      }),
-    ]);
+    if (signal.aborted) return Promise.reject(new DOMException("aborted", "AbortError"));
+    let onRaceAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      onRaceAbort = () => reject(new DOMException("aborted", "AbortError"));
+      signal.addEventListener("abort", onRaceAbort, { once: true });
+    });
+    return Promise.race([promise, aborted]).finally(() => signal.removeEventListener("abort", onRaceAbort));
   };
 
   try {

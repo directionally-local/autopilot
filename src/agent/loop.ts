@@ -21,7 +21,7 @@ import { hasRecalledMemory } from "../memory/recall-inject.js";
 import { logTurnDebug, logTurnOutcome, analyzePrompt, type TurnOutcome } from "../cost-debug.js";
 import { EXTRACTORS, editExtractionMode, normalizeFile } from "../memory/extractors.js";
 import { stripHistoricalReasoning } from "./strip-reasoning.js";
-import { generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
+import { codeModeCrashDisabledReason, generateTypeScriptApi, runInSandbox, secureSandboxUnavailableReason, takeSandboxUnavailableWarning } from "../code-mode/index.js";
 import type { SandboxReadCursor } from "../code-mode/index.js";
 import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
 import { resolveCustomEndpoint } from "./custom-endpoint.js";
@@ -574,11 +574,12 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       : max * 5,
   );
   // Code Mode runs model-written code, which only the isolated-vm sandbox
-  // can contain. Without it the turn uses direct tools (each permission-
-  // checked as usual) and the user is told once per session why.
+  // can contain. Without it (or after the sandbox process crashed repeatedly
+  // this session) the turn uses direct tools (each permission-checked as
+  // usual) and the user is told once per session why.
   let codeMode = opts.codeMode ?? false;
   if (codeMode) {
-    const unavailable = await secureSandboxUnavailableReason();
+    const unavailable = (await secureSandboxUnavailableReason()) ?? codeModeCrashDisabledReason(opts.sessionId);
     if (unavailable) {
       codeMode = false;
       logger.warn("code_mode:sandbox_unavailable", { sessionId: opts.sessionId, error: unavailable });
@@ -1662,6 +1663,13 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       });
       if (servedNewPage) codeModeProgress.add(loopSignature);
       else codeModeProgress.delete(loopSignature);
+      // Repeated sandbox crashes turn Code Mode off for the session: switch
+      // this turn to direct tools now (the notice came with the result's warnings).
+      if (sandboxResult.crashed && codeMode && codeModeCrashDisabledReason(opts.sessionId)) {
+        codeMode = false;
+        toolDefs = toOpenAIToolDefs(profiledTools);
+        logger.warn("code_mode:disabled_after_crashes", { sessionId: opts.sessionId });
+      }
       logger.debug("turn:code_mode_end", {
         sessionId: opts.sessionId,
         toolCallId: tc.id,
