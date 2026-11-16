@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.23.0](https://github.com/directionally-local/autopilot/compare/v3.22.0...v3.23.0) (2026-11-15)
+
+
+### Features
+
+* nearly silent start, and /tour: a step-by-step tour of what's different ([#1260](https://github.com/directionally-local/autopilot/issues/1260)) ([86d0cc3](https://github.com/directionally-local/autopilot/commit/86d0cc386566a5c5a1dde39c4fb6475ff3e7e1a6))
+
+
+### Bug Fixes
+
+* **deps:** raise the @hotcell/sdk floor to 0.1.40 ([#1262](https://github.com/directionally-local/autopilot/issues/1262)) ([c2d40ea](https://github.com/directionally-local/autopilot/commit/c2d40ea4fa4842b364a4a5c5494faeabd9162d91))
+* **deps:** update @modelcontextprotocol/sdk to 1.32.2 (GHSA-f897-62hf-6gxq) ([#1246](https://github.com/directionally-local/autopilot/issues/1246)) ([4fd9272](https://github.com/directionally-local/autopilot/commit/4fd92720a07997980e79f1466acad83a326ff07b))
+* honor an explicit codeMode: false in the interactive app ([#1258](https://github.com/directionally-local/autopilot/issues/1258)) ([20d97ee](https://github.com/directionally-local/autopilot/commit/20d97ee28acdd8a84b6d40de93cde57988027b0d))
+
 ## [3.22.0](https://github.com/directionally-local/autopilot/compare/v3.21.0...v3.22.0) (2026-11-12)
 
 
