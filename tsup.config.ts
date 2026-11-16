@@ -1,7 +1,14 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.tsx", "src/sdk/index.ts", "src/secrets.ts"],
+  entry: {
+    index: "src/index.tsx",
+    "sdk/index": "src/sdk/index.ts",
+    secrets: "src/secrets.ts",
+    // Code Mode's sandbox host: forked as its own process (dist/sandbox-host.js),
+    // so a native crash in isolated-vm cannot take Autopilot down.
+    "sandbox-host": "src/code-mode/sandbox-host.ts",
+  },
   format: ["esm"],
   target: "node20",
   platform: "node",
