@@ -1513,3 +1513,64 @@ describe("runAgentTurn", () => {
     assert.equal(typeof outcome!.durationMs, "number");
   });
 });
+
+describe("runAgentTurn abort listeners", () => {
+  it("keeps the turn signal's abort listener count bounded over a long, tool-heavy turn", async () => {
+    const { getEventListeners } = await import("node:events");
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { ALL_TOOLS } = await import("../tools/executor.js");
+    const dir = mkdtempSync(join(tmpdir(), "abort-listeners-"));
+    writeFileSync(join(dir, "a.txt"), "hello\nworld\n".repeat(20));
+    const controller = new AbortController();
+    const originalFetch = globalThis.fetch;
+    const counts: number[] = [];
+    let requests = 0;
+    globalThis.fetch = async () => {
+      counts.push(getEventListeners(controller.signal, "abort").length);
+      requests++;
+      const i = requests;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          if (i <= 25) {
+            const calls = [
+              { name: "read", args: { path: "a.txt", offset: 1 + (i % 5), limit: 3 } },
+              { name: "grep", args: { pattern: `hello${i}`, path: "." } },
+              { name: "glob", args: { pattern: `*${i}*` } },
+            ];
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls.map((call, j) => ({ index: j, id: `c${i}_${j}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.args) } })) } }] })}\n\n`));
+            // A real stream arrives in many small chunks: one read each.
+            for (let k = 0; k < 100; k++) c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "" } }] })}\n\n`));
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ finish_reason: "tool_calls" }] })}\n\n`));
+          } else {
+            for (let k = 0; k < 100; k++) c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "." } }] })}\n\n`));
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ finish_reason: "stop" }] })}\n\n`));
+          }
+          c.enqueue(encoder.encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    try {
+      await runAgentTurn({
+        openrouterApiKey: "sk-or-test",
+        model: "test/model",
+        messages: [{ role: "system", content: "test" }, { role: "user", content: "go" }],
+        tools: ALL_TOOLS,
+        executor: new RealToolExecutor(ALL_TOOLS),
+        cwd: dir,
+        signal: controller.signal,
+        callbacks: { askPermission: async () => "allow" },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(requests, 26);
+    // Per-turn listeners only: the count must not grow with requests or chunks.
+    assert.ok(Math.max(...counts) <= counts[0]! + 2, `listener counts grew: ${counts.join(",")}`);
+    assert.ok(getEventListeners(controller.signal, "abort").length <= counts[0]! + 2);
+  });
+});
