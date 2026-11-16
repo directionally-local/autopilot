@@ -696,6 +696,17 @@ export async function runInSandbox(opts: SandboxOptions): Promise<SandboxResult>
       toolCalls: [],
     };
   }
+  // Without isolated-vm (e.g. no prebuilt binary for this Node), don't start a sandbox
+  // process just to have it fail on the import: say the sandbox can't run, as before.
+  const unavailable = await secureSandboxUnavailableReason();
+  if (unavailable) {
+    return {
+      output: "",
+      logs: [],
+      error: `The Code Mode sandbox could not run this code: ${unavailable}. Call the tools directly instead.`,
+      toolCalls: [],
+    };
+  }
   try {
     return await runInChildSandbox(opts);
   } catch (err) {
