@@ -1,10 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   CamouflageCrashed,
   CamouflageUnavailable,
+  crashedBeforeFirstFrame,
   crashGiveUpMessage,
+  FIRST_FRAME_GRACE_MS,
+  latestCrashReport,
+  simpleViewSwitchNotice,
   diagnoseRenderer,
   formatUnavailable,
   mountFailureReason,
@@ -232,5 +238,100 @@ describe("crashGiveUpMessage", () => {
 
   it("says nothing was lost when no session started", () => {
     assert.match(crashGiveUpMessage({ crashes: 3, sessionId: null }), /nothing was lost/);
+  });
+});
+
+describe("renderer crash fallback (#1222)", () => {
+  it("a single mid-session crash still reopens the full screen view", async () => {
+    const calls: Array<string | undefined> = [];
+    const out = await runWithCrashRestarts(async (id) => {
+      calls.push(id);
+      if (calls.length === 1) throw new CamouflageCrashed("renderer exited (code 1)", "s1", { beforeFirstFrame: false });
+    });
+    assert.deepEqual(out, { gaveUp: false, restarts: 1 });
+    assert.deepEqual(calls, [undefined, "s1"]);
+  });
+
+  it("the third crash within a minute gives up for the simple view, with the session and crash file", async () => {
+    let t = 0;
+    let n = 0;
+    const out = await runWithCrashRestarts(
+      async () => {
+        n++;
+        t += 10_000;
+        throw new CamouflageCrashed("renderer exited (code 1)", n === 1 ? "s1" : null, { crashFile: n === 2 ? "/h/.camouflage/crash-2.txt" : null });
+      },
+      { now: () => t },
+    );
+    assert.equal(n, 3);
+    assert.equal(out.gaveUp, true);
+    if (out.gaveUp) {
+      assert.equal(out.reason, "repeated");
+      assert.equal(out.crashes, 3);
+      assert.equal(out.sessionId, "s1");
+      assert.equal(out.crashFile, "/h/.camouflage/crash-2.txt");
+    }
+  });
+
+  it("a crash before the first frame gives up at once, without restarting", async () => {
+    let n = 0;
+    const restarts: number[] = [];
+    const out = await runWithCrashRestarts(
+      async () => {
+        n++;
+        throw new CamouflageCrashed("renderer exited (code 1)", null, { beforeFirstFrame: true, crashFile: "/h/.camouflage/crash-a.txt" });
+      },
+      { onRestart: ({ restart }) => restarts.push(restart) },
+    );
+    assert.equal(n, 1);
+    assert.deepEqual(restarts, []);
+    assert.equal(out.gaveUp, true);
+    if (out.gaveUp) {
+      assert.equal(out.reason, "before-first-frame");
+      assert.equal(out.restarts, 0);
+      assert.equal(out.crashFile, "/h/.camouflage/crash-a.txt");
+    }
+  });
+
+  it("before the first frame: an early exit with no event from the renderer", () => {
+    assert.equal(crashedBeforeFirstFrame({ mountedAt: 1000, exitedAt: 1200, sawRendererEvent: false }), true);
+    assert.equal(crashedBeforeFirstFrame({ mountedAt: 1000, exitedAt: 1200, sawRendererEvent: true }), false);
+    assert.equal(crashedBeforeFirstFrame({ mountedAt: 1000, exitedAt: 1000 + FIRST_FRAME_GRACE_MS, sawRendererEvent: false }), false);
+  });
+
+  it("finds the newest crash report written since the renderer started", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cam-crash-"));
+    try {
+      const old = join(dir, "crash-old.txt");
+      const a = join(dir, "crash-a.txt");
+      const b = join(dir, "crash-b.txt");
+      for (const f of [old, a, b, join(dir, "install-error.txt")]) writeFileSync(f, "x");
+      const now = Date.now() / 1000;
+      utimesSync(old, now - 600, now - 600);
+      utimesSync(a, now - 2, now - 2);
+      utimesSync(b, now - 1, now - 1);
+      assert.equal(latestCrashReport(Date.now() - 10_000, dir), b);
+      assert.equal(latestCrashReport(Date.now() + 60_000, dir), null);
+      assert.equal(latestCrashReport(0, join(dir, "missing")), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the switch notice names the product, why, and the crash file", () => {
+    assert.equal(
+      simpleViewSwitchNotice({ reason: "repeated", crashFile: "/home/u/.camouflage/crash-1a2b.txt" }, { AUTOPILOT_LAUNCHED_BY: "dl" }),
+      "dl: the full screen view keeps crashing on this terminal, so dl switched to the simple view. crash details: /home/u/.camouflage/crash-1a2b.txt · please attach it to an issue: https://github.com/directionally-local/autopilot/issues\n",
+    );
+    const early = simpleViewSwitchNotice({ reason: "before-first-frame", crashFile: null }, {});
+    assert.match(early, /^autopilot: the full screen view can't start on this terminal, so autopilot switched to the simple view\./);
+    assert.match(early, /crash details: .*\.camouflage\/crash-\*\.txt · please attach it to an issue/);
+    assert.equal(early.split("\n").length, 2);
+  });
+
+  it("the give-up message names the crash file when there is one", () => {
+    const msg = crashGiveUpMessage({ crashes: 1, sessionId: null, crashFile: "/h/.camouflage/crash-z.txt", reason: "before-first-frame" });
+    assert.match(msg, /exited before it drew anything/);
+    assert.match(msg, /Crash report: \/h\/\.camouflage\/crash-z\.txt\./);
   });
 });

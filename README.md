@@ -85,6 +85,14 @@ On first run, autopilot asks **"How should it think?"**: choose **Free — sign 
 
 The free tier gives free tokens every week. When they run out, `/upgrade` offers dl Pro or a one-time top-up, and you can always switch to your own key or your own GPUs.
 
+### Troubleshooting: the screen fails to start or keeps crashing
+
+The full screen view runs in the Camouflage renderer. If the renderer crashes, autopilot reopens the conversation in a fresh one. If it crashes 3 times within a minute, or exits before it drew anything, autopilot switches to the **simple view**: a plain prompt where each line you type is a turn, with the reply and tool calls printed as plain lines (Ctrl+C stops a turn, `/exit` quits). The conversation carries on and is saved after every turn. Actions that would need your approval are refused there, as in `-p` mode.
+
+To start in the simple view yourself, run `autopilot --simple` (add `-c` or `-S <id>` to continue a conversation) or set `AUTOPILOT_SIMPLE_VIEW=1`. Under dl, use `AUTOPILOT_SIMPLE_VIEW=1 dl`. The simple view has no first-run setup, so connect a provider first (for example `autopilot auth openrouter`, or a key such as `OPENROUTER_API_KEY` in the environment).
+
+Crash reports are saved as `~/.camouflage/crash-*.txt`, and autopilot prints the path. Please attach the report to an [issue](https://github.com/directionally-local/autopilot/issues).
+
 ### Your own GPUs
 
 Before that question, the first run looks for GPUs on this machine. With an Nvidia card of 24 GB or more and Autopilot started by dl, it asks **"Run a private model on it?"**: yes hands over to `dl model up`, which sets up vLLM on the GPU, tests it and opens Autopilot on it; no is remembered. A smaller Nvidia card gets a one-line hint that `dl model up` can run small models on it. If the setup fails, a menu offers to retry, see what failed (the reason and the log file), pick another model, or carry on without a local model.

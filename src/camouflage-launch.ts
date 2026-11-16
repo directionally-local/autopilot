@@ -6,13 +6,13 @@
  * renderer, a bounded number of times.
  */
 
-import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { launchedByDl } from "./util/env.js";
-import { DL_REINSTALL_LINE } from "./util/dl-identity.js";
+import { DL_REINSTALL_LINE, productName } from "./util/dl-identity.js";
 
 /** Platforms camouflage-tui publishes a prebuilt renderer for (its scripts/install.js). */
 export const PREBUILT_PLATFORMS: Readonly<Record<string, string>> = {
@@ -219,13 +219,61 @@ function truncate(s: string, n: number): string {
 
 /** The renderer exited unexpectedly mid-session (not the user quitting). */
 export class CamouflageCrashed extends Error {
+  /** It died before it could have drawn anything (the screen failed to start, #1222). */
+  readonly beforeFirstFrame: boolean;
+  /** The crash report it wrote (~/.camouflage/crash-<id>.txt), when one was found. */
+  readonly crashFile: string | null;
   constructor(
     message: string,
     /** The session to reopen in a fresh renderer, if the App had started one. */
     readonly sessionId: string | null,
+    info: { beforeFirstFrame?: boolean; crashFile?: string | null } = {},
   ) {
     super(message);
+    this.beforeFirstFrame = info.beforeFirstFrame ?? false;
+    this.crashFile = info.crashFile ?? null;
   }
+}
+
+/** Where camouflage-tui writes its crash reports. */
+export function crashReportDir(home: string = homedir()): string {
+  return join(home, ".camouflage");
+}
+
+/**
+ * A renderer that exits this soon after mounting, before sending a single
+ * event, never got a screen up: restarting it only repeats the failure.
+ */
+export const FIRST_FRAME_GRACE_MS = 3_000;
+
+/** Whether a renderer exit counts as "before the first frame" (see FIRST_FRAME_GRACE_MS). */
+export function crashedBeforeFirstFrame(info: { mountedAt: number; exitedAt: number; sawRendererEvent: boolean }): boolean {
+  return !info.sawRendererEvent && info.exitedAt - info.mountedAt < FIRST_FRAME_GRACE_MS;
+}
+
+/**
+ * The newest crash report written at or after `sinceMs` (crash-*.txt in
+ * ~/.camouflage), or null when the renderer left none. Never throws.
+ */
+export function latestCrashReport(sinceMs: number, dir: string = crashReportDir()): string | null {
+  let best: { path: string; mtime: number } | null = null;
+  try {
+    for (const name of readdirSync(dir)) {
+      if (!/^crash-.*\.txt$/.test(name)) continue;
+      const path = join(dir, name);
+      try {
+        const mtime = statSync(path).mtimeMs;
+        // A second of slack for filesystems with coarse timestamps.
+        if (mtime < sinceMs - 1_000) continue;
+        if (!best || mtime > best.mtime) best = { path, mtime };
+      } catch {
+        // Removed while listing.
+      }
+    }
+  } catch {
+    return null;
+  }
+  return best?.path ?? null;
 }
 
 export interface RestartPolicy {
@@ -238,12 +286,23 @@ export interface RestartPolicy {
 
 export type RestartOutcome =
   | { gaveUp: false; restarts: number }
-  | { gaveUp: true; restarts: number; crashes: number; sessionId: string | null; lastError: CamouflageCrashed };
+  | {
+      gaveUp: true;
+      /** "repeated": too many crashes within the window; "before-first-frame": the screen never came up. */
+      reason: "repeated" | "before-first-frame";
+      restarts: number;
+      crashes: number;
+      sessionId: string | null;
+      lastError: CamouflageCrashed;
+      /** The newest crash report any of the crashes named. */
+      crashFile: string | null;
+    };
 
 /**
  * Run the Camouflage view, re-mounting it on the saved session each time the
- * renderer crashes, up to `maxRestarts` times within `windowMs`. Errors other
- * than a crash propagate unchanged.
+ * renderer crashes, up to `maxRestarts` times within `windowMs`. A renderer
+ * that dies before its first frame isn't restarted at all: the screen can't
+ * start on this terminal. Errors other than a crash propagate unchanged.
  */
 export async function runWithCrashRestarts(
   run: (resumeSessionId: string | undefined) => Promise<void>,
@@ -254,6 +313,7 @@ export async function runWithCrashRestarts(
   const now = opts.now ?? Date.now;
   let crashes: number[] = [];
   let sessionId: string | null = null;
+  let crashFile: string | null = null;
   let restarts = 0;
   for (;;) {
     try {
@@ -264,22 +324,45 @@ export async function runWithCrashRestarts(
       // A renderer that dies before the reopened App saved anything still
       // leaves the earlier session to resume.
       sessionId = err.sessionId ?? sessionId;
+      crashFile = err.crashFile ?? crashFile;
       const t = now();
       crashes = [...crashes.filter((c) => t - c < windowMs), t];
-      if (crashes.length > maxRestarts) {
-        return { gaveUp: true, restarts, crashes: crashes.length, sessionId, lastError: err };
-      }
+      const gaveUp = { gaveUp: true as const, restarts, crashes: crashes.length, sessionId, lastError: err, crashFile };
+      if (err.beforeFirstFrame) return { ...gaveUp, reason: "before-first-frame" };
+      if (crashes.length > maxRestarts) return { ...gaveUp, reason: "repeated" };
       restarts++;
       opts.onRestart?.({ sessionId, restart: restarts, error: err });
     }
   }
 }
 
+/**
+ * The one line said when the full screen view is given up for the simple
+ * view: why, and the crash report to attach. Names dl when dl started us.
+ */
+export function simpleViewSwitchNotice(
+  outcome: { reason: "repeated" | "before-first-frame"; crashFile: string | null },
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const product = productName(env);
+  const why = outcome.reason === "before-first-frame" ? "can't start on this terminal" : "keeps crashing on this terminal";
+  const details = outcome.crashFile ?? `${crashReportDir()}/crash-*.txt`;
+  return `${product}: the full screen view ${why}, so ${product} switched to the simple view. crash details: ${details} · please attach it to an issue: https://github.com/directionally-local/autopilot/issues\n`;
+}
+
 /** What to tell the user when the renderer keeps crashing. */
-export function crashGiveUpMessage(outcome: { crashes: number; sessionId: string | null }, windowMs = 60_000, env: NodeJS.ProcessEnv = process.env): string {
+export function crashGiveUpMessage(
+  outcome: { crashes: number; sessionId: string | null; crashFile?: string | null; reason?: "repeated" | "before-first-frame" },
+  windowMs = 60_000,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const lines = [
-    `autopilot: the Camouflage renderer crashed ${outcome.crashes} times within ${Math.round(windowMs / 1000)} seconds, so autopilot stopped restarting it.`,
-    `Crash reports: ${join(homedir(), ".camouflage")} (crash-*.txt). Please attach one to an issue: https://github.com/directionally-local/autopilot/issues`,
+    outcome.reason === "before-first-frame"
+      ? "autopilot: the Camouflage renderer exited before it drew anything, so autopilot stopped restarting it."
+      : `autopilot: the Camouflage renderer crashed ${outcome.crashes} times within ${Math.round(windowMs / 1000)} seconds, so autopilot stopped restarting it.`,
+    outcome.crashFile
+      ? `Crash report: ${outcome.crashFile}. Please attach it to an issue: https://github.com/directionally-local/autopilot/issues`
+      : `Crash reports: ${crashReportDir()} (crash-*.txt). Please attach one to an issue: https://github.com/directionally-local/autopilot/issues`,
   ];
   if (outcome.sessionId && launchedByDl(env)) {
     lines.push("Your conversation is saved. To pick it up again, run `dl -c` in the same folder.");
