@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.24.0](https://github.com/directionally-local/autopilot/compare/v3.23.0...v3.24.0) (2026-11-16)
+
+
+### Features
+
+* **code-mode:** run the isolated-vm sandbox in a child process ([879d687](https://github.com/directionally-local/autopilot/commit/879d687a258b7ef2bf0bfd6cc45165b66026bc1e))
+* **code-mode:** run the isolated-vm sandbox in a child process; fix the per-chunk abort listener leak ([503c1bd](https://github.com/directionally-local/autopilot/commit/503c1bd4c0955602ccf494cc92d47e122602eb3e))
+* fall back to a simple view when the full screen renderer keeps crashing ([40cae89](https://github.com/directionally-local/autopilot/commit/40cae894a00ef1ae4d835f8b7fc60d2939710a40))
+* fall back to a simple view when the full screen renderer keeps crashing ([a81617c](https://github.com/directionally-local/autopilot/commit/a81617c296fcb2d216e96db05d971d3b073f4c30)), closes [#1222](https://github.com/directionally-local/autopilot/issues/1222)
+
+
+### Bug Fixes
+
+* **code-mode:** say the sandbox can't run before starting a process without isolated-vm ([20f502b](https://github.com/directionally-local/autopilot/commit/20f502baec4a5fdabca8137bbd1bf42e62bb22ae))
+* **code-mode:** say the sandbox can't run before starting a process without isolated-vm ([eac6d88](https://github.com/directionally-local/autopilot/commit/eac6d883af2df621409166bb4076ad448930c314))
+* **sse:** remove the per-chunk abort listener once each read settles ([396f7ee](https://github.com/directionally-local/autopilot/commit/396f7ee863fb814973700533bb0e0dccadd1cbfc))
+
 ## [3.23.0](https://github.com/directionally-local/autopilot/compare/v3.22.0...v3.23.0) (2026-11-15)
 
 
