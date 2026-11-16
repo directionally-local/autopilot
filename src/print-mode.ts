@@ -80,7 +80,15 @@ export interface PrintModeOpts
   trace?: AutopilotConfig["trace"];
   /** Full config, recorded (redacted) on the trace's `session_start` event. */
   traceConfigSnapshot?: AutopilotConfig;
+  /** Told the session id once it's resolved (the simple view continues it turn after turn). */
+  onSession?: (sessionId: string) => void;
+  /** Leave the session open after the run (SessionEnd fires at process exit): the simple view runs many. */
+  keepSessionOpen?: boolean;
 }
+
+/** The run Ctrl-C aborts; one SIGINT listener however many runs a process makes. */
+let sigintTarget: AbortController | null = null;
+let sigintInstalled = false;
 
 interface JsonToolCall {
   id: string;
@@ -194,6 +202,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
 
   // Resolve session
   const { sessionFile, isNew } = await resolveSession(opts);
+  opts.onSession?.(sessionFile.id);
   if (opts.title && isNew) {
     sessionFile.title = opts.title;
   }
@@ -276,7 +285,11 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
   }
 
   const controller = new AbortController();
-  process.on("SIGINT", () => controller.abort());
+  sigintTarget = controller;
+  if (!sigintInstalled) {
+    sigintInstalled = true;
+    process.on("SIGINT", () => sigintTarget?.abort());
+  }
 
   // Output state
   const format = opts.format ?? "text";
@@ -339,7 +352,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
       emitStreamJson("error", { message: msg, code: PROMPT_BLOCKED_EXIT_CODE, reason: "prompt_blocked" });
     }
     process.exitCode = PROMPT_BLOCKED_EXIT_CODE;
-    await endSessions("exit");
+    if (!opts.keepSessionOpen) await endSessions("exit");
     trace.emit("session_end", { reason: "exit" }, null);
     await trace.flush();
     return;
@@ -564,7 +577,7 @@ export async function runPrintMode(opts: PrintModeOpts): Promise<void> {
     traceEndReason = "crash";
     throw err;
   } finally {
-    await endSessions("exit");
+    if (!opts.keepSessionOpen) await endSessions("exit");
     await Promise.all(usageWrites);
     trace.emit("session_end", { reason: traceEndReason, total_cost_usd: traceCostUsd || undefined }, null);
     await trace.flush();

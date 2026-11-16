@@ -39,6 +39,7 @@ program
   .option("--mode <mode>", "run mode: interactive (default), print, rpc")
   .option("-c, --continue", "continue the most recent session in the current working directory")
   .option("-S, --session <id>", "resume a specific session by id")
+  .option("--simple", "simple view: a plain line-by-line prompt instead of the full screen view, for terminals where it fails (also AUTOPILOT_SIMPLE_VIEW=1)")
   .option("--from-claude-code", "continue this folder's most recent Claude Code conversation in a new session (read locally; asks first)")
   .option("-f, --file <path>", "attach file(s) to the prompt; repeatable, supports globs (print mode only)", (v, prev: string[] | undefined) => (prev ?? []).concat(v))
   .option("--format <mode>", "output format for print mode: text (default), json, stream-json")
@@ -219,7 +220,7 @@ program
           const outcome = await runWithCrashRestarts(async () => {
             await runCamouflageView({ version: getAppVersion(), header, commands, run });
           });
-          if (outcome.gaveUp) process.stderr.write(crashGiveUpMessage({ crashes: outcome.crashes, sessionId: null }));
+          if (outcome.gaveUp) process.stderr.write(crashGiveUpMessage({ crashes: outcome.crashes, sessionId: null, crashFile: outcome.crashFile, reason: outcome.reason }));
         } catch (err) {
           if (err instanceof CamouflageUnavailable) {
             process.stderr.write(err.message);
@@ -1071,6 +1072,7 @@ const opts = program.opts<{
   mode?: string;
   continue?: boolean;
   session?: string;
+  simple?: boolean;
   fromClaudeCode?: boolean;
   file?: string[];
   format?: string;
@@ -1274,15 +1276,27 @@ async function main() {
     process.exit(2);
   }
 
-  // Camouflage is the only interface. First-run setup (no credentials yet)
+  // The simple view (#1222), asked for by --simple or AUTOPILOT_SIMPLE_VIEW=1.
+  const { simpleViewRequested } = await import("./simple-view.js");
+  if (simpleViewRequested(opts.simple)) {
+    if (opts.fromClaudeCode) {
+      console.error("autopilot: --from-claude-code needs the full screen view; it can't be combined with the simple view.");
+      process.exit(2);
+    }
+    await startSimpleView(cfg, await simpleViewSession(), updateResult);
+    return;
+  }
+
+  // Camouflage is the full screen interface. First-run setup (no credentials yet)
   // runs inside it before the session starts. A machine where the renderer
-  // can't start gets an explanation and exit code 2.
+  // can't start gets an explanation and exit code 2. A renderer that keeps
+  // crashing, or dies before its first frame, hands over to the simple view.
   // `autopilot resume [id]`, `-c` or `-S <id>`: which saved session to open (#906).
   const startup = opts.fromClaudeCode ? await claudeCodeStartup(!cfg) : await interactiveStartup(cfg);
   // Null on first run until Camouflage's onboarding saves a provider and model.
   let sessionCfg: AutopilotConfig | null = cfg ? { ...cfg, model: requireModel(opts.model || cfg.model) } : null;
   const { runCamouflageView } = await import("./camouflage-view.js");
-  const { CamouflageUnavailable, runWithCrashRestarts, crashGiveUpMessage } = await import("./camouflage-launch.js");
+  const { CamouflageUnavailable, runWithCrashRestarts, crashGiveUpMessage, simpleViewSwitchNotice } = await import("./camouflage-launch.js");
   const { renderAppWithBridge } = await import("./app.js");
   const { gracefulExit } = await import("./util/exit.js");
   try {
@@ -1327,9 +1341,26 @@ async function main() {
       },
     );
     if (outcome.gaveUp) {
-      logger.error("camouflage.crash_gave_up", { error: outcome.lastError.message, sessionId: outcome.sessionId, crashes: outcome.crashes });
-      process.stderr.write(crashGiveUpMessage(outcome));
-      await gracefulExit(1);
+      logger.error("camouflage.crash_gave_up", {
+        error: outcome.lastError.message,
+        sessionId: outcome.sessionId,
+        crashes: outcome.crashes,
+        reason: outcome.reason,
+        crashFile: outcome.crashFile,
+      });
+      // First-run setup may have saved a provider before the crash.
+      const fallbackCfg = sessionCfg ?? (await loadConfig().catch(() => null));
+      if (!fallbackCfg) {
+        // The simple view has no first-run setup: say how to connect a provider and come back.
+        const { simpleViewStartHint } = await import("./simple-view.js");
+        process.stderr.write(crashGiveUpMessage(outcome));
+        process.stderr.write(`Connect a provider, then start the simple view with ${simpleViewStartHint()}:\n${await noCredentialsMessage()}\n`);
+        await gracefulExit(1);
+      }
+      process.stderr.write(simpleViewSwitchNotice(outcome));
+      await startSimpleView(fallbackCfg, outcome.sessionId ?? undefined, updateResult);
+      await gracefulExit(process.exitCode === undefined ? 0 : Number(process.exitCode));
+      return;
     }
     await gracefulExit(result === "setup-failed" ? 1 : 0);
   } catch (err) {
@@ -1338,6 +1369,65 @@ async function main() {
     process.stderr.write(err.message);
     process.exit(2);
   }
+}
+
+/** The conversation `-c`, `-S <id>` or `autopilot resume <id>` asks the simple view to continue. */
+async function simpleViewSession(): Promise<string | undefined> {
+  const request: InteractiveResumeRequest | null =
+    resumeCommand ?? (opts.session ? { sessionId: opts.session } : opts.continue ? { latest: true } : null);
+  if (!request) return undefined;
+  const { resolveInteractiveResume } = await import("./interactive-resume.js");
+  const target = await resolveInteractiveResume(request);
+  if (target.kind === "session") return target.sessionId;
+  console.error(
+    target.kind === "error"
+      ? `autopilot: ${target.message}`
+      : "autopilot: the simple view has no session picker; pass the session id: autopilot resume <id> --simple",
+  );
+  process.exit(1);
+}
+
+/**
+ * The simple view (simple-view.ts): each line is a print-mode turn on one
+ * session. Needs a configured provider (it has no first-run setup).
+ */
+async function startSimpleView(cfg: AutopilotConfig | null, sessionId: string | undefined, updateResult: UpdateCheckResult): Promise<void> {
+  if (!cfg) {
+    console.error(`autopilot: ${await noCredentialsMessage()}`);
+    process.exit(2);
+  }
+  const model = requireModel(opts.model || cfg.model);
+  const { runSimpleView, terminalReadLine } = await import("./simple-view.js");
+  let update = updateResult;
+  await runSimpleView(
+    { sessionId: sessionId ?? null },
+    {
+      readLine: terminalReadLine,
+      write: (text) => process.stdout.write(text),
+      runTurn: async (prompt, id, onSession) => {
+        await runPrintMode({
+          ...cfg,
+          model,
+          prompt,
+          allowAll: false,
+          showReasoning: !!(opts.reasoning || opts.thinking),
+          codeMode: cfg.codeMode,
+          continueOnLimit: !!opts.continueOnLimit,
+          maxTotalToolIterations: opts.maxTotalToolIterations ?? cfg.maxTotalToolIterations,
+          // The update notice once, not before every turn.
+          updateResult: update,
+          ...(id ? { sessionId: id } : {}),
+          format: "text",
+          permissions: cfg.permissions,
+          trace: cfg.trace,
+          traceConfigSnapshot: cfg,
+          onSession,
+          keepSessionOpen: true,
+        });
+        update = { ...update, hasUpdate: false };
+      },
+    },
+  );
 }
 
 /** `autopilot resume [id]`, or `-c` / `-S <id>` without `-p`: which

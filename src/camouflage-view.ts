@@ -108,7 +108,16 @@ import { logger } from "./util/logger.js";
 import { JobManager, type JobRecord } from "./jobs/manager.js";
 import { activityFromJob, activityFromSubagent, diffActivityItems, isActiveJob, type ActivityItem } from "./ui/activity.js";
 import { workerRegistry, type RunningWorker } from "./tools/worker-registry.js";
-import { CamouflageCrashed, CamouflageUnavailable, diagnoseRenderer, mountFailureReason, rendererBlocker } from "./camouflage-launch.js";
+import {
+  CamouflageCrashed,
+  CamouflageUnavailable,
+  crashedBeforeFirstFrame,
+  crashReportDir,
+  diagnoseRenderer,
+  latestCrashReport,
+  mountFailureReason,
+  rendererBlocker,
+} from "./camouflage-launch.js";
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
 import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu, type GpuDetection, type UnansweredTool } from "./gpu/detect.js";
@@ -340,6 +349,8 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   reportModelUpResult();
   const restoreConsole = captureConsole();
   let cam: CamouflageHandle;
+  // When the renderer started, to tell a screen that never came up (#1222) from a mid-session crash.
+  const mountedAt = Date.now();
   try {
     cam = await sdk.mount({
       ui: "inline",
@@ -360,6 +371,11 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   const renderer = rendererInfo();
   logger.info("camouflage.renderer", { ...renderer });
   cam.on("stderr", (chunk: string) => logger.warn("camouflage.stderr", { chunk }));
+  // Any event from the renderer means it got a screen up.
+  let sawRendererEvent = false;
+  cam.on("event", () => {
+    sawRendererEvent = true;
+  });
 
   const cwd = process.cwd();
   const branch = gitBranch(cwd);
@@ -445,7 +461,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   };
   // A signal or crash mid-session: give the terminal back before exiting (#877).
   const unregisterShutdown = onShutdown("camouflage-renderer", finish);
-  let crashed: { code: number | null; signal: string | null } | null = null;
+  let crashed: { code: number | null; signal: string | null; beforeFirstFrame: boolean; crashFile: string | null } | null = null;
   cam.on("exit", (info?: { code: number | null; signal: NodeJS.Signals | null }) => {
     if (closing) return;
     const code = info?.code ?? 0;
@@ -464,14 +480,16 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
     // The renderer crashed (#862). The session must survive it: say where the
     // crash report is, let the turn in flight finish (it is saved after every
     // turn), then end the App so the caller reopens it in a fresh renderer.
-    crashed = { code, signal };
-    logger.error("camouflage.crashed", { code, signal, ...renderer });
+    const beforeFirstFrame = crashedBeforeFirstFrame({ mountedAt, exitedAt: Date.now(), sawRendererEvent });
+    const crashFile = latestCrashReport(mountedAt);
+    crashed = { code, signal, beforeFirstFrame, crashFile };
+    logger.error("camouflage.crashed", { code, signal, beforeFirstFrame, crashFile, ...renderer });
     void finish().then(async () => {
       // The renderer left the terminal in raw mode; give it back.
       if (process.stdin.isTTY) process.stdin.setRawMode?.(false);
       process.stderr.write(
         `\nThe Camouflage renderer stopped unexpectedly (${signal ?? `exit code ${code}`}). ` +
-          `Its crash report is in ${join(homedir(), ".camouflage")} (crash-*.txt).\n` +
+          (crashFile ? `Its crash report: ${crashFile}\n` : `Its crash report is in ${crashReportDir()} (crash-*.txt).\n`) +
           (view.busy ? "Finishing the current turn first…\n" : ""),
       );
       await view.settle();
@@ -514,8 +532,11 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
     await finish();
   }
   if (crashed) {
-    const c = crashed as { code: number | null; signal: string | null };
-    throw new CamouflageCrashed(`renderer exited (${c.signal ?? `code ${c.code}`})`, view.sessionId);
+    const c = crashed as { code: number | null; signal: string | null; beforeFirstFrame: boolean; crashFile: string | null };
+    throw new CamouflageCrashed(`renderer exited (${c.signal ?? `code ${c.code}`})`, view.sessionId, {
+      beforeFirstFrame: c.beforeFirstFrame,
+      crashFile: c.crashFile,
+    });
   }
   const outcome = setup as FirstRunOutcome | null;
   if (outcome?.kind === "model-up") return "setup-model-up";
