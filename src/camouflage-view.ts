@@ -122,6 +122,7 @@ import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
 import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu, type GpuDetection, type UnansweredTool } from "./gpu/detect.js";
 import { handoffPath, modelUpResult, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
+import { dlInstallOption, takeDlInstallNotice, type DlInstallOption } from "./providers/dl-install-code.js";
 import { checkModelsEndpoint, normalizeBaseUrl, serverBaseUrl } from "./gpu/endpoint.js";
 import { detectedTelemetry, flushGpuTelemetry, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
 import {
@@ -512,7 +513,8 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
       const onboarding = runFirstRun({
         upgrading: hasLegacyCloudflareConfig,
         configPath,
-        show: (lines) => view.showLines(lines),
+        // dl.new's install command: how its sign-in went, under the welcome.
+        show: (lines) => view.showLines([...lines, ...takeDlInstallNotice()]),
         envKey: () => envKeyProvider(),
         setup: (o) => view.firstRunSetup(o),
         loadConfig,
@@ -601,6 +603,8 @@ export class View implements AppBridge {
   providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
   /** The free tier's public status (open on any failure, within 1.5 s). */
   freeStatus: () => Promise<DlFreeStatus> = () => dlFreeStatus();
+  /** What the person chose on dl.new, from its install command ("gpu": the first run goes to the own-GPU path); replaced in tests. */
+  installChoice: () => DlInstallOption | undefined = () => dlInstallOption();
   /** What the GPU first run calls (detection, the environment dl set, fetch for endpoints); replaced in tests. */
   gpuCalls: { detect: () => Promise<GpuDetection>; env: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {
     detect: () => gpuDetection(),
@@ -1670,7 +1674,13 @@ export class View implements AppBridge {
     const gpu = detection.gpu;
     // Only dl started from a terminal can run dl model up; `autopilot connect` never hands over.
     const canModelUp = o.firstRun && !!handoffPath(this.gpuCalls.env);
-    if (o.firstRun && (await this.gpuPreScreen(detection, canModelUp, say)) === "model-up") return "model-up";
+    // "My Nvidia GPU" on dl.new: the private-model setup without asking again, else the own-GPU choices.
+    const wantsGpu = o.firstRun && this.installChoice() === "gpu";
+    if (o.firstRun && (await this.gpuPreScreen(detection, canModelUp, say, wantsGpu)) === "model-up") return "model-up";
+    if (wantsGpu) {
+      const own = await this.ownGpus({ cfg: o.cfg, firstRun: o.firstRun, standalone: !!o.standalone }, gpu, canModelUp, say, detection.unanswered);
+      if (own !== "back") return own;
+    }
     const starter = lastKnownDlMe()?.level === "starter";
     const chosen: FirstRunChoice | undefined = configured ? (configured === "directionally-local" ? "free" : configured === "vllm" ? "gpus" : "own-key") : undefined;
     // Paused, Free can't be chosen: it is never the default (own key comes first instead).
@@ -1726,6 +1736,8 @@ export class View implements AppBridge {
     detection: GpuDetection,
     canModelUp: boolean,
     say: (message: string, severity?: "info" | "error") => void,
+    /** "My Nvidia GPU" was chosen on dl.new: a GPU that qualifies gets the setup without the question. */
+    wantsGpu = false,
   ): Promise<"model-up" | undefined> {
     const env = this.gpuCalls.env;
     const gpu = detection.gpu;
@@ -1747,6 +1759,7 @@ export class View implements AppBridge {
         say(noDlHint(gpu));
         return undefined;
       }
+      if (wantsGpu) return this.handOverModelUp(gpu, say);
       if (remembered.privateModel === "no") return undefined;
       const answer = await this.select(privateModelQuestion(gpu), PRIVATE_MODEL_CHOICES.map((c) => ({ ...c })), "yes", PRIVATE_MODEL_SUBTITLE);
       if (answer === null) return undefined;
