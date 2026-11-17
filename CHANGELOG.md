@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.26.0](https://github.com/directionally-local/autopilot/compare/v3.25.0...v3.26.0) (2026-11-17)
+
+
+### Features
+
+* **dl:** start signed in from dl.new's personal install command ([#1270](https://github.com/directionally-local/autopilot/issues/1270)) ([4222556](https://github.com/directionally-local/autopilot/commit/4222556cd9da58cf14110478da14cb610d5040e5))
+
 ## [3.25.0](https://github.com/directionally-local/autopilot/compare/v3.24.0...v3.25.0) (2026-11-17)
 
 
