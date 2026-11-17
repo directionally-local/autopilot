@@ -205,7 +205,7 @@ describe("Directionally Local free tier", () => {
 
     it("is first in the picker with the weekly allowance, and a sign-in (not a key) to connect", () => {
       assert.strictEqual(PROVIDER_CHOICES[0]?.id, "directionally-local");
-      assert.strictEqual(dlPickerHint(), "free — GPT-6 Luna + DeepSeek, 50M tokens/week, sign in with GitHub");
+      assert.strictEqual(dlPickerHint(), "free to try — GPT-6 Luna + DeepSeek, sign in with GitHub");
       const rows = providerRows(null, { env: {} });
       assert.strictEqual(rows[0]?.id, "directionally-local");
       assert.deepStrictEqual(planConnect("directionally-local", null, {}), { kind: "directionally-local" });
@@ -262,7 +262,7 @@ describe("Directionally Local free tier", () => {
     it("says what sign-in collects, and that cancelling leaves it unconnected", () => {
       const before = dlSignInLines().split("\n");
       assert.deepStrictEqual(before, [
-        "Free: GPT-6 Luna + DeepSeek, 50M tokens a week, no credit card. Sign in with GitHub to start.",
+        "Free to try: GPT-6 Luna + DeepSeek, no credit card to start. Sign in with GitHub.",
         DL_DISCLOSURE,
       ]);
       const code = { deviceCode: "d", userCode: "ABCD-1234", verificationUri: "u", verificationUriComplete: "https://x/device?code=ABCD-1234", intervalSec: 5, expiresInSec: 600 };
@@ -701,9 +701,9 @@ describe("Directionally Local free tier", () => {
     });
 
     it("says who signed in and the real weekly allowance", () => {
-      assert.strictEqual(dlSignedInLine(me(), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 50M free tokens this week · back every Monday");
-      assert.strictEqual(dlSignedInLine(me({ tokensPerWeek: 20_000_000 }), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 20M free tokens this week · back every Monday");
-      assert.match(dlSignedInLine(null, { now: NOW, timeZone: "Asia/Tokyo" }), /^✓ Signed in · 50M free tokens this week · back every Monday$/);
+      assert.strictEqual(dlSignedInLine(me(), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 50M free tokens a week · back every Monday");
+      assert.strictEqual(dlSignedInLine(me({ tokensPerWeek: 20_000_000 }), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 20M free tokens a week · back every Monday");
+      assert.strictEqual(dlSignedInLine(null, { now: NOW, timeZone: "Asia/Tokyo" }), "✓ Signed in", "no amount it can't know");
     });
 
     const cases: Array<[number, unknown, RegExp, number]> = [

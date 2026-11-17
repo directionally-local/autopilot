@@ -22,6 +22,8 @@ import {
   dlCheckout,
   dlProPrice,
   dlQueuePlace,
+  dlTrialEndedLine,
+  dlTrialEndedTitle,
   isUsdTopup,
   lastKnownDlMe,
   fetchDlMe,
@@ -133,6 +135,16 @@ export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; 
     out.push({ value: "gpus", label: "Run it on your own GPUs", description: "dl model up" });
     return out;
   }
+  if (kind === "trial") {
+    // The one-time trial is used up: the paid ways first, then your own key or GPUs. No "ask for
+    // more free usage" and no wait: the trial doesn't come back.
+    const p = proOption("Get dl Pro");
+    if (p) out.push(p);
+    if (isUsdTopup(topup)) out.push(topupOption(topup));
+    out.push({ value: "own-key", label: "Use your own key", description: "/provider" });
+    out.push({ value: "gpus", label: "Run it on your own GPUs", description: "dl model up" });
+    return out;
+  }
   if (kind === "gpt") {
     // GPT-6 used up, DeepSeek not: DeepSeek first (Enter), then the paid ways and your own key.
     out.push({ value: "deepseek", label: DL_SWITCH_DEEPSEEK_LABEL, description: "/model" });
@@ -225,6 +237,7 @@ export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & {
     const pro = d.offers?.pro && o.plan !== "pro" ? ` Get dl Pro for ${dlProPrice(d.offers.pro)}: \`${DL_UPGRADE_COMMAND}\`` : "";
     return `${dlLimitTitle(d.resetsAt, o)} To keep going now, use your own key: \`autopilot connect\`.${pro}`;
   }
+  if (code === "trial_ended") return dlTrialEndedLine(d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens, { where: "cli", ...(d.offers ? { offers: d.offers } : {}) });
   if (code === "gpt_limit") {
     return `${dlGptLimitTitle(d.resetsAt, o)} Run with \`-m ${typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL}\` to use it.`;
   }
@@ -363,6 +376,8 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 export type DlScreen =
   | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan }
   | { kind: "gpt"; resetsAt?: string; alternative: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
+  /** A new account's one-time trial is used up (402 trial_ended): Pro or a top-up, no reset. */
+  | { kind: "trial"; tokens?: number; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   | { kind: "queued"; position?: number; etaAt?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   | { kind: "upgrade"; offers: DlOffers; plan?: DlPlan };
 
@@ -383,12 +398,16 @@ export interface DlScreenDeps extends PurchaseDeps {
   timeZone?: string;
 }
 
-/** The screen for a free-tier error, when it has one (quota_exceeded or basic_limit, free_tier_queued). */
+/** The screen for a free-tier error, when it has one (quota_exceeded or basic_limit, gpt_limit, trial_ended, free_tier_queued). */
 export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallbackLink?: string, plan?: DlPlan): DlScreen | undefined {
   const referralLink = d.referralLink ?? fallbackLink;
   const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}), ...(plan ? { plan } : {}) };
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...common };
+  }
+  if (code === "trial_ended") {
+    const tokens = d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens;
+    return { kind: "trial", ...(tokens ? { tokens } : {}), ...common };
   }
   if (code === "gpt_limit") {
     const alternative = typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL;
@@ -408,6 +427,8 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
       ? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
       : screen.kind === "gpt"
         ? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
+        : screen.kind === "trial"
+        ? `${dlTrialEndedTitle(screen.tokens)} Keep going with dl Pro or a top-up.`
         : screen.kind === "queued"
         ? dlQueueTitle(screen.position, screen.etaAt, t)
         : "Upgrade Directionally Local";
