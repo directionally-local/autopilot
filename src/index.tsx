@@ -1149,6 +1149,14 @@ async function main() {
     return;
   }
 
+  // dl.new's personal install command: its one-time code signs this machine in to the free tier
+  // before the config loads, so the first run starts signed in (providers/dl-install-code.ts).
+  if (process.env.DL_INSTALL_CODE && opts.print === undefined && opts.mode !== "rpc" && !opts.emitEvents) {
+    const { redeemDlInstallCode } = await import("./providers/dl-install-code.js");
+    const redeemed = await redeemDlInstallCode();
+    if (redeemed.kind !== "none") process.stderr.write(`${redeemed.line}\n`);
+  }
+
   const globalCfg = await loadConfig();
   const updateResult = await checkForUpdate();
 

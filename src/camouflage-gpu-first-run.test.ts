@@ -140,6 +140,24 @@ describe("GPU-aware first run", () => {
     view.dispose();
   });
 
+  it("chose \"My Nvidia GPU\" on dl.new: a 24 GB card goes straight to dl model up, without the question", async () => {
+    const { view, prompts } = await fakeView([], { gpu: RTX4090X2, env: dl() });
+    view.installChoice = () => "gpu";
+    assert.equal(await view.firstRunSetup({ upgrading: false }), "model-up");
+    assert.equal(prompts.length, 0, "nothing asked again");
+    assert.equal(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")).action, "model-up");
+    assert.equal(events()[0]?.event, "detected", "still counted");
+    view.dispose();
+  });
+
+  it("chose \"My Nvidia GPU\" on dl.new without a card that fits here: the own-GPU choices first, then the usual question", async () => {
+    const { view, titles } = await fakeView([null, null], { gpu: null, env: dl() });
+    view.installChoice = () => "gpu";
+    assert.equal(await view.firstRunSetup({ upgrading: false }), false);
+    assert.deepEqual(titles(), [WHERE_QUESTION, FIRST_RUN_QUESTION]);
+    view.dispose();
+  });
+
   it("Nvidia with 24 GB, no: the usual question, and the answer is remembered", async () => {
     const { view, prompts, options } = await fakeView(["no", null], { gpu: RTX4090X2, env: dl() });
     assert.equal(await view.firstRunSetup({ upgrading: false }), false);
