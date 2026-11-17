@@ -115,7 +115,7 @@ export function dlNotFreeLine(what: string): string {
 
 /** The picker's one-line hint. */
 export function dlPickerHint(): string {
-  return `free — GPT-6 Luna + DeepSeek, ${formatTokens(DL_FREE_WEEKLY_TOKENS)} tokens/week, sign in with GitHub`;
+  return "free to try — GPT-6 Luna + DeepSeek, sign in with GitHub";
 }
 
 /** The next Monday 00:00 UTC after `now`: when the service's weeks end. */
