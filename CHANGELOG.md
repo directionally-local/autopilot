@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.25.0](https://github.com/directionally-local/autopilot/compare/v3.24.0...v3.25.0) (2026-11-17)
+
+
+### Features
+
+* **dl:** the free tier's one-time trial: paywall screen, trial left, sign-in line ([9fa3a0f](https://github.com/directionally-local/autopilot/commit/9fa3a0f45e2c1e9205d2aade389add854dd21672))
+* **dl:** the free tier's one-time trial: paywall screen, trial left, sign-in line ([9b94e48](https://github.com/directionally-local/autopilot/commit/9b94e485dc40d83a8a584d0dd8d4b0ecc5df91fb))
+
+
+### Bug Fixes
+
+* **free:** before sign-in, say free to try instead of 50M tokens a week ([5eeb7ba](https://github.com/directionally-local/autopilot/commit/5eeb7ba9e83c484860c91332334e0e25bb111aa8))
+
 ## [3.24.0](https://github.com/directionally-local/autopilot/compare/v3.23.0...v3.24.0) (2026-11-16)
 
 
