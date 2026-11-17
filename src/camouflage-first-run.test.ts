@@ -150,7 +150,7 @@ describe("first run: one question", () => {
     assert.strictEqual(prompts.length, 1, "no provider list, no model picker");
     const lines = said();
     assert.ok(lines.some((l) => l.includes("Free tokens come with usage counts")), "the disclosure is on the sign-in screen");
-    assert.ok(lines.some((l) => /^✓ Signed in as @octo · 50M free tokens this week · back every \w+day$/.test(l)));
+    assert.ok(lines.some((l) => /^✓ Signed in as @octo · 50M free tokens a week · back every \w+day$/.test(l)));
     assert.ok(!lines.some((l) => /billed/.test(l)));
     assert.ok(!lines.some((l) => /^Invite friends/.test(l)), "no invite line without an invite link");
     const cfg = JSON.parse(await readFile(configPath(), "utf8"));

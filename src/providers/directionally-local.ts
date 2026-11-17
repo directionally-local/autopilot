@@ -253,6 +253,8 @@ export interface DlErrorDetail {
   /** gpt_limit: the budget that ran out ("gpt6") and the model that still has usage this week. */
   family?: string;
   alternative?: string;
+  /** trial_ended: the account's one-time trial, as /v1/me's `trial`. */
+  trial?: DlTrial;
 }
 
 // ── Plans, offers, invites and the queue (all optional: older servers send none) ──
@@ -462,6 +464,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const request = str("request");
   const family = str("family");
   const alternative = str("alternative");
+  const trial = parseDlTrial(e.trial);
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -478,6 +481,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(alternative ? { alternative } : {}),
     ...(retryable ? { retryable } : {}),
     ...(request ? { request } : {}),
+    ...(trial ? { trial } : {}),
   };
 }
 
@@ -598,6 +602,23 @@ export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { wher
   return `You've used this week's ${o.plan === "pro" ? "Pro" : "free"} usage. It's back ${back}. ${next}${pro ? ` ${pro}` : ""}`;
 }
 
+/** "You've used your 10M free trial tokens." ("your free trial tokens" when the size isn't known). */
+export function dlTrialEndedTitle(tokens: number | undefined): string {
+  return `You've used your ${tokens && tokens > 0 ? `${formatTokens(tokens)} ` : ""}free trial tokens.`;
+}
+
+/**
+ * The trial is over (402 trial_ended): "You've used your 10M free trial tokens. Keep going with
+ * dl Pro for $3.99/month or a top-up: /upgrade. Or use your own key: /provider."
+ */
+export function dlTrialEndedLine(tokens: number | undefined, o: { where?: DlWhere; offers?: DlOffers } = {}): string {
+  const cli = o.where === "cli";
+  const upgrade = cli ? "`autopilot upgrade`" : "/upgrade";
+  const pro = o.offers?.pro ? `dl Pro for ${dlProPrice(o.offers.pro)}` : "dl Pro";
+  const ownKey = cli ? "Or use your own key: `autopilot connect`." : `Or use your own key: ${DL_SWITCH_HINT}.`;
+  return `${dlTrialEndedTitle(tokens)} Keep going with ${pro} or a top-up: ${upgrade}. ${ownKey}`;
+}
+
 /**
  * "about 3 days, by Fri": how long until free tokens start, in local time.
  * Undefined for a missing or unparseable time.
@@ -667,6 +688,9 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
     case "quota_exceeded":
       // The token and the spending allowance read the same: both are "this week's free usage".
       return dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe) });
+    case "trial_ended":
+      // A new account's one-time trial is used up: Pro or a top-up from here (no weekly reset).
+      return dlTrialEndedLine(extra.trial?.tokens ?? lastMe?.trial?.tokens, { where, ...(extra.offers ? { offers: extra.offers } : lastMe?.offers ? { offers: lastMe.offers } : {}) });
     case "basic_limit":
     case "starter_limit":
       // A basic or starter account used its smaller weekly allowance: the same line, and where to ask for more.
@@ -1072,6 +1096,39 @@ export interface DlMe {
   queue?: DlQueue;
   referral?: DlReferral;
   offers?: DlOffers;
+  /**
+   * A new account's one-time free trial (instead of a weekly free allowance), when the service
+   * says; undefined for accounts on the weekly free allowance and on older servers.
+   */
+  trial?: DlTrial;
+}
+
+/** The one-time free trial: tokens counted as prompt (cached included) plus completion, every free model together. */
+export interface DlTrial {
+  tokens: number;
+  used: number;
+  remaining: number;
+  ended: boolean;
+}
+
+/** /v1/me's (or a trial_ended refusal's) `trial`, when well formed; undefined for null (not on trial) or anything else. */
+export function parseDlTrial(raw: unknown): DlTrial | undefined {
+  if (!isRec(raw)) return undefined;
+  const tokens = raw.tokens;
+  const used = raw.used;
+  if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0 || typeof used !== "number" || !Number.isFinite(used)) return undefined;
+  const remaining = typeof raw.remaining === "number" && Number.isFinite(raw.remaining) ? Math.max(0, raw.remaining) : Math.max(0, tokens - used);
+  return { tokens, used: Math.max(0, used), remaining, ended: raw.ended === true || remaining <= 0 };
+}
+
+/** The trial that limits this account now: on trial and on the free plan (Pro and top-ups don't use it). */
+export function dlActiveTrial(me: Pick<DlMe, "trial" | "plan"> | null | undefined): DlTrial | undefined {
+  return me?.trial && me.plan !== "pro" ? me.trial : undefined;
+}
+
+/** "6.2M of 10M left", or "used up" once it's over. */
+export function dlTrialLeftText(t: DlTrial): string {
+  return t.ended ? "used up" : `${formatTokens(t.remaining)} of ${formatTokens(t.tokens)} left`;
 }
 
 /** One budget of /v1/me's `budgets`, kept only when well formed. */
@@ -1125,8 +1182,10 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
   const levelReason = typeof raw.levelReason === "string" ? raw.levelReason : undefined;
   const thresholds = parseDlThresholds(raw.thresholds);
   const budgets = parseDlBudgets(raw.budgets) ?? (a ? parseDlBudgets((a as unknown as Record<string, unknown>).budgets) : undefined);
+  const trial = parseDlTrial(raw.trial);
+  const { trial: _rawTrial, ...rest } = raw;
   return {
-    ...(raw as unknown as DlMe),
+    ...(rest as unknown as DlMe),
     login: typeof raw.login === "string" ? raw.login : "",
     allowance,
     ...(level ? { level } : {}),
@@ -1141,6 +1200,7 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
     queue,
     referral,
     offers,
+    ...(trial ? { trial } : {}),
   };
 }
 
@@ -1287,6 +1347,9 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
     `Directionally Local ${pro ? "Pro" : "free tier"}${me.login ? ` · signed in as @${me.login}` : ""}`,
     `  plan            ${dlPlanName(me)}`,
   ];
+  // A new account's one-time trial (free plan): what's left of it, never "back Monday".
+  const trial = dlActiveTrial(me);
+  if (trial) lines.push(`  trial           ${dlTrialLeftText(trial)}`);
   const topupUsd = dlTopupUsdText(me, t);
   if (me.queue) {
     lines.push(`  queue           ${dlQueuePlace(me.queue.position, me.queue.etaAt, t).replace(/^You're /, "").replace(/\.$/, "")}`);
@@ -1337,6 +1400,10 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
   }
   lines.push(`  resets          ${formatReset(a.resetsAt || undefined, now, timeZone)}`);
   const topupLeft = (me.topupTokensLeft ?? 0) > 0 || (me.topupUsdLeft ?? 0) > 0;
+  if (trial?.ended) {
+    if (!topupLeft) lines.push(`  ${dlTrialEndedLine(trial.tokens, me.offers ? { offers: me.offers } : {})}`);
+    return lines.join("\n");
+  }
   if (usedUp && !topupLeft) lines.push(`  ${dlQuotaLine(a.resetsAt || undefined, { ...t, ...(me.offers ? { offers: me.offers } : {}), ...planOf(me) })}`);
   else if (pct >= 80 && !usedUp && !topupLeft) lines.push(`  You've used ${pct}% of this week's ${pro ? "Pro" : "free"} usage.`);
   else if (!usedUp && !pro) {
@@ -1346,10 +1413,31 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
   return lines.join("\n");
 }
 
-/** "✓ Signed in as @octo · 50M free tokens this week · back every Monday", from /v1/me. */
+/**
+ * The sign-in success line, from /v1/me:
+ *
+ *   ✓ Signed in as @octo · 10M free tokens to try dl                          (a new account's trial)
+ *   ✓ Signed in as @octo · $2 GPT-6 + $8 DeepSeek free each week · back every Monday   (the weekly allowance)
+ *   ✓ Signed in as @octo · dl Pro: $2 GPT-6 + $8 DeepSeek each week · back every Monday
+ *
+ * An older server without both budgets: its weekly tokens. No account read: just "✓ Signed in".
+ */
 export function dlSignedInLine(me: DlMe | null, o: DlTimeOpts = {}): string {
-  const tokens = me && me.allowance.tokensPerWeek > 0 ? me.allowance.tokensPerWeek : DL_FREE_WEEKLY_TOKENS;
-  return `✓ Signed in${me?.login ? ` as @${me.login}` : ""} · ${formatTokens(tokens)} free tokens this week · back every ${localResetWeekday(me?.allowance.resetsAt, o)}`;
+  const who = `✓ Signed in${me?.login ? ` as @${me.login}` : ""}`;
+  if (!me) return who;
+  const trial = dlActiveTrial(me);
+  if (trial) return trial.ended ? `${who} · your free trial is used up: /upgrade` : `${who} · ${formatTokens(trial.tokens)} free tokens to try dl`;
+  const back = `back every ${localResetWeekday(me.allowance.resetsAt, o)}`;
+  const pro = me.plan === "pro";
+  const budgets = bothBudgets(me);
+  if (budgets) {
+    const part = (b: DlBudget, name: string) => (b.usdPerWeek === null ? `${name} uncapped` : `${formatUsd(b.usdPerWeek)} ${name}`);
+    if (!pro && budgets.gpt6.usdPerWeek === 0 && budgets.deepseek.usdPerWeek === 0) return `${who} · no free usage on this account yet: /request`;
+    const each = `${part(budgets.gpt6, "GPT-6")} + ${part(budgets.deepseek, "DeepSeek")}`;
+    return `${who} · ${pro ? `dl Pro: ${each} each week` : `${each} free each week`} · ${back}`;
+  }
+  if (me.allowance.tokensPerWeek > 0) return `${who} · ${formatTokens(me.allowance.tokensPerWeek)} ${pro ? "Pro" : "free"} tokens a week · ${back}`;
+  return who;
 }
 
 /**
@@ -1368,6 +1456,8 @@ export function dlSignedInInviteLine(me: DlMe | null, where: DlWhere = "signin")
  */
 export function dlHeaderLine(me: DlMe | null): string | undefined {
   if (!me || me.plan === "pro" || me.queue) return undefined;
+  const trial = dlActiveTrial(me);
+  if (trial) return `free · trial: ${dlTrialLeftText(trial)}`;
   const a = me.allowance;
   const budgets = bothBudgets(me);
   if (budgets) {
@@ -1393,7 +1483,9 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
  */
 export function dlStartLine(me: DlMe | null | undefined, modelId?: string): string | undefined {
   if (!me || me.plan === "pro" || me.queue) return undefined;
-  const parts = ["free", dlLeftThisWeek(me, modelId)];
+  // A new account's one-time trial: what's left of it (it never comes back Monday).
+  const trial = dlActiveTrial(me);
+  const parts = ["free", trial ? `trial: ${dlTrialLeftText(trial)}${trial.ended ? " · /upgrade" : ""}` : dlLeftThisWeek(me, modelId)];
   const r = me.referral;
   if (r?.link) {
     parts.push(`invite friends: ${r.link.replace(/^https?:\/\//, "")} (${r.joined} joined)`);

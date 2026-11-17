@@ -701,9 +701,9 @@ describe("Directionally Local free tier", () => {
     });
 
     it("says who signed in and the real weekly allowance", () => {
-      assert.strictEqual(dlSignedInLine(me(), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 50M free tokens this week · back every Monday");
-      assert.strictEqual(dlSignedInLine(me({ tokensPerWeek: 20_000_000 }), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 20M free tokens this week · back every Monday");
-      assert.match(dlSignedInLine(null, { now: NOW, timeZone: "Asia/Tokyo" }), /^✓ Signed in · 50M free tokens this week · back every Monday$/);
+      assert.strictEqual(dlSignedInLine(me(), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 50M free tokens a week · back every Monday");
+      assert.strictEqual(dlSignedInLine(me({ tokensPerWeek: 20_000_000 }), { timeZone: "Asia/Tokyo" }), "✓ Signed in as @octo · 20M free tokens a week · back every Monday");
+      assert.strictEqual(dlSignedInLine(null, { now: NOW, timeZone: "Asia/Tokyo" }), "✓ Signed in", "no amount it can't know");
     });
 
     const cases: Array<[number, unknown, RegExp, number]> = [
