@@ -353,17 +353,7 @@ export class JobManager {
   private reconcile(): void {
     const rows = this.db.prepare("SELECT * FROM jobs WHERE status IN ('starting', 'running', 'cancelling', 'unknown')").all() as JobRow[];
     for (const row of rows) {
-      if (existsSync(row.exit_path)) {
-        try {
-          const result = JSON.parse(readFileSync(row.exit_path, "utf8")) as { code: number | null; signal: string | null; timedOut?: boolean };
-          const status: JobStatus = result.timedOut ? "timed_out" : row.status === "cancelling" ? "cancelled" : result.code === 0 ? "completed" : "failed";
-          this.db.prepare("UPDATE jobs SET status = ?, exit_code = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?")
-            .run(status, result.code, Date.now(), row.id);
-          continue;
-        } catch {
-          // A partial/corrupt marker is not proof of completion. Check process identity below.
-        }
-      }
+      if (this.recordExitMarker(row)) continue;
       let pid = row.pid;
       if (!pid && existsSync(row.pid_path)) {
         const parsed = Number(readFileSync(row.pid_path, "utf8").trim());
@@ -377,6 +367,11 @@ export class JobManager {
           continue;
         }
       }
+      // The process is gone. The wrapper writes its exit marker before it
+      // exits, so a job that finished between the marker check above and the
+      // liveness check has a marker now: re-read it before giving up, or a
+      // job that completed normally is reported as "unknown".
+      if (this.recordExitMarker(row)) continue;
       if (row.status === "cancelling") {
         this.db.prepare("UPDATE jobs SET status = 'cancelled', finished_at = COALESCE(finished_at, ?) WHERE id = ?")
           .run(Date.now(), row.id);
@@ -384,6 +379,21 @@ export class JobManager {
       }
       this.db.prepare("UPDATE jobs SET status = 'unknown', finished_at = COALESCE(finished_at, ?) WHERE id = ?")
         .run(Date.now(), row.id);
+    }
+  }
+
+  /** Record the outcome from the wrapper's exit marker; false when there is no readable marker. */
+  private recordExitMarker(row: JobRow): boolean {
+    if (!existsSync(row.exit_path)) return false;
+    try {
+      const result = JSON.parse(readFileSync(row.exit_path, "utf8")) as { code: number | null; signal: string | null; timedOut?: boolean };
+      const status: JobStatus = result.timedOut ? "timed_out" : row.status === "cancelling" ? "cancelled" : result.code === 0 ? "completed" : "failed";
+      this.db.prepare("UPDATE jobs SET status = ?, exit_code = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?")
+        .run(status, result.code, Date.now(), row.id);
+      return true;
+    } catch {
+      // A partial/corrupt marker is not proof of completion. Check process identity instead.
+      return false;
     }
   }
 }
