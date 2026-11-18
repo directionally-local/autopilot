@@ -33,7 +33,7 @@ Run `/hooks reload` in a running session to pick up the change.
 
 ### Session and prompt events
 
-Every host (the interactive UI, `autopilot -p`, `--emit-events`, `autopilot serve` and the SDK, so also RPC) fires the session events in this order: `SessionStart`, then `UserPromptSubmit` for each prompt, then the turn's tool events and `Stop`, and `SessionEnd` when the session ends. Each one carries the session id, the first prompt of a new session included. Steering messages typed during a turn are not separate prompts.
+Every host (the interactive UI, `autopilot -p`, `--emit-events`, `autopilot serve` and the SDK, so also RPC) fires the session events in this order: `SessionStart`, then `UserPromptSubmit` for each prompt, then the turn's tool events and `Stop` (or `StopFailure`, when the turn was interrupted or failed; see the README's "Turn ends"), and `SessionEnd` when the session ends. Each one carries the session id, the first prompt of a new session included. Steering messages typed during a turn are not separate prompts.
 
 `UserPromptSubmit` can block the prompt (exit 2, or a `deny`/`block` decision); nothing is sent to the model:
 

@@ -18,6 +18,14 @@ import { logger } from "../util/logger.js";
 import { hookTranscriptFields } from "../transcript/claude-jsonl.js";
 import { claudeToolFields, hookMatcherMatches, hookMatcherNames } from "./claude-compat.js";
 import { BEACON_HARNESS_ATTR, HARNESS_NAME } from "../util/harness.js";
+import { getAppVersion } from "../util/version.js";
+
+/**
+ * Version of the hook payload contract (README, "Payload stability"). Fields are only
+ * added within a version; a field is renamed, retyped or removed, or an
+ * event's meaning changes, only with a new version.
+ */
+export const HOOK_PAYLOAD_VERSION = 1;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const STREAM_CAP_BYTES = 4 * 1024;
@@ -167,6 +175,8 @@ export function hookWirePayload(payload: HookPayload): Record<string, unknown> {
     hook_event_name: payload.event,
     client: HARNESS_NAME,
     [BEACON_HARNESS_ATTR]: HARNESS_NAME,
+    autopilot_version: getAppVersion(),
+    hook_payload_version: HOOK_PAYLOAD_VERSION,
   };
   // Claude Code-style JSONL transcript (src/transcript/claude-jsonl.ts), and its format.
   if (payload.session_id) Object.assign(wire, hookTranscriptFields(payload.session_id));

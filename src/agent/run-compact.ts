@@ -87,6 +87,7 @@ export async function runCompact(deps: RunCompactDeps): Promise<void> {
           event: "PreCompact",
           session_id: sessionId ?? null,
           cwd: process.cwd(),
+          trigger: "manual",
         },
         null,
         turnScope.signal,
