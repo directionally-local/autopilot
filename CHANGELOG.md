@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.27.0](https://github.com/directionally-local/autopilot/compare/v3.26.0...v3.27.0) (2026-11-18)
+
+
+### Features
+
+* **hooks:** StopFailure, PreCompact trigger and a versioned hook payload ([#1272](https://github.com/directionally-local/autopilot/issues/1272)) ([3c8eee3](https://github.com/directionally-local/autopilot/commit/3c8eee30df5c5c8962201c6406647339d14a4ccd))
+
 ## [3.26.0](https://github.com/directionally-local/autopilot/compare/v3.25.0...v3.26.0) (2026-11-17)
 
 
