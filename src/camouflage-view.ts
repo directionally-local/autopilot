@@ -121,7 +121,7 @@ import {
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
 import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu, type GpuDetection, type UnansweredTool } from "./gpu/detect.js";
-import { handoffPath, modelUpResult, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
+import { chatSetupOffered, handoffPath, modelUpResult, requestChatUp, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
 import { dlInstallOption, takeDlInstallNotice, type DlInstallOption } from "./providers/dl-install-code.js";
 import { checkModelsEndpoint, normalizeBaseUrl, serverBaseUrl } from "./gpu/endpoint.js";
 import { detectedTelemetry, flushGpuTelemetry, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
@@ -164,6 +164,10 @@ import {
   remoteTunnelHint,
   servedLine,
   smallNvidiaHint,
+  takeTeamUseQuestion,
+  TEAM_USE_CHOICES,
+  TEAM_USE_QUESTION,
+  TEAM_USE_SUBTITLE,
   THIS_MACHINE_WITHOUT_DL,
   WHERE_QUESTION,
   whereChoices,
@@ -286,7 +290,8 @@ export interface CamouflageSessionViewOpts {
 
 /** How the session ended: normally, or before it began because first-run setup was cancelled or failed. */
 /** "setup-model-up": first run handed over to dl model up (gpu/handoff.ts); exit so dl can run it. */
-export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed" | "setup-model-up";
+/** "setup-chat-up": after the model, the team chat was asked of dl (gpu/handoff.ts); exit so dl can set it up. */
+export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed" | "setup-model-up" | "setup-chat-up";
 
 /**
  * The header's detail lines, kept nearly silent: the model (with the folder
@@ -505,6 +510,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   let quitBeforeApp = false;
   const beforeApp = new Promise<void>((resolve) => (endBeforeApp = resolve));
   let setup: FirstRunOutcome | null = null;
+  let chatUp = false;
   try {
     let cfg = opts.cfg;
     if (custom) {
@@ -528,7 +534,13 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
         setup = outcome ?? (quitBeforeApp ? { kind: "cancelled" } : null);
       }
     }
-    if (!custom && cfg && !crashed) await Promise.race([opts.runApp(view, cfg), beforeApp]);
+    if (!custom && cfg && !crashed) {
+      // Back from a dl model up that worked: "How will your team use it?" before the session
+      // opens. Browser chat and Both hand over to dl, which sets up the team chat.
+      const use = await Promise.race([view.teamUse(), beforeApp.then(() => "terminal" as const)]);
+      if (use === "chat-up") chatUp = true;
+      else await Promise.race([opts.runApp(view, cfg), beforeApp]);
+    }
   } finally {
     unregisterShutdown();
     await finish();
@@ -542,6 +554,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   }
   const outcome = setup as FirstRunOutcome | null;
   if (outcome?.kind === "model-up") return "setup-model-up";
+  if (chatUp) return "setup-chat-up";
   if (outcome?.kind === "cancelled") {
     process.stdout.write(`${onboardingCancelledMessage()}\n`);
     return "setup-cancelled";
@@ -1848,6 +1861,28 @@ export class View implements AppBridge {
       const handed = await this.handOverModelUp(gpu, say, choice === "retry" ? (failure.model ? { model: failure.model } : {}) : { pick: true });
       if (handed) return handed;
     }
+  }
+
+  /**
+   * Back from a dl model up that worked, when dl can set up the team chat (DL_CHAT_SETUP): one
+   * question, "How will your team use it?". Terminal agent (or Esc) opens the session as before.
+   * Browser chat and Both hand over to dl ("chat-up"): it sets up Tailscale and Open WebUI and
+   * prints the admin link; after Both it starts Autopilot again, which opens the agent. Asked
+   * once per process; anywhere else (no dl, an older dl, a failed setup) it isn't asked.
+   */
+  async teamUse(): Promise<"terminal" | "chat-up"> {
+    const env = this.gpuCalls.env;
+    const path = handoffPath(env);
+    if (!path || !chatSetupOffered(env) || !takeTeamUseQuestion()) return "terminal";
+    const answer = await this.select(TEAM_USE_QUESTION, TEAM_USE_CHOICES.map((c) => ({ ...c })), undefined, TEAM_USE_SUBTITLE);
+    if (answer !== "browser" && answer !== "both") return "terminal";
+    try {
+      await requestChatUp(path, answer);
+    } catch (e) {
+      this.cam.send("RuntimeError", { message: `Couldn't hand over to dl: ${(e as Error).message}. Run dl ui up and dl ui share in a terminal.`, severity: "error" });
+      return "terminal";
+    }
+    return "chat-up";
   }
 
   /** Ask dl for `dl model up` (Autopilot exits next; dl starts it again on the new model). */

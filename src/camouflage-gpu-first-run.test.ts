@@ -10,7 +10,8 @@ import { FIRST_RUN_QUESTION, firstRunChoices } from "./providers/connect.js";
 import type { ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN } from "./providers/dl-status.js";
 import { probeGpus, realProbe, type DetectedGpu, type UnansweredTool } from "./gpu/detect.js";
-import { CHECKING_GPUS, gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, WHERE_QUESTION } from "./gpu/first-run.js";
+import { CHECKING_GPUS, gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, TEAM_USE_QUESTION, TEAM_USE_SUBTITLE, WHERE_QUESTION } from "./gpu/first-run.js";
+import { chatSetupOffered } from "./gpu/handoff.js";
 import { sentGpuTelemetry, setGpuTelemetryTransportForTesting } from "./gpu/telemetry.js";
 import { fakeModelsServer } from "./gpu/fake-models-server.test-support.js";
 
@@ -556,6 +557,61 @@ describe("GPU-aware first run", () => {
       assert.equal(prompts[0]?.payload.prompt, FIRST_RUN_QUESTION);
       assert.deepEqual(events()[0], { event: "detected", gpuVendor: "amd", outcome: "probe_timeout" });
       view.dispose();
+    });
+  });
+
+  describe("after the model passed: How will your team use it?", () => {
+    const back = (extra: NodeJS.ProcessEnv = {}) => ({ ...dl(), DL_GPU_RESULT: "ok", DL_CHAT_SETUP: "1", ...extra });
+
+    it("asks once, with arrow-key choices and no answer marked current", async () => {
+      const { view, prompts, options } = await fakeView(["terminal"], { env: back() });
+      assert.equal(await view.teamUse(), "terminal");
+      assert.equal(prompts.length, 1);
+      assert.equal(prompts[0]?.payload.prompt, TEAM_USE_QUESTION);
+      assert.equal(TEAM_USE_QUESTION, "How will your team use it?");
+      assert.deepEqual(options(0), ["browser", "terminal", "both"]);
+      assert.deepEqual((prompts[0]?.payload.options as Option[]).map((o) => o.label), ["Browser chat (you and your team)", "Terminal agent", "Both"]);
+      assert.equal(prompts[0]?.payload.default, undefined);
+      assert.equal(prompts[0]?.payload.subtitle, TEAM_USE_SUBTITLE);
+      // Terminal: today's behaviour, nothing asked of dl.
+      await assert.rejects(readFile(dl().DL_GPU_HANDOFF, "utf8"));
+      // A renderer restart doesn't ask again.
+      assert.equal(await view.teamUse(), "terminal");
+      assert.equal(prompts.length, 1);
+      view.dispose();
+    });
+
+    for (const use of ["browser", "both"] as const) {
+      it(`${use === "browser" ? "Browser chat" : "Both"} hands over to dl for the team chat`, async () => {
+        const { view } = await fakeView([use], { env: back() });
+        assert.equal(await view.teamUse(), "chat-up");
+        assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), { version: 1, action: "chat-up", use });
+        view.dispose();
+      });
+    }
+
+    it("Esc is the terminal agent", async () => {
+      const { view } = await fakeView([null], { env: back() });
+      assert.equal(await view.teamUse(), "terminal");
+      await assert.rejects(readFile(dl().DL_GPU_HANDOFF, "utf8"));
+      view.dispose();
+    });
+
+    it("not asked without a dl that offers it, after a failure, or on an ordinary start", async () => {
+      for (const env of [
+        { ...dl(), DL_GPU_RESULT: "ok" },
+        back({ DL_GPU_RESULT: "failed" }),
+        { DL_GPU_RESULT: "ok", DL_CHAT_SETUP: "1" },
+        dl(),
+        {},
+      ]) {
+        resetGpuFirstRunForTesting();
+        const { view, prompts } = await fakeView(["browser"], { env });
+        assert.equal(await view.teamUse(), "terminal", JSON.stringify(env));
+        assert.equal(prompts.length, 0);
+        view.dispose();
+      }
+      assert.equal(chatSetupOffered(back()), true);
     });
   });
 

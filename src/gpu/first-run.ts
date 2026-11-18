@@ -215,6 +215,29 @@ export function modelUpFailedLine(error: ModelUpError): string {
   return `The private model didn't start (${MODEL_UP_WHY[error]}). Pick another way for now; dl model up works any time.`;
 }
 
+// ── After the model passed: "How will your team use it?" ──────────────────
+
+export const TEAM_USE_QUESTION = "How will your team use it?";
+
+export const TEAM_USE_SUBTITLE = "dl sets up Tailscale and a private HTTPS link for the chat · Esc for the terminal agent";
+
+export type TeamUseChoice = "browser" | "terminal" | "both";
+
+export const TEAM_USE_CHOICES: ReadonlyArray<{ value: TeamUseChoice; label: string; description: string }> = [
+  { value: "browser", label: "Browser chat (you and your team)", description: "Open WebUI on a private link, accounts with 2FA" },
+  { value: "terminal", label: "Terminal agent", description: "the coding agent here, on this model" },
+  { value: "both", label: "Both", description: "the browser chat first, then the agent here" },
+];
+
+let teamUseAsked = false;
+
+/** True the first time only: the question is asked once per process (a renderer restart doesn't ask again). */
+export function takeTeamUseQuestion(): boolean {
+  if (teamUseAsked) return false;
+  teamUseAsked = true;
+  return true;
+}
+
 // ── "Use your own GPUs" ─────────────────────────────────────────────────────
 
 export type GpuWhere = "this_machine" | "remote_server" | "endpoint";
@@ -292,4 +315,5 @@ export function reportModelUpResult(env: NodeJS.ProcessEnv = process.env): void 
 
 export function resetGpuFirstRunForTesting(): void {
   resultReported = false;
+  teamUseAsked = false;
 }

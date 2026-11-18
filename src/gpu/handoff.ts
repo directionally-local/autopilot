@@ -20,6 +20,13 @@
  * (dl's picker, the failed model marked). An older dl ignores both and shows its picker. dl
  * leaves DL_GPU_HANDOFF out on the last relaunch it allows, and then there is no menu.
  *
+ * Team chat (dl 0.39 and later): on the relaunch after a model-up that worked, dl also sets
+ * DL_CHAT_SETUP=1 when it can set up the team chat. Autopilot then asks "How will your team use
+ * it?" before the session opens. Terminal agent (or Esc) opens it as before. Browser chat and
+ * Both write {"version":1,"action":"chat-up","use":"browser"|"both"} and exit: dl sets up
+ * Tailscale and Open WebUI (dl ui up, dl ui share) and prints the admin link; after "both" it
+ * starts Autopilot once more, without DL_GPU_RESULT or DL_CHAT_SETUP, so the agent opens.
+ *
  * Without DL_GPU_HANDOFF (plain `autopilot`, or a dl from before this) the screens still run,
  * but a GPU on this machine gets a pointer to `dl model up` instead of the setup. A dl from
  * before this never reads the file, so nothing is asked of it.
@@ -82,4 +89,18 @@ export function modelUpResult(env: NodeJS.ProcessEnv = process.env): { ok: true 
     ...(reason ? { reason } : {}),
     ...(log ? { log } : {}),
   };
+}
+
+/** How the team will use the private model, when it isn't only the terminal agent. */
+export type TeamUse = "browser" | "both";
+
+/** dl can set up the team chat now: back from a model-up that worked, with dl to hand over to. */
+export function chatSetupOffered(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.DL_CHAT_SETUP?.trim() === "1" && env.DL_GPU_RESULT?.trim() === "ok" && !!handoffPath(env);
+}
+
+/** Ask dl to set up the team chat (Autopilot exits next; after "both" dl starts it again). */
+export async function requestChatUp(path: string, use: TeamUse): Promise<void> {
+  await writeFile(path, `${JSON.stringify({ version: HANDOFF_VERSION, action: "chat-up", use })}\n`, { mode: 0o600 });
+  await chmod(path, 0o600);
 }
