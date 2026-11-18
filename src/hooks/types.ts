@@ -34,8 +34,14 @@ export type HookEvent =
   /** A turn ended cleanly. Informational; common use is notification
    *  (terminal bell, desktop notification). */
   | "Stop"
-  /** Auto-compaction is about to run. Informational; common use is
-   *  snapshotting the conversation before it shrinks. */
+  /** A turn ended without a clean finish: the user interrupted it, or it
+   *  failed (model/API error, budget exhausted, context limit). Fires
+   *  instead of Stop, so every prompt ends in exactly one of the two.
+   *  Informational. */
+  | "StopFailure"
+  /** Compaction is about to run (`trigger`: "auto" or "manual" for
+   *  `/compact`). Informational; common use is snapshotting the
+   *  conversation before it shrinks. */
   | "PreCompact"
   /** A session's first turn in this process (new, or resumed). Informational. */
   | "SessionStart"
@@ -58,6 +64,7 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "PermissionRequest",
   "UserPromptSubmit",
   "Stop",
+  "StopFailure",
   "PreCompact",
   "SessionStart",
   "SessionEnd",
@@ -202,8 +209,32 @@ export interface StopPayload extends BaseHookPayload {
   last_assistant_message?: string;
 }
 
+/** Why a turn ended without a clean finish (StopFailure's `error`). Kinds
+ *  may be added in a minor release; a consumer should read an unknown kind
+ *  as a failure (and only `is_interrupt` as an interruption). */
+export type StopFailureKind =
+  /** The user stopped the turn (Esc, Ctrl+C, an SDK/serve abort). */
+  | "interrupted"
+  /** The model or its provider failed after retries (API error, host down). */
+  | "model_error"
+  /** The session's input-token budget ran out. */
+  | "budget_exhausted"
+  /** The conversation no longer fits the model's context window. */
+  | "context_limit"
+  /** Anything else (e.g. the tool-call limit in a headless run). */
+  | "error";
+
+export interface StopFailurePayload extends BaseHookPayload {
+  event: "StopFailure";
+  error: StopFailureKind;
+  /** True when the user interrupted the turn (`error: "interrupted"`). */
+  is_interrupt: boolean;
+}
+
 export interface PreCompactPayload extends BaseHookPayload {
   event: "PreCompact";
+  /** "manual" for `/compact`, "auto" when Autopilot compacts on its own. */
+  trigger?: "auto" | "manual";
 }
 
 export interface SessionStartPayload extends BaseHookPayload {
@@ -226,6 +257,7 @@ export type HookPayload =
   | PermissionRequestPayload
   | UserPromptSubmitPayload
   | StopPayload
+  | StopFailurePayload
   | PreCompactPayload
   | SessionStartPayload
   | SessionEndPayload;

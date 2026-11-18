@@ -685,7 +685,8 @@ still read (see [Settings location](#settings-location)):
 | `PermissionRequest` | You're about to be asked to approve a call     | Allow / deny |
 | `UserPromptSubmit` | A prompt is submitted, in every mode (TUI, `-p`, `--emit-events`, `serve`, SDK) | Yes   |
 | `Stop`             | A turn ended cleanly                            | No    |
-| `PreCompact`       | Auto-compaction is about to run                 | No    |
+| `StopFailure`      | A turn was interrupted or failed, instead of `Stop` (`error`, `is_interrupt`) | No |
+| `PreCompact`       | Compaction is about to run (`trigger`: auto/manual) | No    |
 | `SessionEnd`       | autopilot exits, or `/clear` (`reason`)         | No    |
 
 Hooks receive the event payload as JSON on stdin **and** as
@@ -704,6 +705,45 @@ Claude Code hook scripts — and tools built for them, like
 and `originalFile` (and `type: "create" | "update"` for `Write`); see
 [docs/beacon.md](docs/beacon.md#tool-names-and-result-shapes) for the
 size limits.
+
+#### Turn ends: `Stop` and `StopFailure`
+
+Every prompt that reaches the model ends in exactly one `Stop` or one
+`StopFailure`, so an observer (a status board, a session log) never
+shows a finished turn as still running. `StopFailure` fires when the
+turn ends without a clean finish, with:
+
+- `error`: `interrupted` (you stopped it: Esc, Ctrl+C, an SDK or
+  `serve` abort), `model_error` (the model or its provider failed after
+  retries), `budget_exhausted`, `context_limit`, or `error` (anything
+  else). More kinds may be added; read an unknown one as a failure.
+- `is_interrupt`: `true` only for `interrupted`.
+
+It carries no error text, only the kind. A guardrail that ends the
+turn with a summary fires `Stop`, as before.
+
+#### Payload stability
+
+Every payload carries `hook_payload_version` (currently `1`) and
+`autopilot_version`. Within a payload version fields are only added:
+an existing field is never renamed, retyped or removed, and an event
+keeps its meaning. Any of those changes bumps `hook_payload_version`
+and is called out in the changelog. The stable fields are the ones in
+this section and in [docs/beacon.md](docs/beacon.md): `hook_event_name`,
+`session_id`, `cwd`, `client` (`"autopilot"`), `transcript_path` /
+`transcript_format`, the tool fields (`tool_name`, `tool_input`,
+`tool_response`, `tool_use_id`, `error`, `is_interrupt`), and each
+event's own fields (`source`, `model` and `provider` on `SessionStart`;
+`prompt` on `UserPromptSubmit`; `last_assistant_message` on `Stop`;
+`error` and `is_interrupt` on `StopFailure`; `permission_mode` on
+`PermissionRequest`; `trigger` on `PreCompact`; `reason` on
+`SessionEnd`). Payloads never carry API keys or provider tokens, and
+the transcript is redacted (see docs/beacon.md).
+
+Hooks run in the turn: Autopilot waits for each one, up to its
+`timeoutMs` (default 30 s). An observer should return at once and do
+its work in the background; give it a short `timeoutMs` (a few seconds)
+so a hung observer can't hold a turn.
 
 A blocked `UserPromptSubmit` never reaches the model: the TUI shows the
 reason, `-p` and one-shot `--emit-events` exit with code **44**,

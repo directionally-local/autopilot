@@ -764,7 +764,7 @@ function App({
     firePreCompact: (signal) => {
       if (!hooksManagerRef.current.hasEnabledHooks("PreCompact")) return;
       void hooksManagerRef.current
-        .fire("PreCompact", { event: "PreCompact", session_id: sessionIdRef.current, cwd: process.cwd() }, null, signal)
+        .fire("PreCompact", { event: "PreCompact", session_id: sessionIdRef.current, cwd: process.cwd(), trigger: "auto" }, null, signal)
         .catch(() => {});
     },
   });
@@ -2132,7 +2132,7 @@ function App({
 
   function configuredHooks(): { event: HookEvent; hook: HookConfig }[] {
     const out: { event: HookEvent; hook: HookConfig }[] = [];
-    for (const ev of ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "UserPromptSubmit", "Stop", "PreCompact"] as const) {
+    for (const ev of ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "UserPromptSubmit", "Stop", "StopFailure", "PreCompact"] as const) {
       for (const h of hooksManagerRef.current.hooksFor(ev)) out.push({ event: ev, hook: h });
     }
     return out;

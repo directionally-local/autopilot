@@ -10,7 +10,8 @@ export const EVENT_DESCRIPTIONS: Record<HookEvent, string> = {
   PermissionRequest: "before you're asked to approve a call — can allow or deny it",
   UserPromptSubmit: "when you hit Enter — can VETO the prompt",
   Stop: "when the agent finishes a turn — informational only",
-  PreCompact: "before auto-compaction shrinks the conversation",
+  StopFailure: "when a turn is interrupted or fails (instead of Stop) — informational only",
+  PreCompact: "before compaction shrinks the conversation (auto or /compact)",
   SessionStart: "when a session starts or is resumed — informational only",
   SessionEnd: "when autopilot exits or the session is cleared — informational only",
 };
@@ -57,6 +58,10 @@ export const EVENT_COMMAND_EXAMPLES: Record<HookEvent, string[]> = {
     ``,
     `# macOS desktop notification:`,
     `osascript -e 'display notification "Turn complete" with title "Autopilot"'`,
+  ],
+  StopFailure: [
+    `# Log turns that were interrupted or failed:`,
+    `jq -c '{session: .session_id, error: .error}' >> ~/.local/state/autopilot/turn-failures.log`,
   ],
   PreCompact: [
     `# Snapshot the session file before compaction shrinks it:`,

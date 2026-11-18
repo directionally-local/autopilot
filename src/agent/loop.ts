@@ -1,4 +1,6 @@
 import { noteSessionStart } from "../hooks/session-lifecycle.js";
+import type { StopFailureKind } from "../hooks/types.js";
+import { ApiError } from "../util/errors.js";
 import { providerPresetOf } from "./llm-auth.js";
 import { withOtelEvents } from "../util/otel-events.js";
 import { runKimi } from "./client.js";
@@ -424,6 +426,43 @@ interface TurnTrace {
   costUsd: number;
   /** Set by the loop body when the turn ends for a reason other than a plain completion. */
   endReason: TurnEndReason | null;
+  /** The turn reached its Stop hook (fired, or due with no hook enabled). */
+  stopped: boolean;
+}
+
+/** StopFailure's `error` for a turn that threw. */
+export function stopFailureKind(err: unknown): StopFailureKind {
+  if (err instanceof DOMException && err.name === "AbortError") return "interrupted";
+  if (err instanceof BudgetExhaustedError) return "budget_exhausted";
+  if (err instanceof ContextBudgetError) return "context_limit";
+  if (err instanceof ApiError) return "model_error";
+  return "error";
+}
+
+/**
+ * Fire StopFailure for a turn that ended without reaching Stop:
+ * interrupted, or failed. Every prompt then ends in exactly one Stop or
+ * StopFailure, so an observer never shows a dead turn as still running.
+ * Not given the turn's signal: an interrupted turn's signal is already
+ * aborted. Best-effort, bounded by each hook's own timeout.
+ */
+async function fireStopFailureHook(opts: AgentTurnOpts, error: StopFailureKind): Promise<void> {
+  if (!opts.hooks?.hasEnabledHooks("StopFailure")) return;
+  try {
+    await opts.hooks.fire(
+      "StopFailure",
+      {
+        event: "StopFailure",
+        session_id: opts.sessionId ?? null,
+        cwd: opts.cwd,
+        error,
+        is_interrupt: error === "interrupted",
+      },
+      null,
+    );
+  } catch {
+    // best-effort — must not mask the turn's own error
+  }
 }
 
 export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
@@ -472,6 +511,7 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
     finalText: null,
     costUsd: 0,
     endReason: null,
+    stopped: false,
   };
   const endTurn = (reason: TurnEndReason, finalText: string | null): void => {
     if (!tr.trace.enabled) return;
@@ -498,6 +538,8 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
     endTurn(tr.endReason ?? "complete", tr.finalText);
     dlTurnEnd(tr.endReason ?? "complete");
     opts.callbacks.onTurnEnd?.(tr.endReason ?? "complete");
+    // A turn stopped on its way out (the Stop hook is skipped on abort).
+    if (!tr.stopped && opts.signal.aborted) await fireStopFailureHook(opts, "interrupted");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       endTurn("aborted", tr.partialText || tr.finalText);
@@ -509,6 +551,8 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
       endTurn("error", tr.partialText || tr.finalText);
       dlTurnEnd("error", err);
     }
+    // A guardrail that summarised first (AgentLoopError) already fired Stop.
+    if (!tr.stopped) await fireStopFailureHook(opts, stopFailureKind(err));
     throw err;
   } finally {
     await gitDelta?.finish().catch(() => undefined);
@@ -593,6 +637,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // Skipped on abort and on error paths that never produced an answer.
   const fireStopHook = async (): Promise<void> => {
     if (opts.signal.aborted) return;
+    tr.stopped = true;
     if (!opts.hooks?.hasEnabledHooks("Stop")) return;
     try {
       await opts.hooks.fire(
