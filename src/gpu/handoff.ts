@@ -27,6 +27,15 @@
  * Tailscale and Open WebUI (dl ui up, dl ui share) and prints the admin link; after "both" it
  * starts Autopilot once more, without DL_GPU_RESULT or DL_CHAT_SETUP, so the agent opens.
  *
+ * Coding agent: on that same relaunch, a dl that can open other agents on the model also sets
+ * DL_AGENTS, a JSON list of them (only ones that can work on this model) and whether each CLI
+ * is installed: [{"id":"claude-code","installed":true},{"id":"opencode","installed":false},…].
+ * After Terminal agent or Both, Autopilot then asks "Which coding agent?" (Autopilot first,
+ * recommended and the default). Autopilot (or Esc) goes on as before. Another agent after
+ * Terminal agent writes {"version":1,"action":"agent","agent":"<id>"} and exits; after Both
+ * the chat-up request carries "agent":"<id>". dl keeps the choice for the box and opens that
+ * agent on the model (or prints its install command). Without DL_AGENTS it isn't asked.
+ *
  * Without DL_GPU_HANDOFF (plain `autopilot`, or a dl from before this) the screens still run,
  * but a GPU on this machine gets a pointer to `dl model up` instead of the setup. A dl from
  * before this never reads the file, so nothing is asked of it.
@@ -99,8 +108,44 @@ export function chatSetupOffered(env: NodeJS.ProcessEnv = process.env): boolean 
   return env.DL_CHAT_SETUP?.trim() === "1" && env.DL_GPU_RESULT?.trim() === "ok" && !!handoffPath(env);
 }
 
-/** Ask dl to set up the team chat (Autopilot exits next; after "both" dl starts it again). */
-export async function requestChatUp(path: string, use: TeamUse): Promise<void> {
-  await writeFile(path, `${JSON.stringify({ version: HANDOFF_VERSION, action: "chat-up", use })}\n`, { mode: 0o600 });
+/** Ask dl to set up the team chat (Autopilot exits next; after "both" dl starts it again, or opens `agent`). */
+export async function requestChatUp(path: string, use: TeamUse, agent?: OtherAgent): Promise<void> {
+  await writeFile(path, `${JSON.stringify({ version: HANDOFF_VERSION, action: "chat-up", use, ...(use === "both" && agent ? { agent } : {}) })}\n`, { mode: 0o600 });
+  await chmod(path, 0o600);
+}
+
+/** The coding agents dl can open on the model besides Autopilot. */
+export type OtherAgent = "claude-code" | "opencode" | "pi";
+
+export interface OfferedAgent { id: OtherAgent; installed: boolean }
+
+const OTHER_AGENTS: readonly OtherAgent[] = ["claude-code", "opencode", "pi"];
+
+/** DL_AGENTS, read defensively: known ids only, once each, in dl's order. Empty: don't ask. */
+export function offeredAgents(env: NodeJS.ProcessEnv = process.env): OfferedAgent[] {
+  const raw = env.DL_AGENTS?.trim();
+  if (!raw) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<OtherAgent>();
+  const agents: OfferedAgent[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const { id, installed } = entry as { id?: unknown; installed?: unknown };
+    if (typeof id !== "string" || !(OTHER_AGENTS as readonly string[]).includes(id) || seen.has(id as OtherAgent)) continue;
+    seen.add(id as OtherAgent);
+    agents.push({ id: id as OtherAgent, installed: installed === true });
+  }
+  return agents;
+}
+
+/** Ask dl to open another agent on the model (Autopilot exits next). */
+export async function requestAgent(path: string, agent: OtherAgent): Promise<void> {
+  await writeFile(path, `${JSON.stringify({ version: HANDOFF_VERSION, action: "agent", agent })}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
 }
