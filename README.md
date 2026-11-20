@@ -95,7 +95,7 @@ Crash reports are saved as `~/.camouflage/crash-*.txt`, and autopilot prints the
 
 ### Your own GPUs
 
-Before that question, the first run looks for GPUs on this machine. With an Nvidia card of 24 GB or more and Autopilot started by dl, it asks **"Run a private model on it?"**: yes hands over to `dl model up`, which sets up vLLM on the GPU, tests it and opens Autopilot on it; no is remembered. A smaller Nvidia card gets a one-line hint that `dl model up` can run small models on it. If the setup fails, a menu offers to retry, see what failed (the reason and the log file), pick another model, or carry on without a local model.
+Before that question, the first run looks for GPUs on this machine. With an Nvidia card of 24 GB or more and Autopilot started by dl, it asks **"Run a private model on it?"**: yes hands over to `dl model up`, which sets up vLLM on the GPU, tests it and opens Autopilot on it; no is remembered. A smaller Nvidia card gets a one-line hint that `dl model up` can run small models on it. If the setup fails, a menu offers to retry, see what failed (the reason and the log file), pick another model, or carry on without a local model. Once the model passes its tests, with a dl that can set up team chat, Autopilot asks **"How will your team use it?"**: **Browser chat (you and your team)**, **Terminal agent** or **Both**. Terminal agent (or Esc) opens the session on the model, as before. Browser chat and Both hand over to dl, which sets up Tailscale and Open WebUI on a private HTTPS link (accounts with 2FA) and prints the link where the admin account is made; after Both, Autopilot opens again for the agent.
 
 **Use your own GPUs** asks where they are:
 
