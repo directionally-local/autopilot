@@ -125,6 +125,19 @@ describe("local discovery", () => {
     const models = await discoverOpenAiModels("http://127.0.0.1:8000/v1", undefined, fetchImpl);
     assert.deepStrictEqual(models.map((m) => [m.id, m.contextWindow]), [["qwen", 24000], ["lm", 8192], ["plain", 32768]]);
   });
+
+  it("refuses a name that resolves public before the key is sent", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return json({ data: [] });
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      () => discoverOpenAiModels("http://proxy:8080/v1", "sk-secret", fetchImpl, async () => [{ address: "203.0.113.9", family: 4 }]),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(called, false, "the key never left");
+  });
 });
 
 describe("registry with a provider catalog", () => {

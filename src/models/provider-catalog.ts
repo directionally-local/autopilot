@@ -21,6 +21,7 @@ import { registerProviderModels, type ModelEntry } from "./registry.js";
 import { contextLengthOf } from "./local-context.js";
 import { MODELS_DEV_SNAPSHOT } from "./models-dev-snapshot.js";
 import { PROVIDER_PRESETS, type ProviderId } from "../providers/presets.js";
+import { pinnedRequestUrl, resolveHttpHostGate, type HostResolver } from "../providers/resolve.js";
 import { getUserAgent } from "../util/version.js";
 import { configPath } from "../util/app-dirs.js";
 
@@ -211,8 +212,19 @@ export async function discoverOllamaModels(baseUrl: string, fetchImpl: typeof fe
 }
 
 /** Models from an OpenAI-compatible `GET /models` (LM Studio, vLLM, custom gateways). Ids and context length when listed; capabilities unknown. */
-export async function discoverOpenAiModels(baseUrl: string, apiKey: string | undefined, fetchImpl: typeof fetch = fetch): Promise<ModelEntry[]> {
-  const res = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/models`, {
+export async function discoverOpenAiModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  fetchImpl: typeof fetch = fetch,
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver,
+): Promise<ModelEntry[]> {
+  // Discovery carries the key: the same resolution gate refuses a public http
+  // address before the request, and pins the connection to the checked address.
+  const gate = await resolveHttpHostGate(baseUrl, { hasKey: !!apiKey, ...(resolver ? { resolver } : {}) });
+  if (gate.refusal) throw new Error(gate.refusal);
+  const modelsUrl = `${baseUrl.replace(/\/+$/, "")}/models`;
+  const res = await fetchImpl(gate.pin ? pinnedRequestUrl(modelsUrl, gate.pin) : modelsUrl, {
     headers: { Accept: "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
     signal: AbortSignal.timeout(5_000),
   });

@@ -47,6 +47,24 @@ describe("checkProviderKey", () => {
     assert.match(res.message, /base URL must use https \(got http:\/\/example\.com\)/);
   });
 
+  it("refuses a setup base URL whose name resolves public, before any request", async () => {
+    let called = false;
+    const res = await checkProviderKey(
+      "custom",
+      "sk-test-key-123",
+      "http://proxy:8080/v1",
+      (async () => {
+        called = true;
+        return json(200, { data: [] });
+      }) as unknown as typeof fetch,
+      undefined,
+      async () => [{ address: "203.0.113.9", family: 4 }],
+    );
+    assert.ok(!res.ok && res.reason === "http");
+    assert.match(res.message, /base URL must use https \(got http:\/\/proxy:8080\)/);
+    assert.strictEqual(called, false, "the key never left");
+  });
+
   it("accepts a private setup base URL and warns on the caller's channel when a key travels", async () => {
     resetPrivateHttpWarnings();
     setPrivateHttpWarningHandler(undefined);

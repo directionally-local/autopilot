@@ -25,16 +25,25 @@ describe("llmAuthFromConfig", () => {
     assert.deepStrictEqual(auth.customEndpoint, { baseUrl: "https://broker.example/v1", apiKey: "host" });
   });
 
-  it("refuses public http at the request layer with the destination and fix", () => {
-    for (const baseUrl of ["http://example.com/v1", "http://[2001:db8::1]/v1", "http://gpu-box.example.com/v1"]) {
+  it("refuses public http literals at the request layer with the destination and fix", () => {
+    for (const baseUrl of ["http://203.0.113.9/v1", "http://[2001:db8::1]/v1"]) {
       const host = new URL(baseUrl).host;
       assert.throws(() => llmAuthFromConfig({ baseUrl, apiKey: "k" }), {
         message: `base URL must use https (got http://${host}) — use https or an ssh tunnel to 127.0.0.1`,
       });
     }
-    assert.throws(() => llmAuthFromConfig({ provider: "ollama", providers: { ollama: { baseUrl: "http://example.com/v1" } } }), /base URL must use https/);
-    process.env.AUTOPILOT_BASE_URL = "http://example.com/v1";
+    assert.throws(() => llmAuthFromConfig({ provider: "ollama", providers: { ollama: { baseUrl: "http://203.0.113.9/v1" } } }), /base URL must use https/);
+    process.env.AUTOPILOT_BASE_URL = "http://203.0.113.9/v1";
     assert.throws(() => llmAuthFromConfig(null), /base URL must use https/);
+  });
+
+  it("leaves a non-literal http host to the request-time resolution gate", () => {
+    // A name is not refused by shape: the gate resolves it at request time and
+    // refuses there when any address is public (resolve.test.ts covers the gate).
+    assert.strictEqual(
+      llmAuthFromConfig({ baseUrl: "http://gpu-box.example.com/v1", apiKey: "k" }).customEndpoint?.baseUrl,
+      "http://gpu-box.example.com/v1",
+    );
   });
 
   it("accepts private IPv6 and dotless endpoints at the request layer", () => {

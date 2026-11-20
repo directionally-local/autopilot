@@ -13,6 +13,7 @@
  *   5. openrouter (onboarding will ask for a key)
  */
 
+import { lookup as dnsLookup } from "node:dns";
 import { isIPv4, isIPv6 } from "node:net";
 import { getPreset, isProviderId, type ProviderId, type ProviderPreset } from "./presets.js";
 import { vertexBase, vertexLocation, vertexProject } from "./vertex.js";
@@ -80,13 +81,18 @@ function isLoopbackHost(host: string): boolean {
   return LOOPBACK_NAMES.has(h) || (isIPv4(h) && h.startsWith("127."));
 }
 
-export type HttpHostClass = "loopback" | "private" | "public";
+export type HttpHostClass = "loopback" | "private" | "public" | "unresolved";
 
 /**
- * Classify an http base URL's host. Loopback is silent; private ranges,
- * IPv6 ULA/link-local, `.local` and single-label names are accepted with a
- * key-travel warning; everything else is refused. The CIDR checks are `isIPv4`-gated so a DNS name that merely looks
- * like an address (`127.0.0.1.evil.com`) is never treated as one.
+ * Classify an http base URL's host by shape. Loopback is silent; private
+ * literals (RFC 1918, CGNAT, IPv6 ULA/link-local) are accepted with a
+ * key-travel warning; public literals are refused. A name is **not** trusted
+ * by shape — `.local`, single-label and multi-label names all return
+ * `unresolved` and must pass the resolution gate ({@link resolveHttpHostGate}),
+ * because a hostile resolver, a search domain or a resolvable dotless TLD can
+ * point any of them at a public address. The CIDR checks are `isIPv4`-gated so
+ * a DNS name that merely looks like an address (`127.0.0.1.evil.com`) is never
+ * treated as one.
  */
 export function classifyHttpHost(host: string): HttpHostClass {
   const h = host.toLowerCase().replace(/^\[|\]$/g, "");
@@ -99,14 +105,105 @@ export function classifyHttpHost(host: string): HttpHostClass {
     if (a === 172 && b !== undefined && b >= 16 && b <= 31) return "private"; // 172.16.0.0/12
     if (a === 192 && b === 168) return "private"; // 192.168.0.0/16
     if (a === 100 && b !== undefined && b >= 64 && b <= 127) return "private"; // 100.64.0.0/10 (tailscale)
+    return "public";
   }
   if (isIPv6(h)) {
     const prefix = Number.parseInt(h.split(":")[0]!, 16);
     if ((prefix & 0xfe00) === 0xfc00 || (prefix & 0xffc0) === 0xfe80) return "private";
     return "public";
   }
-  if (h.endsWith(".local") || /^[a-z0-9_-]+$/i.test(h)) return "private";
-  return "public";
+  return "unresolved";
+}
+
+/** A DNS resolver: `dns.lookup(host, { all: true })` by default; injected in tests. */
+export type HostResolver = (host: string, opts: { all: true }) => Promise<Array<{ address: string; family: number }>>;
+
+const defaultHostResolver: HostResolver = (host, opts) =>
+  new Promise((resolve, reject) => {
+    dnsLookup(host, opts, (err, addresses) => (err ? reject(err) : resolve(addresses)));
+  });
+
+/** What the resolution gate decided for one request target. */
+export interface HttpHostGate {
+  /** Set when the host is (or resolves to) a public address: the request must be refused. */
+  refusal?: string;
+  /** The address the check validated; the connection must use it (http, non-literal hosts). */
+  pin?: { hostname: string; address: string; port: string };
+}
+
+function publicHttpRefusal(url: URL): string {
+  return `base URL must use https (got http://${url.host}) — use https or an ssh tunnel to 127.0.0.1`;
+}
+
+/**
+ * The resolution gate, run at request time. Literal hosts classify by shape;
+ * a non-literal host is resolved with `dns.lookup(host, { all: true })` and is
+ * accepted-private only when **every** returned address is loopback or
+ * private. Any public address refuses exactly like a public http host;
+ * resolution failure is not our refusal (the request fails as it would
+ * anyway). The returned `pin` is the address the connection must use.
+ */
+export async function resolveHttpHostGate(
+  baseUrl: string,
+  opts: { hasKey?: boolean; onWarning?: (message: string) => void; resolver?: HostResolver } = {},
+): Promise<HttpHostGate> {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return {}; // a malformed URL fails later, at request time
+  }
+  if (url.protocol !== "http:") return {};
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const kind = classifyHttpHost(hostname);
+  if (kind === "public") return { refusal: publicHttpRefusal(url) };
+  if (kind === "loopback") return {};
+  if (kind === "private") {
+    if (opts.hasKey) privateHttpKeyTravelWarning(hostname, opts.onWarning ?? privateHttpWarningHandler);
+    return {};
+  }
+  let addresses: Array<{ address: string; family: number }>;
+  try {
+    addresses = await (opts.resolver ?? defaultHostResolver)(hostname, { all: true });
+  } catch {
+    return {}; // resolution failure is the request's own failure, not our refusal
+  }
+  if (addresses.length === 0) return {};
+  const classes = addresses.map((a) => classifyHttpHost(a.address));
+  if (classes.some((c) => c === "public")) return { refusal: publicHttpRefusal(url) };
+  if (opts.hasKey && classes.some((c) => c === "private")) {
+    privateHttpKeyTravelWarning(hostname, opts.onWarning ?? privateHttpWarningHandler);
+  }
+  return { pin: { hostname, address: addresses[0]!.address, port: url.port } };
+}
+
+/**
+ * The request target for a checked host: the same path and port, addressed to
+ * the IP the gate validated, so a rebinding resolver cannot swap it after the
+ * check. Node's fetch derives `Host` from the URL and ignores an explicit
+ * header, so the connection carries the address as its Host (see the round-7
+ * Known Deviations).
+ */
+export function pinnedRequestUrl(url: string, pin: { address: string }): string {
+  const u = new URL(url);
+  // Node's WHATWG URL hostname setter silently ignores a bare IPv6 address
+  // (`u.hostname = "fd00::1"` leaves the URL unchanged); only the bracketed
+  // form takes effect. A silent no-op would leave the connection on the name,
+  // so the rewrite is asserted rather than assumed.
+  const expected = pin.address.includes(":") ? `[${pin.address}]` : pin.address;
+  u.hostname = expected;
+  // Compare through the URL parser so an equivalent IPv6 spelling is not
+  // mistaken for a failed rewrite; a no-op leaves the original hostname.
+  let normalized: string;
+  try {
+    normalized = new URL(`http://${expected}/`).hostname;
+  } catch {
+    throw new Error(`failed to pin the request target to ${pin.address} (invalid host form ${expected})`);
+  }
+  if (u.hostname !== normalized) {
+    throw new Error(`failed to pin the request target to ${pin.address} (hostname is ${u.hostname})`);
+  }
+  return u.toString();
 }
 
 // Only visible delivery consumes the once-guard. Resolutions without a channel
@@ -203,9 +300,7 @@ export function resolveActiveProvider(
 function publicHttpBaseUrlRefusal(baseUrl: string): string | undefined {
   try {
     const url = new URL(baseUrl);
-    if (url.protocol === "http:" && classifyHttpHost(url.hostname) === "public") {
-      return `base URL must use https (got http://${url.host}) — use https or an ssh tunnel to 127.0.0.1`;
-    }
+    if (url.protocol === "http:" && classifyHttpHost(url.hostname) === "public") return publicHttpRefusal(url);
   } catch {
     // A malformed URL fails later, at request time.
   }
@@ -235,7 +330,14 @@ export function assertHttpsBaseUrl(baseUrl: string, opts: { hasKey?: boolean; on
 
 /** The host the API key will be sent to, for the banner and status line. */
 export function providerDestinationLabel(p: ActiveProvider): string {
-  if (!p.baseUrl) return "<preset>";
+  if (!p.baseUrl) {
+    // A preset-owned URL: name its real host, or nothing — never the "<preset>" placeholder.
+    try {
+      return p.preset.baseUrl ? new URL(p.preset.baseUrl).hostname : "";
+    } catch {
+      return "";
+    }
+  }
   try {
     return new URL(p.baseUrl).hostname;
   } catch {

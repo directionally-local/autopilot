@@ -34,6 +34,7 @@ import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
 import { resolveCustomEndpoint, customChatCompletionsUrl, type CustomEndpoint } from "./custom-endpoint.js";
+import { pinnedRequestUrl, resolveHttpHostGate, type HostResolver } from "../providers/resolve.js";
 import type { LlmAuth } from "./llm-auth.js";
 import { fitOutputTokens, localContextLength, localContextMessage, localProviderOf, servedPromptLimit } from "../models/local-context.js";
 import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
@@ -79,6 +80,8 @@ export interface RunKimiOpts extends LlmAuth {
   onRetry?: (message: string) => void;
   /** One-line notices from the provider (e.g. the free tier's 80%-of-allowance notice). */
   onNotice?: (message: string) => void;
+  /** DNS resolver for the http resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  hostResolver?: HostResolver;
 }
 
 /**
@@ -154,7 +157,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
   // the reply to at most half of it (less when the prompt leaves less room),
   // and fail here, before sending, when the prompt can't fit with room for a
   // reply. No answer leaves the request as it was.
-  const servedContext = await localContextLength(customEndpoint, opts.model);
+  const servedContext = await localContextLength(customEndpoint, opts.model, opts.hostResolver ? { resolver: opts.hostResolver } : {});
   if (servedContext) {
     const promptTokens = estimatePromptTokens(opts.messages) + (hasTools ? approxTokens(JSON.stringify(opts.tools).length) : 0);
     const fit = fitOutputTokens(maxTokens, servedContext, promptTokens, opts.model);
@@ -344,6 +347,17 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
     targetHeaders = { ...targetHeaders, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
   };
   if (dlFree) await dlAuthorize(false);
+
+  // The resolution gate (spec v2.2.0): a non-literal http host is resolved at
+  // request time and the connection is pinned to the address the check
+  // validated, so a rebinding resolver cannot swap it after the check. A
+  // public answer refuses here, before the key is attached to any request.
+  const gate = await resolveHttpHostGate(url, {
+    hasKey: !!customEndpoint?.apiKey,
+    ...(opts.hostResolver ? { resolver: opts.hostResolver } : {}),
+  });
+  if (gate.refusal) throw new ApiError(gate.refusal);
+  if (gate.pin) url = pinnedRequestUrl(url, gate.pin);
 
   // Observers of the finalized request body: the debug payload dump
   // (AUTOPILOT_DUMP_LLM=1) and the session trace. Both read the body

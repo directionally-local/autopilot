@@ -17,7 +17,7 @@ it("DL starts with a saved public-http config: status and tour render; first req
   const root = await mkdtemp(join(tmpdir(), "ap-public-http-startup-"));
   const cwd = process.cwd();
   const savedEnv = { ...process.env };
-  const refusal = "base URL must use https (got http://example.com) — use https or an ssh tunnel to 127.0.0.1";
+  const refusal = "base URL must use https (got http://203.0.113.9) — use https or an ssh tunnel to 127.0.0.1";
   try {
     // All state is disposable, including the persisted config and startup indexes.
     for (const key of Object.keys(process.env)) {
@@ -33,7 +33,7 @@ it("DL starts with a saved public-http config: status and tour render; first req
     process.chdir(project);
     await writeFile(join(project, "README.md"), "Startup regression fixture\n");
     await mkdir(dirname(configPath()), { recursive: true });
-    await writeFile(configPath(), JSON.stringify({ provider: "custom", baseUrl: "http://example.com/v1", apiKey: "test-only", model: "test-model" }));
+    await writeFile(configPath(), JSON.stringify({ provider: "custom", baseUrl: "http://203.0.113.9/v1", apiKey: "test-only", model: "test-model" }));
 
     const cfg = await loadConfig();
     assert.ok(cfg, "saved config loads instead of crashing or triggering onboarding");
@@ -41,9 +41,9 @@ it("DL starts with a saved public-http config: status and tour render; first req
     const active = resolveActiveProvider(cfg);
     assert.equal(active.baseUrlRefusal, refusal);
     const providerHost = providerDestinationLabel(active);
-    assert.equal(providerHost, "example.com");
+    assert.equal(providerHost, "203.0.113.9");
     const status = statusSegments({ model: cfg.model, providerHost } as Parameters<typeof statusSegments>[0]);
-    assert.equal(status.provider, "example.com");
+    assert.equal(status.provider, "203.0.113.9");
 
     // This is the same factory called eagerly by App while building the tour.
     const ask = tourAskModel(cfg);
@@ -51,7 +51,7 @@ it("DL starts with a saved public-http config: status and tour render; first req
     const tour = await buildTour({ cwd: project, enabled: true, ask, providerHost });
     assert.equal(tour.kind, "shown");
     if (tour.kind === "shown") {
-      assert.match(tour.text, /provider: example\.com/);
+      assert.match(tour.text, /provider: 203\.0\.113\.9/);
       assert.equal(tour.source, "local", "a refused optional model call falls back to local suggestions");
     }
 

@@ -47,11 +47,13 @@ describe("local server context length", () => {
       return json({ object: "list", data: [{ id: "other", max_model_len: 1 }, { id: "qwen", max_model_len: 24000 }] });
     }) as typeof fetch;
     const endpoint = { baseUrl: "http://gpu:8000/v1/", providerId: "vllm" as const, apiKey: "k" };
-    const [a, b] = await Promise.all([localContextLength(endpoint, "qwen", { fetchImpl }), localContextLength(endpoint, "qwen", { fetchImpl })]);
+    const resolver = async () => [{ address: "192.168.1.9", family: 4 }];
+    const [a, b] = await Promise.all([localContextLength(endpoint, "qwen", { fetchImpl, resolver }), localContextLength(endpoint, "qwen", { fetchImpl, resolver })]);
     assert.equal(a, 24000);
     assert.equal(b, 24000);
-    assert.equal(await localContextLength(endpoint, "qwen", { fetchImpl }), 24000);
-    assert.deepEqual(calls, ["http://gpu:8000/v1/models"]);
+    assert.equal(await localContextLength(endpoint, "qwen", { fetchImpl, resolver }), 24000);
+    // The gate pinned the connection to the address it checked.
+    assert.deepEqual(calls, ["http://192.168.1.9:8000/v1/models"]);
     assert.equal(servedContextLength("qwen"), 24000);
     // The registry follows, so compaction and the context meter use it.
     assert.equal(getModelOrInfer("qwen").contextWindow, 24000);
@@ -87,12 +89,27 @@ describe("local server context length", () => {
       throw new TypeError("fetch failed");
     }) as typeof fetch;
     const endpoint = { baseUrl: "http://down:8000/v1", providerId: "vllm" as const };
-    assert.equal(await localContextLength(endpoint, "m", { fetchImpl: failing }), null);
-    assert.equal(await localContextLength(endpoint, "m", { fetchImpl: failing }), null);
+    const resolver = async () => [{ address: "192.168.1.9", family: 4 }];
+    assert.equal(await localContextLength(endpoint, "m", { fetchImpl: failing, resolver }), null);
+    assert.equal(await localContextLength(endpoint, "m", { fetchImpl: failing, resolver }), null);
     assert.equal(calls, 1);
     const http500 = (async () => json({ error: "boom" }, 500)) as typeof fetch;
-    assert.equal(await localContextLength({ ...endpoint, baseUrl: "http://other:8000/v1" }, "m", { fetchImpl: http500 }), null);
+    assert.equal(await localContextLength({ ...endpoint, baseUrl: "http://other:8000/v1" }, "m", { fetchImpl: http500, resolver }), null);
     assert.equal(servedContextLength("m"), undefined);
+  });
+
+  it("never sends the key to a name that resolves public", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return json({ data: [] });
+    }) as typeof fetch;
+    const ctx = await localContextLength({ baseUrl: "http://proxy:8080/v1", providerId: "vllm", apiKey: "k" }, "m", {
+      fetchImpl,
+      resolver: async () => [{ address: "203.0.113.9", family: 4 }],
+    });
+    assert.equal(ctx, null);
+    assert.equal(called, false, "the key never left");
   });
 
   it("never asks hosted providers", async () => {

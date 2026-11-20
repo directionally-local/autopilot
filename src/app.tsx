@@ -130,7 +130,6 @@ import {
 import { projectDirsToRead } from "./util/app-dirs.js";
 import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
 import { DL_PROVIDER_ID, dlGptLimitAutoSwitch, lastKnownDlMe } from "./providers/directionally-local.js";
-import { resolveActiveProvider } from "./providers/resolve.js";
 import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
 import type { FeedbackLine, FeedbackRequest } from "./feedback.js";
 import type { AccessRequestLine, AccessRequestOpen } from "./access-request.js";

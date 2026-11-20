@@ -1,6 +1,7 @@
 import { describe, it, mock } from "node:test";
 import assert from "node:assert";
-import { classifyHttpHost, detectEnvProviders, isProviderUsable, providerDestinationLabel, resetPrivateHttpWarnings, resolveActiveProvider, resolveProviderId, setPrivateHttpWarningHandler } from "./resolve.js";
+import { classifyHttpHost, detectEnvProviders, isProviderUsable, pinnedRequestUrl, providerDestinationLabel, resetPrivateHttpWarnings, resolveActiveProvider, resolveHttpHostGate, resolveProviderId, setPrivateHttpWarningHandler } from "./resolve.js";
+import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { PROVIDER_IDS, PROVIDER_PRESETS } from "./presets.js";
 import { logger } from "../util/logger.js";
 
@@ -99,27 +100,36 @@ describe("base URL scheme guard (T3-F2 re-scope)", () => {
     }
   });
 
-  it("marks public http for request-time refusal without throwing from resolution", () => {
+  it("marks public http literals for request-time refusal without throwing from resolution", () => {
+    const p = resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://203.0.113.9/v1", AUTOPILOT_API_KEY: "k" });
+    assert.strictEqual(p.baseUrl, "http://203.0.113.9/v1");
+    assert.strictEqual(p.baseUrlRefusal, "base URL must use https (got http://203.0.113.9) — use https or an ssh tunnel to 127.0.0.1");
+    assert.strictEqual(providerDestinationLabel(p), "203.0.113.9");
+  });
+
+  it("defers a non-literal http host to the request-time resolution gate", () => {
+    // A name is not refused by shape: it is resolved at request time (v2.2.0).
     const p = resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://example.com/v1", AUTOPILOT_API_KEY: "k" });
     assert.strictEqual(p.baseUrl, "http://example.com/v1");
-    assert.strictEqual(p.baseUrlRefusal, "base URL must use https (got http://example.com) — use https or an ssh tunnel to 127.0.0.1");
-    assert.strictEqual(providerDestinationLabel(p), "example.com");
+    assert.strictEqual(p.baseUrlRefusal, undefined);
   });
 
   it("does not allowlist hosts: any https host is accepted", () => {
     assert.strictEqual(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "https://any-host.example/v1", AUTOPILOT_API_KEY: "k" }).baseUrl, "https://any-host.example/v1");
   });
 
-  it("does not treat a 127.* DNS name as loopback (T1-01)", () => {
+  it("does not treat a 127.* DNS name as loopback (T1-01)", async () => {
     for (const url of ["http://127.0.0.1.evil.com/v1", "http://127.1.evil.com/v1"]) {
-      assert.match(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: url, AUTOPILOT_API_KEY: "k" }).baseUrlRefusal ?? "", /base URL must use https/, url);
+      // A name that looks like an address is not one: resolution decides.
+      const gate = await resolveHttpHostGate(url, { hasKey: true, resolver: async () => [{ address: "203.0.113.9", family: 4 }] });
+      assert.match(gate.refusal ?? "", /base URL must use https/, url);
     }
   });
 
-  it("labels the destination host, or <preset> when the module owns the URL", () => {
+  it("labels the destination host, or nothing when the module owns the URL", () => {
     assert.strictEqual(providerDestinationLabel(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "https://api.example.com/v1", AUTOPILOT_API_KEY: "k" })), "api.example.com");
     assert.strictEqual(providerDestinationLabel(resolveActiveProvider(null, { AUTOPILOT_BASE_URL: "http://localhost:11434/v1", AUTOPILOT_API_KEY: "k" })), "localhost");
-    assert.strictEqual(providerDestinationLabel(resolveActiveProvider(null, { AUTOPILOT_OPENROUTER_KEY: "sk-or" })), "<preset>");
+    assert.strictEqual(providerDestinationLabel(resolveActiveProvider(null, { AUTOPILOT_OPENROUTER_KEY: "sk-or" })), "", "never the <preset> placeholder");
   });
 });
 
@@ -129,10 +139,11 @@ describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)"
   it("classifies hosts without treating lookalike DNS names as addresses", () => {
     assert.strictEqual(classifyHttpHost("127.0.0.1"), "loopback");
     assert.strictEqual(classifyHttpHost("192.168.1.5"), "private");
-    assert.strictEqual(classifyHttpHost("ollama-box.local"), "private");
-    assert.strictEqual(classifyHttpHost("127.0.0.1.evil.com"), "public");
-    assert.strictEqual(classifyHttpHost("notlocal.example"), "public");
-    assert.strictEqual(classifyHttpHost("example.com"), "public");
+    // A name is not trusted by shape: it must pass the resolution gate.
+    assert.strictEqual(classifyHttpHost("ollama-box.local"), "unresolved");
+    assert.strictEqual(classifyHttpHost("127.0.0.1.evil.com"), "unresolved");
+    assert.strictEqual(classifyHttpHost("notlocal.example"), "unresolved");
+    assert.strictEqual(classifyHttpHost("example.com"), "unresolved");
   });
 
   it("accepts http to each private range", () => {
@@ -168,18 +179,20 @@ describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)"
     }
   });
 
-  it("accepts dotless names with a once-per-host key warning, not dotted public names", () => {
+  it("accepts dotless names only through the resolution gate, with a once-per-host key warning", async () => {
     resetPrivateHttpWarnings();
     const warnings: string[] = [];
     setPrivateHttpWarningHandler((message) => warnings.push(message));
+    const resolver = async () => [{ address: "192.168.1.9", family: 4 }];
     try {
-      assert.strictEqual(resolve("http://gpu-box:11434/v1", "").baseUrlRefusal, undefined);
+      assert.strictEqual((await resolveHttpHostGate("http://gpu-box:11434/v1", { hasKey: false, resolver })).refusal, undefined);
       assert.strictEqual(warnings.length, 0);
-      assert.strictEqual(resolve("http://gpu-box:11434/v1").baseUrlRefusal, undefined);
-      resolve("http://GPU-BOX:11434/v1");
+      assert.strictEqual((await resolveHttpHostGate("http://gpu-box:11434/v1", { hasKey: true, resolver })).refusal, undefined);
+      await resolveHttpHostGate("http://GPU-BOX:11434/v1", { hasKey: true, resolver });
       assert.strictEqual(warnings.length, 1);
       assert.match(warnings[0]!, /gpu-box/);
-      assert.match(resolve("http://gpu-box.example.com/v1").baseUrlRefusal ?? "", /base URL must use https/);
+      const refused = await resolveHttpHostGate("http://gpu-box.example.com/v1", { hasKey: true, resolver: async () => [{ address: "203.0.113.9", family: 4 }] });
+      assert.match(refused.refusal ?? "", /base URL must use https/);
     } finally {
       setPrivateHttpWarningHandler(undefined);
       resetPrivateHttpWarnings();
@@ -231,6 +244,95 @@ describe("base URL scheme guard (v2.0.0: private ranges and key-travel warning)"
 
   it("labels a private host", () => {
     assert.strictEqual(providerDestinationLabel(resolve("http://192.168.1.5/v1")), "192.168.1.5");
+  });
+});
+
+describe("resolution gate (v2.2.0: resolve-then-check, pin)", () => {
+  const privateResolver = async () => [{ address: "192.168.1.9", family: 4 }];
+  const publicResolver = async () => [{ address: "203.0.113.9", family: 4 }];
+
+  it("accepts a name that resolves only to private addresses, and warns once when a key travels", async () => {
+    resetPrivateHttpWarnings();
+    const warnings: string[] = [];
+    setPrivateHttpWarningHandler((m) => warnings.push(m));
+    try {
+      for (const url of ["http://model:8000", "http://gpu-box:11434/v1"]) {
+        const gate = await resolveHttpHostGate(url, { hasKey: true, resolver: privateResolver });
+        assert.strictEqual(gate.refusal, undefined, url);
+        assert.ok(gate.pin, `${url} is pinned to the checked address`);
+      }
+      assert.strictEqual(warnings.length, 2, "one warning per host");
+      assert.match(warnings[0]!, /model/);
+      assert.match(warnings[1]!, /gpu-box/);
+    } finally {
+      setPrivateHttpWarningHandler(undefined);
+      resetPrivateHttpWarnings();
+    }
+  });
+
+  it("accepts .local names through the gate, case-insensitively", async () => {
+    const resolver = async () => [{ address: "192.168.1.20", family: 4 }];
+    for (const url of ["http://ollama-box.local:11434/v1", "http://NAS.LOCAL/v1"]) {
+      const gate = await resolveHttpHostGate(url, { hasKey: true, resolver });
+      assert.strictEqual(gate.refusal, undefined, url);
+      assert.strictEqual(gate.pin?.address, "192.168.1.20", url);
+    }
+  });
+
+  it("refuses a name that resolves to a public address, or to a mix", async () => {
+    const mixed = async () => [{ address: "192.168.1.9", family: 4 }, { address: "203.0.113.9", family: 4 }];
+    for (const resolver of [publicResolver, mixed]) {
+      const gate = await resolveHttpHostGate("http://proxy:8080", { hasKey: true, resolver });
+      assert.match(gate.refusal ?? "", /base URL must use https \(got http:\/\/proxy:8080\)/);
+      assert.strictEqual(gate.pin, undefined);
+    }
+  });
+
+  it("treats resolution failure as the request's own failure, not a refusal", async () => {
+    const failing = async () => {
+      throw Object.assign(new Error("getaddrinfo ENOTFOUND proxy"), { code: "ENOTFOUND" });
+    };
+    const empty = async () => [];
+    for (const resolver of [failing, empty]) {
+      const gate = await resolveHttpHostGate("http://proxy:8080", { hasKey: true, resolver });
+      assert.strictEqual(gate.refusal, undefined);
+      assert.strictEqual(gate.pin, undefined);
+    }
+  });
+
+  it("keeps the hotcell sandbox URL working (the maintainer's blocker, his URL verbatim)", async () => {
+    const url = "http://host.docker.internal:4752/deepseek";
+    const gate = await resolveHttpHostGate(url, { hasKey: true, resolver: async () => [{ address: "172.17.0.2", family: 4 }] });
+    assert.strictEqual(gate.refusal, undefined);
+    assert.deepStrictEqual(gate.pin, { hostname: "host.docker.internal", address: "172.17.0.2", port: "4752" });
+    // The first turn is not refused: request auth succeeds for the same URL.
+    const auth = llmAuthFromConfig({ provider: "deepseek", providers: { deepseek: { baseUrl: url, apiKey: "egress-token" } } });
+    assert.strictEqual(auth.customEndpoint?.baseUrl, url);
+    assert.strictEqual(auth.customEndpoint?.apiKey, "egress-token");
+  });
+
+  it("covers tailscale magicdns: x.ts.net resolving to 100.64/10 is accepted, public is refused", async () => {
+    const accepted = await resolveHttpHostGate("http://x.ts.net:8080/v1", { hasKey: true, resolver: async () => [{ address: "100.101.102.103", family: 4 }] });
+    assert.strictEqual(accepted.refusal, undefined);
+    assert.strictEqual(accepted.pin?.address, "100.101.102.103");
+    const refused = await resolveHttpHostGate("http://x.ts.net:8080/v1", { hasKey: true, resolver: publicResolver });
+    assert.match(refused.refusal ?? "", /base URL must use https/);
+  });
+
+  it("pins a name that resolves to an IPv6 ULA address, bracketing it and keeping the port", async () => {
+    const gate = await resolveHttpHostGate("http://gpu-box:11434/v1", { resolver: async () => [{ address: "fd00::1", family: 6 }] });
+    assert.strictEqual(gate.refusal, undefined, "a ULA address is private, so the gate accepts");
+    assert.deepStrictEqual(gate.pin, { hostname: "gpu-box", address: "fd00::1", port: "11434" });
+    assert.strictEqual(pinnedRequestUrl("http://gpu-box:11434/v1", gate.pin!), "http://[fd00::1]:11434/v1");
+  });
+
+  it("pins an IPv4 answer to the checked address, keeping the port", () => {
+    assert.strictEqual(pinnedRequestUrl("http://model:8000/v1/chat/completions", { address: "127.0.0.1" }), "http://127.0.0.1:8000/v1/chat/completions");
+  });
+
+  it("pins an IPv6 answer in bracketed form, keeping the port", () => {
+    // The input is a NAME, not the pinned form: a no-op rewrite cannot pass this.
+    assert.strictEqual(pinnedRequestUrl("http://gpu-box:11434/v1", { address: "fd00::1" }), "http://[fd00::1]:11434/v1");
   });
 });
 

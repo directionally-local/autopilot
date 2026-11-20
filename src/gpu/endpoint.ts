@@ -4,6 +4,8 @@
  * checked with GET <base>/models before anything is saved.
  */
 
+import { pinnedRequestUrl, resolveHttpHostGate, type HostResolver } from "../providers/resolve.js";
+
 export type EndpointError = "unreachable" | "unauthorized" | "http" | "not_openai" | "no_models";
 
 export type EndpointCheck = { ok: true; baseUrl: string; models: string[] } | { ok: false; error: EndpointError; message: string };
@@ -43,10 +45,21 @@ export function serverBaseUrl(address: string, port: string): string | undefined
 }
 
 /** GET <base>/models: reachable, accepted, OpenAI-shaped, with at least one model. */
-export async function checkModelsEndpoint(baseUrl: string, key?: string, fetchImpl: typeof fetch = fetch): Promise<EndpointCheck> {
+export async function checkModelsEndpoint(
+  baseUrl: string,
+  key?: string,
+  fetchImpl: typeof fetch = fetch,
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver,
+): Promise<EndpointCheck> {
+  // The gpu "own server" flow carries the key too: the same resolution gate
+  // refuses a public http address at setup, before the key is sent.
+  const gate = await resolveHttpHostGate(baseUrl, { hasKey: !!key, ...(resolver ? { resolver } : {}) });
+  if (gate.refusal) return { ok: false, error: "http", message: gate.refusal };
+  const modelsUrl = gate.pin ? pinnedRequestUrl(`${baseUrl}/models`, gate.pin) : `${baseUrl}/models`;
   let res: Response;
   try {
-    res = await fetchImpl(`${baseUrl}/models`, {
+    res = await fetchImpl(modelsUrl, {
       headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
       signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
     });

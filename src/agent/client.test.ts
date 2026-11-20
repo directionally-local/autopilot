@@ -364,3 +364,80 @@ describe("runKimi: OpenRouter HTTP errors", () => {
     assert.match(err.message, /Moonshot AI: context too long/);
   });
 });
+
+describe("runKimi: http resolution gate and pin (v2.2.0)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let requests: Request[] = [];
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    delete process.env.KIMIFLARE_BASE_URL;
+    delete process.env.KIMIFLARE_API_KEY;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(new Request(input, init));
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+  });
+  after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  beforeEach(() => {
+    requests = [];
+  });
+
+  const base: RunKimiOpts = {
+    customEndpoint: { baseUrl: "http://proxy:8080/v1", apiKey: "sk-secret-key" },
+    model: "m",
+    messages: [{ role: "user", content: "hi" }],
+  };
+  const drain = async (opts: Partial<RunKimiOpts>) => {
+    for await (const _ of runKimi({ ...base, ...opts })) {
+      /* drain */
+    }
+  };
+
+  it("refuses a name that resolves public before any request carries the key", async () => {
+    await assert.rejects(
+      () => drain({ hostResolver: async () => [{ address: "203.0.113.9", family: 4 }] }),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(requests.length, 0, "no request was sent, so the key never left");
+  });
+
+  it("refuses a mixed private+public answer", async () => {
+    await assert.rejects(
+      () => drain({ hostResolver: async () => [{ address: "192.168.1.9", family: 4 }, { address: "203.0.113.9", family: 4 }] }),
+      /base URL must use https/,
+    );
+    assert.strictEqual(requests.length, 0);
+  });
+
+  it("pins the connection to the address the check validated", async () => {
+    await drain({ hostResolver: async () => [{ address: "127.0.0.1", family: 4 }] });
+    const chat = requests.find((r) => r.url.endsWith("/chat/completions"));
+    assert.ok(chat, "the chat request was sent");
+    assert.strictEqual(chat.url, "http://127.0.0.1:8080/v1/chat/completions", "the request targets the checked address, not the name");
+    assert.strictEqual(new Headers(chat.headers).get("authorization"), "Bearer sk-secret-key");
+  });
+
+  it("pins an IPv6 answer in bracketed form", async () => {
+    await drain({
+      customEndpoint: { baseUrl: "http://gpu-box:11434/v1", apiKey: "sk-secret-key" },
+      hostResolver: async () => [{ address: "fd00::1", family: 6 }],
+    });
+    const chat = requests.find((r) => r.url.endsWith("/chat/completions"));
+    assert.ok(chat, "the chat request was sent");
+    assert.strictEqual(chat.url, "http://[fd00::1]:11434/v1/chat/completions", "the request targets the bracketed checked address, not the name");
+  });
+
+  it("lets the request proceed when resolution fails (the request's own failure)", async () => {
+    await drain({
+      hostResolver: async () => {
+        throw Object.assign(new Error("getaddrinfo ENOTFOUND proxy"), { code: "ENOTFOUND" });
+      },
+    });
+    const chat = requests.find((r) => r.url.endsWith("/chat/completions"));
+    assert.ok(chat, "the request was attempted");
+    assert.strictEqual(chat.url, "http://proxy:8080/v1/chat/completions", "no pin without a validated address");
+  });
+});

@@ -15,7 +15,6 @@ coverage/
 .kimiflare/
 .autopilot/
 changelog-*.png
-.agents/
 
 # raw eval output (absolute paths, traces); commit evals/results/*.json summaries only
 evals/results/run-*/

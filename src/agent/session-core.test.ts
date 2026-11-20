@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { configPath, loadConfig } from "../config.js";
 import { assembleTurn, describeSubagentGuidance, lastUserText, resolveTurnPolicy } from "./session-core.js";
-import { resetPrivateHttpWarnings, setPrivateHttpWarningHandler } from "../providers/resolve.js";
+import { resetPrivateHttpWarnings, resolveHttpHostGate, setPrivateHttpWarningHandler } from "../providers/resolve.js";
 import type { ToolSpec } from "../tools/registry.js";
 
 const tool = (name: string): ToolSpec => ({ name, description: name, parameters: { type: "object" }, needsPermission: false, run: async () => "" });
@@ -99,7 +99,7 @@ describe("assembleTurn", () => {
   });
 
   for (const hostname of ["192.168.1.5", "gpu-box"]) {
-    it(`delivers exactly one warning for saved keyed ${hostname}: loadConfig → resolveTurnPolicy → assembleTurn`, async () => {
+    it(`delivers exactly one warning for saved keyed ${hostname}: loadConfig → resolveTurnPolicy → assembleTurn → first request`, async () => {
       const root = await mkdtemp(join(tmpdir(), "ap-private-http-lifecycle-"));
       const savedEnv = { ...process.env };
       resetPrivateHttpWarnings();
@@ -125,12 +125,17 @@ describe("assembleTurn", () => {
           host: { model: "m", messages: [], executor: {} as never, cwd: root, signal: new AbortController().signal, callbacks: { askPermission: async () => "allow" as const, onWarning: (m: string) => warnings.push(m) } },
         };
         assembleTurn(turn);
-        assert.strictEqual(warnings.length, 1, "first turn delivers the pending warning");
+        // A literal private host is classified at resolution; a name is resolved
+        // at request time (the round-7 gate), so the first request delivers it.
+        const resolver = async () => [{ address: "192.168.1.9", family: 4 }];
+        await resolveHttpHostGate(`http://${hostname}/v1`, { hasKey: true, resolver });
+        assert.strictEqual(warnings.length, 1, "the first request delivers the pending warning");
         assert.ok(warnings[0]!.includes(hostname));
         assert.match(warnings[0]!, /API key over cleartext http/);
         const nextPolicy = await resolveTurnPolicy({ cfg, prompt: "hi again", tools: TOOLS });
         assembleTurn({ ...turn, policy: nextPolicy });
-        assert.strictEqual(warnings.length, 1, "later policy and turn resolution do not repeat delivery");
+        await resolveHttpHostGate(`http://${hostname}/v1`, { hasKey: true, resolver });
+        assert.strictEqual(warnings.length, 1, "later policy, turn and request resolution do not repeat delivery");
       } finally {
         setPrivateHttpWarningHandler(undefined);
         resetPrivateHttpWarnings();
