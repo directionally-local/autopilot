@@ -1,7 +1,47 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { stripHistoricalReasoning } from "./strip-reasoning.js";
+import { createReasoningStripGate, stripHistoricalReasoning } from "./strip-reasoning.js";
+import { PROVIDER_PRESETS } from "../providers/presets.js";
 import type { ChatMessage } from "./messages.js";
+
+describe("STRIP_REASONING env gate", () => {
+  it("warns once and ignores STRIP_REASONING=1 on echoing presets without refusing", () => {
+    const gate = createReasoningStripGate();
+    const warnings: string[] = [];
+    const messages: ChatMessage[] = [{
+      role: "assistant", content: "narration", reasoning_content: "required echo",
+      tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }],
+    }];
+    for (const preset of [PROVIDER_PRESETS["directionally-local"], PROVIDER_PRESETS.deepseek]) {
+      for (let request = 0; request < 2; request++) {
+        const strip = gate(preset.compat, (w) => warnings.push(w), { STRIP_REASONING: "1" });
+        assert.strictEqual(strip, false, "ignore the opt-in, do not refuse or strip");
+        const sent = strip ? stripHistoricalReasoning(messages, { keepLast: 0 }) : messages;
+        assert.strictEqual(sent, messages, "ignoring the env var leaves history untouched");
+        assert.strictEqual(sent[0]!.reasoning_content, "required echo");
+        assert.strictEqual(sent[0]!.content, "narration");
+      }
+    }
+    assert.strictEqual(warnings.length, 1);
+    assert.match(warnings[0]!, /STRIP_REASONING=1.*ignored.*requires reasoning_content/);
+  });
+
+  it("honors the opt-in on non-echoing presets and supports both prefixed spellings", () => {
+    const gate = createReasoningStripGate();
+    const warnings: string[] = [];
+    const warn = (w: string) => warnings.push(w);
+    for (const env of [{ STRIP_REASONING: "1" }, { AUTOPILOT_STRIP_REASONING: "1" }, { KIMIFLARE_STRIP_REASONING: "1" }]) {
+      assert.strictEqual(gate(PROVIDER_PRESETS.openai.compat, warn, env), true);
+      assert.strictEqual(gate(PROVIDER_PRESETS.deepseek.compat, warn, env), false);
+    }
+    assert.strictEqual(warnings.length, 1);
+    assert.strictEqual(gate(PROVIDER_PRESETS.openai.compat, warn, {}), false);
+    assert.strictEqual(gate(PROVIDER_PRESETS.deepseek.compat, warn, { STRIP_REASONING: "0" }), false);
+    assert.strictEqual(gate(PROVIDER_PRESETS.openai.compat, warn, {
+      AUTOPILOT_STRIP_REASONING: "0", KIMIFLARE_STRIP_REASONING: "1", STRIP_REASONING: "1",
+    }), false, "current prefix retains precedence");
+  });
+});
 
 describe("stripHistoricalReasoning", () => {
   it("leaves system and user messages untouched", () => {
@@ -31,7 +71,7 @@ describe("stripHistoricalReasoning", () => {
       },
     ];
     const out = stripHistoricalReasoning(messages);
-    assert.strictEqual(out[0]!.reasoning_content, undefined);
+    assert.strictEqual(out[0]!.reasoning_content, "old reasoning");
     assert.strictEqual(out[0]!.content, "");
     assert.strictEqual(out[2]!.reasoning_content, "new reasoning");
     assert.strictEqual(out[2]!.content, "new");
@@ -88,8 +128,24 @@ describe("stripHistoricalReasoning", () => {
     ];
     const out = stripHistoricalReasoning(messages, { keepLast: 0 });
     assert.strictEqual(out[0]!.content, "");
-    assert.strictEqual(out[0]!.reasoning_content, undefined);
+    assert.strictEqual(out[0]!.reasoning_content, "plan");
     assert.strictEqual(out[0]!.tool_calls!.length, 2);
+  });
+
+  it("keeps reasoning_content on tool-call turns with keepLast=0, strips narration text", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: "Let me check",
+        reasoning_content: "plan",
+        tool_calls: [
+          { id: "tc1", type: "function", function: { name: "read", arguments: "{}" } },
+        ],
+      },
+    ];
+    const out = stripHistoricalReasoning(messages, { keepLast: 0 });
+    assert.strictEqual(out[0]!.reasoning_content, "plan");
+    assert.strictEqual(out[0]!.content, "");
   });
 
   it("handles array content correctly", () => {
@@ -110,7 +166,7 @@ describe("stripHistoricalReasoning", () => {
     const content = out[0]!.content as Array<{ type: string; text?: string }>;
     assert.strictEqual(content[0]!.text, "");
     assert.strictEqual(content[1]!.type, "image_url");
-    assert.strictEqual(out[0]!.reasoning_content, undefined);
+    assert.strictEqual(out[0]!.reasoning_content, "plan");
   });
 
   it("does not modify tool messages", () => {
