@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.28.1](https://github.com/directionally-local/autopilot/compare/v3.28.0...v3.28.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **free:** default the free tier to DeepSeek V4.1 Flash; switch GPT-6 on gpt_limit ([#1281](https://github.com/directionally-local/autopilot/issues/1281)) ([9c326f7](https://github.com/directionally-local/autopilot/commit/9c326f71238a3df7dd36ace20cec46de06be89ea))
+
 ## [3.28.0](https://github.com/directionally-local/autopilot/compare/v3.27.0...v3.28.0) (2026-11-20)
 
 
