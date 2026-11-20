@@ -38,6 +38,7 @@ export const PROVIDER_CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> =
   { id: "fireworks", hint: "open models with a Fireworks key" },
   { id: "deepinfra", hint: "open models with a DeepInfra key" },
   { id: "vercel", hint: "many vendors with one Vercel AI Gateway key" },
+  { id: "llmtr", hint: "many vendors with one LLMTR key, some models hosted in Turkey" },
   { id: "cloudflare", hint: "Workers AI with your Cloudflare account" },
   { id: "azure", hint: "your Azure OpenAI resource and deployments" },
   { id: "deepseek", hint: "DeepSeek API key" },

@@ -37,6 +37,7 @@ export const PROVIDER_IDS = [
   "fireworks",
   "deepinfra",
   "vercel",
+  "llmtr",
   "cloudflare",
   "azure",
   "chatgpt",
@@ -473,6 +474,23 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     catalog: "models.dev",
     modelsDevId: "vercel",
     compat: { ...OPENAI_COMPAT, reasoningEcho: { content: true, details: false } },
+    capabilities: NO_OPENROUTER_FEATURES,
+  },
+  llmtr: {
+    id: "llmtr",
+    name: "LLMTR",
+    // OpenAI-compatible gateway: `llmtr/` models are hosted in Turkey, other
+    // `vendor/model` ids are routed to their vendors. Not on models.dev, so
+    // the model list comes from the gateway's /v1/models.
+    baseUrl: "https://llmtr.com/v1",
+    apiKeyEnv: ["LLMTR_API_KEY"],
+    keyRequired: true,
+    keysUrl: "https://llmtr.com/dashboard/keys",
+    defaultModel: "llmtr/qwen3-8-27b",
+    plumbingModel: "llmtr/qwen3-5-4b",
+    embedding: null,
+    catalog: "openai-models",
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEcho: { content: true, details: false } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   cloudflare: {

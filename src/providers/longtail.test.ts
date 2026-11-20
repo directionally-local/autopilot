@@ -34,7 +34,7 @@ describe("Mistral tool-call ids", () => {
 
 describe("long-tail presets", () => {
   const originalFetch = globalThis.fetch;
-  const ENV = ["CLOUDFLARE_ACCOUNT_ID", "CF_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN", "AUTOPILOT_PROVIDER", "CEREBRAS_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY"];
+  const ENV = ["CLOUDFLARE_ACCOUNT_ID", "CF_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN", "AUTOPILOT_PROVIDER", "CEREBRAS_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY", "LLMTR_API_KEY"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
   const seen: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
 
@@ -83,6 +83,22 @@ describe("long-tail presets", () => {
       assert.strictEqual(req.body.model, PROVIDER_PRESETS[id].defaultModel);
     });
   }
+
+  it("llmtr sends its default model to https://llmtr.com/v1/chat/completions", async () => {
+    // LLMTR is not on models.dev; its models are discovered from /v1/models.
+    registerProviderModels("llmtr", []);
+    const auth = llmAuthFromConfig({ provider: "llmtr", providers: { llmtr: { apiKey: "test-key-123" } } });
+    seen.length = 0;
+    for await (const _ of runKimi({ ...auth, model: PROVIDER_PRESETS.llmtr.defaultModel!, messages: [{ role: "user", content: "hi" }] })) {
+      /* drain */
+    }
+    const req = seen[0]!;
+    assert.strictEqual(req.url, "https://llmtr.com/v1/chat/completions");
+    assert.strictEqual(req.headers.get("authorization"), "Bearer test-key-123");
+    assert.strictEqual(req.body.model, "llmtr/qwen3-8-27b");
+    assert.strictEqual(PROVIDER_PRESETS.llmtr.keysUrl, "https://llmtr.com/dashboard/keys");
+    assert.strictEqual(PROVIDER_PRESETS.llmtr.catalog, "openai-models");
+  });
 
   it("Cerebras gets its integration header", async () => {
     assert.strictEqual((await send("cerebras")).headers.get("x-cerebras-3rd-party-integration"), "autopilot");

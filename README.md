@@ -150,6 +150,7 @@ To continue a Claude Code conversation (say it stopped on a usage limit), run `a
 | Mistral | `mistral` | `MISTRAL_API_KEY` | tool-call ids adapted to Mistral's format; `mistral-embed` |
 | Groq · Cerebras · Together AI · Fireworks AI · DeepInfra | `groq` · `cerebras` · `together` · `fireworks` · `deepinfra` | `GROQ_API_KEY` · `CEREBRAS_API_KEY` · `TOGETHER_API_KEY` · `FIREWORKS_API_KEY` · `DEEPINFRA_API_KEY` | fast / open-model hosts |
 | Vercel AI Gateway | `vercel` | `AI_GATEWAY_API_KEY` | many vendors with one key |
+| [LLMTR](https://llmtr.com) | `llmtr` | `LLMTR_API_KEY` | many vendors with one key; `llmtr/` models are hosted in Turkey; models are discovered from `/v1/models` |
 | Cloudflare Workers AI | `cloudflare` | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (or `autopilot auth cloudflare --account-id …`) | Cloudflare-era kimiflare configs reuse their credentials, and memory stays on `bge-base-en-v1.5`. For **AI Gateway**, use its OpenAI-compatible URL as a `custom` endpoint |
 | Azure OpenAI | `azure` | `AZURE_API_KEY` + `AZURE_RESOURCE_NAME` (or `autopilot auth azure --resource <name>`) | v1 API over Responses; model ids are your deployment names, discovered from the resource. Entra ID sign-in isn't supported yet — use a key |
 | Ollama (local) | `ollama` | none | installed models are discovered; `providers.ollama.baseUrl` for another host |
