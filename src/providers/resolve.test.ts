@@ -106,5 +106,6 @@ describe("presets", () => {
 describe("detectEnvProviders", () => {
   it("lists providers whose key is in the environment", () => {
     assert.deepStrictEqual(detectEnvProviders({ OPENAI_API_KEY: "x", ZHIPU_API_KEY: "y" }), ["openai", "zai"]);
+    assert.deepStrictEqual(detectEnvProviders({ LLMTR_API_KEY: "x" }), ["llmtr"]);
   });
 });
