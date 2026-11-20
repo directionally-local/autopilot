@@ -44,15 +44,15 @@ export interface DlFreeModel {
   reasoning: boolean;
 }
 
-/** Every model the free tier serves. GPT-6 Luna is the default; DeepSeek is its fallback. */
+/** Every model the free tier serves. DeepSeek V4.1 Flash is the default; GPT-6 models are listed and can be picked. */
 export const DL_FREE_MODELS: readonly DlFreeModel[] = [
+  { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", pool: "luna", family: "deepseek", contextWindow: 1_048_576, maxOutputTokens: 65_536, vision: false, reasoning: true },
   { id: "gpt-6-luna", name: "GPT-6 Luna", pool: "luna", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
   { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", pool: "sol", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
   { id: "gpt-6-astra", name: "GPT-6 Astra", pool: "astra", family: "gpt6", contextWindow: 1_050_000, maxOutputTokens: 128_000, vision: true, reasoning: true },
-  { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", pool: "luna", family: "deepseek", contextWindow: 1_048_576, maxOutputTokens: 65_536, vision: false, reasoning: true },
 ];
 
-/** The default free model: GPT-6 Luna. */
+/** The default free model: DeepSeek V4.1 Flash. */
 export const DL_FREE_MODEL = DL_FREE_DEFAULT_MODEL;
 /** The weekly grant per person, for picker copy and as a fallback before /v1/me has been read. */
 export const DL_FREE_WEEKLY_TOKENS = 50_000_000;
@@ -88,7 +88,7 @@ export function formatTokens(n: number): string {
 
 /** One free model as a catalog entry, priced at $0 (it comes out of the weekly allowance). */
 export function dlFreeModelEntry(id: string = DL_FREE_MODEL): ModelEntry {
-  const model = DL_FREE_MODELS.find((entry) => entry.id === id) ?? DL_FREE_MODELS[0]!;
+  const model = DL_FREE_MODELS.find((entry) => entry.id === id) ?? DL_FREE_MODELS.find((entry) => entry.id === DL_FREE_MODEL)!;
   return {
     id: model.id,
     name: `${model.name} (free)`,
@@ -115,7 +115,7 @@ export function dlNotFreeLine(what: string): string {
 
 /** The picker's one-line hint. */
 export function dlPickerHint(): string {
-  return "free to try — GPT-6 Luna + DeepSeek, sign in with GitHub";
+  return "free to try — DeepSeek V4.1 Flash, sign in with GitHub";
 }
 
 /** The next Monday 00:00 UTC after `now`: when the service's weeks end. */
@@ -1535,37 +1535,94 @@ export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnow
   return `${formatTokens(Math.max(0, pool.remaining))} of ${formatTokens(pool.tokensPerWeek)} left this week`;
 }
 
+/** Said once when GPT-6 is paused on the free tier and the session moves to DeepSeek V4.1 Flash. */
+export const DL_GPT6_PAUSED_LINE = "GPT-6 isn't available on the free tier right now; switched to DeepSeek V4.1 Flash.";
+
+/** True when /v1/me says GPT-6's weekly budget is $0: GPT-6 is paused on the free tier. */
+export function dlGpt6Paused(me: Pick<DlMe, "budgets"> | null | undefined): boolean {
+  return me?.budgets?.gpt6?.usdPerWeek === 0;
+}
+
+/** True for a free-tier GPT-6 model id. */
+export function isDlGpt6Model(id: string | undefined): boolean {
+  return !!id && DL_FREE_MODELS.some((entry) => entry.id === id && entry.family === "gpt6");
+}
+
+/** Said once when a gpt_limit with reason "security" moves the session to DeepSeek V4.1 Flash. */
+export const DL_GPT6_SECURITY_LINE = "GPT-6 isn't available for security work on the free tier; switched to DeepSeek V4.1 Flash.";
+
+const gpt6LinesShown = new Set<string>();
+/** The GPT-6 switch line the first time it is asked for in this process; undefined after. */
+export function takeDlGpt6PausedLine(line: string = DL_GPT6_PAUSED_LINE): string | undefined {
+  if (gpt6LinesShown.has(line)) return undefined;
+  gpt6LinesShown.add(line);
+  return line;
+}
+
 /**
- * The free model to run this session on when the saved one has nothing left:
- * its pool is empty this week (or the service no longer offers it) while
- * GPT-6 Luna's isn't. Returns the config for this session and a one-line
- * notice, and records the fallback so saving the config keeps the saved
- * model for later sessions. Null when the saved model is fine, isn't a free
- * model, or /v1/me didn't say enough to tell.
+ * The free model to run this session on when the saved one can't run: GPT-6
+ * is paused on the free tier (/v1/me gives GPT-6 a $0 budget) and the saved
+ * model is a GPT-6 one, or its pool is empty this week (or the service no
+ * longer offers it) while the default's isn't. Returns the config for this
+ * session and a one-line notice (none when the paused line was already said),
+ * and records the fallback so saving the config keeps the saved model for
+ * later sessions. Null when the saved model is fine, isn't a free model, or
+ * /v1/me didn't say enough to tell.
  */
 export function freeModelFallback<T extends { model?: string }>(
   cfg: T,
-  me: Pick<DlMe, "pools" | "models" | "topupTokensLeft"> | null,
-): { cfg: T; notice: string } | null {
+  me: Pick<DlMe, "pools" | "models" | "topupTokensLeft" | "budgets"> | null,
+): { cfg: T; notice?: string } | null {
   const saved = cfg.model;
   const model = DL_FREE_MODELS.find((entry) => entry.id === saved);
-  const luna = DL_FREE_MODELS.find((entry) => entry.id === DL_FREE_MODEL)!;
-  if (!me || !saved || !model || model.pool === luna.pool) return null;
+  const fallback = DL_FREE_MODELS.find((entry) => entry.id === DL_FREE_MODEL)!;
+  if (!me || !saved || !model || model.id === fallback.id) return null;
+  if (model.family === "gpt6" && dlGpt6Paused(me)) {
+    setSessionModelFallback({ provider: DL_PROVIDER_ID, saved, used: fallback.id });
+    const notice = takeDlGpt6PausedLine();
+    return { cfg: { ...cfg, model: fallback.id }, ...(notice ? { notice } : {}) };
+  }
+  if (model.pool === fallback.pool) return null;
   // Bought tokens cover an empty pool.
   if ((me.topupTokensLeft ?? 0) > 0) return null;
   const pool = me.pools?.[model.pool];
   const notOffered = Array.isArray(me.models) && me.models.length > 0 && !me.models.includes(saved);
   const empty = !!pool && pool.remaining <= 0;
   if (!notOffered && !empty) return null;
-  // Nothing gained when Luna has nothing left either: the service's own limit message says why.
-  const lunaPool = me.pools?.[luna.pool];
-  if (lunaPool && lunaPool.remaining <= 0) return null;
-  setSessionModelFallback({ provider: DL_PROVIDER_ID, saved, used: luna.id });
+  // Nothing gained when the default has nothing left either: the service's own limit message says why.
+  const fallbackPool = me.pools?.[fallback.pool];
+  if (fallbackPool && fallbackPool.remaining <= 0) return null;
+  setSessionModelFallback({ provider: DL_PROVIDER_ID, saved, used: fallback.id });
   const why = empty ? `has no free tokens left this week` : `isn't available on your account`;
   return {
-    cfg: { ...cfg, model: luna.id },
-    notice: `${model.name} ${why}, so this session runs on ${luna.name}. ${model.name} stays your saved model for later sessions.`,
+    cfg: { ...cfg, model: fallback.id },
+    notice: `${model.name} ${why}, so this session runs on ${fallback.name}. ${model.name} stays your saved model for later sessions.`,
   };
+}
+
+/**
+ * The GPT-6 limit (402 gpt_limit) on a free-tier GPT-6 model: switch the
+ * session to the service's alternative and send the blocked turn again, once.
+ * Returns the model to switch to and the line to show (only the first time
+ * in this process), or null when the turn should get the usual limit screen:
+ * not the free tier (own-key providers never get here), not a GPT-6 model,
+ * already on the alternative, or this turn was itself the retry (no loop).
+ * The same applies whatever the reason (a $0 GPT-6 budget, or "security").
+ */
+export function dlGptLimitAutoSwitch(o: {
+  provider: string | undefined;
+  model: string | undefined;
+  code: string | undefined;
+  alternative: string | undefined;
+  /** The service's reason for the limit ("security": GPT-6 isn't offered for security work). */
+  reason?: string | undefined;
+  retried: boolean;
+}): { model: string; notice?: string } | null {
+  if (o.provider !== DL_PROVIDER_ID || o.code !== "gpt_limit" || o.retried) return null;
+  const alternative = o.alternative && DL_FREE_MODELS.some((entry) => entry.id === o.alternative) ? o.alternative : DL_DEEPSEEK_MODEL;
+  if (!isDlGpt6Model(o.model) || o.model === alternative) return null;
+  const notice = takeDlGpt6PausedLine(o.reason === "security" ? DL_GPT6_SECURITY_LINE : DL_GPT6_PAUSED_LINE);
+  return { model: alternative, ...(notice ? { notice } : {}) };
 }
 
 /**
@@ -1621,6 +1678,7 @@ export function quotaNoticeFromHeaders(headers: Headers, opts: { weeklyTokens?: 
 export function resetDlNoticeState(): void {
   noticeShownFor = null;
   fallbackShown = false;
+  gpt6LinesShown.clear();
   lastMe = null;
   lastQuota = null;
   knownWeeklyTokens = undefined;

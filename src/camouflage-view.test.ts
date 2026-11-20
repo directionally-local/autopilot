@@ -185,6 +185,37 @@ describe("modelOptions", () => {
   });
 });
 
+describe("modelOptions while GPT-6 is paused on the free tier", () => {
+  it("still lists GPT-6 models, marked (paused), and leaves DeepSeek active", () => {
+    const me = normalizeDlMe({
+      login: "octo",
+      allowance: { tokensPerWeek: 50_000_000, usedThisWeek: 0, remaining: 50_000_000, resetsAt: "2026-11-23T00:00:00.000Z" },
+      budgets: { gpt6: { usdPerWeek: 0, spentUsd: 0 }, deepseek: { usdPerWeek: 2, spentUsd: 0 } },
+    })!;
+    setLastKnownDlMe(me);
+    const models = dlFreeModelEntries();
+    registerProviderModels(DL_PROVIDER_ID, models);
+    try {
+      const opts = modelOptions(models, "deepseek/deepseek-v4.1-flash-1017");
+      for (const id of ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]) {
+        const row = opts.find((o) => o.value === id)!;
+        assert.ok(row, `${id} is still listed`);
+        assert.equal(row.description, "(paused)");
+        assert.equal(row.state, "off");
+      }
+      const deepseek = opts.find((o) => o.value === "deepseek/deepseek-v4.1-flash-1017")!;
+      assert.equal(deepseek.state, undefined);
+      assert.equal(deepseek.description, undefined);
+      // A GPT-6 budget above $0: nothing is marked.
+      setLastKnownDlMe(normalizeDlMe({ ...me, budgets: { gpt6: { usdPerWeek: 2, spentUsd: 0 }, deepseek: { usdPerWeek: 2, spentUsd: 0 } } })!);
+      assert.equal(modelOptions(models, "gpt-6-luna").find((o) => o.value === "gpt-6-luna")!.description, undefined);
+    } finally {
+      setLastKnownDlMe(null);
+      registerProviderModels("openrouter", []);
+    }
+  });
+});
+
 describe("helpOptions", () => {
   it("lists the Ink help pages as sections, with custom commands last", () => {
     const opts = helpOptions([{ name: "ship", description: "Ship it" }]);

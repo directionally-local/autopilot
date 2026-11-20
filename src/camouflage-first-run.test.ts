@@ -78,7 +78,7 @@ describe("first run: one question", () => {
     assert.deepStrictEqual(
       firstRunChoices().map((c) => `${c.label} · ${c.description}`),
       [
-        "Free — sign in with GitHub · GPT-6 Luna + DeepSeek, free to try, no credit card to start",
+        "Free — sign in with GitHub · DeepSeek V4.1 Flash, free to try, no credit card to start",
         "Use my own API key · OpenRouter, Anthropic, OpenAI and more",
         "Use your own GPUs · a private model on this machine, a server of yours, or your vLLM",
       ],

@@ -5,8 +5,8 @@
 
 export const DL_FREE_DEFAULT_URL = "https://free.directionallylocal.com";
 
-/** The free tier's default model: GPT-6 Luna. Kept here so presets.ts can use it without a cycle. */
-export const DL_FREE_DEFAULT_MODEL = "gpt-6-luna";
+/** The free tier's default model: DeepSeek V4.1 Flash (GPT-6 is paused on the free tier). Kept here so presets.ts can use it without a cycle. */
+export const DL_FREE_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 
 /** The service origin from AUTOPILOT_DL_FREE_URL or the default (no trailing slash, no /v1). */
 export function dlOrigin(env: NodeJS.ProcessEnv = process.env): string {

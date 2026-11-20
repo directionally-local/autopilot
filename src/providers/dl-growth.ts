@@ -239,7 +239,9 @@ export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & {
   }
   if (code === "trial_ended") return dlTrialEndedLine(d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens, { where: "cli", ...(d.offers ? { offers: d.offers } : {}) });
   if (code === "gpt_limit") {
-    return `${dlGptLimitTitle(d.resetsAt, o)} Run with \`-m ${typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL}\` to use it.`;
+    // A limit with a reason (e.g. "security"): the service's own sentence; else the allowance line.
+    const title = d.reason && typeof d.message === "string" && d.message.trim() ? d.message.trim() : dlGptLimitTitle(d.resetsAt, o);
+    return `${title} Run with \`-m ${typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL}\` to use it.`;
   }
   if (code === "free_tier_queued") {
     return `${dlQueuePlace(d.position, d.etaAt, o)} Each friend who starts using dl moves you up${link ? `: ${link}` : ""}. Start now: \`${DL_UPGRADE_COMMAND}\`, or your own key: \`autopilot connect\`.`;
@@ -375,7 +377,8 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 /** A screen the session shows: out of tokens, queued, or /upgrade. */
 export type DlScreen =
   | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan }
-  | { kind: "gpt"; resetsAt?: string; alternative: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
+  /** `message`: the service's own sentence when the limit has a reason (e.g. "security"), shown instead of the allowance title. */
+  | { kind: "gpt"; resetsAt?: string; alternative: string; reason?: string; message?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   /** A new account's one-time trial is used up (402 trial_ended): Pro or a top-up, no reset. */
   | { kind: "trial"; tokens?: number; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   | { kind: "queued"; position?: number; etaAt?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
@@ -411,7 +414,9 @@ export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallback
   }
   if (code === "gpt_limit") {
     const alternative = typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL;
-    return { kind: "gpt", alternative, ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...common };
+    // A limit with a reason (e.g. "security") is the service's to explain: show its sentence.
+    const message = d.reason && typeof d.message === "string" && d.message.trim() ? d.message.trim() : undefined;
+    return { kind: "gpt", alternative, ...(d.reason ? { reason: d.reason } : {}), ...(message ? { message } : {}), ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...common };
   }
   if (code === "free_tier_queued") return { kind: "queued", ...(d.position ? { position: d.position } : {}), ...(d.etaAt ? { etaAt: d.etaAt } : {}), ...common };
   return undefined;
@@ -426,7 +431,7 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
     screen.kind === "quota"
       ? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
       : screen.kind === "gpt"
-        ? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
+        ? screen.message ?? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
         : screen.kind === "trial"
         ? `${dlTrialEndedTitle(screen.tokens)} Keep going with ${screen.offers?.pro && screen.plan !== "pro" ? "dl Pro or a top-up" : "a top-up"}.`
         : screen.kind === "queued"

@@ -1,9 +1,14 @@
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert";
 import { FIRST_RUN_QUESTION, firstRunChoices } from "./connect.js";
 import {
   DL_DEEPSEEK_MODEL,
+  DL_FREE_MODEL,
+  DL_GPT6_PAUSED_LINE,
+  DL_GPT6_SECURITY_LINE,
   DL_GPT_LIMIT_HINT,
+  dlGptLimitAutoSwitch,
+  resetDlNoticeState,
   dlBudgetText,
   dlHeaderLine,
   dlModelAllowanceLine,
@@ -154,6 +159,74 @@ describe("402 gpt_limit", () => {
       dlHeadlessLine(e.code, e, { now: NOW, ...TZ }),
       `You've used this week's GPT-6 allowance (back Mon 09:00). DeepSeek V4.1 Flash still has free usage this week. Run with \`-m ${DL_DEEPSEEK_MODEL}\` to use it.`,
     );
+  });
+});
+
+describe("GPT-6 paused on the free tier: DeepSeek V4.1 Flash", () => {
+  beforeEach(() => resetDlNoticeState());
+  const base = { provider: "directionally-local", model: "gpt-6.1-sol", code: "gpt_limit", alternative: DL_DEEPSEEK_MODEL, retried: false };
+
+  it("is the free tier's default model", () => {
+    assert.strictEqual(DL_FREE_MODEL, DL_DEEPSEEK_MODEL);
+  });
+
+  it("switches a picked GPT-6 model to the alternative and retries, saying so once", () => {
+    assert.deepStrictEqual(dlGptLimitAutoSwitch(base), { model: DL_DEEPSEEK_MODEL, notice: DL_GPT6_PAUSED_LINE });
+    assert.strictEqual(DL_GPT6_PAUSED_LINE, "GPT-6 isn't available on the free tier right now; switched to DeepSeek V4.1 Flash.");
+    // Picked GPT-6 again later: switches again, without repeating the line.
+    assert.deepStrictEqual(dlGptLimitAutoSwitch({ ...base, model: "gpt-6-luna" }), { model: DL_DEEPSEEK_MODEL });
+  });
+
+  it("retries once: never on the retried turn, and never when already on the alternative", () => {
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, retried: true }), null);
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, model: DL_DEEPSEEK_MODEL }), null);
+  });
+
+  it("leaves own-key providers and other errors alone", () => {
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, provider: "openai" }), null);
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, provider: "openrouter", model: "gpt-6-luna" }), null);
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, code: "quota_exceeded" }), null);
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, model: "some/other-model" }), null);
+  });
+
+  it("falls back to DeepSeek when the alternative isn't a free model", () => {
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, alternative: undefined })?.model, DL_DEEPSEEK_MODEL);
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...base, alternative: "evil/model" })?.model, DL_DEEPSEEK_MODEL);
+  });
+});
+
+describe("402 gpt_limit with reason security", () => {
+  beforeEach(() => resetDlNoticeState());
+  const message = "GPT-6 isn't available for security work on the free tier. DeepSeek V4.1 Flash still works: switch with /model.";
+  const body = { error: { code: "gpt_limit", reason: "security", message, family: "gpt6", alternative: DL_DEEPSEEK_MODEL } };
+
+  it("shows the service's sentence on the screen and in headless runs, not the allowance line", async () => {
+    const e = parseDlError(body)!;
+    const screen = dlScreenFor(e.code, e, undefined, "free")!;
+    assert.strictEqual(screen.kind, "gpt");
+    let title = "";
+    const deps = {
+      now: () => NOW,
+      timeZone: TZ.timeZone,
+      say: () => {},
+      copy: () => true,
+      select: async (t: string) => {
+        title = t;
+        return null;
+      },
+    } as unknown as DlScreenDeps;
+    await runDlScreen(screen, deps);
+    assert.strictEqual(title, message);
+    assert.strictEqual(dlHeadlessLine(e.code, e, { now: NOW, ...TZ }), `${message} Run with \`-m ${DL_DEEPSEEK_MODEL}\` to use it.`);
+  });
+
+  it("auto-switches to the alternative and retries once, with its own line", () => {
+    const e = parseDlError(body)!;
+    const screen = dlScreenFor(e.code, e, undefined, "free")!;
+    assert.ok(screen.kind === "gpt");
+    const input = { provider: "directionally-local", model: "gpt-6-luna", code: e.code, alternative: screen.alternative, reason: screen.reason, retried: false };
+    assert.deepStrictEqual(dlGptLimitAutoSwitch(input), { model: DL_DEEPSEEK_MODEL, notice: DL_GPT6_SECURITY_LINE });
+    assert.strictEqual(dlGptLimitAutoSwitch({ ...input, retried: true }), null);
   });
 });
 

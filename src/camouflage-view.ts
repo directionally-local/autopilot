@@ -30,7 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlModelAllowanceLine, dlStartLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlGpt6Paused, dlModelAllowanceLine, dlStartLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, isDlGpt6Model, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
@@ -2994,16 +2994,20 @@ export function modelOptions(models: ModelEntry[], current: string): PickOption[
   const featuredIds = new Set(featured.map((m) => m.id));
   const me = activeProviderCatalog() === DL_PROVIDER_ID ? lastKnownDlMe() : null;
   const starter = me?.level === "starter";
+  const gpt6Paused = dlGpt6Paused(me);
   const row = (m: ModelEntry, section: string): PickOption => {
     // On the free tier, each model's own weekly allowance is the useful third column.
     const allowance = activeProviderCatalog() === DL_PROVIDER_ID ? dlModelAllowanceLine(m.id, me) : undefined;
     // A Starter account gets DeepSeek only: say so on the GPT-6 rows, and leave DeepSeek active.
     const locked = starter && m.id !== "deepseek/deepseek-v4.1-flash-1017";
+    // GPT-6 is paused on the free tier when /v1/me gives it a $0 budget: still listed, marked.
+    const paused = !locked && gpt6Paused && isDlGpt6Model(m.id);
     return {
       value: m.id,
       label: m.id,
       section,
       ...(locked ? { description: "locked on Starter — DeepSeek only", state: "off" as const } : {}),
+      ...(paused ? { description: "(paused)", state: "off" as const } : {}),
       columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing), ...(allowance ? [allowance] : [])],
       keywords: m.name ?? "",
     };
