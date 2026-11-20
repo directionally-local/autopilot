@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.28.0](https://github.com/directionally-local/autopilot/compare/v3.27.0...v3.28.0) (2026-11-20)
+
+
+### Features
+
+* **gpu:** ask "How will your team use it?" after the private model passes ([#1276](https://github.com/directionally-local/autopilot/issues/1276)) ([735b86f](https://github.com/directionally-local/autopilot/commit/735b86f38ae0b9f6d718c0f54bc3c75d2e5cc67d))
+* **gpu:** ask "Which coding agent?" after Terminal agent or Both ([#1277](https://github.com/directionally-local/autopilot/issues/1277)) ([4780362](https://github.com/directionally-local/autopilot/commit/4780362610f6be1ac5ec8c695006c81c76e9ce6b))
+
+
+### Bug Fixes
+
+* **jobs:** re-read the exit marker before reporting a finished job as unknown ([#1274](https://github.com/directionally-local/autopilot/issues/1274)) ([23b5eed](https://github.com/directionally-local/autopilot/commit/23b5eed5019dcaab99bcb88138871f5c60d483c4))
+
 ## [3.27.0](https://github.com/directionally-local/autopilot/compare/v3.26.0...v3.27.0) (2026-11-18)
 
 
