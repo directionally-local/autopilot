@@ -188,8 +188,8 @@ describe("Directionally Local free tier", () => {
       const p = getPreset("directionally-local");
       assert.strictEqual(p.name, "Directionally Local, free");
       assert.strictEqual(p.protocol ?? "openai-chat", "openai-chat");
-      assert.strictEqual(p.defaultModel, "gpt-6-luna");
-      assert.strictEqual(p.plumbingModel, "gpt-6-luna");
+      assert.strictEqual(p.defaultModel, "deepseek/deepseek-v4.1-flash-1017");
+      assert.strictEqual(p.plumbingModel, "deepseek/deepseek-v4.1-flash-1017");
       assert.strictEqual(p.catalog, "directionally-local");
       assert.strictEqual(p.keysUrl, undefined);
       assert.strictEqual(dlApiBase({ AUTOPILOT_DL_FREE_URL: "http://x:9/" }), "http://x:9/v1");
@@ -205,7 +205,7 @@ describe("Directionally Local free tier", () => {
 
     it("is first in the picker with the weekly allowance, and a sign-in (not a key) to connect", () => {
       assert.strictEqual(PROVIDER_CHOICES[0]?.id, "directionally-local");
-      assert.strictEqual(dlPickerHint(), "free to try — GPT-6 Luna + DeepSeek, sign in with GitHub");
+      assert.strictEqual(dlPickerHint(), "free to try — DeepSeek V4.1 Flash, sign in with GitHub");
       const rows = providerRows(null, { env: {} });
       assert.strictEqual(rows[0]?.id, "directionally-local");
       assert.deepStrictEqual(planConnect("directionally-local", null, {}), { kind: "directionally-local" });
@@ -262,7 +262,7 @@ describe("Directionally Local free tier", () => {
     it("says what sign-in collects, and that cancelling leaves it unconnected", () => {
       const before = dlSignInLines().split("\n");
       assert.deepStrictEqual(before, [
-        "Free to try: GPT-6 Luna + DeepSeek, no credit card to start. Sign in with GitHub.",
+        "Free to try: DeepSeek V4.1 Flash, no credit card to start. Sign in with GitHub.",
         DL_DISCLOSURE,
       ]);
       const code = { deviceCode: "d", userCode: "ABCD-1234", verificationUri: "u", verificationUriComplete: "https://x/device?code=ABCD-1234", intervalSec: 5, expiresInSec: 600 };
@@ -638,7 +638,7 @@ describe("Directionally Local free tier", () => {
       assert.strictEqual(describeDlError("below_bar", { message: "From the service." }), "From the service.");
       assert.match(describeDlError("below_bar")!, /contact@directionallylocal\.com/);
       assert.strictEqual(describeDlError("rate_limited", { retryAfter: 12 }), "Directionally Local is limiting how fast you send requests; try again in 12 seconds.");
-      assert.match(describeDlError("model_not_allowed")!, /serves gpt-6-luna, gpt-6\.1-sol, gpt-6-astra, deepseek\/deepseek-v4\.1-flash-1017/);
+      assert.match(describeDlError("model_not_allowed")!, /serves deepseek\/deepseek-v4\.1-flash-1017, gpt-6-luna, gpt-6\.1-sol, gpt-6-astra/);
       for (const code of ["quota_exceeded", "service_paused", "suspended", "not_invited", "cohort_full", "account_too_new"]) {
         assert.doesNotMatch(describeDlError(code, tokyo)!, /\/model or|autopilot connect|UTC/, `${code}: the switch is /provider, times are local`);
       }
@@ -718,7 +718,7 @@ describe("Directionally Local free tier", () => {
       [503, { error: { code: "paused", resets_at: "2026-11-09T00:00:00.000Z" } }, /Free tokens are paused for everyone until \w{3} \d\d:\d\d\./, 1],
       [503, { error: { code: "global_weekly_budget_reached", reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z", pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone until \w{3} \d\d:\d\d\. Your own key works now: \/provider$/, 1],
       [503, { error: { code: "global_total_budget_reached", reason: "total_budget", resetsAt: null, pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone\. Your own key works now: \/provider$/, 1],
-      [400, { error: { code: "model_not_allowed" } }, /serves gpt-6-luna, gpt-6\.1-sol, gpt-6-astra, deepseek\/deepseek-v4\.1-flash-1017/, 1],
+      [400, { error: { code: "model_not_allowed" } }, /serves deepseek\/deepseek-v4\.1-flash-1017, gpt-6-luna, gpt-6\.1-sol, gpt-6-astra/, 1],
     ];
     for (const [status, body, pattern, calls] of cases) {
       const code = (body as { error: { code: string } }).error.code;

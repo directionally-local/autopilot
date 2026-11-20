@@ -64,8 +64,9 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   // notice, the free tier's default-model note, the memory disclosure, the
   // setup-import checklist, and counts of what was indexed or cleaned up.
 
-  // On the free tier, a saved model with no tokens left this week runs this
-  // session on GPT-6 Luna (said once); the saved choice stays for later.
+  // On the free tier, a saved model that can't run (GPT-6 paused, or no tokens
+  // left this week) runs this session on DeepSeek V4.1 Flash (said once); the
+  // saved choice stays for later.
   if (!freeModelChecked && resolveActiveProvider(cfg).id === "directionally-local" && !process.env.KIMI_MODEL) {
     freeModelChecked = true;
     const startModel = cfg.model;
@@ -76,7 +77,8 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
         if (!fallback) return;
         // Someone who already picked a model this session keeps it.
         setCfg((current) => (current && current.model === startModel ? { ...current, model: fallback.cfg.model } : current));
-        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: fallback.notice }]);
+        const notice = fallback.notice;
+        if (notice) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
       })
       .catch(() => {
         // Non-fatal: the service's own limit message still applies.

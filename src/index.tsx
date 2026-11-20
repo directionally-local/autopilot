@@ -928,7 +928,7 @@ authCommand.addCommand(
       const { switchProvider } = await import("./providers/keys.js");
       const { openBrowser } = await import("./ui/app-helpers.js");
       try {
-        console.log(`Free: GPT-6 Luna + DeepSeek, ${dl.formatTokens(dl.DL_FREE_WEEKLY_TOKENS)} tokens a week, no card.`);
+        console.log(`Free: DeepSeek V4.1 Flash, ${dl.formatTokens(dl.DL_FREE_WEEKLY_TOKENS)} tokens a week, no card.`);
         console.log(dl.DL_DISCLOSURE);
         await dl.dlSignIn(
           (code) => {

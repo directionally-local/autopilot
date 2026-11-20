@@ -285,7 +285,7 @@ export function leavingFreeTierLine(active: ProviderId | undefined, to: Provider
  * a browser really opened (`opened`); otherwise the link is for any device.
  */
 export function dlSignInLines(code?: DlDeviceCode, opened = false): string {
-  if (!code) return `Free to try: GPT-6 Luna + DeepSeek, no credit card to start. Sign in with GitHub.\n${DL_DISCLOSURE}`;
+  if (!code) return `Free to try: DeepSeek V4.1 Flash, no credit card to start. Sign in with GitHub.\n${DL_DISCLOSURE}`;
   const where = opened
     ? `Opened your browser at ${code.verificationUriComplete} — sign in with GitHub and approve it`
     : `Open ${code.verificationUriComplete} in a browser on any device, sign in with GitHub and approve it`;
@@ -311,7 +311,7 @@ export function dlWaitingText(code: DlDeviceCode, opened = false): string {
 export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved.";
 
 /** The free tier's model and who serves it, under the first-run question (a plain fact, and their site). */
-export const DL_FREE_MODEL_LINE = "Free: GPT-6 Luna on OpenAI, with DeepSeek on Luminal as the backup";
+export const DL_FREE_MODEL_LINE = "Free: DeepSeek V4.1 Flash on Luminal";
 
 /** The first-run question's answers. */
 export type FirstRunChoice = "free" | "own-key" | "gpus";
@@ -336,7 +336,7 @@ export function firstRunChoices(status: DlFreeStatus = DL_STATUS_OPEN, timeZone?
   if (status.free === "paused") return [ownKey, OWN_GPUS_CHOICE, { value: "free", label: DL_FREE_PAUSED_LABEL, description: "not taking new sign-ins right now" }];
   const description = starter
     ? "Starter: DeepSeek only, 5M tokens a week"
-    : status.free === "waitlist" ? dlWaitlistText(status, timeZone) : "GPT-6 Luna + DeepSeek, free to try, no credit card to start";
+    : status.free === "waitlist" ? dlWaitlistText(status, timeZone) : "DeepSeek V4.1 Flash, free to try, no credit card to start";
   return [{ value: "free", label: "Free — sign in with GitHub", description }, ownKey, OWN_GPUS_CHOICE];
 }
 

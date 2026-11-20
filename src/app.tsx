@@ -48,7 +48,7 @@ import { setTerminalTitle } from "./ui/terminal-title.js";
 import { syncHerdrFromTui } from "./util/herdr.js";
 import { checkForUpdate, updateNotice } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, pickedModel, saveConfig, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, pickedModel, saveConfig, setSessionModelFallback, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, startMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { resolveTurnCodeMode } from "./agent/turn-code-mode.js";
@@ -128,7 +128,8 @@ import {
 } from "./ui/app-helpers.js";
 import { projectDirsToRead } from "./util/app-dirs.js";
 import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
-import { lastKnownDlMe } from "./providers/directionally-local.js";
+import { DL_PROVIDER_ID, dlGptLimitAutoSwitch, lastKnownDlMe } from "./providers/directionally-local.js";
+import { resolveActiveProvider } from "./providers/resolve.js";
 import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
 import type { FeedbackLine, FeedbackRequest } from "./feedback.js";
 import type { AccessRequestLine, AccessRequestOpen } from "./access-request.js";
@@ -1777,6 +1778,30 @@ function App({
               e instanceof DlApiError && failure.kind !== "aborted"
                 ? dlScreenFor(e.providerCode, (e.providerDetail ?? {}) as Parameters<typeof dlScreenFor>[1], lastKnownDlMe()?.referral?.link, lastKnownDlMe()?.plan)
                 : undefined;
+            // GPT-6 on the free tier hit gpt_limit: move this session to the alternative and send the turn again, once.
+            const autoSwitch =
+              screen?.kind === "gpt" && e instanceof DlApiError
+                ? dlGptLimitAutoSwitch({
+                    provider: resolveActiveProvider(cfg).id,
+                    model: cfg.model,
+                    code: e.providerCode,
+                    alternative: screen.alternative,
+                    reason: screen.reason,
+                    retried: retry,
+                  })
+                : null;
+            const blocked = lastTurnPromptRef.current;
+            if (autoSwitch && blocked) {
+              const saved = cfg.model;
+              // For this session only: the saved model stays for later sessions.
+              if (saved) setSessionModelFallback({ provider: DL_PROVIDER_ID, saved, used: autoSwitch.model });
+              setCfg((c) => (c ? { ...c, model: autoSwitch.model } : c));
+              const notice = autoSwitch.notice;
+              if (notice) setEvents((es) => [...es, { kind: "info", key: mkKey(), text: notice }]);
+              setDlRetryOn({ model: autoSwitch.model, ...blocked });
+              cleanupTurn();
+              return;
+            }
             if (screen) {
               dlScreenErrorRef.current = failure.kind === "error" ? failure.text : failure.kind === "api_error" ? failure.message : null;
               setDlScreen(screen);
