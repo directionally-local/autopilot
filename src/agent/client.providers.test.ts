@@ -220,7 +220,7 @@ describe("stripReasoningEcho", () => {
     }
   });
 
-  it("does not add reasoning_content to tool-call-free assistant turns", () => {
+  it("does not add reasoning_content to tool-call-free assistant turns (DL and deepseek compat)", () => {
     const messages: ChatMessage[] = [
       {
         role: "assistant",
@@ -228,8 +228,20 @@ describe("stripReasoningEcho", () => {
         reasoning_details: [{ type: "reasoning.text", text: "why" }],
       },
     ];
-    const out = stripReasoningEcho(messages, PROVIDER_PRESETS["directionally-local"].compat);
-    assert.strictEqual("reasoning_content" in out[0]!, false);
+    // deepseek has `details: false`, so the details-based synthesis path is live
+    // there; a text-only turn must still gain no field.
+    for (const id of ["directionally-local", "deepseek"] as const) {
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS[id].compat);
+      assert.strictEqual("reasoning_content" in out[0]!, false, `${id}: no synthesized field on a text-only turn`);
+    }
+  });
+
+  it("keeps a reasoning_content the message already carried on a text-only turn", () => {
+    const messages: ChatMessage[] = [{ role: "assistant", content: "just text", reasoning_content: "kept" }];
+    for (const id of ["directionally-local", "deepseek"] as const) {
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS[id].compat);
+      assert.strictEqual(out[0]!.reasoning_content, "kept", `${id}: existing content is preserved`);
+    }
   });
 
   it("does not synthesize reasoning_content for non-echoing providers (openai compat)", () => {
@@ -243,6 +255,59 @@ describe("stripReasoningEcho", () => {
     ];
     const out = stripReasoningEcho(messages, PROVIDER_PRESETS.openai.compat);
     assert.strictEqual("reasoning_content" in out[0]!, false);
+  });
+
+  const FLAGGED = ["directionally-local", "deepseek", "moonshot", "kimi-code", "zai"] as const;
+  const UNFLAGGED_ECHOING = ["openrouter", "custom", "together", "fireworks", "deepinfra", "vercel", "cloudflare"] as const;
+
+  it("flags exactly the presets whose thinking mode needs the synthesized fallback", () => {
+    const flagged = (Object.keys(PROVIDER_PRESETS) as ProviderId[])
+      .filter((id) => PROVIDER_PRESETS[id].compat.reasoningEcho.synthesizeFallback === true)
+      .sort();
+    assert.deepStrictEqual(flagged, [...FLAGGED].sort());
+  });
+
+  it("synthesizes the empty fallback on tool-call turns for every flagged preset", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.encrypted", data: "x" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+    ];
+    for (const id of FLAGGED) {
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS[id].compat);
+      assert.strictEqual(out[0]!.reasoning_content, "", `${id}: empty fallback synthesized`);
+    }
+  });
+
+  it("leaves unflagged echoing presets exactly as before: no reasoning_content injected", () => {
+    const shapes: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.text", text: "why" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.encrypted", data: "x" }],
+        tool_calls: [{ id: "c2", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c3", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+    ];
+    for (const id of UNFLAGGED_ECHOING) {
+      const out = stripReasoningEcho(shapes, PROVIDER_PRESETS[id].compat);
+      for (const m of out) {
+        assert.strictEqual("reasoning_content" in m, false, `${id}: no reasoning_content injected`);
+      }
+    }
   });
 });
 

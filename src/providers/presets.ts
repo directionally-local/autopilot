@@ -83,8 +83,13 @@ export interface ProviderCompat {
    * Reasoning fields to echo back on assistant history. DeepSeek and Kimi
    * thinking models require `reasoning_content` during tool loops; strict
    * APIs reject OpenRouter's `reasoning_details`.
+   *
+   * `synthesizeFallback` marks the providers whose thinking mode rejects a
+   * replayed tool-call turn that lacks `reasoning_content`: only they get the
+   * field derived from `reasoning_details` (or `""` when the details carry no
+   * text). Every other echoing preset replays exactly what it was given.
    */
-  reasoningEcho: { content: boolean; details: boolean };
+  reasoningEcho: { content: boolean; details: boolean; synthesizeFallback?: boolean };
 }
 
 /** OpenRouter-specific features, by whether a provider can support them. */
@@ -177,7 +182,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: null,
     catalog: "directionally-local",
     // Forwarded to OpenRouter as-is: reasoning comes back the OpenRouter way.
-    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEffort: false, reasoningEcho: { content: true, details: true } },
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", reasoningEffort: false, reasoningEcho: { content: true, details: true, synthesizeFallback: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   openrouter: {
@@ -254,7 +259,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: null,
     catalog: "models.dev",
     modelsDevId: "deepseek",
-    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false } },
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false, synthesizeFallback: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   moonshot: {
@@ -269,7 +274,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: null,
     catalog: "models.dev",
     modelsDevId: "moonshotai",
-    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false } },
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false, synthesizeFallback: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   anthropic: {
@@ -578,7 +583,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: null,
     catalog: "models.dev",
     modelsDevId: "kimi-code-plan-global",
-    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false } },
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false, synthesizeFallback: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   zai: {
@@ -593,7 +598,7 @@ export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
     embedding: { model: "embedding-3", dim: 2048 },
     catalog: "models.dev",
     modelsDevId: "zai",
-    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false } },
+    compat: { ...OPENAI_COMPAT, maxTokensField: "max_tokens", parallelToolCalls: false, reasoningEcho: { content: true, details: false, synthesizeFallback: true } },
     capabilities: NO_OPENROUTER_FEATURES,
   },
   "zai-coding": {

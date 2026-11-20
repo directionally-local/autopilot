@@ -1132,17 +1132,20 @@ function reasoningTextFromDetails(details: ReasoningDetail[] | undefined): strin
  * (DeepSeek, Kimi, Z.ai) or whose model declares it (models.dev `interleaved`).
  *
  * DeepSeek/Kimi thinking mode rejects a replayed tool-call turn that lacks
- * `reasoning_content`, so for echoing providers we synthesize it from
- * `reasoning_details` (or `""` when the details carry no text).
+ * `reasoning_content`, so the presets flagged `synthesizeFallback` get it
+ * derived from `reasoning_details` (or `""` when the details carry no text).
+ * The synthesis is confined to tool-call turns: a text-only turn gains no
+ * field, and an unflagged echoing preset replays exactly what it was given.
  */
 export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderCompat, modelEchoField?: string): ChatMessage[] {
   const keepContent = compat.reasoningEcho.content || modelEchoField === "reasoning_content";
   const keepDetails = compat.reasoningEcho.details;
+  const synthesize = compat.reasoningEcho.synthesizeFallback === true;
   const keepExtras = compat.toolCallExtras === true;
   return messages.map((m) => {
     if (m.role !== "assistant") return m;
     const hasExtras = !keepExtras && (m.tool_calls ?? []).some((tc) => tc.extra_content !== undefined);
-    const needsContent = keepContent && (m.tool_calls?.length ?? 0) > 0 && m.reasoning_content == null;
+    const needsContent = keepContent && synthesize && (m.tool_calls?.length ?? 0) > 0 && m.reasoning_content == null;
     if (
       !hasExtras &&
       !needsContent &&
@@ -1152,10 +1155,10 @@ export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderComp
       return m;
     }
     const { reasoning_content, reasoning_details, ...rest } = m;
-    const content = reasoning_content ?? (keepContent ? reasoningTextFromDetails(reasoning_details) : undefined);
+    const content = needsContent ? reasoningTextFromDetails(reasoning_details) : reasoning_content;
     return {
       ...rest,
-      ...(keepContent ? { reasoning_content: content ?? "" } : {}),
+      ...(keepContent && content !== undefined ? { reasoning_content: content } : {}),
       ...(keepDetails && reasoning_details !== undefined ? { reasoning_details } : {}),
       ...(hasExtras ? { tool_calls: m.tool_calls!.map(({ extra_content: _drop, ...tc }) => tc) } : {}),
     };
