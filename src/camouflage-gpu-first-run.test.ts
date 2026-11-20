@@ -10,8 +10,8 @@ import { FIRST_RUN_QUESTION, firstRunChoices } from "./providers/connect.js";
 import type { ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN } from "./providers/dl-status.js";
 import { probeGpus, realProbe, type DetectedGpu, type UnansweredTool } from "./gpu/detect.js";
-import { CHECKING_GPUS, gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, TEAM_USE_QUESTION, TEAM_USE_SUBTITLE, WHERE_QUESTION } from "./gpu/first-run.js";
-import { chatSetupOffered } from "./gpu/handoff.js";
+import { AGENT_QUESTION, AGENT_SUBTITLE, agentChoices, CHECKING_GPUS, gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, TEAM_USE_QUESTION, TEAM_USE_SUBTITLE, WHERE_QUESTION } from "./gpu/first-run.js";
+import { chatSetupOffered, offeredAgents } from "./gpu/handoff.js";
 import { sentGpuTelemetry, setGpuTelemetryTransportForTesting } from "./gpu/telemetry.js";
 import { fakeModelsServer } from "./gpu/fake-models-server.test-support.js";
 
@@ -612,6 +612,79 @@ describe("GPU-aware first run", () => {
         view.dispose();
       }
       assert.equal(chatSetupOffered(back()), true);
+    });
+  });
+
+  describe("then: Which coding agent?", () => {
+    const AGENTS = JSON.stringify([{ id: "claude-code", installed: true }, { id: "opencode", installed: false }, { id: "pi", installed: true }]);
+    const back = (extra: NodeJS.ProcessEnv = {}) => ({ ...dl(), DL_GPU_RESULT: "ok", DL_CHAT_SETUP: "1", DL_AGENTS: AGENTS, ...extra });
+
+    it("after Terminal agent: Autopilot first and the default; install first when the CLI is missing", async () => {
+      const { view, prompts, options } = await fakeView(["terminal", "autopilot"], { env: back() });
+      assert.equal(await view.teamUse(), "terminal");
+      assert.equal(prompts.length, 2);
+      assert.equal(prompts[1]?.payload.prompt, AGENT_QUESTION);
+      assert.equal(AGENT_QUESTION, "Which coding agent?");
+      assert.equal(prompts[1]?.payload.default, "autopilot");
+      assert.equal(prompts[1]?.payload.subtitle, AGENT_SUBTITLE);
+      assert.deepEqual(options(1), ["autopilot", "claude-code", "opencode", "pi"]);
+      assert.deepEqual((prompts[1]?.payload.options as Option[]).map((o) => o.label), ["Autopilot (recommended)", "Claude Code", "OpenCode (install first)", "Pi"]);
+      await assert.rejects(readFile(dl().DL_GPU_HANDOFF, "utf8"), "Autopilot: nothing asked of dl, the session opens");
+      view.dispose();
+    });
+
+    it("Terminal agent + another agent hands it to dl", async () => {
+      const { view } = await fakeView(["terminal", "claude-code"], { env: back() });
+      assert.equal(await view.teamUse(), "agent");
+      assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), { version: 1, action: "agent", agent: "claude-code" });
+      view.dispose();
+    });
+
+    it("an agent that isn't installed is handed over too (dl prints its install command)", async () => {
+      const { view } = await fakeView(["terminal", "opencode"], { env: back() });
+      assert.equal(await view.teamUse(), "agent");
+      assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), { version: 1, action: "agent", agent: "opencode" });
+      view.dispose();
+    });
+
+    it("Both + Pi: the chat request carries the agent; Both + Autopilot doesn't", async () => {
+      const pi = await fakeView(["both", "pi"], { env: back() });
+      assert.equal(await pi.view.teamUse(), "chat-up");
+      assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), { version: 1, action: "chat-up", use: "both", agent: "pi" });
+      pi.view.dispose();
+      resetGpuFirstRunForTesting();
+      const autopilot = await fakeView(["both", "autopilot"], { env: back() });
+      assert.equal(await autopilot.view.teamUse(), "chat-up");
+      assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), { version: 1, action: "chat-up", use: "both" });
+      autopilot.view.dispose();
+    });
+
+    it("Esc on the agent question is Autopilot; Browser chat and Esc on the first question aren't followed by it", async () => {
+      const esc = await fakeView(["terminal", null], { env: back() });
+      assert.equal(await esc.view.teamUse(), "terminal");
+      await assert.rejects(readFile(dl().DL_GPU_HANDOFF, "utf8"));
+      esc.view.dispose();
+      for (const first of ["browser", null]) {
+        resetGpuFirstRunForTesting();
+        const { view, prompts } = await fakeView([first, "pi"], { env: back() });
+        await view.teamUse();
+        assert.equal(prompts.length, 1, String(first));
+        view.dispose();
+      }
+    });
+
+    it("not asked without DL_AGENTS (an older dl) or with nothing usable in it", async () => {
+      for (const agents of [undefined, "", "not json", "[]", JSON.stringify([{ id: "codex", installed: true }, { id: "autopilot" }])]) {
+        resetGpuFirstRunForTesting();
+        const env: NodeJS.ProcessEnv = { ...back() };
+        if (agents === undefined) delete env.DL_AGENTS; else env.DL_AGENTS = agents;
+        const { view, prompts } = await fakeView(["terminal", "pi"], { env });
+        assert.equal(await view.teamUse(), "terminal", String(agents));
+        assert.equal(prompts.length, 1);
+        view.dispose();
+      }
+      assert.deepEqual(offeredAgents({ DL_AGENTS: JSON.stringify([{ id: "pi", installed: true }, { id: "pi", installed: false }, { id: "opencode" }]) }), [{ id: "pi", installed: true }, { id: "opencode", installed: false }]);
+      assert.deepEqual(agentChoices([]).map((c) => c.value), ["autopilot"]);
     });
   });
 

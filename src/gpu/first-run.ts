@@ -16,7 +16,7 @@
 
 import { readState, writeState, type StateFile } from "../util/state.js";
 import { vendorName, type DetectedGpu, type UnansweredTool } from "./detect.js";
-import { modelUpResult, type ModelUpError, type ModelUpFailure } from "./handoff.js";
+import { modelUpResult, type ModelUpError, type ModelUpFailure, type OfferedAgent, type OtherAgent } from "./handoff.js";
 import { sendGpuTelemetry } from "./telemetry.js";
 
 export const INSTALL_LINE = "curl -fsSL https://dl.new | sh";
@@ -228,6 +228,32 @@ export const TEAM_USE_CHOICES: ReadonlyArray<{ value: TeamUseChoice; label: stri
   { value: "terminal", label: "Terminal agent", description: "the coding agent here, on this model" },
   { value: "both", label: "Both", description: "the browser chat first, then the agent here" },
 ];
+
+// ── Then: "Which coding agent?" (after Terminal agent or Both, when dl offers others) ──
+
+export const AGENT_QUESTION = "Which coding agent?";
+
+export const AGENT_SUBTITLE = "All run on your private model · change it later with dl agent";
+
+export type AgentChoice = "autopilot" | OtherAgent;
+
+const AGENT_INFO: Readonly<Record<OtherAgent, { label: string; description: string }>> = {
+  "claude-code": { label: "Claude Code", description: "Anthropic's CLI, on your model through its Messages API" },
+  opencode: { label: "OpenCode", description: "open-source agent, on your model as an OpenAI-compatible provider" },
+  pi: { label: "Pi", description: "minimal open-source agent, on your model as an OpenAI-compatible provider" },
+};
+
+/** The menu: Autopilot first (recommended), then the agents dl offers; "(install first)" when the CLI is missing. */
+export function agentChoices(offered: readonly OfferedAgent[]): Array<{ value: AgentChoice; label: string; description: string }> {
+  return [
+    { value: "autopilot", label: "Autopilot (recommended)", description: "comes with dl, made for local models" },
+    ...offered.map((agent) => ({
+      value: agent.id,
+      label: agent.installed ? AGENT_INFO[agent.id].label : `${AGENT_INFO[agent.id].label} (install first)`,
+      description: agent.installed ? AGENT_INFO[agent.id].description : "not installed yet · dl shows the install command",
+    })),
+  ];
+}
 
 let teamUseAsked = false;
 
