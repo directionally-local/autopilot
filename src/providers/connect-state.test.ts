@@ -60,8 +60,8 @@ describe("buildConnectState", () => {
   });
 
   it("a saved per-provider base URL wins over the preset's", () => {
-    const state = buildConnectState({ id: "ollama", model: "m" }, { providers: { ollama: { baseUrl: "http://gpu-box:11434/v1" } } }, env);
-    assert.strictEqual(state.baseUrl, "http://gpu-box:11434/v1");
+    const state = buildConnectState({ id: "ollama", model: "m" }, { providers: { ollama: { baseUrl: "https://gpu-box:11434/v1" } } }, env);
+    assert.strictEqual(state.baseUrl, "https://gpu-box:11434/v1");
   });
 
   it("Anthropic sends the key in x-api-key, not as a Bearer token", () => {
@@ -86,8 +86,8 @@ describe("buildConnectState", () => {
     assert.strictEqual(state.baseUrl, "http://localhost:4000/v1");
     assert.strictEqual(state.apiKey, "k");
     assert.strictEqual(state.keyRequired, false);
-    const saved = buildConnectState({ id: "custom", model: "m" }, { provider: "custom", baseUrl: "http://gw:8000/v1" }, env);
-    assert.strictEqual(saved.baseUrl, "http://gw:8000/v1");
+    const saved = buildConnectState({ id: "custom", model: "m" }, { provider: "custom", baseUrl: "https://gw:8000/v1" }, env);
+    assert.strictEqual(saved.baseUrl, "https://gw:8000/v1");
     assert.strictEqual(saved.apiKey, null);
     assert.throws(() => buildConnectState({ id: "custom", model: "m" }, null, env), /no base URL/);
   });

@@ -11,7 +11,7 @@ import { checkOpenRouterKey, looksLikeOpenRouterKey } from "../models/openrouter
 import { checkRequestyKey } from "../models/requesty.js";
 import { getPreset, keyHeaders, PROVIDER_IDS, type ProviderId } from "./presets.js";
 import { anthropicHeaders } from "../agent/protocols/anthropic.js";
-import { resolveActiveProvider, resolveProviderKey, type ProviderSettings } from "./resolve.js";
+import { pinnedRequestUrl, resolveActiveProvider, resolveHttpHostGate, resolveProviderKey, type HostResolver, type ProviderSettings } from "./resolve.js";
 import { DL_FREE_MODELS } from "./directionally-local.js";
 
 export type ProviderKeyCheck =
@@ -34,6 +34,10 @@ export async function checkProviderKey(
   key: string | undefined,
   baseUrl?: string,
   fetchImpl: typeof fetch = fetch,
+  /** The caller's user-visible channel for the key-travel warning (the connect screens' say). */
+  onWarning?: (message: string) => void,
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver,
 ): Promise<ProviderKeyCheck> {
   const preset = getPreset(id);
   if (key && !looksLikeProviderKey(id, key)) {
@@ -106,12 +110,18 @@ export async function checkProviderKey(
   }
   const base = (baseUrl ?? preset.baseUrl)?.replace(/\/+$/, "");
   if (!base) return { ok: false, reason: "http", message: "No base URL configured." };
+  // The setup path verifies a key with a live GET /models; the resolution gate
+  // refuses a cleartext host that is (or resolves to) public before the request
+  // carries the key, and pins the connection to the address it checked.
+  const gate = await resolveHttpHostGate(base, { hasKey: !!key, ...(onWarning ? { onWarning } : {}), ...(resolver ? { resolver } : {}) });
+  if (gate.refusal) return { ok: false, reason: "http", message: gate.refusal };
+  const modelsUrl = gate.pin ? pinnedRequestUrl(`${base}/models`, gate.pin) : `${base}/models`;
   if (!key && preset.keyRequired) return { ok: false, reason: "invalid", message: `A ${preset.name} API key is required.` };
   let res: Response;
   try {
     const auth: Record<string, string> =
       preset.protocol === "anthropic-messages" ? anthropicHeaders(key) : keyHeaders(id, key);
-    res = await fetchImpl(`${base}/models`, {
+    res = await fetchImpl(modelsUrl, {
       headers: { Accept: "application/json", ...auth },
       signal: AbortSignal.timeout(10_000),
     });
