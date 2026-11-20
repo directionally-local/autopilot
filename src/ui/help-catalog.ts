@@ -95,7 +95,7 @@ export const CATEGORIES: Category[] = [
       { command: "/usage", description: "Directionally Local: plan, tokens used and left this week, top-up, invite bonus, and when it resets" },
       { command: "/invite", description: "free tier: your invite link, who joined, and your bonus" },
       { command: "/request", description: "free tier: ask for more free tokens (tell us what you're building)" },
-      { command: "/upgrade", description: "Directionally Local: dl Pro or a top-up; on Pro, manage or cancel your plan" },
+      { command: "/upgrade", description: "Directionally Local: a one-time top-up; on Pro, manage or cancel your plan" },
     ],
   },
   {

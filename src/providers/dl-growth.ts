@@ -428,7 +428,7 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
       : screen.kind === "gpt"
         ? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
         : screen.kind === "trial"
-        ? `${dlTrialEndedTitle(screen.tokens)} Keep going with dl Pro or a top-up.`
+        ? `${dlTrialEndedTitle(screen.tokens)} Keep going with ${screen.offers?.pro && screen.plan !== "pro" ? "dl Pro or a top-up" : "a top-up"}.`
         : screen.kind === "queued"
         ? dlQueueTitle(screen.position, screen.etaAt, t)
         : "Upgrade Directionally Local";
@@ -648,7 +648,8 @@ export function dlPortalLine(url: string, opened: boolean): string {
 
 /**
  * `/upgrade`: on Pro, open the billing portal; on the free tier with offers,
- * the Pro and top-up screen; otherwise why not.
+ * the screen of what the service offers (the top-up, and Pro only when the
+ * service still offers it); otherwise why not.
  */
 export async function dlUpgradeStep(o: {
   providerId: string;
@@ -679,6 +680,7 @@ export async function dlUpgradeStep(o: {
       return { kind: "text", text: (e as Error).message };
     }
   }
-  if (!me.offers) return { kind: "text", text: "Pro and top-ups aren't available from this Directionally Local server yet." };
+  // The service leaves Pro out of `offers` when it isn't offered; then /upgrade is the top-up alone.
+  if (!me.offers || (!me.offers.pro && !me.offers.topup)) return { kind: "text", text: "Top-ups aren't available from this Directionally Local server yet." };
   return { kind: "screen", screen: { kind: "upgrade", offers: me.offers, ...(me.plan ? { plan: me.plan } : {}) }, me };
 }

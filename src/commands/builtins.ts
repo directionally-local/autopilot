@@ -15,7 +15,7 @@ export const BUILTIN_COMMANDS: SlashItem[] = [
   { name: "usage", description: "Show your Directionally Local plan, tokens used and left this week, and when it resets", source: "builtin" },
   { name: "invite", description: "Free tier: your invite link, who joined, and your bonus", source: "builtin" },
   { name: "request", description: "Free tier: ask for more free tokens (tell us what you're building)", source: "builtin" },
-  { name: "upgrade", description: "Directionally Local: dl Pro or a one-time top-up; on Pro, manage or cancel your plan", source: "builtin" },
+  { name: "upgrade", description: "Directionally Local: a one-time top-up; on Pro, manage or cancel your plan", source: "builtin" },
   { name: "cost", argHint: "[verify|on|off]", description: "Show cost report or toggle attribution", source: "builtin" },
   { name: "settings", argHint: "[modes|pr-footer|invite-tip|star-tip on|off]", description: "Show or change feature settings (e.g. plan/edit/auto modes, the PR footer)", source: "builtin" },
   { name: "key", argHint: "[set <key>|clear]", description: "Show or replace the active provider's API key", source: "builtin" },

@@ -609,14 +609,15 @@ export function dlTrialEndedTitle(tokens: number | undefined): string {
 
 /**
  * The trial is over (402 trial_ended): "You've used your 10M free trial tokens. Keep going with
- * dl Pro for $3.99/month or a top-up: /upgrade. Or use your own key: /provider."
+ * dl Pro for $3.99/month or a top-up: /upgrade. Or use your own key: /provider." Pro is named only
+ * when the service offers it; otherwise "Keep going with a top-up".
  */
 export function dlTrialEndedLine(tokens: number | undefined, o: { where?: DlWhere; offers?: DlOffers } = {}): string {
   const cli = o.where === "cli";
   const upgrade = cli ? "`autopilot upgrade`" : "/upgrade";
-  const pro = o.offers?.pro ? `dl Pro for ${dlProPrice(o.offers.pro)}` : "dl Pro";
+  const way = o.offers?.pro ? `dl Pro for ${dlProPrice(o.offers.pro)} or a top-up` : "a top-up";
   const ownKey = cli ? "Or use your own key: `autopilot connect`." : `Or use your own key: ${DL_SWITCH_HINT}.`;
-  return `${dlTrialEndedTitle(tokens)} Keep going with ${pro} or a top-up: ${upgrade}. ${ownKey}`;
+  return `${dlTrialEndedTitle(tokens)} Keep going with ${way}: ${upgrade}. ${ownKey}`;
 }
 
 /**

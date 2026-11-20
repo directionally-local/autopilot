@@ -397,7 +397,7 @@ describe("free tier growth", () => {
       assert.strictEqual(w.selects[0]!.title, "Upgrade Directionally Local");
       assert.deepStrictEqual(await dlUpgradeStep({ ...base, providerId: "directionally-local", fetchMe: async () => me({ offers: undefined }) }), {
         kind: "text",
-        text: "Pro and top-ups aren't available from this Directionally Local server yet.",
+        text: "Top-ups aren't available from this Directionally Local server yet.",
       });
       const off = await dlUpgradeStep({ ...base, providerId: "openrouter", providerName: "OpenRouter", fetchMe: async () => me() });
       assert.strictEqual(off.kind === "text" && off.text, "/upgrade is for Directionally Local; you're on OpenRouter, billed by that provider. /provider switches to it.");

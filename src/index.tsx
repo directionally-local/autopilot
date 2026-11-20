@@ -682,8 +682,8 @@ program
 
 program
   .command("upgrade")
-  .description("Directionally Local: buy Pro or a one-time top-up (opens the payment page, then waits up to 10 minutes for it to show); on Pro, open the page to manage or cancel your plan")
-  .argument("[product]", "pro or topup (asked when omitted)")
+  .description("Directionally Local: buy a one-time top-up (opens the payment page, then waits up to 10 minutes for it to show); on Pro, open the page to manage or cancel your plan")
+  .argument("[product]", "topup (asked when omitted)")
   .action(async (product: string | undefined) => {
     const { runUpgradeCommand } = await import("./dl-commands.js");
     process.exitCode = await runUpgradeCommand(product, await dlCommandDeps());
