@@ -109,6 +109,9 @@ export interface AgentCallbacks {
 
 /** Credentials come in as `LlmAuth` fields — spread `llmAuthFromConfig(cfg)`. */
 export interface AgentTurnOpts extends LlmAuth {
+  /** Attended terminal only: one approved search callback, never persisted or
+   * forwarded to sandbox execution, delegated work, or unattended hosts. */
+  foregroundSearch?: import("../tools/parallel-search.js").ForegroundSearch;
   model: string;
   /** Set when `model` was chosen by intent-based routing (config
    *  `modelRouting`) instead of this model. Logged to cost-debug so the
@@ -466,6 +469,14 @@ async function fireStopFailureHook(opts: AgentTurnOpts, error: StopFailureKind):
 }
 
 export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
+  try {
+    await runAgentTurnWithEvents(opts);
+  } finally {
+    opts.foregroundSearch?.close();
+  }
+}
+
+async function runAgentTurnWithEvents(opts: AgentTurnOpts): Promise<void> {
   // Model profiles (#999): per-family caps flow into the reducer so switching
   // models changes what the harness serves without any provider change.
   const profile = modelProfileFor(opts.model);
@@ -560,6 +571,9 @@ export async function runAgentTurn(opts: AgentTurnOpts): Promise<void> {
 }
 
 async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<void> {
+  if (opts.foregroundSearch && (opts.headless || opts.runId || opts.codeMode)) {
+    throw new Error("An approved public-documentation lookup requires a native foreground turn with Code Mode disabled.");
+  }
   // Model profiles (#999): caps and guardrail thresholds follow the model.
   const modelProfile = modelProfileFor(opts.model);
   const maxToolContentChars =
@@ -679,7 +693,14 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   // Model profiles (#999): the schemas the model sees may differ from the
   // module-level tools (e.g. DeepSeek's strict `edit`), so apply the profile
   // before building both the direct defs and the Code Mode API.
-  const profiledTools = applyToolProfile(opts.tools, opts.model);
+  const foregroundTools = opts.foregroundSearch
+    ? opts.tools.map((tool) => tool.name === "search_web" ? {
+        ...tool,
+        description: "Search public documentation once using the user's exact approved Parallel lookup. Call with the query below unchanged. Carry original source URLs from the result into your answer.",
+        parameters: { type: "object", properties: { query: { type: "string", enum: [opts.foregroundSearch!.query] } }, required: ["query"], additionalProperties: false },
+      } : tool)
+    : opts.tools;
+  const profiledTools = applyToolProfile(foregroundTools, opts.model);
   const sandboxTools = profiledTools.filter((tool) => !tool.codeModeDirect);
   const directTools = profiledTools.filter((tool) => tool.codeModeDirect);
   if (codeMode) {
@@ -1628,7 +1649,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           jobsDbPath: opts.jobsDbPath,
         },
         opts.onFileChange,
-        readRepeat > 0 ? { readRepeat } : undefined,
+        { ...(readRepeat > 0 ? { readRepeat } : {}), ...(opts.foregroundSearch ? { foregroundSearch: opts.foregroundSearch } : {}) },
       );
       if (!result.ok && result.errorCode === "policy_rejection") {
         logger.warn("hook:vetoed_tool_call", { sessionId: opts.sessionId, tool: tc.function.name, toolCallId: tc.id });

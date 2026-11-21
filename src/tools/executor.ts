@@ -40,6 +40,7 @@ import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
 import { runWithGithubAccess } from "../github-access.js";
 import { modelProfileFor } from "../models/profile.js";
 import type { WorkerProfile } from "../agent/messages.js";
+import type { ForegroundSearch } from "./parallel-search.js";
 
 export const ALL_TOOLS: ToolSpec[] = [
   { ...readTool, isReadOnly: true },
@@ -521,7 +522,7 @@ export class ToolExecutor {
     askPermission: PermissionAsker,
     ctx: ToolContext,
     onFileChange?: (path: string, content: string) => void,
-    options?: { readRepeat?: number },
+    options?: { readRepeat?: number; foregroundSearch?: ForegroundSearch },
   ): Promise<ToolResult> {
     const trace = ctx.trace ?? this.trace;
     if (!trace?.enabled) return this.runInner(call, askPermission, ctx, onFileChange, null, options);
@@ -537,7 +538,7 @@ export class ToolExecutor {
     ctx: ToolContext,
     onFileChange: ((path: string, content: string) => void) | undefined,
     tr: ToolTrace | null,
-    options?: { readRepeat?: number },
+    options?: { readRepeat?: number; foregroundSearch?: ForegroundSearch },
   ): Promise<ToolResult> {
     // `spawn_worker` was renamed to `subagent`; resumed sessions and models
     // primed by old history may still emit the old name.
@@ -765,7 +766,10 @@ export class ToolExecutor {
       const recoveryPoint = guard ? createRecoveryPoint(guard.findings, { project: projectOf(ctx.cwd), tool: tool.name }) : null;
       const recoveryNote = recoveryPoint ? `\n\n[autopilot] ${describeRecoveryPoint(recoveryPoint)}` : "";
       // A push or pull request without GitHub access: ask (or say how) instead of the raw error.
-      const result = await runWithGithubAccess(call.name, args, runCtx, () => tool.run(args as never, runCtx));
+      const result = await runWithGithubAccess(call.name, args, runCtx, () =>
+        call.name === "search_web" && options?.foregroundSearch
+          ? options.foregroundSearch.run(args, runCtx)
+          : tool.run(args as never, runCtx));
       toolCompleted = true;
       const fileChange = before ? await fileChangeAfter(call.name, args, ctx.cwd, before) : undefined;
       const normalized = normalizeToolOutput(result);

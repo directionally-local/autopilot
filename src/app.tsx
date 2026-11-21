@@ -53,6 +53,8 @@ import { nextMode, startMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { resolveTurnCodeMode } from "./agent/turn-code-mode.js";
 import { assembleTurn, describeSubagentGuidance, resolveTurnPolicy } from "./agent/session-core.js";
+import { createForegroundSearchChoice } from "./ui/foreground-search.js";
+import type { ParallelSearchPermit } from "./tools/parallel-search.js";
 import { getMemoryDb } from "./memory/db.js";
 import {
   addCheckpoint,
@@ -1168,8 +1170,12 @@ function App({
     [mkKey, setShowPlanCompletePicker, setMode, setEvents, submitRef, buildSlashContext],
   );
 
+  const foregroundSearchChoiceRef = useRef(createForegroundSearchChoice());
   const handleSlash = useCallback(
-    async (cmd: string): Promise<boolean> => dispatchSlashCommand(buildSlashContext(), cmd),
+    async (cmd: string): Promise<boolean> => {
+      foregroundSearchChoiceRef.current.clear();
+      return dispatchSlashCommand(buildSlashContext(), cmd);
+    },
     [buildSlashContext],
   );
 
@@ -1262,6 +1268,8 @@ function App({
       text: string,
       displayText?: string,
       opts?: {
+        /** Only the literal terminal bridge submit supplies this ephemeral capability. */
+        publicDocsPermit?: ParallelSearchPermit;
         queuedKeys?: string[];
         userPromptForHooks?: string;
         eventKey?: string;
@@ -1274,6 +1282,8 @@ function App({
       let trimmed = text.trim();
       if (!trimmed) return;
       const retry = opts?.retry === true;
+      foregroundSearchChoiceRef.current.clear();
+      const publicDocsPermit = retry ? undefined : opts?.publicDocsPermit;
 
       let display = displayText?.trim() || trimmed;
       const promptKey = opts?.eventKey ?? opts?.queuedKeys?.[0];
@@ -1292,6 +1302,17 @@ function App({
       // while async setup (image encoding, hooks, etc.) is in flight.
       beginTurn();
 
+      // An approved lookup must already be cancellable while prompt hooks and
+      // session preparation await. Reuse this scope when the agent starts;
+      // never bind the permit to a fresh signal after an early Esc or SIGINT.
+      const publicDocsScope = publicDocsPermit ? sessionScopeRef.current.createChild() : undefined;
+      if (publicDocsScope) activeScopeRef.current = publicDocsScope;
+      const endPreparation = () => {
+        publicDocsScope?.abort("preparation_ended");
+        if (publicDocsScope && activeScopeRef.current === publicDocsScope) activeScopeRef.current = null;
+        endTurn();
+      };
+
       let overrideModel: string | undefined;
       let overrideEffort: ReasoningEffort | undefined;
 
@@ -1299,21 +1320,21 @@ function App({
       // turn so the model can act on the output (e.g. `! npm login`, then
       // publish). A bare `!` only prints usage.
       let bangContext: string | null = null;
-      const bangCommand = retry ? null : parseBangCommand(trimmed);
+      const bangCommand = retry || publicDocsPermit ? null : parseBangCommand(trimmed);
       if (bangCommand !== null) {
         bangContext = await runUserShellCommand(bangCommand, display, opts?.queuedKeys?.[0]);
         if (bangContext === null) {
-          endTurn();
+          endPreparation();
           return;
         }
       }
 
-      if (!retry && trimmed.startsWith("/")) {
+      if (!retry && !publicDocsPermit && trimmed.startsWith("/")) {
         const head = trimmed.split(/\s+/)[0]!.toLowerCase();
         const selfManaged = ["/compact", "/init"].includes(head);
         if (await handleSlash(trimmed)) {
           if (!selfManaged) {
-            endTurn();
+            endPreparation();
           }
           return;
         }
@@ -1323,7 +1344,7 @@ function App({
         if (expanded) {
           for (const text of expanded.notices) setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
           if (!expanded.prompt.trim()) {
-            endTurn();
+            endPreparation();
             return;
           }
           overrideModel = expanded.model;
@@ -1336,7 +1357,7 @@ function App({
       // A `!` command's output is already the user message: don't re-scan it
       // for @mentions or image paths.
       const { content, images, errors: imageErrors, notices: imageNotices } =
-        bangContext !== null || retry
+        bangContext !== null || retry || publicDocsPermit
           ? { content: bangContext ?? trimmed, images: [] as string[], errors: [] as string[], notices: [] as string[] }
           : await buildPromptContent(trimmed, (path) =>
               encodeImageFile(path, { maxEdge: cfg.imageMaxEdge, quality: cfg.imageQuality }),
@@ -1371,6 +1392,11 @@ function App({
       // (no network). The result is reused below where the turn is
       // actually configured, so this isn't a duplicate cost.
       const classification = classifyIntent(trimmed);
+      if (publicDocsPermit && resolveTurnCodeMode(cfg.codeMode, classification.tier)) {
+        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: 'This lookup requires native tools. Set "codeMode": false in config.json, then prepare and approve a new /search lookup.' }]);
+        endPreparation();
+        return;
+      }
 
       // SessionStart, then the UserPromptSubmit hook (veto-able), shared with
       // every host. Fired after we know the prompt resolves to actual
@@ -1393,7 +1419,7 @@ function App({
             });
       if (promptGate.blocked) {
         setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `hook blocked the prompt: ${promptGate.reason}` }]);
-        endTurn();
+        endPreparation();
         return;
       }
 
@@ -1457,7 +1483,11 @@ function App({
       const effectiveCodeMode = resolveTurnCodeMode(cfg?.codeMode, classification.tier);
       setCodeMode(effectiveCodeMode);
 
-      const turnScope = sessionScopeRef.current.createChild();
+      if (publicDocsScope?.signal.aborted) {
+        endPreparation();
+        return;
+      }
+      const turnScope = publicDocsScope ?? sessionScopeRef.current.createChild();
       activeScopeRef.current = turnScope;
 
       // Pre-turn async work (session-start memory recall + skill routing) is
@@ -1639,6 +1669,7 @@ function App({
           toolLimitBehavior: "continue",
           maxTotalToolIterations: cfg.maxTotalToolIterations,
           codeMode: effectiveCodeMode,
+          ...(publicDocsPermit ? { foregroundSearch: publicDocsPermit.bind(turnScope.signal) } : {}),
           allowDirectPush: cfg.allowDirectPush,
           preferPullRequests: cfg.preferPullRequests,
           lspManager: lspManagerRef.current,
@@ -1937,6 +1968,9 @@ function App({
 
   const submit = useCallback(
     (full: string, display?: string) => {
+      // Generated plans, handoffs, feedback and queued/retried prompts share
+      // this path. They can discard a preview but cannot create or approve one.
+      foregroundSearchChoiceRef.current.clear();
       if (full.trim()) {
         // The first input after the tour: 1–3 sends that task. Any input
         // ends the tour, and cancels one still being prepared.
@@ -2210,8 +2244,34 @@ function App({
     if (modals.showHooksDashboard) open.push("hooksDashboard");
     if (modals.showChangelogImagePicker) open.push("changelogImage");
     bridge.connect({
-      submit: (text) => submitRef.current(text),
+      // The production consumer calls this only for Camouflage userInput.
+      // Intercept the original text before submit's tour expansion or queueing.
+      submit: (text) => {
+        const match = /^\/search(?:\s+([\s\S]*))?$/i.exec(text.trim());
+        if (!match) {
+          foregroundSearchChoiceRef.current.clear();
+          submitRef.current(text);
+          return;
+        }
+        if (!cfg || busyRef.current || supervisorRef.current.isRunning || queueRef.current.length > 0 ||
+            pendingPromptEditRef.current || pendingSteersRef.current.length > 0 || queuePlanDraft || dlScreen || starAsk) {
+          foregroundSearchChoiceRef.current.clear();
+          setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "/search requires an idle foreground terminal. It cannot be queued; prepare a new lookup when idle." }]);
+          return;
+        }
+        tourAbortRef.current?.abort();
+        tourAbortRef.current = null;
+        tourTasksRef.current = null;
+        const result = foregroundSearchChoiceRef.current.command(match[1] ?? "");
+        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: result.notice }]);
+        if (result.permit) {
+          // No command, token or permit enters input history, the queue, or
+          // submitRef. processMessage's other callers never receive a permit.
+          void processMessage(result.permit.objective, undefined, { publicDocsPermit: result.permit });
+        }
+      },
       interrupt: () => {
+        foregroundSearchChoiceRef.current.clear();
         if (busyRef.current || supervisorRef.current.isRunning) runInterruptTurn(interruptDepsRef.current!);
       },
       cycleMode: () => {

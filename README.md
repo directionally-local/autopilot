@@ -523,6 +523,19 @@ autopilot
 
 There is no `/thinking` command. In the interactive UI the reasoning effort for each turn follows the request's intent tier (light → `low`, medium → `medium`, heavy → `high`), and a custom command (`/command create`) can pin it with `effort`. `reasoningEffort` in config (or `KIMI_REASONING_EFFORT`) sets the session default, and SDK sessions can change it with `setReasoningEffort()`.
 
+### Public documentation search with Parallel
+
+In the native foreground terminal, `/search` offers an opt-in Parallel lookup for one exact public documentation question. DuckDuckGo remains the default. Enter both fields yourself, review the destination and complete tool arguments, then type the approval command shown in the preview:
+
+```text
+/search parallel-public-docs {"objective":"Find the public Node.js readFile documentation","search_queries":["Node.js fs readFile documentation"]}
+/search approve <token from the preview>
+```
+
+Use only text you authorize sending as a public documentation lookup. The request goes to `https://mcp.parallel.ai/mcp` using its `web_search` tool, without an API key. Only the displayed `objective` and single `search_queries` entry are sent as tool arguments; the MCP handshake identifies Autopilot and its version. No conversation, files, model identity, credentials, or prior search session are added. The agent receives excerpts and original source URLs for its normal answer. See [Parallel MCP setup](https://docs.parallel.ai/integrations/mcp/quickstart).
+
+Prepare and approve the lookup while the terminal is idle; these commands cannot be queued. Only text submitted directly in the terminal can open or approve a preview; generated plans, tour tasks, startup handoffs, retries and permission feedback cannot. Approval expires after one request, failure, cancellation, or the turn ending. `/search cancel` or another input discards an unapproved preview. Queries cannot be rephrased or extended by the model. This choice is available only for native foreground turns with Code Mode off (`"codeMode": false` in `config.json`); print, SDK, replay, background work, delegated agents, and sandbox calls do not receive the permit. Unavailable or empty results do not trigger a DuckDuckGo fallback.
+
 ### Subagent routing
 
 `/subagents auto` is the default: on substantial tasks the agent is asked to look for independent parts and delegate them, and it decides whether delegation is worth it. `suggest` only hints at delegation for likely parallel work, and `off` disables harness guidance (you can still ask for subagents explicitly). Explicit requests to use subagents or to work without them always win. Set the policy with `/subagents`, `AUTOPILOT_SUBAGENT_POLICY`, or `subagentPolicy` in config.
