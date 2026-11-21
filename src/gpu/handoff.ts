@@ -27,6 +27,12 @@
  * Tailscale and Open WebUI (dl ui up, dl ui share) and prints the admin link; after "both" it
  * starts Autopilot once more, without DL_GPU_RESULT or DL_CHAT_SETUP, so the agent opens.
  *
+ * API endpoint (dl 0.44 and later): on that same relaunch, a dl that can turn the model into an
+ * OpenAI-compatible API (dl model endpoint) also sets DL_API_SETUP=1. "How will your team use
+ * it?" then has a fourth answer, API endpoint, which writes {"version":1,"action":"api-up"} and
+ * exits: dl turns the endpoint on (this machine only, a key required), prints the base URL, the
+ * key and setup for other tools, and exits. Without DL_API_SETUP the answer isn't offered.
+ *
  * Coding agent: on that same relaunch, a dl that can open other agents on the model also sets
  * DL_AGENTS, a JSON list of them (only ones that can work on this model) and whether each CLI
  * is installed: [{"id":"claude-code","installed":true},{"id":"opencode","installed":false},…].
@@ -111,6 +117,17 @@ export function chatSetupOffered(env: NodeJS.ProcessEnv = process.env): boolean 
 /** Ask dl to set up the team chat (Autopilot exits next; after "both" dl starts it again, or opens `agent`). */
 export async function requestChatUp(path: string, use: TeamUse, agent?: OtherAgent): Promise<void> {
   await writeFile(path, `${JSON.stringify({ version: HANDOFF_VERSION, action: "chat-up", use, ...(use === "both" && agent ? { agent } : {}) })}\n`, { mode: 0o600 });
+  await chmod(path, 0o600);
+}
+
+/** dl can also turn the model into an OpenAI-compatible API now (offered with the team chat question). */
+export function apiSetupOffered(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.DL_API_SETUP?.trim() === "1" && chatSetupOffered(env);
+}
+
+/** Ask dl to turn on the API endpoint (Autopilot exits next; dl prints the endpoint and exits). */
+export async function requestApiUp(path: string): Promise<void> {
+  await writeFile(path, `${JSON.stringify({ version: HANDOFF_VERSION, action: "api-up" })}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
 }
 

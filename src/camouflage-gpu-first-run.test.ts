@@ -11,7 +11,7 @@ import type { ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN } from "./providers/dl-status.js";
 import { probeGpus, realProbe, type DetectedGpu, type UnansweredTool } from "./gpu/detect.js";
 import { AGENT_QUESTION, AGENT_SUBTITLE, agentChoices, CHECKING_GPUS, gpuSummary, NO_GPU_HINT, REMOTE_SERVER_STEPS, reportModelUpResult, resetGpuFirstRunForTesting, TEAM_USE_QUESTION, TEAM_USE_SUBTITLE, WHERE_QUESTION } from "./gpu/first-run.js";
-import { chatSetupOffered, offeredAgents } from "./gpu/handoff.js";
+import { apiSetupOffered, chatSetupOffered, offeredAgents } from "./gpu/handoff.js";
 import { sentGpuTelemetry, setGpuTelemetryTransportForTesting } from "./gpu/telemetry.js";
 import { fakeModelsServer } from "./gpu/fake-models-server.test-support.js";
 
@@ -589,6 +589,27 @@ describe("GPU-aware first run", () => {
         view.dispose();
       });
     }
+
+    it("API endpoint: a fourth answer when dl offers it (DL_API_SETUP); it hands over to dl, with no agent question", async () => {
+      const AGENTS = JSON.stringify([{ id: "pi", installed: true }]);
+      const { view, prompts, options } = await fakeView(["api", "pi"], { env: back({ DL_API_SETUP: "1", DL_AGENTS: AGENTS }) });
+      assert.equal(await view.teamUse(), "api-up");
+      assert.deepEqual(options(0), ["browser", "terminal", "both", "api"]);
+      assert.equal((prompts[0]?.payload.options as Option[])[3]?.label, "API endpoint (any coding tool)");
+      assert.equal(prompts.length, 1);
+      assert.deepEqual(JSON.parse(await readFile(dl().DL_GPU_HANDOFF, "utf8")), { version: 1, action: "api-up" });
+      view.dispose();
+    });
+
+    it("API endpoint isn't offered by an older dl, nor without the team chat question", async () => {
+      const { view, options } = await fakeView(["terminal"], { env: back() });
+      await view.teamUse();
+      assert.deepEqual(options(0), ["browser", "terminal", "both"]);
+      view.dispose();
+      assert.equal(apiSetupOffered(back({ DL_API_SETUP: "1" })), true);
+      assert.equal(apiSetupOffered({ ...dl(), DL_GPU_RESULT: "ok", DL_API_SETUP: "1" }), false, "no DL_CHAT_SETUP: the question isn't asked at all");
+      assert.equal(apiSetupOffered(back({ DL_API_SETUP: "1", DL_GPU_RESULT: "failed" })), false);
+    });
 
     it("Esc is the terminal agent", async () => {
       const { view } = await fakeView([null], { env: back() });
