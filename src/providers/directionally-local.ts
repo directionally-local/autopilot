@@ -1450,6 +1450,25 @@ export function dlSignedInInviteLine(me: DlMe | null, where: DlWhere = "signin")
   return `Your invite link: ${me.referral.link} (${where === "cli" ? "`autopilot invite`" : "/invite"})`;
 }
 
+/** The tip after a new free-tier sign-in: dl's other commands use the same free tokens. */
+export const DL_OTHER_AGENTS_LINE = "Already use Claude Code or OpenCode? Run dl claude or dl opencode to use your free dl tokens there.";
+
+/**
+ * DL_OTHER_AGENTS_LINE, for the end of a new GitHub sign-in (not a saved one reused). Only
+ * when dl started this process (it names dl's commands), and not on Pro or on an account
+ * with nothing free to use (a used-up trial, or no free usage yet).
+ */
+export function dlSignedInAgentsLine(me: DlMe | null, env: EnvLike = process.env): string | undefined {
+  if (!launchedByDl(env)) return undefined;
+  if (me) {
+    if (me.plan === "pro") return undefined;
+    if (dlActiveTrial(me)?.ended) return undefined;
+    const budgets = bothBudgets(me);
+    if (budgets && budgets.gpt6.usdPerWeek === 0 && budgets.deepseek.usdPerWeek === 0) return undefined;
+  }
+  return DL_OTHER_AGENTS_LINE;
+}
+
 /**
  * The session header's free-tier line: "free · 49.9M left · /invite for
  * more" (the hint only while invites can add more). Undefined without an

@@ -3,6 +3,8 @@ import assert from "node:assert";
 import {
   describeDlError,
   dlHeaderLine,
+  DL_OTHER_AGENTS_LINE,
+  dlSignedInAgentsLine,
   dlSignedInLine,
   dlStartLine,
   normalizeDlMe,
@@ -110,6 +112,16 @@ describe("the sign-in line", () => {
       dlSignedInLine(me({ budgets: { gpt6: { usdPerWeek: 0, spentUsd: 0 }, deepseek: { usdPerWeek: 0, spentUsd: 0 } } }), TZ),
       "✓ Signed in as @octo · no free usage on this account yet: /request",
     );
+  });
+  it("is followed by the dl claude / dl opencode tip when dl started Autopilot and there are free tokens to use", () => {
+    const dl = { AUTOPILOT_LAUNCHED_BY: "dl" };
+    assert.strictEqual(dlSignedInAgentsLine(me(), dl), DL_OTHER_AGENTS_LINE);
+    assert.strictEqual(dlSignedInAgentsLine(me({ trial: TRIAL }), dl), DL_OTHER_AGENTS_LINE);
+    assert.strictEqual(dlSignedInAgentsLine(null, dl), DL_OTHER_AGENTS_LINE, "no account read: the tip still holds");
+    assert.strictEqual(dlSignedInAgentsLine(me(), {}), undefined, "plain autopilot: dl may not be installed");
+    assert.strictEqual(dlSignedInAgentsLine(me({ plan: "pro" }), dl), undefined, "not free tokens on Pro");
+    assert.strictEqual(dlSignedInAgentsLine(me({ trial: ENDED }), dl), undefined, "a used-up trial");
+    assert.strictEqual(dlSignedInAgentsLine(me({ budgets: { gpt6: { usdPerWeek: 0, spentUsd: 0 }, deepseek: { usdPerWeek: 0, spentUsd: 0 } } }), dl), undefined, "no free usage yet");
   });
 });
 
