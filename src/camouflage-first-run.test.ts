@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions } from "./ui/app-bridge.js";
 import { configPath } from "./config.js";
-import { DL_WAITING_LINE, dlWaitingText, envKeyLine, envKeyProvider, FIRST_RUN_QUESTION, firstRunChoices, OWN_KEY_BILLING_LINE } from "./providers/connect.js";
+import { DL_WAITING_LINE, dlWaitingText, envKeyLine, envKeyProvider, FIRST_RUN_QUESTION, firstRunChoices, OWN_KEY_BILLING_LINE, type KeySource } from "./providers/connect.js";
 import { HIDDEN_WITHOUT_GATEWAY } from "./providers/connect-state.js";
-import { DL_DISCLOSURE, DL_FREE_MODEL, dlDenialLine, DlError, type DlDenial, type DlMe } from "./providers/directionally-local.js";
+import { DL_DISCLOSURE, DL_FREE_MODEL, DL_OTHER_AGENTS_LINE, dlDenialLine, DlError, type DlDenial, type DlMe } from "./providers/directionally-local.js";
 import type { ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, type DlFreeStatus } from "./providers/dl-status.js";
 
@@ -134,6 +134,58 @@ describe("first run: one question", () => {
     assert.ok(at >= 0);
     assert.strictEqual(lines[at + 1], "Your invite link: https://dl.new/r/octo42 (/invite)");
     view.dispose();
+  });
+
+  describe("the dl claude / dl opencode tip after a new sign-in", () => {
+    const savedBy = process.env.AUTOPILOT_LAUNCHED_BY;
+    after(() => {
+      if (savedBy === undefined) delete process.env.AUTOPILOT_LAUNCHED_BY;
+      else process.env.AUTOPILOT_LAUNCHED_BY = savedBy;
+    });
+    const calls = (onSignIn: () => void = () => {}) => ({
+      dlSignIn: async () => (onSignIn(), { key: "at-1" }),
+      verify: async (id: ProviderId, key: string | undefined, source: KeySource) => ({ ok: true as const, connection: { id, ...(key ? { key } : {}), source } }),
+      dlMe: async () => me,
+    });
+
+    it("started by dl: one line right after the sign-in line, once", async () => {
+      process.env.AUTOPILOT_LAUNCHED_BY = "dl";
+      await fresh();
+      const { view, said } = await fakeView(["free"]);
+      view.providerCalls = calls();
+      assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
+      const lines = said();
+      const at = lines.findIndex((l) => l.startsWith("✓ Signed in as @octo"));
+      assert.ok(at >= 0);
+      assert.strictEqual(lines[at + 1], DL_OTHER_AGENTS_LINE);
+      assert.strictEqual(DL_OTHER_AGENTS_LINE, "Already use Claude Code or OpenCode? Run dl claude or dl opencode to use your free dl tokens there.");
+      assert.strictEqual(lines.filter((l) => l === DL_OTHER_AGENTS_LINE).length, 1);
+      view.dispose();
+    });
+
+    it("not when the saved sign-in is reused, and not without dl", async () => {
+      process.env.AUTOPILOT_LAUNCHED_BY = "dl";
+      await fresh();
+      let signIns = 0;
+      const reused = await fakeView(["use"]);
+      reused.view.providerCalls = calls(() => signIns++);
+      const say = (m: string) => void reused.sent.push({ type: "RuntimeError", payload: { message: m } });
+      const signIn = (reused.view as unknown as { freeTierSignIn: (cfg: unknown, say: (m: string) => void) => Promise<{ kind: string }> }).freeTierSignIn.bind(reused.view);
+      assert.strictEqual((await signIn({ providers: { "directionally-local": { apiKey: "at-saved" } } }, say)).kind, "connected");
+      assert.strictEqual(signIns, 0, "the saved sign-in, no new one");
+      assert.ok(reused.said().some((l) => l.startsWith("✓ Signed in as @octo")));
+      assert.ok(!reused.said().includes(DL_OTHER_AGENTS_LINE));
+      reused.view.dispose();
+
+      delete process.env.AUTOPILOT_LAUNCHED_BY;
+      await fresh();
+      const plain = await fakeView(["free"]);
+      plain.view.providerCalls = calls();
+      assert.strictEqual(await plain.view.firstRunSetup({ upgrading: false }), true);
+      assert.ok(plain.said().some((l) => l.startsWith("✓ Signed in as @octo")));
+      assert.ok(!plain.said().includes(DL_OTHER_AGENTS_LINE), "plain autopilot: dl may not be installed");
+      plain.view.dispose();
+    });
   });
 
   it("Free goes straight into the sign-in, then saves the free model and says who signed in", async () => {

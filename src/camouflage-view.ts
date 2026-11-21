@@ -30,7 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
-import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlGpt6Paused, dlModelAllowanceLine, dlStartLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, isDlGpt6Model, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
+import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlGpt6Paused, dlModelAllowanceLine, dlStartLine, dlSignedInAgentsLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, isDlGpt6Model, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
@@ -2121,6 +2121,9 @@ export class View implements AppBridge {
       say(dlSignedInLine(me));
       const invite = dlSignedInInviteLine(me);
       if (invite) say(invite);
+      // A new sign-in only (first run, or "Sign in again"), not a saved one reused.
+      const agents = source === "signin" ? dlSignedInAgentsLine(me) : undefined;
+      if (agents) say(agents);
       return { kind: "connected", connection: res.connection };
     };
     const signedIn = resolveProviderKey(id, cfg);
