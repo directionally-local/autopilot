@@ -221,13 +221,25 @@ export const TEAM_USE_QUESTION = "How will your team use it?";
 
 export const TEAM_USE_SUBTITLE = "dl sets up Tailscale and a private HTTPS link for the chat · Esc for the terminal agent";
 
-export type TeamUseChoice = "browser" | "terminal" | "both";
+export type TeamUseChoice = "browser" | "terminal" | "both" | "api";
 
 export const TEAM_USE_CHOICES: ReadonlyArray<{ value: TeamUseChoice; label: string; description: string }> = [
   { value: "browser", label: "Browser chat (you and your team)", description: "Open WebUI on a private link, accounts with 2FA" },
   { value: "terminal", label: "Terminal agent", description: "the coding agent here, on this model" },
   { value: "both", label: "Both", description: "the browser chat first, then the agent here" },
 ];
+
+/** The fourth answer, when dl offers it (DL_API_SETUP): the model as an OpenAI-compatible API. */
+export const API_ENDPOINT_CHOICE = {
+  value: "api",
+  label: "API endpoint (any coding tool)",
+  description: "an OpenAI-compatible URL and key for Cursor, OpenCode, Claude Code…",
+} as const satisfies { value: TeamUseChoice; label: string; description: string };
+
+/** The answers to "How will your team use it?": today's three, then API endpoint when dl offers it. */
+export function teamUseChoices(api: boolean): Array<{ value: TeamUseChoice; label: string; description: string }> {
+  return [...TEAM_USE_CHOICES.map((c) => ({ ...c })), ...(api ? [{ ...API_ENDPOINT_CHOICE }] : [])];
+}
 
 // ── Then: "Which coding agent?" (after Terminal agent or Both, when dl offers others) ──
 
