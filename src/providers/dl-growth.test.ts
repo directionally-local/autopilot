@@ -294,6 +294,47 @@ describe("free tier growth", () => {
     });
   });
 
+  describe("dl Pro's prompt (phase 1)", () => {
+    const TEXT = "You've hit this week's free limit. dl Pro: $7/month for higher limits and early access to new models.";
+    const PRO7 = { pro: { priceUsdMonthly: 7, price: "$7/month", valueLine: "Higher limits and early access to new models." } };
+    const body = { error: { code: "quota_exceeded", resetsAt: RESETS, message: `${TEXT} Upgrade: https://dl.new/account`, offers: PRO7, proPrompt: { text: TEXT, price: "$7/month", upgradeUrl: "https://dl.new/account" } } };
+
+    it("reads the prompt from the 402, and ignores a malformed one", () => {
+      assert.deepStrictEqual(parseDlError(body)?.proPrompt, { text: TEXT, upgradeUrl: "https://dl.new/account" });
+      for (const proPrompt of [null, "x", { text: 42 }, { text: "" }, { text: "a\u001b]0;b" }, { text: "x".repeat(301) }]) {
+        assert.strictEqual(parseDlError({ error: { code: "quota_exceeded", proPrompt } })?.proPrompt, undefined);
+      }
+      assert.deepStrictEqual(parseDlError({ error: { code: "quota_exceeded", proPrompt: { text: "t", upgradeUrl: "javascript:x" } } })?.proPrompt, { text: "t" });
+    });
+
+    it("says it with Upgrade: /upgrade in a session, `autopilot upgrade` in the CLI, and keeps /request for a smaller level", () => {
+      const parsed = parseDlError(body)!;
+      assert.strictEqual(describeDlError("quota_exceeded", { ...parsed, where: "session" }), `${TEXT} Upgrade: /upgrade`);
+      assert.strictEqual(describeDlError("quota_exceeded", { ...parsed, where: "cli" }), `${TEXT} Upgrade: \`autopilot upgrade\``);
+      assert.strictEqual(describeDlError("basic_limit", { ...parsed, request: "/v1/access-request", where: "session" }), `${TEXT} Upgrade: /upgrade\ntype /request to ask for more free tokens.`);
+    });
+
+    it("titles the limit screen with the prompt, Upgrade first, and Upgrade starts Pro's checkout", async () => {
+      const screen = dlScreenFor("quota_exceeded", parseDlError(body)!, undefined, "free")!;
+      assert.deepStrictEqual(screen, { kind: "quota", resetsAt: RESETS, proPrompt: TEXT, offers: parseDlError(body)!.offers, plan: "free" });
+      const w = world({ select: ["pro"], meSeq: [me(), me({ plan: "pro" })] });
+      assert.strictEqual(await runDlScreen(screen, w.deps), "retry");
+      assert.strictEqual(w.selects[0]!.title, TEXT);
+      assert.strictEqual(w.selects[0]!.labels[0], "Upgrade");
+      assert.deepStrictEqual(w.checkouts, ["pro"]);
+      assert.strictEqual(dlScreenChoices("quota", { offers: PRO7 as never, proPrompt: TEXT })[0]!.description, "dl Pro, $7/month");
+      // Already on Pro: no prompt.
+      assert.strictEqual((dlScreenFor("quota_exceeded", parseDlError(body)!, undefined, "pro") as { proPrompt?: string }).proPrompt, undefined);
+    });
+
+    it("headless: the prompt with `autopilot upgrade`, and your own key", () => {
+      const err = new ApiError("autopilot: …", undefined, 402);
+      err.providerCode = "quota_exceeded";
+      err.providerDetail = { ...parseDlError(body)! };
+      assert.strictEqual(dlHeadlessMessage(err, { now: NOW, timeZone: TZ, plan: "free" }), `${TEXT} Upgrade: \`autopilot upgrade\`. Or use your own key: \`autopilot connect\`.`);
+    });
+  });
+
   describe("queue screen (free_tier_queued)", () => {
     const etaAt = "2026-11-06T03:00:00Z"; // Friday, three days on
     it("reads the place in line and says when, with the link and the ways on", async () => {

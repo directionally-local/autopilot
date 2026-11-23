@@ -257,6 +257,37 @@ export interface DlErrorDetail {
   trial?: DlTrial;
   /** model_not_allowed: the models this person can use (the service lists only those). */
   allowed?: string[];
+  /**
+   * dl Pro's prompt (quota_exceeded, basic_limit, starter_limit): the service sends it when this
+   * free week's open models are used up and Pro is offered. `text` is shown as sent, then Upgrade.
+   */
+  proPrompt?: DlProPrompt;
+}
+
+/** dl Pro's prompt as the service sends it; older servers send none. */
+export interface DlProPrompt {
+  /** "You've hit this week's free limit. dl Pro: $7/month for higher limits and early access to new models." */
+  text: string;
+  /** Where Upgrade goes outside Autopilot (dl.new/account); Autopilot uses /upgrade instead. */
+  upgradeUrl?: string;
+}
+
+/** The service's `proPrompt`, when well formed: one line of text, at most 300 characters. */
+export function parseDlProPrompt(raw: unknown): DlProPrompt | undefined {
+  if (!isRec(raw) || typeof raw.text !== "string") return undefined;
+  const text = raw.text.trim();
+  if (!text || text.length > 300 || /[\u0000-\u001f\u007f]/.test(text)) return undefined;
+  const url = typeof raw.upgradeUrl === "string" && /^https:\/\/\S+$/.test(raw.upgradeUrl) && raw.upgradeUrl.length <= 200 ? raw.upgradeUrl : undefined;
+  return { text, ...(url ? { upgradeUrl: url } : {}) };
+}
+
+/**
+ * dl Pro's prompt as one line, with Upgrade: "You've hit this week's free limit. dl Pro: $7/month
+ * for higher limits and early access to new models. Upgrade: /upgrade" (`autopilot upgrade` in
+ * the CLI and headless runs).
+ */
+export function dlProPromptLine(prompt: DlProPrompt, where: DlWhere = "session"): string {
+  return `${prompt.text} Upgrade: ${where === "session" ? "/upgrade" : "`autopilot upgrade`"}`;
 }
 
 // ── Plans, offers, invites and the queue (all optional: older servers send none) ──
@@ -468,6 +499,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const alternative = str("alternative");
   const trial = parseDlTrial(e.trial);
   const allowed = Array.isArray(e.allowed) ? e.allowed.filter((id): id is string => typeof id === "string" && id !== "") : [];
+  const proPrompt = parseDlProPrompt(e.proPrompt ?? e.pro_prompt);
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -486,6 +518,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(request ? { request } : {}),
     ...(trial ? { trial } : {}),
     ...(allowed.length > 0 ? { allowed } : {}),
+    ...(proPrompt ? { proPrompt } : {}),
   };
 }
 
@@ -691,6 +724,8 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
         ? `The free tier didn't accept your sign-in. ${DL_FREE_SIGN_IN_AGAIN}`
         : `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
     case "quota_exceeded":
+      // dl Pro's prompt, when the service sent it (the free week's open models are used up).
+      if (extra.proPrompt && lastMe?.plan !== "pro") return dlProPromptLine(extra.proPrompt, where);
       // The token and the spending allowance read the same: both are "this week's free usage".
       return dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe) });
     case "trial_ended":
@@ -699,6 +734,7 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
     case "basic_limit":
     case "starter_limit":
       // A basic or starter account used its smaller weekly allowance: the same line, and where to ask for more.
+      if (extra.proPrompt && lastMe?.plan !== "pro") return withRequestHint(dlProPromptLine(extra.proPrompt, where), extra, where);
       return withRequestHint(dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe) }), extra, where);
     case "upstream_busy":
       return "The free tier is busy right now; try again shortly.";
