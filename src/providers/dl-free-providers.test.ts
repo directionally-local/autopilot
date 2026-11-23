@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import {
   DL_FALLBACK_PROVIDERS,
   DL_PROVIDERS_CACHE_MS,
+  DL_UNKNOWN_CONTEXT,
+  DL_UNKNOWN_MAX_OUTPUT,
   cachedDlProviders,
+  dlServedModelEntry,
+  fetchDlServedModels,
+  loadDlCatalog,
   dlAccessAllowed,
   dlFreeModelOption,
   dlModelProviderLine,
@@ -181,5 +186,62 @@ describe("formatting", () => {
     assert.equal(dlModelProviderLine("gpt-6.1-sol", list), "OpenAI");
     assert.equal(dlModelProviderLine("nope", list), undefined);
     assert.equal(dlModelProviderLine("gpt-6-luna", null), undefined);
+  });
+});
+
+describe("free models this Autopilot doesn't know yet", () => {
+  const kimi = { id: "moonshotai/kimi-k3.1-pro", name: "Kimi K3.1 Pro", family: "kimi", contextWindow: 262_144, access: "free", status: "on", tokensPerSecond: 64, ttftMs: 990, successRate24h: 0.99, measuredAt: "2026-11-23T08:00:00.000Z" };
+  const withKimi = { ...body, providers: [...body.providers, { id: "liquid", name: "Liquid Inference", website: "https://liquidinference.ai", url: "https://liquidinference.ai/", logo: "/logos/liquid.svg", models: [kimi] }] };
+
+  it("are offered when /v1/models serves them, with provider and speed", () => {
+    const list = parseDlProviders(withKimi)!;
+    assert.ok(!usableDlModels(list).some((m) => m.id === kimi.id), "not without /v1/models: the catalog would have no entry for it");
+    const usable = usableDlModels(list, { modelIds: new Set(["deepseek/deepseek-v4.1-flash-1017", kimi.id]) });
+    assert.deepEqual(usable.map(dlFreeModelOption), [
+      { value: "deepseek/deepseek-v4.1-flash-1017", label: "DeepSeek V4.1 Flash · Luminal", columns: ["~85 tok/s"] },
+      { value: kimi.id, label: "Kimi K3.1 Pro · Liquid Inference", columns: ["~64 tok/s"] },
+    ]);
+  });
+
+  it("get a catalog entry from /v1/models, else /v1/providers, else safe defaults", () => {
+    const list = parseDlProviders(withKimi)!;
+    const fromModels = dlServedModelEntry({ id: kimi.id, name: "Kimi K3.1 Pro", contextWindow: 200_000, maxOutputTokens: 16_000 }, list);
+    assert.equal(fromModels.name, "Kimi K3.1 Pro (free)");
+    assert.equal(fromModels.contextWindow, 200_000);
+    assert.equal(fromModels.maxOutputTokens, 16_000);
+    assert.deepEqual(fromModels.pricing, { inputPerMtok: 0, outputPerMtok: 0 });
+    assert.equal(fromModels.supports.tools, true);
+    const fromProviders = dlServedModelEntry({ id: kimi.id }, list);
+    assert.equal(fromProviders.name, "Kimi K3.1 Pro (free)");
+    assert.equal(fromProviders.contextWindow, 262_144);
+    assert.equal(fromProviders.maxOutputTokens, DL_UNKNOWN_MAX_OUTPUT);
+    const bare = dlServedModelEntry({ id: "new/model" }, null);
+    assert.equal(bare.name, "new/model (free)");
+    assert.equal(bare.contextWindow, DL_UNKNOWN_CONTEXT);
+  });
+
+  it("loadDlCatalog adds them to the built-in models; the built-in list alone without a token or an answer", async () => {
+    const fetchImpl = (async (url: string) =>
+      url.endsWith("/v1/providers")
+        ? json(withKimi)
+        : json({ object: "list", data: [{ id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash" }, { id: kimi.id, name: "Kimi K3.1 Pro", context_window: 262_144 }] })) as unknown as typeof fetch;
+    const catalog = await loadDlCatalog("tok", { fetchImpl, env });
+    const ids = catalog.map((m) => m.id);
+    assert.ok(ids.includes("deepseek/deepseek-v4.1-flash-1017") && ids.includes("gpt-6-luna"), "built-in models stay");
+    const entry = catalog.find((m) => m.id === kimi.id)!;
+    assert.equal(entry.name, "Kimi K3.1 Pro (free)");
+    assert.equal(entry.contextWindow, 262_144);
+    assert.equal(ids.filter((id) => id === "deepseek/deepseek-v4.1-flash-1017").length, 1, "a known model isn't added twice");
+    setDlProvidersCache(null);
+    const offline = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    assert.deepEqual((await loadDlCatalog("tok", { fetchImpl: offline, env })).map((m) => m.id), ids.filter((id) => id !== kimi.id));
+    assert.deepEqual((await loadDlCatalog(undefined, { fetchImpl, env })).map((m) => m.id), ids.filter((id) => id !== kimi.id));
+  });
+
+  it("fetchDlServedModels keeps name and limits", async () => {
+    const fetchImpl = (async () => json({ data: [{ id: "a", name: "A", context_window: 1000, max_output_tokens: 100 }, { id: "b" }, { nope: 1 }] })) as unknown as typeof fetch;
+    assert.deepEqual(await fetchDlServedModels("tok", { fetchImpl, env }), [{ id: "a", name: "A", contextWindow: 1000, maxOutputTokens: 100 }, { id: "b" }]);
   });
 });

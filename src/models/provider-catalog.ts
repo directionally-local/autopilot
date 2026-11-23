@@ -289,9 +289,10 @@ export async function ensureProviderCatalog(
         .filter((m) => CHATGPT_MODELS.has(m.id))
         .map((m) => ({ ...m, pricing: { inputPerMtok: 0, outputPerMtok: 0 } }));
     } else if (preset.catalog === "directionally-local") {
-      // Free only: the models the free tier serves, never anything else.
-      const { dlFreeModelEntries } = await import("../providers/directionally-local.js");
-      models = dlFreeModelEntries();
+      // Free only: the models the free tier serves, never anything else. Built in, plus any
+      // model /v1/models serves this person that this Autopilot doesn't know yet.
+      const { loadDlCatalog } = await import("../providers/dl-free-providers.js");
+      models = await loadDlCatalog(endpoint.apiKey, { fetchImpl });
     } else if (preset.catalog === "ollama" && endpoint.baseUrl) {
       models = await discoverOllamaModels(endpoint.baseUrl, fetchImpl);
     } else if ((preset.catalog === "openai-models" || preset.catalog === "none") && endpoint.baseUrl) {

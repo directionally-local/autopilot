@@ -11,7 +11,8 @@
 
 import { getUserAgent } from "../util/version.js";
 import { DL_FREE_DEFAULT_MODEL, dlOrigin } from "./dl-endpoint.js";
-import { DL_FREE_MODELS, type DlMe } from "./directionally-local.js";
+import { DL_FREE_MODELS, dlFreeModelEntries, type DlMe } from "./directionally-local.js";
+import type { ModelEntry } from "../models/registry.js";
 
 export type DlModelAccess = "free" | "trusted" | "opt-in" | "pro";
 export type DlModelStatus = "on" | "paused" | "out_of_credit";
@@ -165,12 +166,22 @@ export async function fetchDlProviders(opts: { fetchImpl?: typeof fetch; env?: N
   }
 }
 
+/** One model of GET /v1/models: what the free tier serves this person. */
+export interface DlServedModel {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+const posInt = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : undefined);
+
 /**
- * GET /v1/models with the person's token: the ids the free tier serves this
- * person. Undefined when it can't be read in time (the caller then goes by
- * /v1/providers and /v1/me alone).
+ * GET /v1/models with the person's token: the models the free tier serves this
+ * person, with name and limits when it says. Undefined when it can't be read in
+ * time (the caller then goes by /v1/providers and /v1/me alone).
  */
-export async function fetchDlModelIds(token: string, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<Set<string> | undefined> {
+export async function fetchDlServedModels(token: string, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<DlServedModel[] | undefined> {
   try {
     const res = await (opts.fetchImpl ?? fetch)(`${dlOrigin(opts.env)}/v1/models`, {
       headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
@@ -179,11 +190,63 @@ export async function fetchDlModelIds(token: string, opts: { fetchImpl?: typeof 
     if (!res.ok) return undefined;
     const body = (await res.json().catch(() => null)) as unknown;
     if (!isRec(body) || !Array.isArray(body.data)) return undefined;
-    const ids = body.data.map((m) => (isRec(m) ? str(m.id) : "")).filter(Boolean);
-    return ids.length > 0 ? new Set(ids) : undefined;
+    const out: DlServedModel[] = [];
+    for (const m of body.data) {
+      if (!isRec(m) || !str(m.id)) continue;
+      const name = str(m.name);
+      const contextWindow = posInt(m.context_window ?? m.contextWindow);
+      const maxOutputTokens = posInt(m.max_output_tokens ?? m.maxOutputTokens);
+      out.push({ id: str(m.id), ...(name ? { name } : {}), ...(contextWindow ? { contextWindow } : {}), ...(maxOutputTokens ? { maxOutputTokens } : {}) });
+    }
+    return out.length > 0 ? out : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** GET /v1/models as a set of ids (see fetchDlServedModels). */
+export async function fetchDlModelIds(token: string, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<Set<string> | undefined> {
+  const served = await fetchDlServedModels(token, opts);
+  return served ? new Set(served.map((m) => m.id)) : undefined;
+}
+
+/** Context for a served model the service gave no limits for, and its output cap. */
+export const DL_UNKNOWN_CONTEXT = 128_000;
+export const DL_UNKNOWN_MAX_OUTPUT = 32_768;
+
+/**
+ * A catalog entry for a free model this Autopilot has no built-in entry for (a model
+ * added on the server, e.g. a new one on a new provider): name and context from
+ * /v1/models, else /v1/providers, else conservative defaults. Free, with tools.
+ */
+export function dlServedModelEntry(m: DlServedModel, list: DlProviders | null = cachedDlProviders()): ModelEntry {
+  const listed = list?.providers.flatMap((p) => p.models).find((x) => x.id === m.id);
+  const contextWindow = m.contextWindow ?? (listed && listed.contextWindow > 0 ? listed.contextWindow : DL_UNKNOWN_CONTEXT);
+  const maxOutputTokens = Math.min(m.maxOutputTokens ?? DL_UNKNOWN_MAX_OUTPUT, contextWindow);
+  return {
+    id: m.id,
+    name: `${m.name ?? listed?.name ?? m.id} (free)`,
+    contextWindow,
+    maxOutputTokens,
+    pricing: { inputPerMtok: 0, outputPerMtok: 0 },
+    supports: { tools: true, reasoning: false, streaming: true, vision: false },
+  };
+}
+
+/**
+ * The free tier's catalog for /model and the session: the built-in models, plus every
+ * model /v1/models serves this person that this Autopilot doesn't know yet, so models
+ * added on the server show up without a release. Never throws; without a token or an
+ * answer it is the built-in list.
+ */
+export async function loadDlCatalog(token: string | undefined, o: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<ModelEntry[]> {
+  const builtIn = dlFreeModelEntries();
+  if (!token) return builtIn;
+  const call = { ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}), ...(o.env ? { env: o.env } : {}) };
+  const [served, list] = await Promise.all([fetchDlServedModels(token, call), fetchDlProviders(call)]);
+  const known = new Set(builtIn.map((m) => m.id));
+  const extra = (served ?? []).filter((m) => !known.has(m.id)).map((m) => dlServedModelEntry(m, list));
+  return [...builtIn, ...extra];
 }
 
 /** A free model this person can pick, with who serves it and how fast it measured. */
@@ -212,8 +275,9 @@ export function dlAccessAllowed(model: Pick<DlProviderModel, "access" | "family"
 
 /**
  * The free models this person can use now: status "on"; served to them by /v1/models
- * when that was read (it filters per person), and allowed by /v1/me; and known to this
- * Autopilot (an id it has no catalog entry for can't be sized or run). DeepSeek V4.1
+ * when that was read (it filters per person), and allowed by /v1/me. A model this
+ * Autopilot has no built-in entry for is offered only when /v1/models serves it (the
+ * catalog then has an entry from /v1/models, see loadDlCatalog). DeepSeek V4.1
  * Flash first, then by measured speed. The same model from two providers is listed once,
  * the faster one.
  */
@@ -222,7 +286,8 @@ export function usableDlModels(list: DlProviders, o: { modelIds?: Set<string>; m
   const byId = new Map<string, DlUsableModel>();
   for (const p of list.providers) {
     for (const m of p.models) {
-      if (m.status !== "on" || !known.has(m.id)) continue;
+      if (m.status !== "on") continue;
+      if (!known.has(m.id) && !o.modelIds?.has(m.id)) continue;
       // /v1/models is the per-person answer when it was read; /v1/me rules out what it shows as closed,
       // and without /v1/models a model /v1/me doesn't speak for is left out.
       if (o.modelIds && !o.modelIds.has(m.id)) continue;
