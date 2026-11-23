@@ -114,7 +114,14 @@ describe("fetchDlProviders", () => {
     const slow = ((_url: string, init: RequestInit) =>
       new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new DOMException("timed out", "TimeoutError"))))) as unknown as typeof fetch;
     const started = Date.now();
-    assert.equal(await fetchDlProviders({ fetchImpl: slow, env, timeoutMs: 50 }), DL_FALLBACK_PROVIDERS);
+    // AbortSignal.timeout's timer doesn't hold the event loop open; with nothing else pending, Node 22's
+    // test runner ends the test before it fires. A plain timer keeps the loop alive until it does.
+    const keepAlive = setTimeout(() => {}, 5_000);
+    try {
+      assert.equal(await fetchDlProviders({ fetchImpl: slow, env, timeoutMs: 50 }), DL_FALLBACK_PROVIDERS);
+    } finally {
+      clearTimeout(keepAlive);
+    }
     assert.ok(Date.now() - started < 1_000);
     setDlProvidersCache(null);
     const down = (async () => {
