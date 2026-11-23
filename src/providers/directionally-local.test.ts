@@ -638,7 +638,11 @@ describe("Directionally Local free tier", () => {
       assert.strictEqual(describeDlError("below_bar", { message: "From the service." }), "From the service.");
       assert.match(describeDlError("below_bar")!, /contact@directionallylocal\.com/);
       assert.strictEqual(describeDlError("rate_limited", { retryAfter: 12 }), "Directionally Local is limiting how fast you send requests; try again in 12 seconds.");
-      assert.match(describeDlError("model_not_allowed")!, /serves deepseek\/deepseek-v4\.1-flash-1017, gpt-6-luna, gpt-6\.1-sol, gpt-6-astra/);
+      // Only what this person can use: the service's list, else DeepSeek (GPT-6 only with a GPT-6 budget).
+      resetDlNoticeState();
+      assert.strictEqual(describeDlError("model_not_allowed"), "The free tier serves deepseek/deepseek-v4.1-flash-1017; pick one with /model.");
+      assert.strictEqual(describeDlError("model_not_allowed", { allowed: ["deepseek/deepseek-v4.1-flash-1017", "gpt-6-luna"] }), "The free tier serves deepseek/deepseek-v4.1-flash-1017, gpt-6-luna; pick one with /model.");
+      assert.deepStrictEqual(parseDlError({ error: { code: "model_not_allowed", allowed: ["gpt-6-luna", 3, ""] } })?.allowed, ["gpt-6-luna"]);
       for (const code of ["quota_exceeded", "service_paused", "suspended", "not_invited", "cohort_full", "account_too_new"]) {
         assert.doesNotMatch(describeDlError(code, tokyo)!, /\/model or|autopilot connect|UTC/, `${code}: the switch is /provider, times are local`);
       }
@@ -718,7 +722,8 @@ describe("Directionally Local free tier", () => {
       [503, { error: { code: "paused", resets_at: "2026-11-09T00:00:00.000Z" } }, /Free tokens are paused for everyone until \w{3} \d\d:\d\d\./, 1],
       [503, { error: { code: "global_weekly_budget_reached", reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z", pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone until \w{3} \d\d:\d\d\. Your own key works now: \/provider$/, 1],
       [503, { error: { code: "global_total_budget_reached", reason: "total_budget", resetsAt: null, pausedForEveryone: true, message: "m" } }, /^autopilot: Free tokens are paused for everyone\. Your own key works now: \/provider$/, 1],
-      [400, { error: { code: "model_not_allowed" } }, /serves deepseek\/deepseek-v4\.1-flash-1017, gpt-6-luna, gpt-6\.1-sol, gpt-6-astra/, 1],
+      [400, { error: { code: "model_not_allowed" } }, /serves deepseek\/deepseek-v4\.1-flash-1017/, 1],
+      [400, { error: { code: "model_not_allowed", allowed: ["deepseek/deepseek-v4.1-flash-1017"] } }, /serves deepseek\/deepseek-v4\.1-flash-1017; pick one/, 1],
     ];
     for (const [status, body, pattern, calls] of cases) {
       const code = (body as { error: { code: string } }).error.code;
