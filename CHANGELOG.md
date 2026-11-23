@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.30.0](https://github.com/directionally-local/autopilot/compare/v3.29.0...v3.30.0) (2026-11-23)
+
+
+### Features
+
+* **free:** pick a free model after sign-in, with provider and speed ([#1290](https://github.com/directionally-local/autopilot/issues/1290)) ([de76562](https://github.com/directionally-local/autopilot/commit/de765624929b39d37b264c6746891f117e17e7ec))
+
 ## [3.29.0](https://github.com/directionally-local/autopilot/compare/v3.28.2...v3.29.0) (2026-11-23)
 
 
