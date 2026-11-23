@@ -243,6 +243,10 @@ export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & {
     const title = d.reason && typeof d.message === "string" && d.message.trim() ? d.message.trim() : dlGptLimitTitle(d.resetsAt, o);
     return `${title} Run with \`-m ${typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL}\` to use it.`;
   }
+  if (code === "provider_limit") {
+    const title = typeof d.message === "string" && d.message.trim() ? d.message.trim() : "This free model's provider is at its limit for now.";
+    return `${title} Run with \`-m ${typeof d.alternative === "string" && d.alternative ? d.alternative : DL_DEEPSEEK_MODEL}\` to use another free model.`;
+  }
   if (code === "free_tier_queued") {
     return `${dlQueuePlace(d.position, d.etaAt, o)} Each friend who starts using dl moves you up${link ? `: ${link}` : ""}. Start now: \`${DL_UPGRADE_COMMAND}\`, or your own key: \`autopilot connect\`.`;
   }

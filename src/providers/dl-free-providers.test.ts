@@ -4,6 +4,7 @@ import {
   DL_FALLBACK_PROVIDERS,
   DL_PROVIDERS_CACHE_MS,
   DL_UNKNOWN_CONTEXT,
+  dlProviderLimitAutoSwitch,
   DL_UNKNOWN_MAX_OUTPUT,
   cachedDlProviders,
   dlServedModelEntry,
@@ -20,6 +21,9 @@ import {
   setDlProvidersCache,
   usableDlModels,
 } from "./dl-free-providers.js";
+
+import { describeDlError, parseDlError } from "./directionally-local.js";
+import { dlHeadlessLine } from "./dl-growth.js";
 
 const env = { AUTOPILOT_DL_FREE_URL: "https://free.test" } as NodeJS.ProcessEnv;
 const model = (over: Record<string, unknown>) => ({
@@ -243,5 +247,48 @@ describe("free models this Autopilot doesn't know yet", () => {
   it("fetchDlServedModels keeps name and limits", async () => {
     const fetchImpl = (async () => json({ data: [{ id: "a", name: "A", context_window: 1000, max_output_tokens: 100 }, { id: "b" }, { nope: 1 }] })) as unknown as typeof fetch;
     assert.deepEqual(await fetchDlServedModels("tok", { fetchImpl, env }), [{ id: "a", name: "A", contextWindow: 1000, maxOutputTokens: 100 }, { id: "b" }]);
+  });
+});
+
+describe("402 provider_limit: switch to the alternative and resend once", () => {
+  const kimiId = "moonshotai/kimi-k3.1-pro";
+  const list = parseDlProviders({
+    providers: [
+      { id: "luminal", name: "Luminal", models: [model({})] },
+      { id: "liquid", name: "Liquid Inference", models: [model({ id: kimiId, name: "Kimi K3.1 Pro", family: "kimi", access: "opt-in" })] },
+    ],
+  });
+  const base = { provider: "directionally-local", model: kimiId, code: "provider_limit", alternative: "deepseek/deepseek-v4.1-flash-1017", servedBy: "liquid", retried: false, list };
+
+  it("reads the error like gpt_limit, with the provider", () => {
+    const body = { error: { code: "provider_limit", message: "Kimi K3.1 Pro is paused.", family: "kimi", provider: "liquid", reason: "paused", resetsAt: "2026-11-30T00:00:00.000Z", alternative: "deepseek/deepseek-v4.1-flash-1017" } };
+    assert.deepEqual(parseDlError(body), { code: "provider_limit", message: "Kimi K3.1 Pro is paused.", family: "kimi", provider: "liquid", reason: "paused", resetsAt: "2026-11-30T00:00:00.000Z", alternative: "deepseek/deepseek-v4.1-flash-1017" });
+    assert.equal(describeDlError("provider_limit", {}), "This free model's provider is at its limit for now; pick another free model with /model.");
+    assert.equal(dlHeadlessLine("provider_limit", { message: "Kimi K3.1 Pro is paused." }), "Kimi K3.1 Pro is paused. Run with `-m deepseek/deepseek-v4.1-flash-1017` to use another free model.");
+  });
+
+  it("switches any free model to the alternative, with one line naming model and provider", () => {
+    assert.deepEqual(dlProviderLimitAutoSwitch(base), {
+      model: "deepseek/deepseek-v4.1-flash-1017",
+      notice: "Kimi K3.1 Pro on Liquid Inference is at its limit for now; switched to DeepSeek V4.1 Flash.",
+    });
+    // A provider given by name, or none (then whoever /v1/providers says serves it); GPT-6 too.
+    assert.match(dlProviderLimitAutoSwitch({ ...base, servedBy: "Liquid Inference" })!.notice, /^Kimi K3\.1 Pro on Liquid Inference is/);
+    assert.match(dlProviderLimitAutoSwitch({ ...base, servedBy: undefined })!.notice, /^Kimi K3\.1 Pro on Liquid Inference is/);
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, model: "gpt-6-luna", servedBy: "openai", list: null })!.notice, "GPT-6 Luna on openai is at its limit for now; switched to DeepSeek V4.1 Flash.");
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, servedBy: undefined, list: null })!.notice, "moonshotai/kimi-k3.1-pro is at its limit for now; switched to DeepSeek V4.1 Flash.");
+  });
+
+  it("resends once only, and leaves other cases alone", () => {
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, retried: true }), null);
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, model: "deepseek/deepseek-v4.1-flash-1017" }), null);
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, provider: "openrouter" }), null);
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, code: "gpt_limit" }), null);
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, model: undefined }), null);
+  });
+
+  it("falls back to DeepSeek when the alternative isn't a free model", () => {
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, alternative: undefined })!.model, "deepseek/deepseek-v4.1-flash-1017");
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, alternative: "evil/model" })!.model, "deepseek/deepseek-v4.1-flash-1017");
   });
 });

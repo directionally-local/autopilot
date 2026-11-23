@@ -11,8 +11,8 @@
 
 import { getUserAgent } from "../util/version.js";
 import { DL_FREE_DEFAULT_MODEL, dlOrigin } from "./dl-endpoint.js";
-import { DL_FREE_MODELS, dlFreeModelEntries, type DlMe } from "./directionally-local.js";
-import type { ModelEntry } from "../models/registry.js";
+import { DL_DEEPSEEK_MODEL, DL_FREE_MODELS, DL_PROVIDER_ID, dlFreeModelEntries, type DlMe } from "./directionally-local.js";
+import { getModel, type ModelEntry } from "../models/registry.js";
 
 export type DlModelAccess = "free" | "trusted" | "opt-in" | "pro";
 export type DlModelStatus = "on" | "paused" | "out_of_credit";
@@ -347,4 +347,47 @@ export async function loadUsableDlModels(
 /** One row of the "Pick a free model" screen: "DeepSeek V4.1 Flash · Luminal", then "~85 tok/s" (blank when not measured). */
 export function dlFreeModelOption(m: DlUsableModel): { value: string; label: string; columns: string[] } {
   return { value: m.id, label: `${m.name} · ${m.provider}`, columns: [formatTokPerSec(m.tokensPerSecond)] };
+}
+
+/** A free model's display name: built in, else /v1/providers, else the catalog (without " (free)"), else its id. */
+export function dlModelName(id: string, list: DlProviders | null = cachedDlProviders()): string {
+  const builtIn = DL_FREE_MODELS.find((m) => m.id === id)?.name;
+  if (builtIn) return builtIn;
+  const listed = list?.providers.flatMap((p) => p.models).find((m) => m.id === id)?.name;
+  if (listed) return listed;
+  const name = getModel(id)?.name?.replace(/ \(free\)$/, "");
+  return name || id;
+}
+
+/** The provider's name for a provider_limit: the error's provider (an id or a name), else whoever /v1/providers says serves the model. */
+function dlProviderName(provider: string | undefined, modelId: string, list: DlProviders | null): string | undefined {
+  if (provider) return list?.providers.find((p) => p.id === provider)?.name ?? provider;
+  return list?.providers.find((p) => p.models.some((m) => m.id === modelId))?.name;
+}
+
+/**
+ * A free model's provider can't serve it right now (402 provider_limit: paused, out of
+ * credit, its weekly budget, or this person's cap): switch the session to the service's
+ * alternative (DeepSeek V4.1 Flash when it names none this Autopilot knows) and send the
+ * blocked turn again, once, with one line saying so. Null when the turn should get the
+ * usual error: not the free tier, another error, already on the alternative, or this turn
+ * was itself the retry (no loop). Any model, not only GPT-6.
+ */
+export function dlProviderLimitAutoSwitch(o: {
+  provider: string | undefined;
+  model: string | undefined;
+  code: string | undefined;
+  alternative: string | undefined;
+  /** The error's `provider`: who couldn't serve the model. */
+  servedBy?: string | undefined;
+  retried: boolean;
+  list?: DlProviders | null;
+}): { model: string; notice: string } | null {
+  if (o.provider !== DL_PROVIDER_ID || o.code !== "provider_limit" || o.retried || !o.model) return null;
+  const alternative = o.alternative && DL_FREE_MODELS.some((m) => m.id === o.alternative) ? o.alternative : DL_DEEPSEEK_MODEL;
+  if (o.model === alternative) return null;
+  const list = o.list === undefined ? cachedDlProviders() : o.list;
+  const servedBy = dlProviderName(o.servedBy, o.model, list);
+  const what = servedBy ? `${dlModelName(o.model, list)} on ${servedBy}` : dlModelName(o.model, list);
+  return { model: alternative, notice: `${what} is at its limit for now; switched to ${dlModelName(alternative, list)}.` };
 }
