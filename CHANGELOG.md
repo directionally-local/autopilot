@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.28.2](https://github.com/directionally-local/autopilot/compare/v3.28.1...v3.28.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **free:** quiet the type-stripping warning; unknown-model line lists only usable models ([#1288](https://github.com/directionally-local/autopilot/issues/1288)) ([b2b5b19](https://github.com/directionally-local/autopilot/commit/b2b5b195f577da4e9b29861b5ee5a21169ce79a5))
+
 ## [3.28.1](https://github.com/directionally-local/autopilot/compare/v3.28.0...v3.28.1) (2026-11-20)
 
 
