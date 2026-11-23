@@ -17,7 +17,7 @@
 
 <p align="center">
   <strong>The open-source coding agent inside <a href="https://dl.new">dl</a>. It doesn't ask permission.</strong><br>
-  Free DeepSeek V4.1 Flash tokens every week with a GitHub sign-in, no credit card. Or bring your own key: OpenRouter, Anthropic, OpenAI and 25+ more.
+  Free DeepSeek V4.1 Flash tokens every week with a GitHub sign-in, no credit card, and GPT-6 too once you've used dl for a while. Or bring your own key: OpenRouter, Anthropic, OpenAI and 25+ more.
 </p>
 
 ## Get it
