@@ -122,13 +122,48 @@ async function loadTypescript(cwd: string): Promise<typeof import("typescript") 
   return null;
 }
 
+type StripTypes = (code: string, opts?: { mode?: "strip" | "transform" }) => string;
+
+/** Node's one-time "stripTypeScriptTypes is an experimental feature" warning, and nothing else. */
+export function isStripTypesWarning(warning: unknown, args: unknown[]): boolean {
+  const message = typeof warning === "string" ? warning : warning instanceof Error ? warning.message : "";
+  const first = args[0];
+  const type =
+    typeof first === "string"
+      ? first
+      : first && typeof first === "object" && "type" in first
+        ? String((first as { type?: unknown }).type)
+        : warning instanceof Error
+          ? warning.name
+          : "";
+  return type === "ExperimentalWarning" && /stripTypeScriptTypes/.test(message);
+}
+
+/**
+ * Node's built-in type stripper, without the experimental warning its first call prints on
+ * stderr (it would start `autopilot -p` output). Only that warning is dropped, and only during
+ * the call; every other warning still goes out.
+ */
+export function stripTypesQuietly(strip: StripTypes, code: string): string {
+  const original = process.emitWarning;
+  process.emitWarning = function (this: unknown, warning: unknown, ...args: unknown[]) {
+    if (isStripTypesWarning(warning, args)) return;
+    return (original as (...a: unknown[]) => void).call(process, warning, ...args);
+  } as typeof process.emitWarning;
+  try {
+    return strip(code, { mode: "transform" });
+  } finally {
+    process.emitWarning = original;
+  }
+}
+
 async function transpileOrStrip(code: string, cwd: string): Promise<{ js: string; warnings: string[] }> {
   // Node's built-in type stripper (22.13+): reliable, and no 23 MB
   // typescript dependency in the package. "transform" also handles enums.
-  const builtin = (await import("node:module")) as { stripTypeScriptTypes?: (code: string, opts?: { mode?: "strip" | "transform" }) => string };
+  const builtin = (await import("node:module")) as { stripTypeScriptTypes?: StripTypes };
   if (typeof builtin.stripTypeScriptTypes === "function") {
     try {
-      return { js: builtin.stripTypeScriptTypes(code, { mode: "transform" }), warnings: [] };
+      return { js: stripTypesQuietly(builtin.stripTypeScriptTypes, code), warnings: [] };
     } catch {
       // unsupported syntax for the built-in: try typescript, then the regex fallback
     }

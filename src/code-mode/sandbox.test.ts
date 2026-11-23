@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
   stripTypescript,
+  stripTypesQuietly,
+  isStripTypesWarning,
   runInSandbox,
   buildFallbackWarning,
   resetFallbackWarningFlag,
@@ -302,5 +304,28 @@ describe("concurrent tool calls from a script", { skip: NO_SANDBOX }, () => {
     });
     assert.strictEqual(result.toolCalls.length, 1);
     assert.strictEqual(result.toolCalls[0]!.ok, false);
+  });
+});
+
+describe("Node's type stripper", () => {
+  it("drops only its experimental warning, so `autopilot -p` output starts clean", async () => {
+    const seen: string[] = [];
+    const listener = (warning: Error) => seen.push(`${warning.name}: ${warning.message}`);
+    process.on("warning", listener);
+    try {
+      const strip = (code: string) => {
+        process.emitWarning("stripTypeScriptTypes is an experimental feature and might change at any time", "ExperimentalWarning");
+        process.emitWarning("something else", "DeprecationWarning");
+        return code.replace(": number", "");
+      };
+      assert.strictEqual(stripTypesQuietly(strip, "const a: number = 1"), "const a = 1");
+      process.emitWarning("stripTypeScriptTypes is an experimental feature and might change at any time", "ExperimentalWarning");
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("warning", listener);
+    }
+    assert.deepStrictEqual(seen, ["DeprecationWarning: something else", "ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time"], "other warnings, and the same one outside the call, still go out");
+    assert.ok(isStripTypesWarning("stripTypeScriptTypes is an experimental feature", [{ type: "ExperimentalWarning" }]));
+    assert.ok(!isStripTypesWarning("SQLite is an experimental feature", ["ExperimentalWarning"]));
   });
 });

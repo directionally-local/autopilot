@@ -255,6 +255,8 @@ export interface DlErrorDetail {
   alternative?: string;
   /** trial_ended: the account's one-time trial, as /v1/me's `trial`. */
   trial?: DlTrial;
+  /** model_not_allowed: the models this person can use (the service lists only those). */
+  allowed?: string[];
 }
 
 // ── Plans, offers, invites and the queue (all optional: older servers send none) ──
@@ -465,6 +467,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const family = str("family");
   const alternative = str("alternative");
   const trial = parseDlTrial(e.trial);
+  const allowed = Array.isArray(e.allowed) ? e.allowed.filter((id): id is string => typeof id === "string" && id !== "") : [];
   return {
     code: e.code,
     ...(message ? { message } : {}),
@@ -482,6 +485,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(retryable ? { retryable } : {}),
     ...(request ? { request } : {}),
     ...(trial ? { trial } : {}),
+    ...(allowed.length > 0 ? { allowed } : {}),
   };
 }
 
@@ -723,10 +727,21 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       return `Directionally Local is limiting how fast you send requests; try again${s ? ` in ${s} second${s === 1 ? "" : "s"}` : " shortly"}.`;
     }
     case "model_not_allowed":
-      return `The free tier serves ${DL_FREE_MODELS.map((model) => model.id).join(", ")}; pick one with /model.`;
+      return `The free tier serves ${dlUsableModels(extra.allowed).join(", ")}; pick one with /model.`;
     default:
       return undefined;
   }
+}
+
+/**
+ * The free models this person can use, for the unknown-model refusal: the service's own list
+ * when it sent one, else DeepSeek, plus GPT-6 only when the last /v1/me showed a GPT-6 budget.
+ */
+function dlUsableModels(allowed: string[] | undefined): string[] {
+  if (allowed && allowed.length > 0) return allowed;
+  const gpt6 = lastMe?.budgets?.gpt6?.usdPerWeek;
+  const hasGpt6 = gpt6 === null || (typeof gpt6 === "number" && gpt6 > 0);
+  return DL_FREE_MODELS.filter((model) => model.family !== "gpt6" || hasGpt6).map((model) => model.id);
 }
 
 // ── Device sign-in ───────────────────────────────────────────────────────
