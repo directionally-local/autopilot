@@ -30,6 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
+import { cachedDlProviders, DL_FALLBACK_PROVIDERS, dlFreeModelOption, dlLockedProOption, dlModelProviderLine, dlProModelRow, fetchDlProviders, loadUsableDlModels, lockedDlProModels, type DlUsableModel } from "./providers/dl-free-providers.js";
 import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlGpt6Paused, dlModelAllowanceLine, dlStartLine, dlSignedInAgentsLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, isDlGpt6Model, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
@@ -621,7 +622,13 @@ export class View implements AppBridge {
   /** The terminal lent out while waiting on a browser (tests swap in a fake). */
   terminalIo: WaitIo | undefined = undefined;
   /** The provider calls the setup screens make; replaced in tests. */
-  providerCalls = { dlSignIn: directionallyLocalSignIn, verify: verifyProvider, dlMe: () => fetchDlMe() };
+  providerCalls = {
+    dlSignIn: directionallyLocalSignIn,
+    verify: verifyProvider,
+    dlMe: () => fetchDlMe(),
+    /** The free models this person can pick, with provider and speed (first run's "Pick a free model"). */
+    dlFreeModels: (token: string | undefined): Promise<DlUsableModel[]> => loadUsableDlModels(token, { me: lastKnownDlMe() }),
+  };
   /** The free tier's public status (open on any failure, within 1.5 s). */
   freeStatus: () => Promise<DlFreeStatus> = () => dlFreeStatus();
   /** What the person chose on dl.new, from its install command ("gpu": the first run goes to the own-GPU path); replaced in tests. */
@@ -1281,13 +1288,18 @@ export class View implements AppBridge {
       case "model":
         return want("model", async () => {
           const models = s.modelChoices ?? pickableModels();
+          // On the free tier, provider and speed per model: cached for 10 minutes, at most 2 s to read.
+          if (activeProviderCatalog() === DL_PROVIDER_ID) await fetchDlProviders();
           // On the free tier the list is its one model: say how to get others, so search isn't a dead end.
           const freeOnly = models.length === 1 && models[0]!.id === DL_FREE_MODEL;
           const subtitle = freeOnly
             ? "The free tier has this one model. For any other, use your own key: /provider"
             : "Context · price per Mtok (input / output / cached) · type to search all models";
-          const r = await this.select("Select a model", modelOptions(models, s.model), s.model, subtitle);
-          a.pickModel(models.find((m) => m.id === r) ?? null);
+          const options = modelOptions(models, s.model);
+          const r = await this.select("Select a model", options, s.model, subtitle);
+          // A row that is off (a dl Pro perk on a free account, GPT-6 on Starter) is never picked.
+          const off = options.some((o) => o.value === r && o.state === "off");
+          a.pickModel(off ? null : (models.find((m) => m.id === r) ?? null));
         });
       case "provider": {
         const initial = s.providerSetup?.initial;
@@ -1741,7 +1753,8 @@ export class View implements AppBridge {
       const free = await this.freeTierSignIn(o.cfg, say);
       // A denial's message names the way on; the question comes back.
       if (free.kind !== "connected") continue;
-      const saved = await this.commitChoice(free.connection, DL_FREE_MODEL, { firstRun: o.firstRun, standalone: !!o.standalone }, say);
+      const model = await this.pickFreeModel(free.connection);
+      const saved = await this.commitChoice(free.connection, model, { firstRun: o.firstRun, standalone: !!o.standalone }, say);
       if (saved) return saved;
     }
   }
@@ -2099,6 +2112,23 @@ export class View implements AppBridge {
     if (o.firstRun) say(`✓ Saved to ${configPath()}. Switch provider any time with /provider, model with /model.`);
     else if (o.standalone) say(`✓ Saved to ${configPath()}.`);
     return { id: connection.id, connection, model: modelId, cfg: saved };
+  }
+
+  /**
+   * First run on the free tier, once signed in: "Pick a free model" from the models this
+   * person can use (status on, allowed by /v1/models and /v1/me), each with its provider
+   * and measured speed; DeepSeek V4.1 Flash preselected. With one model there is nothing
+   * to pick; Esc keeps the default.
+   */
+  private async pickFreeModel(connection: Connection): Promise<string> {
+    const models = await this.providerCalls.dlFreeModels(connection.key).catch((): DlUsableModel[] => []);
+    if (models.length <= 1) return models[0]?.id ?? DL_FREE_MODEL;
+    const preselect = models.some((m) => m.id === DL_FREE_MODEL) ? DL_FREE_MODEL : models[0]!.id;
+    // dl Pro perks (Kimi K3.1 Pro) a free account can't use: shown as "Pro" rows that are off.
+    const locked = lockedDlProModels(cachedDlProviders() ?? DL_FALLBACK_PROVIDERS, lastKnownDlMe());
+    const options = [...models.map(dlFreeModelOption), ...locked.map(dlLockedProOption)];
+    const r = await this.select("Pick a free model", options, preselect, "Provider · measured speed · switch any time with /model · Esc keeps DeepSeek V4.1 Flash");
+    return r && models.some((m) => m.id === r) ? r : preselect;
   }
 
   /**
@@ -3000,18 +3030,24 @@ export function modelOptions(models: ModelEntry[], current: string): PickOption[
   const gpt6Paused = dlGpt6Paused(me);
   const row = (m: ModelEntry, section: string): PickOption => {
     // On the free tier, each model's own weekly allowance is the useful third column.
-    const allowance = activeProviderCatalog() === DL_PROVIDER_ID ? dlModelAllowanceLine(m.id, me) : undefined;
+    const free = activeProviderCatalog() === DL_PROVIDER_ID;
+    const allowance = free ? dlModelAllowanceLine(m.id, me) : undefined;
+    // Who serves it and how fast it measured, from the cached /v1/providers ("Luminal · ~85 tok/s").
+    const servedBy = free ? dlModelProviderLine(m.id) : undefined;
     // A Starter account gets DeepSeek only: say so on the GPT-6 rows, and leave DeepSeek active.
     const locked = starter && m.id !== "deepseek/deepseek-v4.1-flash-1017";
     // GPT-6 is paused on the free tier when /v1/me gives it a $0 budget: still listed, marked.
     const paused = !locked && gpt6Paused && isDlGpt6Model(m.id);
+    // A dl Pro perk (Kimi K3.1 Pro): "Pro" and off for a free account, this week's ration left for Pro.
+    const pro = free && !locked && !paused ? dlProModelRow(m.id, me) : undefined;
     return {
       value: m.id,
       label: m.id,
       section,
       ...(locked ? { description: "locked on Starter — DeepSeek only", state: "off" as const } : {}),
       ...(paused ? { description: "(paused)", state: "off" as const } : {}),
-      columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing), ...(allowance ? [allowance] : [])],
+      ...(pro ? { description: pro.description, ...(pro.locked ? { state: "off" as const } : {}) } : {}),
+      columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing), ...(servedBy ? [servedBy] : []), ...(allowance ? [allowance] : []), ...(pro?.column ? [pro.column] : [])],
       keywords: m.name ?? "",
     };
   };

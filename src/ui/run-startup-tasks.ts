@@ -69,6 +69,8 @@ export function runStartupTasks(deps: RunStartupTasksDeps): void {
   // saved choice stays for later.
   if (!freeModelChecked && resolveActiveProvider(cfg).id === "directionally-local" && !process.env.KIMI_MODEL) {
     freeModelChecked = true;
+    // Warm the free tier's provider list (names and speeds for /model); never blocks or fails.
+    void import("../providers/dl-free-providers.js").then(({ fetchDlProviders }) => fetchDlProviders()).catch(() => {});
     const startModel = cfg.model;
     void import("../providers/directionally-local.js")
       .then(async ({ fetchDlMe, freeModelFallback, lastKnownDlMe }) => {

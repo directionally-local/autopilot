@@ -250,9 +250,17 @@ export interface DlErrorDetail {
   retryable?: boolean;
   /** below_bar, basic_limit: where to ask for more free tokens (/request); older servers send none. */
   request?: string;
-  /** gpt_limit: the budget that ran out ("gpt6") and the model that still has usage this week. */
+  /** gpt_limit, provider_limit: the budget that ran out ("gpt6") and the model that still has usage this week. */
   family?: string;
   alternative?: string;
+  /** provider_limit: the provider that can't serve the model right now (its id or name, as /v1/providers has it). */
+  provider?: string;
+  /** provider_limit: "pro" when the model is a dl Pro perk (reason pro_only for a free account, person_cap for Pro's used-up ration). */
+  plans?: string;
+  /** provider_limit pro_only: where dl Pro is bought (dl.new/account); absent while Pro isn't offered. */
+  upgradeUrl?: string;
+  /** provider_limit with plans "pro": about how many tokens of the model Pro gets a week. */
+  approxTokensPerWeek?: number;
   /** trial_ended: the account's one-time trial, as /v1/me's `trial`. */
   trial?: DlTrial;
   /** model_not_allowed: the models this person can use (the service lists only those). */
@@ -497,6 +505,10 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const request = str("request");
   const family = str("family");
   const alternative = str("alternative");
+  const provider = str("provider");
+  const plans = str("plans");
+  const upgradeUrl = str("upgradeUrl", "upgrade_url");
+  const approxTokensPerWeek = num("approxTokensPerWeek", "approx_tokens_per_week");
   const trial = parseDlTrial(e.trial);
   const allowed = Array.isArray(e.allowed) ? e.allowed.filter((id): id is string => typeof id === "string" && id !== "") : [];
   const proPrompt = parseDlProPrompt(e.proPrompt ?? e.pro_prompt);
@@ -514,6 +526,10 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(etaAt ? { etaAt } : {}),
     ...(family ? { family } : {}),
     ...(alternative ? { alternative } : {}),
+    ...(provider ? { provider } : {}),
+    ...(plans ? { plans } : {}),
+    ...(upgradeUrl && /^https:\/\//.test(upgradeUrl) ? { upgradeUrl } : {}),
+    ...(approxTokensPerWeek !== undefined && approxTokensPerWeek > 0 ? { approxTokensPerWeek } : {}),
     ...(retryable ? { retryable } : {}),
     ...(request ? { request } : {}),
     ...(trial ? { trial } : {}),
@@ -762,6 +778,9 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       const s = extra.retryAfter && extra.retryAfter > 0 ? Math.ceil(extra.retryAfter) : undefined;
       return `Directionally Local is limiting how fast you send requests; try again${s ? ` in ${s} second${s === 1 ? "" : "s"}` : " shortly"}.`;
     }
+    case "provider_limit":
+      // Sessions switch to the alternative on their own (dlProviderLimitAutoSwitch); this is the line when they can't.
+      return extra.message ?? "This free model's provider is at its limit for now; pick another free model with /model.";
     case "model_not_allowed":
       return `The free tier serves ${dlUsableModels(extra.allowed).join(", ")}; pick one with /model.`;
     default:

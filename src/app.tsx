@@ -128,7 +128,8 @@ import {
 } from "./ui/app-helpers.js";
 import { projectDirsToRead } from "./util/app-dirs.js";
 import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
-import { DL_PROVIDER_ID, dlGptLimitAutoSwitch, lastKnownDlMe } from "./providers/directionally-local.js";
+import { DL_PROVIDER_ID, dlGptLimitAutoSwitch, lastKnownDlMe, type DlErrorDetail } from "./providers/directionally-local.js";
+import { dlProviderLimitAutoSwitch } from "./providers/dl-free-providers.js";
 import { resolveActiveProvider } from "./providers/resolve.js";
 import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
 import type { FeedbackLine, FeedbackRequest } from "./feedback.js";
@@ -1779,6 +1780,7 @@ function App({
                 ? dlScreenFor(e.providerCode, (e.providerDetail ?? {}) as Parameters<typeof dlScreenFor>[1], lastKnownDlMe()?.referral?.link, lastKnownDlMe()?.plan)
                 : undefined;
             // GPT-6 on the free tier hit gpt_limit: move this session to the alternative and send the turn again, once.
+            // A free model's provider hit provider_limit (any model): the same, with its own line.
             const autoSwitch =
               screen?.kind === "gpt" && e instanceof DlApiError
                 ? dlGptLimitAutoSwitch({
@@ -1789,7 +1791,22 @@ function App({
                     reason: screen.reason,
                     retried: retry,
                   })
-                : null;
+                : e instanceof DlApiError && e.providerCode === "provider_limit" && failure.kind !== "aborted"
+                  ? dlProviderLimitAutoSwitch({
+                      provider: resolveActiveProvider(cfg).id,
+                      model: cfg.model,
+                      code: e.providerCode,
+                      alternative: (e.providerDetail as { alternative?: string } | undefined)?.alternative,
+                      servedBy: (e.providerDetail as { provider?: string } | undefined)?.provider,
+                      // A dl Pro perk: the reason (pro_only, person_cap), the Upgrade link and the reset day.
+                      reason: (e.providerDetail as DlErrorDetail | undefined)?.reason,
+                      plans: (e.providerDetail as DlErrorDetail | undefined)?.plans,
+                      upgradeUrl: (e.providerDetail as DlErrorDetail | undefined)?.upgradeUrl,
+                      approxTokensPerWeek: (e.providerDetail as DlErrorDetail | undefined)?.approxTokensPerWeek,
+                      resetsAt: (e.providerDetail as DlErrorDetail | undefined)?.resetsAt,
+                      retried: retry,
+                    })
+                  : null;
             const blocked = lastTurnPromptRef.current;
             if (autoSwitch && blocked) {
               const saved = cfg.model;
