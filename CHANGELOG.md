@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.29.0](https://github.com/directionally-local/autopilot/compare/v3.28.2...v3.29.0) (2026-11-23)
+
+
+### Features
+
+* **free:** dl Pro prompt when the free week's open models run out ([#1291](https://github.com/directionally-local/autopilot/issues/1291)) ([e5ece46](https://github.com/directionally-local/autopilot/commit/e5ece46bd8527fdd670a79455e972c4ad698d538))
+
 ## [3.28.2](https://github.com/directionally-local/autopilot/compare/v3.28.1...v3.28.2) (2026-11-23)
 
 
