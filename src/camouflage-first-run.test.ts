@@ -127,6 +127,7 @@ describe("first run: one question", () => {
       dlSignIn: async () => ({ key: "at-1" }),
       verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
       dlMe: async () => ({ ...me, referral }),
+      dlFreeModels: async () => [],
     };
     assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
     const lines = said();
@@ -146,6 +147,7 @@ describe("first run: one question", () => {
       dlSignIn: async () => (onSignIn(), { key: "at-1" }),
       verify: async (id: ProviderId, key: string | undefined, source: KeySource) => ({ ok: true as const, connection: { id, ...(key ? { key } : {}), source } }),
       dlMe: async () => me,
+      dlFreeModels: async () => [],
     });
 
     it("started by dl: one line right after the sign-in line, once", async () => {
@@ -196,6 +198,7 @@ describe("first run: one question", () => {
       dlSignIn: async () => (signIns++, { key: "at-1" }),
       verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
       dlMe: async () => me,
+      dlFreeModels: async () => [],
     };
     assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
     assert.strictEqual(signIns, 1);
@@ -245,6 +248,7 @@ describe("first run: one question", () => {
           },
           verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
           dlMe: async () => me,
+          dlFreeModels: async () => [],
         };
         assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
         assert.match(onScreen, /Your code is WLZH-2682/, `attempt ${attempt}: the code is on screen`);
@@ -291,6 +295,7 @@ describe("first run: one question", () => {
         },
         verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
         dlMe: async () => me,
+        dlFreeModels: async () => [],
       };
       assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
       assert.strictEqual(drawn.length, 2);
@@ -325,6 +330,7 @@ describe("first run: one question", () => {
         },
         verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
         dlMe: async () => me,
+        dlFreeModels: async () => [],
       };
       assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
       const text = said().join("\n");
@@ -453,6 +459,7 @@ describe("first run and /provider: the free tier's status", () => {
       dlSignIn: async () => (signIns++, { key: "at-1" }),
       verify: async (id: ProviderId, key: string | undefined, source) => ({ ok: true, connection: { id, ...(key ? { key } : {}), source } }),
       dlMe: async () => me,
+      dlFreeModels: async () => [],
     };
     assert.strictEqual(await view.firstRunSetup({ upgrading: false }), true);
     const first = prompts[0]!.payload;
@@ -473,6 +480,7 @@ describe("first run and /provider: the free tier's status", () => {
       dlSignIn: async () => (signIns++, { key: "at-1" }),
       verify: async () => ({ ok: false, message: "unexpected" }) as never,
       dlMe: async () => me,
+      dlFreeModels: async () => [],
     };
     assert.strictEqual(await view.firstRunSetup({ upgrading: false }), false);
     const options = prompts[0]!.payload.options as Option[];

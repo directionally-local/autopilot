@@ -62,6 +62,7 @@ async function fakeView(select: (string | null)[], o: { gpu?: DetectedGpu | null
       return { ok: true, connection: { id, ...(key ? { key } : {}), source, ...(baseUrl ? { baseUrl } : {}) } };
     },
     dlMe: async () => null as never,
+    dlFreeModels: async () => [],
   };
   const said = () => sent.filter((s) => s.type === "RuntimeError").map((s) => String(s.payload.message));
   const splash = () => sent.filter((s) => s.type === "Splash").map((s) => String(s.payload.text)).join("\n");

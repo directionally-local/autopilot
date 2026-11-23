@@ -9,6 +9,7 @@ import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/view-types.js";
 import { listModels, registerProviderModels } from "./models/registry.js";
 import { DL_PROVIDER_ID, DlError, dlFreeModelEntries, normalizeDlMe, setLastKnownDlMe } from "./providers/directionally-local.js";
+import { parseDlProviders, setDlProvidersCache, type DlUsableModel } from "./providers/dl-free-providers.js";
 import { bashTool } from "./tools/bash.js";
 import { jobStartTool } from "./tools/jobs.js";
 
@@ -213,6 +214,67 @@ describe("modelOptions while GPT-6 is paused on the free tier", () => {
       setLastKnownDlMe(null);
       registerProviderModels("openrouter", []);
     }
+  });
+});
+
+describe("modelOptions on the free tier: provider and speed", () => {
+  it("shows who serves each free model and its measured tok/s, from the cached /v1/providers", () => {
+    const m = (id: string, name: string, tps: number | null) => ({ id, name, family: "gpt6", contextWindow: 1, access: "free", status: "on", tokensPerSecond: tps, ttftMs: null, successRate24h: null, measuredAt: null });
+    setDlProvidersCache(
+      parseDlProviders({
+        updatedAt: "2026-11-23T08:00:00.000Z",
+        providers: [
+          { id: "luminal", name: "Luminal", models: [m("deepseek/deepseek-v4.1-flash-1017", "DeepSeek V4.1 Flash", 85.4)] },
+          { id: "openai", name: "OpenAI", models: [m("gpt-6-luna", "GPT-6 Luna", null)] },
+        ],
+      }),
+    );
+    const models = dlFreeModelEntries();
+    registerProviderModels(DL_PROVIDER_ID, models);
+    try {
+      const opts = modelOptions(models, "deepseek/deepseek-v4.1-flash-1017");
+      assert.ok(opts.find((o) => o.value === "deepseek/deepseek-v4.1-flash-1017")!.columns!.includes("Luminal · ~85 tok/s"));
+      assert.ok(opts.find((o) => o.value === "gpt-6-luna")!.columns!.includes("OpenAI"), "provider alone when not measured");
+      assert.equal(opts.find((o) => o.value === "gpt-6.1-sol")!.columns!.length, 2, "nothing added for a model no provider lists");
+    } finally {
+      setDlProvidersCache(null);
+      registerProviderModels("openrouter", []);
+    }
+  });
+});
+
+describe("Camouflage first run: Pick a free model", () => {
+  const usable: DlUsableModel[] = [
+    { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", provider: "Luminal", tokensPerSecond: 85 },
+    { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", tokensPerSecond: null },
+  ];
+  type Pick = { pickFreeModel: (c: unknown) => Promise<string> };
+
+  it("lists model · provider with tok/s, DeepSeek preselected, and returns the choice", async () => {
+    const { view, prompts } = await fakeView({ select: ["gpt-6-luna"] });
+    let token: string | undefined;
+    view.providerCalls = { ...view.providerCalls, dlFreeModels: async (t) => ((token = t), usable) };
+    const model = await (view as unknown as Pick).pickFreeModel({ id: "directionally-local", source: "signin", key: "tok" });
+    assert.equal(model, "gpt-6-luna");
+    assert.equal(token, "tok");
+    const spec = prompts[0]!.payload as { prompt: string; default: string; options: { label: string; columns: string[] }[] };
+    assert.equal(spec.prompt, "Pick a free model");
+    assert.equal(spec.default, "deepseek/deepseek-v4.1-flash-1017");
+    assert.deepEqual(spec.options.map((o) => [o.label, o.columns[0]]), [["DeepSeek V4.1 Flash · Luminal", "~85 tok/s"], ["GPT-6 Luna · OpenAI", ""]]);
+    view.dispose();
+  });
+
+  it("Esc keeps DeepSeek; one model (or a failed read) asks nothing", async () => {
+    const { view, prompts } = await fakeView({ select: [null] });
+    view.providerCalls = { ...view.providerCalls, dlFreeModels: async () => usable };
+    const pick = view as unknown as Pick;
+    assert.equal(await pick.pickFreeModel({ id: "directionally-local", source: "signin", key: "tok" }), "deepseek/deepseek-v4.1-flash-1017");
+    view.providerCalls = { ...view.providerCalls, dlFreeModels: async () => usable.slice(0, 1) };
+    assert.equal(await pick.pickFreeModel({ id: "directionally-local", source: "signin", key: "tok" }), "deepseek/deepseek-v4.1-flash-1017");
+    view.providerCalls = { ...view.providerCalls, dlFreeModels: () => Promise.reject(new Error("offline")) };
+    assert.equal(await pick.pickFreeModel({ id: "directionally-local", source: "signin", key: "tok" }), "deepseek/deepseek-v4.1-flash-1017");
+    assert.equal(prompts.length, 1);
+    view.dispose();
   });
 });
 
