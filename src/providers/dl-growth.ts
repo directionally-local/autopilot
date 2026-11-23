@@ -21,6 +21,7 @@ import {
   DL_SWITCH_HINT,
   dlCheckout,
   dlProPrice,
+  dlProPromptLine,
   dlQueuePlace,
   dlTrialEndedLine,
   dlTrialEndedTitle,
@@ -81,6 +82,9 @@ export function inviteLabel(): string {
   return "Invite a friend (moves you up the line)";
 }
 
+/** dl Pro's prompt's one action (phase 1): Checkout for Pro. */
+export const DL_UPGRADE_LABEL = "Upgrade";
+
 /** "Get dl Pro: $3.99/month" (the price exactly as the service sends it). */
 export function proLabel(pro: DlProOffer, lead = "Get dl Pro"): string {
   return `${lead}: ${dlProPrice(pro)}`;
@@ -116,7 +120,7 @@ export interface DlChoiceOption {
  * for more free usage, your own key, your own GPUs. Queued: invite (with a
  * link), Pro, your own key. `upgrade` is /upgrade: Pro and the top-up.
  */
-export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; referralLink?: string; plan?: DlPlan }): DlChoiceOption[] {
+export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; referralLink?: string; plan?: DlPlan; proPrompt?: string }): DlChoiceOption[] {
   const out: DlChoiceOption[] = [];
   const pro = o.offers?.pro && o.plan !== "pro" ? o.offers.pro : undefined;
   const proOption = (lead: string): DlChoiceOption | undefined =>
@@ -127,7 +131,8 @@ export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; 
     return { value: "topup", label: topupLabel(t), ...(description ? { description } : {}) };
   };
   if (kind === "quota") {
-    const p = proOption("Get dl Pro");
+    // With dl Pro's prompt as the title, the first choice is its [Upgrade].
+    const p = o.proPrompt && pro ? { value: "pro" as const, label: DL_UPGRADE_LABEL, description: `dl Pro, ${dlProPrice(pro)}` } : proOption("Get dl Pro");
     if (p) out.push(p);
     if (isUsdTopup(topup)) out.push(topupOption(topup));
     if (o.plan !== "pro") out.push({ value: "request", label: "Ask for more free usage", description: "/request" });
@@ -234,6 +239,7 @@ export function dlWinLine(link: string): string {
 export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & { plan?: DlPlan } = {}): string | undefined {
   const link = d.referralLink;
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
+    if (d.proPrompt && o.plan !== "pro") return `${dlProPromptLine(d.proPrompt, "cli")}. Or use your own key: \`autopilot connect\`.`;
     const pro = d.offers?.pro && o.plan !== "pro" ? ` Get dl Pro for ${dlProPrice(d.offers.pro)}: \`${DL_UPGRADE_COMMAND}\`` : "";
     return `${dlLimitTitle(d.resetsAt, o)} To keep going now, use your own key: \`autopilot connect\`.${pro}`;
   }
@@ -376,7 +382,8 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 
 /** A screen the session shows: out of tokens, queued, or /upgrade. */
 export type DlScreen =
-  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan }
+  /** `proPrompt`: dl Pro's prompt from the service (the free week's open models are used up), shown as the title. */
+  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan; proPrompt?: string }
   /** `message`: the service's own sentence when the limit has a reason (e.g. "security"), shown instead of the allowance title. */
   | { kind: "gpt"; resetsAt?: string; alternative: string; reason?: string; message?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   /** A new account's one-time trial is used up (402 trial_ended): Pro or a top-up, no reset. */
@@ -406,7 +413,8 @@ export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallback
   const referralLink = d.referralLink ?? fallbackLink;
   const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}), ...(plan ? { plan } : {}) };
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
-    return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...common };
+    const proPrompt = d.proPrompt && plan !== "pro" ? d.proPrompt.text : undefined;
+    return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...(proPrompt ? { proPrompt } : {}), ...common };
   }
   if (code === "trial_ended") {
     const tokens = d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens;
@@ -429,7 +437,7 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
   const choices = dlScreenChoices(screen.kind, screen);
   const title =
     screen.kind === "quota"
-      ? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
+      ? screen.proPrompt ?? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
       : screen.kind === "gpt"
         ? screen.message ?? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
         : screen.kind === "trial"
