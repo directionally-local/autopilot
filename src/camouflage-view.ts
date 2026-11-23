@@ -30,7 +30,7 @@ import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
 import { getPreset, type ProviderId } from "./providers/presets.js";
 import { DL_STATUS_OPEN, dlFreeStatus, dlPausedLine, type DlFreeStatus } from "./providers/dl-status.js";
-import { dlFreeModelOption, dlModelProviderLine, fetchDlProviders, loadUsableDlModels, type DlUsableModel } from "./providers/dl-free-providers.js";
+import { cachedDlProviders, DL_FALLBACK_PROVIDERS, dlFreeModelOption, dlLockedProOption, dlModelProviderLine, dlProModelRow, fetchDlProviders, loadUsableDlModels, lockedDlProModels, type DlUsableModel } from "./providers/dl-free-providers.js";
 import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlGpt6Paused, dlModelAllowanceLine, dlStartLine, dlSignedInAgentsLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, isDlGpt6Model, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
@@ -1295,8 +1295,11 @@ export class View implements AppBridge {
           const subtitle = freeOnly
             ? "The free tier has this one model. For any other, use your own key: /provider"
             : "Context · price per Mtok (input / output / cached) · type to search all models";
-          const r = await this.select("Select a model", modelOptions(models, s.model), s.model, subtitle);
-          a.pickModel(models.find((m) => m.id === r) ?? null);
+          const options = modelOptions(models, s.model);
+          const r = await this.select("Select a model", options, s.model, subtitle);
+          // A row that is off (a dl Pro perk on a free account, GPT-6 on Starter) is never picked.
+          const off = options.some((o) => o.value === r && o.state === "off");
+          a.pickModel(off ? null : (models.find((m) => m.id === r) ?? null));
         });
       case "provider": {
         const initial = s.providerSetup?.initial;
@@ -2121,8 +2124,11 @@ export class View implements AppBridge {
     const models = await this.providerCalls.dlFreeModels(connection.key).catch((): DlUsableModel[] => []);
     if (models.length <= 1) return models[0]?.id ?? DL_FREE_MODEL;
     const preselect = models.some((m) => m.id === DL_FREE_MODEL) ? DL_FREE_MODEL : models[0]!.id;
-    const r = await this.select("Pick a free model", models.map(dlFreeModelOption), preselect, "Provider · measured speed · switch any time with /model · Esc keeps DeepSeek V4.1 Flash");
-    return r ?? preselect;
+    // dl Pro perks (Kimi K3.1 Pro) a free account can't use: shown as "Pro" rows that are off.
+    const locked = lockedDlProModels(cachedDlProviders() ?? DL_FALLBACK_PROVIDERS, lastKnownDlMe());
+    const options = [...models.map(dlFreeModelOption), ...locked.map(dlLockedProOption)];
+    const r = await this.select("Pick a free model", options, preselect, "Provider · measured speed · switch any time with /model · Esc keeps DeepSeek V4.1 Flash");
+    return r && models.some((m) => m.id === r) ? r : preselect;
   }
 
   /**
@@ -3032,13 +3038,16 @@ export function modelOptions(models: ModelEntry[], current: string): PickOption[
     const locked = starter && m.id !== "deepseek/deepseek-v4.1-flash-1017";
     // GPT-6 is paused on the free tier when /v1/me gives it a $0 budget: still listed, marked.
     const paused = !locked && gpt6Paused && isDlGpt6Model(m.id);
+    // A dl Pro perk (Kimi K3.1 Pro): "Pro" and off for a free account, this week's ration left for Pro.
+    const pro = free && !locked && !paused ? dlProModelRow(m.id, me) : undefined;
     return {
       value: m.id,
       label: m.id,
       section,
       ...(locked ? { description: "locked on Starter — DeepSeek only", state: "off" as const } : {}),
       ...(paused ? { description: "(paused)", state: "off" as const } : {}),
-      columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing), ...(servedBy ? [servedBy] : []), ...(allowance ? [allowance] : [])],
+      ...(pro ? { description: pro.description, ...(pro.locked ? { state: "off" as const } : {}) } : {}),
+      columns: [formatContext(m.contextWindow), formatModelPrice(m.pricing), ...(servedBy ? [servedBy] : []), ...(allowance ? [allowance] : []), ...(pro?.column ? [pro.column] : [])],
       keywords: m.name ?? "",
     };
   };

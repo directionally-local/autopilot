@@ -246,7 +246,13 @@ export async function loadDlCatalog(token: string | undefined, o: { fetchImpl?: 
   const [served, list] = await Promise.all([fetchDlServedModels(token, call), fetchDlProviders(call)]);
   const known = new Set(builtIn.map((m) => m.id));
   const extra = (served ?? []).filter((m) => !known.has(m.id)).map((m) => dlServedModelEntry(m, list));
-  return [...builtIn, ...extra];
+  // dl Pro perks /v1/models doesn't serve this person (a free account): listed so /model can show
+  // them as "Pro" rows that are off (camouflage-view modelOptions, dlProModelRow).
+  const listedIds = new Set([...known, ...extra.map((m) => m.id)]);
+  const pro = lockedDlProModels(list, null)
+    .filter((m) => !listedIds.has(m.id))
+    .map((m) => ({ ...dlServedModelEntry({ id: m.id, name: m.name }, list), name: `${m.name} (Pro)` }));
+  return [...builtIn, ...extra, ...pro];
 }
 
 /** A free model this person can pick, with who serves it and how fast it measured. */
@@ -349,13 +355,13 @@ export function dlFreeModelOption(m: DlUsableModel): { value: string; label: str
   return { value: m.id, label: `${m.name} · ${m.provider}`, columns: [formatTokPerSec(m.tokensPerSecond)] };
 }
 
-/** A free model's display name: built in, else /v1/providers, else the catalog (without " (free)"), else its id. */
+/** A free model's display name: built in, else /v1/providers, else the catalog (without " (free)" or " (Pro)"), else its id. */
 export function dlModelName(id: string, list: DlProviders | null = cachedDlProviders()): string {
   const builtIn = DL_FREE_MODELS.find((m) => m.id === id)?.name;
   if (builtIn) return builtIn;
   const listed = list?.providers.flatMap((p) => p.models).find((m) => m.id === id)?.name;
   if (listed) return listed;
-  const name = getModel(id)?.name?.replace(/ \(free\)$/, "");
+  const name = getModel(id)?.name?.replace(/ \((free|Pro)\)$/, "");
   return name || id;
 }
 
@@ -365,13 +371,31 @@ function dlProviderName(provider: string | undefined, modelId: string, list: DlP
   return list?.providers.find((p) => p.models.some((m) => m.id === modelId))?.name;
 }
 
+/** 140000 → "140K", 1200000 → "1.2M": the "about N tokens" of a Pro ration. */
+export function formatApproxTokens(n: number): string {
+  const trim = (v: number) => v.toFixed(1).replace(/\.0$/, "");
+  if (n >= 1_000_000) return `${trim(n / 1_000_000)}M`;
+  if (n >= 1_000) return `${trim(n / 1_000)}K`;
+  return String(Math.round(n));
+}
+
+/** "Monday 30 Nov": when a weekly ration resets, in this machine's time zone. */
+export function dlResetDay(iso: string | undefined, timeZone?: string): string | undefined {
+  if (!iso || !Number.isFinite(Date.parse(iso))) return undefined;
+  const date = new Date(iso);
+  const tz = timeZone ? { timeZone } : {};
+  return `${date.toLocaleDateString("en-GB", { weekday: "long", ...tz })} ${date.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...tz })}`;
+}
+
 /**
  * A free model's provider can't serve it right now (402 provider_limit: paused, out of
  * credit, its weekly budget, or this person's cap): switch the session to the service's
  * alternative (DeepSeek V4.1 Flash when it names none this Autopilot knows) and send the
- * blocked turn again, once, with one line saying so. Null when the turn should get the
- * usual error: not the free tier, another error, already on the alternative, or this turn
- * was itself the retry (no loop). Any model, not only GPT-6.
+ * blocked turn again, once, with one line saying so. A dl Pro perk (the error's `plans`
+ * "pro") gets its own line: the perk and where to upgrade for a free account (pro_only), the
+ * reset day for Pro's used-up ration (person_cap). Null when the turn should get the usual
+ * error: not the free tier, another error, already on the alternative, or this turn was itself
+ * the retry (no loop). Any model, not only GPT-6.
  */
 export function dlProviderLimitAutoSwitch(o: {
   provider: string | undefined;
@@ -380,6 +404,14 @@ export function dlProviderLimitAutoSwitch(o: {
   alternative: string | undefined;
   /** The error's `provider`: who couldn't serve the model. */
   servedBy?: string | undefined;
+  /** The error's `reason`, `plans`, `upgradeUrl`, `approxTokensPerWeek` and `resetsAt`. */
+  reason?: string | undefined;
+  plans?: string | undefined;
+  upgradeUrl?: string | undefined;
+  approxTokensPerWeek?: number | undefined;
+  resetsAt?: string | undefined;
+  /** For tests: the time zone the reset day is shown in. */
+  timeZone?: string;
   retried: boolean;
   list?: DlProviders | null;
 }): { model: string; notice: string } | null {
@@ -387,7 +419,105 @@ export function dlProviderLimitAutoSwitch(o: {
   const alternative = o.alternative && DL_FREE_MODELS.some((m) => m.id === o.alternative) ? o.alternative : DL_DEEPSEEK_MODEL;
   if (o.model === alternative) return null;
   const list = o.list === undefined ? cachedDlProviders() : o.list;
+  const name = dlModelName(o.model, list);
+  const switched = `switched to ${dlModelName(alternative, list)}`;
+  const ration = o.approxTokensPerWeek ? `about ${formatApproxTokens(o.approxTokensPerWeek)} tokens a week` : undefined;
+  if (o.plans === "pro" && o.reason === "pro_only") {
+    const perk = ration ? `${name} is a dl Pro perk (${ration})` : `${name} is a dl Pro perk`;
+    return { model: alternative, notice: `${perk}; ${switched}.${o.upgradeUrl ? ` Upgrade: ${o.upgradeUrl}` : ""}` };
+  }
+  if (o.plans === "pro" && o.reason === "person_cap") {
+    const day = dlResetDay(o.resetsAt, o.timeZone);
+    return { model: alternative, notice: `This week's ${name} with dl Pro is used up${day ? ` (it resets ${day})` : ""}; ${switched}.` };
+  }
   const servedBy = dlProviderName(o.servedBy, o.model, list);
-  const what = servedBy ? `${dlModelName(o.model, list)} on ${servedBy}` : dlModelName(o.model, list);
-  return { model: alternative, notice: `${what} is at its limit for now; switched to ${dlModelName(alternative, list)}.` };
+  const what = servedBy ? `${name} on ${servedBy}` : name;
+  return { model: alternative, notice: `${what} is at its limit for now; ${switched}.` };
+}
+
+// ─── dl Pro only models (Kimi K3.1 Pro) ─────────────────────────────────────
+
+/** One entry of /v1/me `proModels`: a model only dl Pro gets, and this person's weekly ration of it. */
+export interface DlProModel {
+  id: string;
+  name: string;
+  /** Whether this account may use it (Pro, or an admin). */
+  available: boolean;
+  approxTokensPerWeek: number | null;
+  /** Pro's ration this week; null for a free account (or an admin, who has none). */
+  ration: { approxTokensLeft: number; approxTokensPerWeek: number; remainingUsd: number; resetsAt: string } | null;
+  /** The service's one line about it, to show as it is. */
+  text: string;
+}
+
+/** /v1/me `proModels`, read defensively; [] when the service doesn't send it (older servers). */
+export function dlProModels(me: unknown): DlProModel[] {
+  const raw = isRec(me) ? me.proModels : undefined;
+  if (!Array.isArray(raw)) return [];
+  const out: DlProModel[] = [];
+  for (const m of raw) {
+    if (!isRec(m) || !str(m.id)) continue;
+    const r = isRec(m.ration) ? m.ration : null;
+    const left = r ? numOrNull(r.approxTokensLeft) : null;
+    const perWeek = r ? numOrNull(r.approxTokensPerWeek) : null;
+    out.push({
+      id: str(m.id),
+      name: str(m.name) || str(m.id),
+      available: m.available === true,
+      approxTokensPerWeek: numOrNull(m.approxTokensPerWeek),
+      ration: r && left !== null && perWeek !== null ? { approxTokensLeft: left, approxTokensPerWeek: perWeek, remainingUsd: numOrNull(r.remainingUsd) ?? 0, resetsAt: str(r.resetsAt) } : null,
+      text: str(m.text),
+    });
+  }
+  return out;
+}
+
+/** Whether /v1/providers lists this model as a dl Pro perk (access "pro"). */
+export function isDlProModel(modelId: string, list: DlProviders | null = cachedDlProviders()): boolean {
+  return !!list?.providers.some((p) => p.models.some((m) => m.id === modelId && m.access === "pro"));
+}
+
+/**
+ * How a dl Pro only model shows in a picker for this person: for a free account (or when the
+ * plan isn't known) the row is off, labelled "Pro" and says how to get it; for Pro, a column
+ * with this week's ration left ("~86K of 140K left"). Undefined for every other model.
+ */
+export function dlProModelRow(
+  modelId: string,
+  me: Pick<DlMe, "plan"> | null | undefined,
+  list: DlProviders | null = cachedDlProviders(),
+): { locked: boolean; description: string; column?: string } | undefined {
+  const fromMe = dlProModels(me).find((m) => m.id === modelId);
+  if (!fromMe && !isDlProModel(modelId, list)) return undefined;
+  const available = fromMe ? fromMe.available : me?.plan === "pro";
+  if (!available) {
+    const perWeek = fromMe?.approxTokensPerWeek ? `, about ${formatApproxTokens(fromMe.approxTokensPerWeek)} tokens a week` : "";
+    return { locked: true, description: `Pro — dl Pro only${perWeek}: /upgrade` };
+  }
+  const ration = fromMe?.ration;
+  if (!ration) return { locked: false, description: "Pro" };
+  const column = ration.remainingUsd <= 0 ? "used up this week" : `~${formatApproxTokens(ration.approxTokensLeft)} of ${formatApproxTokens(ration.approxTokensPerWeek)} left`;
+  return { locked: false, description: "Pro", column };
+}
+
+/**
+ * The dl Pro only models a free account sees but can't pick (status on in /v1/providers),
+ * shown on the first run's "Pick a free model" as "Pro" rows. [] for Pro (theirs are usable).
+ */
+export function lockedDlProModels(list: DlProviders, me: Pick<DlMe, "plan"> | null | undefined): DlUsableModel[] {
+  if (me?.plan === "pro") return [];
+  const byId = new Map<string, DlUsableModel>();
+  for (const p of list.providers) {
+    for (const m of p.models) {
+      if (m.access !== "pro" || m.status !== "on") continue;
+      const prev = byId.get(m.id);
+      if (!prev || (m.tokensPerSecond ?? -1) > (prev.tokensPerSecond ?? -1)) byId.set(m.id, { id: m.id, name: m.name, provider: p.name, tokensPerSecond: m.tokensPerSecond });
+    }
+  }
+  return [...byId.values()];
+}
+
+/** A locked "Pro" row of "Pick a free model": shown, off, saying how to get it. */
+export function dlLockedProOption(m: DlUsableModel): { value: string; label: string; description: string; state: "off"; columns: string[] } {
+  return { value: m.id, label: `${m.name} · ${m.provider}`, description: "Pro — dl Pro only: /upgrade", state: "off", columns: [formatTokPerSec(m.tokensPerSecond)] };
 }

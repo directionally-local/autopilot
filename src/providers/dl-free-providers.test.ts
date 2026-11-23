@@ -20,6 +20,11 @@ import {
   parseDlProviders,
   setDlProvidersCache,
   usableDlModels,
+  dlLockedProOption,
+  dlProModelRow,
+  dlProModels,
+  dlResetDay,
+  lockedDlProModels,
 } from "./dl-free-providers.js";
 
 import { describeDlError, parseDlError } from "./directionally-local.js";
@@ -290,5 +295,68 @@ describe("402 provider_limit: switch to the alternative and resend once", () => 
   it("falls back to DeepSeek when the alternative isn't a free model", () => {
     assert.equal(dlProviderLimitAutoSwitch({ ...base, alternative: undefined })!.model, "deepseek/deepseek-v4.1-flash-1017");
     assert.equal(dlProviderLimitAutoSwitch({ ...base, alternative: "evil/model" })!.model, "deepseek/deepseek-v4.1-flash-1017");
+  });
+});
+
+describe("dl Pro only models (Kimi K3.1 Pro)", () => {
+  const KIMI = "moonshotai/kimi-k3.1-pro";
+  const withKimi = parseDlProviders({
+    ...body,
+    providers: [...body.providers, { id: "liquid", name: "Liquid Inference", website: "", url: "", logo: "", models: [model({ id: KIMI, name: "Kimi K3.1 Pro", family: "kimi", access: "pro", tokensPerSecond: 40 })] }],
+  })!;
+  const freeMe = {
+    plan: "free" as const,
+    proModels: [{ id: KIMI, name: "Kimi K3.1 Pro", provider: "liquid", access: "pro", available: false, usdPerWeek: 0.25, approxTokensPerWeek: 140_000, ration: null, text: "Kimi K3.1 Pro is a dl Pro perk: about 140K tokens a week, then DeepSeek." }],
+  };
+  const proMe = (remainingUsd: number, left: number) => ({
+    plan: "pro" as const,
+    proModels: [{ id: KIMI, name: "Kimi K3.1 Pro", provider: "liquid", access: "pro", available: true, usdPerWeek: 0.25, approxTokensPerWeek: 140_000, ration: { usdPerWeek: 0.25, usedUsd: 0.25 - remainingUsd, remainingUsd, approxTokensPerWeek: 140_000, approxTokensLeft: left, resetsAt: "2026-11-30T00:00:00.000Z" }, text: "" }],
+  });
+
+  it("isn't offered to a free account on the first run, but shown as a locked Pro row", () => {
+    assert.ok(!usableDlModels(withKimi, { me: freeMe }).some((m) => m.id === KIMI));
+    const locked = lockedDlProModels(withKimi, freeMe);
+    assert.deepEqual(locked.map((m) => m.id), [KIMI]);
+    assert.deepEqual(dlLockedProOption(locked[0]!), { value: KIMI, label: "Kimi K3.1 Pro · Liquid Inference", description: "Pro — dl Pro only: /upgrade", state: "off", columns: ["~40 tok/s"] });
+    assert.deepEqual(lockedDlProModels(withKimi, { plan: "pro" }), [], "Pro's are usable, not locked");
+    assert.ok(usableDlModels(withKimi, { modelIds: new Set([KIMI]), me: { plan: "pro" } }).some((m) => m.id === KIMI));
+  });
+
+  it("marks the /model row Pro: off with the ration's size for free, the ration left for Pro", () => {
+    assert.deepEqual(dlProModelRow(KIMI, freeMe, withKimi), { locked: true, description: "Pro — dl Pro only, about 140K tokens a week: /upgrade" });
+    assert.deepEqual(dlProModelRow(KIMI, { plan: "free" }, withKimi), { locked: true, description: "Pro — dl Pro only: /upgrade" }, "an older /v1/me: from /v1/providers");
+    assert.deepEqual(dlProModelRow(KIMI, proMe(0.15, 86_000), withKimi), { locked: false, description: "Pro", column: "~86K of 140K left" });
+    assert.deepEqual(dlProModelRow(KIMI, proMe(0, 0), withKimi), { locked: false, description: "Pro", column: "used up this week" });
+    assert.equal(dlProModelRow("deepseek/deepseek-v4.1-flash-1017", freeMe, withKimi), undefined);
+    assert.deepEqual(dlProModels({ proModels: [{ id: "" }, "junk", { id: KIMI, available: "yes" }] }).map((m) => [m.id, m.available]), [[KIMI, false]]);
+    assert.deepEqual(dlProModels({}), []);
+  });
+
+  it("adds Kimi to a free account's /model catalog as a Pro entry, once", async () => {
+    const providersBody = { ...body, providers: [...body.providers, { id: "liquid", name: "Liquid Inference", models: [model({ id: KIMI, name: "Kimi K3.1 Pro", access: "pro" })] }] };
+    const fetchImpl = (async (url: string | URL) => {
+      if (String(url).endsWith("/v1/providers")) return json(providersBody);
+      return json({ object: "list", data: [{ id: "deepseek/deepseek-v4.1-flash-1017" }] });
+    }) as typeof fetch;
+    const catalog = await loadDlCatalog("tok", { fetchImpl, env });
+    const kimi = catalog.filter((m) => m.id === KIMI);
+    assert.equal(kimi.length, 1);
+    assert.equal(kimi[0]!.name, "Kimi K3.1 Pro (Pro)");
+  });
+
+  it("a free account's pro_only: the perk, its size and the Upgrade link, then DeepSeek", () => {
+    const detail = parseDlError({ error: { code: "provider_limit", reason: "pro_only", plans: "pro", approxTokensPerWeek: 140_000, upgradeUrl: "https://dl.new/account", alternative: "deepseek/deepseek-v4.1-flash-1017", provider: "liquid", message: "Kimi K3.1 Pro is a dl Pro perk: about 140K tokens a week, then DeepSeek. Upgrade: https://dl.new/account" } })!;
+    assert.equal(detail.plans, "pro");
+    assert.equal(detail.upgradeUrl, "https://dl.new/account");
+    assert.equal(detail.approxTokensPerWeek, 140_000);
+    const r = dlProviderLimitAutoSwitch({ provider: "directionally-local", model: KIMI, code: "provider_limit", alternative: detail.alternative, servedBy: detail.provider, reason: detail.reason, plans: detail.plans, upgradeUrl: detail.upgradeUrl, approxTokensPerWeek: detail.approxTokensPerWeek, resetsAt: detail.resetsAt, retried: false, list: withKimi });
+    assert.deepEqual(r, { model: "deepseek/deepseek-v4.1-flash-1017", notice: "Kimi K3.1 Pro is a dl Pro perk (about 140K tokens a week); switched to DeepSeek V4.1 Flash. Upgrade: https://dl.new/account" });
+    assert.equal(parseDlError({ error: { code: "provider_limit", upgradeUrl: "javascript:alert(1)" } })!.upgradeUrl, undefined);
+  });
+
+  it("Pro's used-up ration: the reset day, then DeepSeek", () => {
+    const r = dlProviderLimitAutoSwitch({ provider: "directionally-local", model: KIMI, code: "provider_limit", alternative: "deepseek/deepseek-v4.1-flash-1017", reason: "person_cap", plans: "pro", resetsAt: "2026-11-30T00:00:00.000Z", timeZone: "UTC", retried: false, list: withKimi });
+    assert.deepEqual(r, { model: "deepseek/deepseek-v4.1-flash-1017", notice: "This week's Kimi K3.1 Pro with dl Pro is used up (it resets Monday 30 Nov); switched to DeepSeek V4.1 Flash." });
+    assert.equal(dlResetDay("2026-11-30T00:00:00.000Z", "Asia/Tokyo"), "Monday 30 Nov");
   });
 });

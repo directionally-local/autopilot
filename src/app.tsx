@@ -128,7 +128,7 @@ import {
 } from "./ui/app-helpers.js";
 import { projectDirsToRead } from "./util/app-dirs.js";
 import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
-import { DL_PROVIDER_ID, dlGptLimitAutoSwitch, lastKnownDlMe } from "./providers/directionally-local.js";
+import { DL_PROVIDER_ID, dlGptLimitAutoSwitch, lastKnownDlMe, type DlErrorDetail } from "./providers/directionally-local.js";
 import { dlProviderLimitAutoSwitch } from "./providers/dl-free-providers.js";
 import { resolveActiveProvider } from "./providers/resolve.js";
 import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
@@ -1798,6 +1798,12 @@ function App({
                       code: e.providerCode,
                       alternative: (e.providerDetail as { alternative?: string } | undefined)?.alternative,
                       servedBy: (e.providerDetail as { provider?: string } | undefined)?.provider,
+                      // A dl Pro perk: the reason (pro_only, person_cap), the Upgrade link and the reset day.
+                      reason: (e.providerDetail as DlErrorDetail | undefined)?.reason,
+                      plans: (e.providerDetail as DlErrorDetail | undefined)?.plans,
+                      upgradeUrl: (e.providerDetail as DlErrorDetail | undefined)?.upgradeUrl,
+                      approxTokensPerWeek: (e.providerDetail as DlErrorDetail | undefined)?.approxTokensPerWeek,
+                      resetsAt: (e.providerDetail as DlErrorDetail | undefined)?.resetsAt,
                       retried: retry,
                     })
                   : null;
