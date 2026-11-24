@@ -94,11 +94,12 @@ import { tourAskModel } from "./ui/project-tour-model.js";
 import { initLsp as initLspImpl, initMcp as initMcpImpl } from "./ui/manager-init.js";
 import { runCompact as runCompactImpl } from "./agent/run-compact.js";
 import { compactAfterTurn, compactMidTurn, compactOnIdleReturn, type AutoCompactionDeps } from "./agent/auto-compaction.js";
-import { prepareAutoFresh } from "./agent/auto-fresh.js";
+import { preFreshCheckpoint } from "./agent/auto-fresh.js";
+import { inTurnHandoffFrom, planHandoffTurn, runHandoff, type HandoffTurnPlan } from "./agent/handoff.js";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents } from "./ui/turn-callbacks.js";
 import { continuePrompt, type WhereYouLeftOff } from "./ui/resume-summary.js";
 import { buildPromptContent, expandCustomCommand, turnReasoningEffort } from "./ui/prepare-prompt.js";
-import { freshSuggestion, INIT_TIP, turnNudges } from "./ui/turn-nudges.js";
+import { INIT_TIP, turnNudges } from "./ui/turn-nudges.js";
 import { classifyNextMessage, makeTurnId } from "./trace/index.js";
 import { toOpenAIToolDefs } from "./tools/registry.js";
 import { distillSessionPlan } from "./agent/distill.js";
@@ -119,7 +120,6 @@ import {
   AUTO_COMPACT_THRESHOLD,
   capEvents,
   CONTEXT_LIMIT,
-  DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
   costLookupFromConfig,
   makePrefixMessages,
   mkAssistantId,
@@ -409,6 +409,12 @@ function App({
   const updateNudgedRef = useRef(false);
   const compactSuggestedRef = useRef(false);
   const freshSuggestedRef = useRef(false);
+  /** The 50% ping was delivered this session. */
+  const pingDeliveredRef = useRef(false);
+  /** The 80% warning was delivered this session. */
+  const warningDeliveredRef = useRef(false);
+  /** The handoff plan for the current turn; run at the natural break (post-turn). */
+  const pendingHandoffRef = useRef<HandoffTurnPlan | null>(null);
   const mcpManagerRef = useRef(new McpManager());
   const mcpToolsRef = useRef<ToolSpec[]>([]);
   const mcpInitRef = useRef(false);
@@ -486,6 +492,7 @@ function App({
   const {
     sessionIdRef,
     sessionTitleRef,
+    continuedFromRef,
     resumeSessions,
     checkpointSession,
     checkpointList,
@@ -787,38 +794,73 @@ function App({
     },
   });
 
-  /** Checkpoint the session, then build the continuation summary a fresh session starts from. */
-  const prepareAutoFreshNow = (): Promise<string | null> =>
-    prepareAutoFresh({
+  /** Preserve the old session whole before a handoff (the pre-fresh checkpoint). */
+  const savePreFreshCheckpoint = async (): Promise<void> => {
+    const checkpoint = preFreshCheckpoint({
       messages: messagesRef.current,
       compiledContext: compiledContextRef.current,
       sessionState: sessionStateRef.current,
       artifactStore: artifactStoreRef.current,
-      saveCheckpoint: async (checkpoint) => {
-        ensureSessionId();
-        const { sessionsDir } = await import("./sessions.js");
-        await addCheckpoint(join(sessionsDir(), `${sessionIdRef.current}.json`), checkpoint);
-      },
-      summarize: () =>
-        generateContinuationSummary({
-          messages: messagesRef.current,
-          mode: modeRef.current,
-          ...llmAuthFromConfig(cfg!),
-          model: plumbingModelOf(cfg!),
-          memoryManager: memoryManagerRef.current,
-          memoryEnabled: tuiMemoryEnabled(cfg!),
-        }),
+    });
+    if (!checkpoint) return;
+    ensureSessionId();
+    const { sessionsDir } = await import("./sessions.js");
+    await addCheckpoint(join(sessionsDir(), `${sessionIdRef.current}.json`), checkpoint);
+  };
+
+  /** The fallback handoff summary (used only when the model did not author one in-turn). */
+  const fallbackHandoffSummary = (): Promise<string | null> =>
+    generateContinuationSummary({
+      messages: messagesRef.current,
+      mode: modeRef.current,
+      ...llmAuthFromConfig(cfg!),
+      model: plumbingModelOf(cfg!),
+      memoryManager: memoryManagerRef.current,
+      memoryEnabled: tuiMemoryEnabled(cfg!),
     });
 
-  /** Start a fresh session from a continuation summary (after a silent checkpoint), with a notice. */
-  const runAutoFresh = async (notice: string): Promise<void> => {
+  /**
+   * Run the handoff at the natural break: checkpoint the old session, then —
+   * when the plan says to transition — the in-turn handoff, else the fallback
+   * summary, else compaction. Compaction never runs while a handoff is in
+   * progress or has succeeded for the same exhaustion event.
+   */
+  const runHandoffNow = async (plan: HandoffTurnPlan): Promise<void> => {
     try {
-      const summary = await prepareAutoFreshNow();
-      if (!summary) return;
-      executeFreshStart(buildSlashContext(), summary);
-      setEvents((e) => [...e, { kind: "info", key: mkKey(), text: notice }]);
+      // The link is a required invariant, not best effort: the old session has
+      // an id before the handoff cites it, even on the session's first save.
+      const oldSessionId = ensureSessionId();
+      await runHandoff({
+        oldSessionId,
+        transition: plan.transitionAtBreak,
+        inTurnSummary: inTurnHandoffFrom(messagesRef.current),
+        checkpoint: savePreFreshCheckpoint,
+        fallbackSummary: fallbackHandoffSummary,
+        compact: async () => {
+          await compactAfterTurn(
+            {
+              getMessages: () => messagesRef.current,
+              setMessages: (messages) => {
+                messagesRef.current = messages;
+              },
+              overThreshold: true,
+              estimateTokens: estimatePromptTokens,
+              aggressiveTokenThreshold: cfg?.autoCompactTokenThreshold ?? 500_000,
+              signal: new AbortController().signal,
+            },
+            autoCompactionDeps(currentTurnIdRef.current),
+          );
+        },
+        startFresh: (summary) => {
+          executeFreshStart(buildSlashContext(), summary, undefined, {
+            continuedFrom: oldSessionId,
+          });
+          return sessionIdRef.current ?? "";
+        },
+        notify: (kind, text) => setEvents((e) => [...e, { kind, key: mkKey(), text }]),
+      });
     } catch (e) {
-      setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Auto-fresh failed: ${(e as Error).message}` }]);
+      setEvents((es) => [...es, { kind: "error", key: mkKey(), text: `Handoff failed: ${(e as Error).message}` }]);
     }
   };
 
@@ -1087,6 +1129,7 @@ function App({
     initMcp,
     initLsp,
     ensureSessionId,
+    saveSessionSafe,
     startTour,
     lspManagerRef,
     mcpManagerRef,
@@ -1106,6 +1149,7 @@ function App({
     lspToolsRef,
     lspInitRef,
     sessionIdRef,
+    continuedFromRef,
     compactSuggestedRef,
     updateNudgedRef,
     freshSuggestedRef,
@@ -1442,22 +1486,42 @@ function App({
         }
       }
 
-      // Occasional /init tip; for long auto/edit sessions, suggest /fresh or start fresh.
+      // Occasional /init tip; for auto/edit sessions, the context-fill handoff
+      // trigger (50% ping / 80% warning) replaces the old turn-count trigger.
       if (!retry) turnCounterRef.current += 1;
+      const budgetTokens = cfg ? effectiveInputBudget(cfg.model) : undefined;
+      const estimatedTokens = estimatePromptTokens(messagesRef.current);
       const nudges = turnNudges({
         turn: turnCounterRef.current,
         hasContextFile: ["AGENTS.md", "KIMI.md", "KIMIFLARE.md", "AGENT.md"].some((name) => existsSync(join(process.cwd(), name))),
         contextStale: kimiMdStale,
         mode: modeRef.current,
-        freshAfterTurns: cfg?.autoFreshSuggestionTurns ?? DEFAULT_AUTO_FRESH_SUGGESTION_TURNS,
-        freshSuggested: freshSuggestedRef.current,
-        autoFreshEnabled: cfg?.autoFreshEnabled === true,
+        estimatedTokens,
+        budgetTokens,
+        pingDelivered: pingDeliveredRef.current,
+        warningDelivered: warningDeliveredRef.current,
+        shares: { ping: cfg?.autoFreshPingShare, warning: cfg?.autoFreshWarningShare },
       });
       if (nudges.initTip && !retry) setEvents((e) => [...e, { kind: "info", key: mkKey(), text: INIT_TIP }]);
       if (nudges.fresh) {
-        freshSuggestedRef.current = true;
-        if (nudges.fresh === "auto") void runAutoFresh("Auto-fresh triggered: starting new session with continuation context…");
-        else setEvents((e) => [...e, { kind: "info", key: mkKey(), text: freshSuggestion(turnCounterRef.current) }]);
+        const fill = budgetTokens && budgetTokens > 0 ? estimatedTokens / budgetTokens : 0;
+        const plan = planHandoffTurn({
+          trigger: nudges.fresh,
+          fill,
+          // Unset means the handoff is the default at the warning; only an
+          // explicit `false` opts out (compaction then handles exhaustion).
+          autoFreshEnabled: cfg?.autoFreshEnabled,
+          mode: modeRef.current,
+          oldSessionId: sessionIdRef.current ?? "",
+        });
+        if (nudges.fresh === "ping") pingDeliveredRef.current = true;
+        else warningDeliveredRef.current = true;
+        // Delivered in-conversation: the model sees it in its own turn. The
+        // checkpoint and transition wait for the natural break (post-turn), so
+        // the ping never interrupts an iteration.
+        messagesRef.current.push({ role: "system", content: plan.notice });
+        setEvents((e) => [...e, { kind: "info", key: mkKey(), text: plan.notice.split("\n")[0]! }]);
+        pendingHandoffRef.current = plan;
       }
 
       responseMetaRef.current = null;
@@ -1740,9 +1804,26 @@ function App({
                 return;
               }
 
+              const plan = pendingHandoffRef.current;
+              pendingHandoffRef.current = null;
+
+              // The 50% ping: the checkpoint is written here, when the
+              // iteration has ended naturally — never mid-iteration.
+              if (plan && !plan.transitionAtBreak) {
+                await runHandoffNow(plan);
+              }
+
+              // Fresh-first at exhaustion: the 80% warning attempts the
+              // handoff before compaction; compaction runs only if the handoff
+              // fails (runHandoffNow's `compact` dep).
+              if (plan?.transitionAtBreak) {
+                await runHandoffNow(plan);
+                return;
+              }
+
               // Proactive compaction past the model's budget threshold, then an
               // aggressive pass when the history is still huge; if even that
-              // leaves it above the fresh-start threshold, start fresh.
+              // leaves it above the absolute backstop, hand off (fresh-first).
               const tokensAfterAggressive = await compactAfterTurn(
                 {
                   getMessages: () => messagesRef.current,
@@ -1757,9 +1838,14 @@ function App({
                 autoCompactionDeps(turnId),
               );
               if (tokensAfterAggressive !== null && tokensAfterAggressive > (cfg?.autoFreshTokenThreshold ?? 2_000_000)) {
-                await runAutoFresh(
-                  `Auto-fresh triggered at ~${tokensAfterAggressive.toLocaleString()} tokens: starting new session with continuation context…`,
-                );
+                const budget = cfg ? effectiveInputBudget(cfg.model) : 0;
+                await runHandoffNow({
+                  trigger: "warning",
+                  fill: budget > 0 ? tokensAfterAggressive / budget : 1,
+                  notice: "",
+                  checkpointAtBreak: true,
+                  transitionAtBreak: true,
+                });
               }
             })().catch((e: unknown) => {
               logger.warn("post-turn housekeeping failed", { error: (e as Error)?.message });

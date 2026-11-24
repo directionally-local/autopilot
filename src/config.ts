@@ -277,10 +277,19 @@ export interface AutopilotConfig {
   workerMaxParallel?: number;
   /** Timeout per worker in milliseconds (default: 600000 = 10 min). */
   workerTimeoutMs?: number;
-  /** Turn count at which Autopilot suggests /fresh in auto/edit mode. 0 = disabled. Default: 30. */
+  /** Turn count at which Autopilot suggests /fresh in auto/edit mode. 0 = disabled. Default: 30.
+   *  @deprecated The auto-fresh trigger is the context-fill trigger
+   *  (`autoFreshPingShare` / `autoFreshWarningShare`); this setting only drives
+   *  the one-time /fresh suggestion when a long session is resumed. */
   autoFreshSuggestionTurns?: number;
-  /** If true, automatically execute /fresh when the threshold is hit instead of just suggesting it. Default: false. */
+  /** If false, opt out of the automatic context handoff: at the fill warning the
+   *  session checkpoints and compaction handles exhaustion instead. The handoff
+   *  is the default when this is unset. Default: true. */
   autoFreshEnabled?: boolean;
+  /** Context-fill share at which the in-conversation handoff ping is delivered. Default: 0.5. */
+  autoFreshPingShare?: number;
+  /** Context-fill share at which the handoff warning fires and the session transitions. Default: 0.8. */
+  autoFreshWarningShare?: number;
   /** Estimated in-memory token threshold to trigger aggressive auto-compaction between turns. Default: 500_000. */
   autoCompactTokenThreshold?: number;
   /** Optional absolute cap for the budget-relative compaction thresholds (cost
@@ -578,6 +587,8 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     workerTimeoutMs: readNumberEnv("WORKER_TIMEOUT_MS") ?? persisted.workerTimeoutMs,
     autoFreshSuggestionTurns: persisted.autoFreshSuggestionTurns,
     autoFreshEnabled: persisted.autoFreshEnabled,
+    autoFreshPingShare: persisted.autoFreshPingShare,
+    autoFreshWarningShare: persisted.autoFreshWarningShare,
     autoCompactTokenThreshold: persisted.autoCompactTokenThreshold,
     autoCompactCapTokens: readNumberEnv("AUTO_COMPACT_CAP_TOKENS") ?? persisted.autoCompactCapTokens ?? DEFAULT_AUTO_COMPACT_CAP_TOKENS,
     idleCompactGapMinutes: readNumberEnv("IDLE_COMPACT_GAP_MINUTES") ?? persisted.idleCompactGapMinutes ?? 10,

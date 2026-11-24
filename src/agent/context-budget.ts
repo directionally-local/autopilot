@@ -36,6 +36,44 @@ export const SOFT_COMPACTION_SHARE = 0.6;
 /** Hard threshold: summarize only when the history is still above this share. */
 export const HARD_COMPACTION_SHARE = 0.85;
 
+/** Handoff ping: deliver the in-conversation notice at this share of the input
+ *  budget. Below the soft compaction share (0.6), so the handoff starts before
+ *  compaction would. */
+export const HANDOFF_PING_SHARE = 0.5;
+
+/** Handoff warning: finish the iteration and transition at this share. Below
+ *  the hard compaction share (0.85), so the handoff fires before compaction
+ *  would. */
+export const HANDOFF_WARNING_SHARE = 0.8;
+
+/** What the context-fill trigger asks for at a given fill. */
+export type HandoffTrigger = "none" | "ping" | "warning";
+
+/** Tunable shares; the defaults are the spec's starting points. */
+export interface HandoffShares {
+  ping?: number;
+  warning?: number;
+}
+
+/** The session's fill fraction of its effective input budget. */
+export function contextFillFraction(estimatedTokens: number, budgetTokens: number): number {
+  if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) return 0;
+  return Math.max(0, estimatedTokens) / budgetTokens;
+}
+
+/**
+ * The handoff decision over a fill fraction: below 50% nothing, 50–80% a
+ * non-interrupting ping, 80% and above the warning that ends the session at
+ * the natural break. Fractions of the budget, never absolute token counts.
+ */
+export function handoffTrigger(fill: number, shares: HandoffShares = {}): HandoffTrigger {
+  const ping = shares.ping ?? HANDOFF_PING_SHARE;
+  const warning = shares.warning ?? HANDOFF_WARNING_SHARE;
+  if (!Number.isFinite(fill) || fill < ping) return "none";
+  if (fill < warning) return "ping";
+  return "warning";
+}
+
 /** Recent turns to keep raw, tried in order until the history fits. */
 const KEEP_TURNS_LADDER = [4, 2, 1] as const;
 
@@ -75,6 +113,16 @@ export function hardCompactionThreshold(model: string, opts: CompactionThreshold
   const budget = effectiveInputBudget(model, opts.maxCompletionTokens);
   const hard = Math.floor(budget * HARD_COMPACTION_SHARE);
   return opts.absoluteCapTokens ? Math.min(hard, opts.absoluteCapTokens) : hard;
+}
+
+/** Estimated-token level at which the in-conversation handoff ping is delivered. */
+export function handoffPingThreshold(model: string, maxCompletionTokens?: number): number {
+  return Math.floor(effectiveInputBudget(model, maxCompletionTokens) * HANDOFF_PING_SHARE);
+}
+
+/** Estimated-token level at which the handoff warning fires and the session transitions. */
+export function handoffWarningThreshold(model: string, maxCompletionTokens?: number): number {
+  return Math.floor(effectiveInputBudget(model, maxCompletionTokens) * HANDOFF_WARNING_SHARE);
 }
 
 /** @deprecated Use {@link softCompactionThreshold}. Budget-relative since #947. */

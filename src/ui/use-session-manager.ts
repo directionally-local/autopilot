@@ -153,6 +153,8 @@ export interface SessionManager {
   // calling `sessionIdRef.current` unchanged).
   sessionIdRef: React.MutableRefObject<string | null>;
   sessionTitleRef: React.MutableRefObject<string | null>;
+  /** The session this one continues from after a context handoff (persisted as `continuedFrom`). */
+  continuedFromRef: React.MutableRefObject<string | null>;
 
   // Picker state (powers the resume + checkpoint modals).
   resumeSessions: SessionSummary[] | null;
@@ -219,6 +221,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   const sessionIdRef = useRef<string | null>(null);
   const sessionCreatedAtRef = useRef<string | null>(null);
   const sessionTitleRef = useRef<string | null>(null);
+  const continuedFromRef = useRef<string | null>(null);
 
   const [resumeSessions, setResumeSessions] = useState<SessionSummary[] | null>(null);
   const [checkpointSession, setCheckpointSession] = useState<SessionSummary | null>(null);
@@ -321,6 +324,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         createdAt: sessionCreatedAtRef.current,
         updatedAt: now,
         title: sessionTitleRef.current ?? undefined,
+        continuedFrom: continuedFromRef.current ?? undefined,
         messages: d.messagesRef.current,
         sessionState: d.compiledContextRef.current ? d.sessionStateRef.current : undefined,
         artifactStore: serializeArtifactStore(d.artifactStoreRef.current),
@@ -376,6 +380,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         turnHistoryRef.current = [];
         sessionIdRef.current = file.id;
         sessionTitleRef.current = file.title ?? null;
+        continuedFromRef.current = file.continuedFrom ?? null;
         if (file.title) setTerminalTitle(file.title);
         setLogSessionId(file.id);
         sessionCreatedAtRef.current = file.createdAt;
@@ -548,6 +553,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     setLogSessionId(null);
     sessionCreatedAtRef.current = null;
     sessionTitleRef.current = null;
+    continuedFromRef.current = null;
     setTerminalTitle("autopilot");
     const d = depsRef.current;
     // A new session starts on the saved global model, not one explicitly
@@ -566,6 +572,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   return {
     sessionIdRef,
     sessionTitleRef,
+    continuedFromRef,
     resumeSessions, setResumeSessions,
     checkpointSession, setCheckpointSession,
     checkpointList, setCheckpointList,

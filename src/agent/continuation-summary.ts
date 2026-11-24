@@ -17,14 +17,27 @@ export interface ContinuationSummaryOpts extends LlmAuth {
   onProgress?: (delta: number) => void;
 }
 
-const HANDOFF_SYSTEM = `You are a session-continuation engine. Given evidence from a coding session, produce a dense handoff document so a new agent can pick up exactly where this one left off.
+/** The five handoff headings, in order, with the guidance `/fresh`'s summarizer
+ *  gives each. The one source of truth for the format: the prompt below is
+ *  built from it, and the context handoff (src/agent/handoff.ts) validates the
+ *  model's in-turn handoff against the same list. */
+const HANDOFF_SECTIONS = [
+  ["Goal:", "what the user originally asked for."],
+  ["Completed:", "files modified, tests added, key decisions, commits made."],
+  ["Remaining:", "what still needs to be done."],
+  ["Current state:", "any open errors, incomplete refactors, or pending work."],
+  ["Context:", "relevant file paths or architectural notes."],
+] as const;
+
+/** The five headings, in order. */
+export const HANDOFF_HEADINGS: readonly string[] = HANDOFF_SECTIONS.map(([heading]) => heading);
+
+/** The summarizer prompt `/fresh` uses; exported so a test can bind the
+ *  handoff validator to the same headings. */
+export const HANDOFF_SYSTEM = `You are a session-continuation engine. Given evidence from a coding session, produce a dense handoff document so a new agent can pick up exactly where this one left off.
 
 Output format (use these exact headings):
-Goal: what the user originally asked for.
-Completed: files modified, tests added, key decisions, commits made.
-Remaining: what still needs to be done.
-Current state: any open errors, incomplete refactors, or pending work.
-Context: relevant file paths or architectural notes.
+${HANDOFF_SECTIONS.map(([heading, guidance]) => `${heading} ${guidance}`).join("\n")}
 
 Rules:
 - Be terse but complete. A new agent with zero prior context must be able to continue.

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ChatMessage } from "./agent/messages.js";
 import { addCheckpoint, listSessions, loadSession, saveSession, sessionsDir, type SessionFile } from "./sessions.js";
 
@@ -54,5 +55,25 @@ describe("saveSession (T4-01)", () => {
     const after = await loadSession(path);
     assert.deepStrictEqual(after.checkpoints?.map((c) => c.id), ["cp1", "cp2", "cp3", "cp4"]);
     assert.equal(after.messages.length, 4);
+  });
+
+  it("persists the handoff link and keeps the old session retrievable by id", async () => {
+    const oldId = "handoff-old";
+    const at = new Date().toISOString();
+    const oldPath = await saveSession({
+      ...session(oldId, messages(2, 10)),
+      checkpoints: [{ id: "cp_prefresh_1", label: "pre-fresh auto-save", turnIndex: 2, timestamp: at }],
+    });
+    const transcript = join(sessionsDir(), `${oldId}.jsonl`);
+    await writeFile(transcript, '{"type":"user"}\n');
+
+    const newPath = await saveSession({ ...session("handoff-new", messages(1, 10)), continuedFrom: oldId });
+    const loaded = await loadSession(newPath);
+    assert.equal(loaded.continuedFrom, oldId);
+
+    // The old session is preserved whole and retrievable by the cited id.
+    const old = await loadSession(oldPath);
+    assert.equal(old.checkpoints?.[0]?.id, "cp_prefresh_1");
+    assert.equal(await readFile(transcript, "utf8"), '{"type":"user"}\n');
   });
 });
