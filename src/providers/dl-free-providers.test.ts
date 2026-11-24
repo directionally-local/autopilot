@@ -361,6 +361,16 @@ describe("dl Pro only models (Kimi K3.1 Pro)", () => {
     assert.equal(parseDlError({ error: { code: "provider_limit", upgradeUrl: "javascript:alert(1)" } })!.upgradeUrl, undefined);
   });
 
+  it("a free model's weekly cap or the provider's weekly budget: the reset day, then DeepSeek", () => {
+    const GLM = "z-ai/glm-5.3-flash";
+    const withGlm = { ...withKimi, providers: [...withKimi.providers, { id: "openrelay", name: "Open Relay", website: "", url: "", logo: "", models: [{ ...withKimi.providers[0]!.models[0]!, id: GLM, name: "GLM 5.3 Flash", access: "free" as const }] }] };
+    const base = { provider: "directionally-local", model: GLM, code: "provider_limit", alternative: "deepseek/deepseek-v4.1-flash-1017", servedBy: "openrelay", resetsAt: "2026-11-30T00:00:00.000Z", timeZone: "UTC", retried: false, list: withGlm };
+    assert.deepEqual(dlProviderLimitAutoSwitch({ ...base, reason: "person_cap" }), { model: "deepseek/deepseek-v4.1-flash-1017", notice: "This week's free GLM 5.3 Flash is used up (it resets Monday 30 Nov); switched to DeepSeek V4.1 Flash." });
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, reason: "weekly_budget" })!.notice, "GLM 5.3 Flash on Open Relay has used its free budget for this week (it resets Monday 30 Nov); switched to DeepSeek V4.1 Flash.");
+    // No reset day for a pause or the credit.
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, reason: "out_of_credit", resetsAt: undefined })!.notice, "GLM 5.3 Flash on Open Relay is at its limit for now; switched to DeepSeek V4.1 Flash.");
+  });
+
   it("Pro's used-up ration: the reset day, then DeepSeek", () => {
     const r = dlProviderLimitAutoSwitch({ provider: "directionally-local", model: KIMI, code: "provider_limit", alternative: "deepseek/deepseek-v4.1-flash-1017", reason: "person_cap", plans: "pro", resetsAt: "2026-11-30T00:00:00.000Z", timeZone: "UTC", retried: false, list: withKimi });
     assert.deepEqual(r, { model: "deepseek/deepseek-v4.1-flash-1017", notice: "This week's Kimi K3.1 Pro with dl Pro is used up (it resets Monday 30 Nov); switched to DeepSeek V4.1 Flash." });

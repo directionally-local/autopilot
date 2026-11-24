@@ -430,8 +430,12 @@ export function dlProviderLimitAutoSwitch(o: {
     const day = dlResetDay(o.resetsAt, o.timeZone);
     return { model: alternative, notice: `This week's ${name} with dl Pro is used up${day ? ` (it resets ${day})` : ""}; ${switched}.` };
   }
+  // A weekly limit (this person's free cap, or the provider's weekly budget) says when it is back.
+  const day = o.reason === "person_cap" || o.reason === "weekly_budget" ? dlResetDay(o.resetsAt, o.timeZone) : undefined;
+  if (o.reason === "person_cap" && day) return { model: alternative, notice: `This week's free ${name} is used up (it resets ${day}); ${switched}.` };
   const servedBy = dlProviderName(o.servedBy, o.model, list);
   const what = servedBy ? `${name} on ${servedBy}` : name;
+  if (day) return { model: alternative, notice: `${what} has used its free budget for this week (it resets ${day}); ${switched}.` };
   return { model: alternative, notice: `${what} is at its limit for now; ${switched}.` };
 }
 
