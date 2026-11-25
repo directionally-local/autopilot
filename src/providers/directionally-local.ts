@@ -448,12 +448,18 @@ export function parseDlPools(raw: unknown): Record<string, DlPool> | undefined {
     const used = numOf(value, "usedThisWeek", "used_this_week") ?? Math.max(0, tokensPerWeek - remaining);
     const resetsAt = strOf(value, "resetsAt", "resets_at");
     const models = Array.isArray(value.models) ? value.models.filter((id): id is string => typeof id === "string") : [];
+    const family = value.family === "gpt6" || value.family === "deepseek" ? value.family : undefined;
+    const realTokensPerWeek = numOf(value, "realTokensPerWeek", "real_tokens_per_week");
+    const realUsedThisWeek = numOf(value, "realUsedThisWeek", "real_used_this_week");
     out[name] = {
       tokensPerWeek,
       usedThisWeek: used,
       remaining,
       ...(resetsAt ? { resetsAt } : {}),
       models,
+      ...(family ? { family } : {}),
+      ...(realTokensPerWeek !== undefined && realTokensPerWeek >= 0 ? { realTokensPerWeek } : {}),
+      ...(realUsedThisWeek !== undefined && realUsedThisWeek >= 0 ? { realUsedThisWeek } : {}),
     };
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -648,11 +654,14 @@ export function dlProLine(offers: DlOffers | undefined, o: { where?: DlWhere; pl
  * your own key. Get dl Pro for $3.99/month: /upgrade" (the last sentence only when the service
  * offers Pro and the account isn't on it). On Pro, "this week's Pro usage".
  */
-export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere; offers?: DlOffers; plan?: DlPlan } = {}): string {
+export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere; offers?: DlOffers; plan?: DlPlan; limit?: string } = {}): string {
   const back = formatLocalTime(resetsAt ?? nextWeekStart(o.now), o);
   const next = o.where === "cli" ? "To keep going now, use your own key: `autopilot connect`." : `To keep going now: ${DL_SWITCH_HINT} to use your own key.`;
   const pro = dlProLine(o.offers, { ...(o.where ? { where: o.where } : {}), ...(o.plan ? { plan: o.plan } : {}) });
-  return `You've used this week's ${o.plan === "pro" ? "Pro" : "free"} usage. It's back ${back}. ${next}${pro ? ` ${pro}` : ""}`;
+  const plan = o.plan === "pro" ? "Pro" : "free";
+  // `limit` (dlLimitName): which of the week's limits ran out, when the refusal said.
+  const lead = o.limit ? `You've hit this week's ${plan} ${o.limit}.` : `You've used this week's ${plan} usage.`;
+  return `${lead} It's back ${back}. ${next}${pro ? ` ${pro}` : ""}`;
 }
 
 /** "You've used your 10M free trial tokens." ("your free trial tokens" when the size isn't known). */
@@ -739,19 +748,23 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       return launchedByDl(extra.env ?? process.env)
         ? `The free tier didn't accept your sign-in. ${DL_FREE_SIGN_IN_AGAIN}`
         : `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
-    case "quota_exceeded":
+    case "quota_exceeded": {
+      // Which limit ran out (the token allowance or the dollar one), named in either line.
+      const limit = dlLimitName(extra.reason, extra.family);
       // dl Pro's prompt, when the service sent it (the free week's open models are used up).
-      if (extra.proPrompt && lastMe?.plan !== "pro") return dlProPromptLine(extra.proPrompt, where);
-      // The token and the spending allowance read the same: both are "this week's free usage".
-      return dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe) });
+      if (extra.proPrompt && lastMe?.plan !== "pro") return dlProPromptLine(dlNamedProPrompt(extra.proPrompt, limit), where);
+      return dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe), ...(limit ? { limit } : {}) });
+    }
     case "trial_ended":
       // A new account's one-time trial is used up: Pro or a top-up from here (no weekly reset).
       return dlTrialEndedLine(extra.trial?.tokens ?? lastMe?.trial?.tokens, { where, ...(extra.offers ? { offers: extra.offers } : lastMe?.offers ? { offers: lastMe.offers } : {}) });
     case "basic_limit":
-    case "starter_limit":
+    case "starter_limit": {
       // A basic or starter account used its smaller weekly allowance: the same line, and where to ask for more.
-      if (extra.proPrompt && lastMe?.plan !== "pro") return withRequestHint(dlProPromptLine(extra.proPrompt, where), extra, where);
-      return withRequestHint(dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe) }), extra, where);
+      const limit = dlLimitName(extra.reason, extra.family);
+      if (extra.proPrompt && lastMe?.plan !== "pro") return withRequestHint(dlProPromptLine(dlNamedProPrompt(extra.proPrompt, limit), where), extra, where);
+      return withRequestHint(dlQuotaLine(extra.resetsAt, { ...extra, where, ...planOf(lastMe), ...(limit ? { limit } : {}) }), extra, where);
+    }
     case "upstream_busy":
       return "The free tier is busy right now; try again shortly.";
     case "upstream_unavailable":
@@ -1124,7 +1137,11 @@ export interface DlBudget {
   tokensThisWeek?: number;
 }
 
-/** One weekly token pool: what a model tier has left this week. */
+/**
+ * One weekly token pool: what a model tier has left this week. The service enforces counted
+ * tokens (cached input weighted down); `realTokensPerWeek` and `realUsedThisWeek` are the same
+ * as real tokens at the plan mix, when the service sends them (newer servers).
+ */
 export interface DlPool {
   tokensPerWeek: number;
   usedThisWeek: number;
@@ -1132,6 +1149,16 @@ export interface DlPool {
   resetsAt?: string;
   /** The model ids that draw from this pool. */
   models: string[];
+  /** The dollar budget the pool's models also draw from, when the service says. */
+  family?: DlFamily;
+  realTokensPerWeek?: number;
+  realUsedThisWeek?: number;
+}
+
+/** How counted tokens become real ones (/v1/me `mix`): counted per real token, and the mix's label. */
+export interface DlMix {
+  countedFactor: number;
+  label: string;
 }
 
 /** The thresholds a Full account must clear, as the service reports them. */
@@ -1155,6 +1182,8 @@ export interface DlMe {
   pools?: Record<string, DlPool>;
   /** The two weekly dollar budgets, GPT-6 and DeepSeek, when the service sends them (older servers have one). */
   budgets?: Partial<Record<DlFamily, DlBudget>>;
+  /** How the pools' counted tokens become real ones, when the service says (newer servers). */
+  mix?: DlMix;
   models?: string[];
   /** "pro" once paid; free when the service doesn't say (older servers). */
   plan?: DlPlan;
@@ -1221,6 +1250,16 @@ export function parseDlBudgets(raw: unknown): Partial<Record<DlFamily, DlBudget>
   return { ...(gpt6 ? { gpt6 } : {}), ...(deepseek ? { deepseek } : {}) };
 }
 
+/** /v1/me's `mix`, when well formed: a counted-per-real factor in (0, 1] and a short label. */
+function parseDlMix(raw: unknown): DlMix | undefined {
+  if (!isRec(raw)) return undefined;
+  const factor = raw.countedFactor;
+  const label = typeof raw.label === "string" ? raw.label.trim() : "";
+  if (typeof factor !== "number" || !Number.isFinite(factor) || factor <= 0 || factor > 1) return undefined;
+  if (!label || label.length > 60 || /[\u0000-\u001f\u007f]/.test(label)) return undefined;
+  return { countedFactor: factor, label };
+}
+
 /** The thresholds block of /v1/me, keeping only well-formed numbers. */
 function parseDlThresholds(raw: unknown): DlThresholds | undefined {
   if (!isRec(raw)) return undefined;
@@ -1254,7 +1293,8 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
   const thresholds = parseDlThresholds(raw.thresholds);
   const budgets = parseDlBudgets(raw.budgets) ?? (a ? parseDlBudgets((a as unknown as Record<string, unknown>).budgets) : undefined);
   const trial = parseDlTrial(raw.trial);
-  const { trial: _rawTrial, ...rest } = raw;
+  const mix = parseDlMix(raw.mix);
+  const { trial: _rawTrial, mix: _rawMix, ...rest } = raw;
   return {
     ...(rest as unknown as DlMe),
     login: typeof raw.login === "string" ? raw.login : "",
@@ -1264,6 +1304,7 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
     ...(thresholds ? { thresholds } : {}),
     ...(pools ? { pools } : {}),
     ...(budgets ? { budgets } : {}),
+    ...(mix ? { mix } : {}),
     plan,
     topupTokensLeft: topup !== undefined ? Math.max(0, topup) : undefined,
     topupUsdLeft: topupUsd !== undefined ? Math.max(0, topupUsd) : undefined,
@@ -1382,15 +1423,161 @@ export function dlBudgetUsedUp(b: DlBudget): boolean {
   return typeof b.usdPerWeek === "number" && b.spentUsd >= b.usdPerWeek;
 }
 
+/** The plan mix when the service doesn't send one: 95.5% cached input (at 0.02), 3.8% fresh, 0.7% output. */
+export const DL_DEFAULT_MIX: DlMix = { countedFactor: 0.955 * 0.02 + 0.038 + 0.007, label: "95.5% caching applied" };
+
 /**
- * One budget's week: "$1.20 of $8 this week · 58M tokens" (dollars first: they are the limit
- * that binds; tokens counted the normal way, cached included), or "limit reached, resets Mon
- * 09:00" once its dollars are spent.
+ * A family's weekly token limit (a smaller free level has one on DeepSeek besides its dollar
+ * budget). `limit` and `used` are counted tokens, what the service enforces; `realLimit` and
+ * `realUsed` the same as real tokens at the plan mix (`label`), what a person is shown.
  */
-export function dlBudgetText(b: DlBudget, resetsAt: string | undefined, o: DlTimeOpts = {}): string {
-  if (dlBudgetUsedUp(b)) return `limit reached, resets ${formatLocalTime(resetsAt || nextWeekStart(o.now), o)}`;
+export interface DlTokenLimit {
+  limit: number;
+  used: number;
+  realLimit: number;
+  realUsed: number;
+  label: string;
+  usedUp: boolean;
+  /** Used of the limit, 0 to 1. */
+  share: number;
+}
+
+/** The pool's dollar budget: the service's `family`, else by name (older servers). */
+function poolFamily(name: string, pool: DlPool): DlFamily | undefined {
+  if (pool.family) return pool.family;
+  return name === "deepseek" ? "deepseek" : undefined;
+}
+
+/**
+ * The family's weekly token limit from /v1/me's pools: DeepSeek's one pool, when it has a token
+ * cap (a smaller level; Full has none). GPT-6's models each have their own pool, so no one token
+ * limit stands for the family: undefined, and its dollar budget is what /usage shows.
+ */
+export function dlTokenLimit(me: Pick<DlMe, "pools" | "mix">, family: DlFamily): DlTokenLimit | undefined {
+  if (family !== "deepseek") return undefined;
+  const pools = Object.entries(me.pools ?? {}).filter(([name, pool]) => poolFamily(name, pool) === family && pool.tokensPerWeek > 0);
+  if (pools.length !== 1) return undefined;
+  const pool = pools[0]![1];
+  const mix = me.mix ?? DL_DEFAULT_MIX;
+  const real = (counted: number) => Math.round(counted / mix.countedFactor);
+  return {
+    limit: pool.tokensPerWeek,
+    used: pool.usedThisWeek,
+    realLimit: pool.realTokensPerWeek ?? real(pool.tokensPerWeek),
+    realUsed: pool.realUsedThisWeek ?? real(pool.usedThisWeek),
+    label: mix.label,
+    usedUp: pool.remaining <= 0,
+    share: Math.min(1, Math.max(0, pool.usedThisWeek / pool.tokensPerWeek)),
+  };
+}
+
+/**
+ * The limit that binds a family this week: "tokens" when its token limit is used up or more of
+ * it is used than of its dollars (or there is no dollar cap), else "spend".
+ */
+export function dlBindingLimit(b: DlBudget, tokens: DlTokenLimit | undefined): "tokens" | "spend" {
+  if (!tokens) return "spend";
+  if (tokens.usedUp) return "tokens";
+  if (dlBudgetUsedUp(b)) return "spend";
+  if (b.usdPerWeek === null) return "tokens";
+  const usdShare = b.usdPerWeek > 0 ? b.spentUsd / b.usdPerWeek : 0;
+  return tokens.share > usdShare ? "tokens" : "spend";
+}
+
+/** True when a family's week is over: its dollars are spent or its token limit is used up. */
+export function dlFamilyUsedUp(me: Pick<DlMe, "budgets" | "pools" | "mix">, family: DlFamily): boolean {
+  const b = me.budgets?.[family];
+  return (b !== undefined && dlBudgetUsedUp(b)) || dlTokenLimit(me, family)?.usedUp === true;
+}
+
+/** Used of the binding limit, 0 to 100. */
+function bindingPct(b: DlBudget, tokens: DlTokenLimit | undefined): number {
+  if (dlBindingLimit(b, tokens) === "tokens" && tokens) return Math.min(100, Math.round(tokens.share * 100));
+  return typeof b.usdPerWeek === "number" && b.usdPerWeek > 0 ? Math.min(100, Math.round((b.spentUsd / b.usdPerWeek) * 100)) : 0;
+}
+
+/** "~18.7M of ~18.7M tokens (95.5% caching applied)". */
+function tokenLimitAmount(t: DlTokenLimit): string {
+  return `~${formatTokens(t.realUsed)} of ~${formatTokens(t.realLimit)} tokens (${t.label})`;
+}
+
+/** "~11.2M left" (real tokens at the plan mix). */
+function tokenLimitLeft(t: DlTokenLimit): string {
+  return `~${formatTokens(Math.max(0, t.realLimit - t.realUsed))} left`;
+}
+
+/**
+ * One budget's week, the limit that binds first:
+ *
+ *   $1.20 of $8 this week · 58M tokens                                  (dollars bind; tokens counted the normal way)
+ *   ~7.5M of ~18.7M tokens (95.5% caching applied) this week            (a token limit binds)
+ *   token limit reached: ~18.7M of ~18.7M tokens (95.5% caching applied), resets Mon 09:00
+ *   spending limit reached: $8 of $8, resets Mon 09:00                  (dollars spent, a token limit too)
+ *   limit reached, resets Mon 09:00                                     (dollars spent, the only limit)
+ */
+export function dlBudgetText(b: DlBudget, resetsAt: string | undefined, o: DlTimeOpts = {}, tokens?: DlTokenLimit): string {
+  const back = formatLocalTime(resetsAt || nextWeekStart(o.now), o);
+  if (tokens && dlBindingLimit(b, tokens) === "tokens") {
+    return tokens.usedUp ? `token limit reached: ${tokenLimitAmount(tokens)}, resets ${back}` : `${tokenLimitAmount(tokens)} this week`;
+  }
+  if (dlBudgetUsedUp(b)) return tokens ? `spending limit reached: ${formatUsd(b.spentUsd)} of ${formatUsd(b.usdPerWeek ?? 0)}, resets ${back}` : `limit reached, resets ${back}`;
   const dollars = b.usdPerWeek === null ? `${formatUsd(b.spentUsd)} this week, no cap` : `${formatUsd(b.spentUsd)} of ${formatUsd(b.usdPerWeek)} this week`;
   return b.tokensThisWeek === undefined ? dollars : `${dollars} · ${formatTokens(b.tokensThisWeek)} tokens`;
+}
+
+/**
+ * /usage's second line for a budget with a token limit: the limit that doesn't bind. Under a
+ * binding token limit, "$0.22 of $8 spending limit · 21.4M tokens processed"; under binding
+ * dollars, "token limit: ~2.1M of ~18.7M tokens (95.5% caching applied)". Undefined without one.
+ */
+export function dlBudgetDetail(b: DlBudget, tokens: DlTokenLimit | undefined): string | undefined {
+  if (!tokens) return undefined;
+  if (dlBindingLimit(b, tokens) === "spend") return `token limit: ${tokenLimitAmount(tokens)}`;
+  const dollars = b.usdPerWeek === null ? `${formatUsd(b.spentUsd)} spent, no spending limit` : `${formatUsd(b.spentUsd)} of ${formatUsd(b.usdPerWeek)} spending limit`;
+  return b.tokensThisWeek === undefined ? dollars : `${dollars} · ${formatTokens(b.tokensThisWeek)} tokens processed`;
+}
+
+/**
+ * Which weekly limit a refusal hit, by name: "token limit on DeepSeek V4.1 Flash (~18.7M
+ * tokens, 95.5% caching applied)" or "$8 spending limit on DeepSeek V4.1 Flash". `reason` is
+ * the refusal's ("tokens" or "spend"); `family` the refusal's, else the one /v1/me shows used
+ * up. Undefined without a known reason.
+ */
+export function dlLimitName(reason: string | undefined, family: string | undefined, me: DlMe | null = lastMe): string | undefined {
+  if (reason !== "tokens" && reason !== "spend") return undefined;
+  const families: DlFamily[] = ["deepseek", "gpt6"];
+  const fam: DlFamily | undefined =
+    family === "gpt6" || family === "deepseek"
+      ? family
+      : me
+        ? families.find((f) => (reason === "tokens" ? dlTokenLimit(me, f)?.usedUp === true : me.budgets?.[f] !== undefined && dlBudgetUsedUp(me.budgets[f]!)))
+        : undefined;
+  const on = fam === "gpt6" ? " on GPT-6" : fam === "deepseek" ? " on DeepSeek V4.1 Flash" : "";
+  if (reason === "tokens") {
+    const t = fam && me ? dlTokenLimit(me, fam) : undefined;
+    return `token limit${on}${t ? ` (~${formatTokens(t.realLimit)} tokens, ${t.label})` : ""}`;
+  }
+  const usd = fam ? me?.budgets?.[fam]?.usdPerWeek : undefined;
+  return `${typeof usd === "number" && usd > 0 ? `${formatUsd(usd)} ` : ""}spending limit${on}`;
+}
+
+/**
+ * dl Pro's prompt naming the limit: the service's generic "You've hit this week's free limit."
+ * (older servers) becomes "You've hit this week's free token limit on …". A prompt that names
+ * it already, or no known limit: as sent.
+ */
+export function dlNamedProPrompt(prompt: DlProPrompt, limit: string | undefined): DlProPrompt {
+  if (!limit) return prompt;
+  const text = prompt.text.replace(/^You've hit this week's free limit\./, `You've hit this week's free ${limit}.`);
+  return text === prompt.text ? prompt : { ...prompt, text };
+}
+
+/** What a family has left, its binding limit's: "limit reached", "no cap", "$7.78 left" or "~11.2M left". */
+function dlBudgetLeft(me: Pick<DlMe, "budgets" | "pools" | "mix">, family: DlFamily, b: DlBudget): string {
+  if (dlFamilyUsedUp(me, family)) return "limit reached";
+  const tokens = dlTokenLimit(me, family);
+  if (tokens && dlBindingLimit(b, tokens) === "tokens") return tokenLimitLeft(tokens);
+  return b.usdPerWeek === null ? "no cap" : `${formatUsd(Math.max(0, b.usdPerWeek - b.spentUsd))} left`;
 }
 
 /** Both budgets, GPT-6 first, when the service sent both (newer servers); undefined otherwise. */
@@ -1432,20 +1619,27 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
   const budgets = bothBudgets(me);
   const cap = dollarCap(a);
   // With two budgets the week is over only when both are; the percentage is DeepSeek's (the larger one).
-  const usedUp = budgets ? dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek) : weekUsedUp(a);
-  const share = (b: DlBudget) => (typeof b.usdPerWeek === "number" && b.usdPerWeek > 0 ? Math.min(100, Math.round((b.spentUsd / b.usdPerWeek) * 100)) : 0);
+  // A family's week is over when its dollars are spent or its token limit (smaller levels' DeepSeek) is used up.
+  const usedUp = budgets ? dlFamilyUsedUp(me, "gpt6") && dlFamilyUsedUp(me, "deepseek") : weekUsedUp(a);
+  // With two budgets the percentage is DeepSeek's binding limit's (the larger budget).
   const pct = budgets
-    ? share(budgets.deepseek)
+    ? bindingPct(budgets.deepseek, dlTokenLimit(me, "deepseek"))
     : cap !== undefined
       ? Math.min(100, Math.round(((a.spentUsdThisWeek ?? 0) / cap) * 100))
       : a.tokensPerWeek > 0
         ? Math.min(100, Math.round((a.usedThisWeek / a.tokensPerWeek) * 100))
         : 0;
   if (budgets) {
-    // Two weekly budgets: dollars are the limit, tokens counted the normal way (cached included).
+    // Two weekly budgets: each family's binding limit first (dollars, or a token limit when it
+    // binds), and the other one on a second line when the family has both.
     const resets = a.resetsAt || undefined;
-    lines.push(`  gpt-6           ${dlBudgetText(budgets.gpt6, resets, t)}`, `  deepseek        ${dlBudgetText(budgets.deepseek, resets, t)}`);
-    if (dlBudgetUsedUp(budgets.gpt6) && !dlBudgetUsedUp(budgets.deepseek)) lines.push(`  ${DL_GPT_LIMIT_HINT}`);
+    for (const family of ["gpt6", "deepseek"] as const) {
+      const tokens = dlTokenLimit(me, family);
+      lines.push(`  ${dlFamilyLabel(family).padEnd(16)}${dlBudgetText(budgets[family], resets, t, tokens)}`);
+      const detail = dlBudgetDetail(budgets[family], tokens);
+      if (detail) lines.push(`${" ".repeat(18)}${detail}`);
+    }
+    if (dlFamilyUsedUp(me, "gpt6") && !dlFamilyUsedUp(me, "deepseek")) lines.push(`  ${DL_GPT_LIMIT_HINT}`);
   } else if (cap !== undefined) {
     // The dollar cap is what binds: show it first, and tokens only as what was used.
     lines.push(
@@ -1551,9 +1745,8 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
   const a = me.allowance;
   const budgets = bothBudgets(me);
   if (budgets) {
-    const part = (family: DlFamily, b: DlBudget) =>
-      `${dlFamilyLabel(family)} ${dlBudgetUsedUp(b) ? "limit reached" : b.usdPerWeek === null ? "no cap" : `${formatUsd(Math.max(0, b.usdPerWeek - b.spentUsd))} left`}`;
-    if (dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek)) return `free · limit reached`;
+    const part = (family: DlFamily, b: DlBudget) => `${dlFamilyLabel(family)} ${dlBudgetLeft(me, family, b)}`;
+    if (dlFamilyUsedUp(me, "gpt6") && dlFamilyUsedUp(me, "deepseek")) return `free · limit reached`;
     return `free · ${part("gpt6", budgets.gpt6)} · ${part("deepseek", budgets.deepseek)}`;
   }
   const cap = dollarCap(a);
@@ -1593,11 +1786,8 @@ function dlLeftThisWeek(me: DlMe, modelId?: string): string {
   const budgets = bothBudgets(me);
   if (budgets) {
     const b = model ? budgets[model.family] : undefined;
-    if (b) {
-      if (dlBudgetUsedUp(b)) return named("limit reached this week");
-      return b.usdPerWeek === null ? named("no cap this week") : named(`${formatUsd(Math.max(0, b.usdPerWeek - b.spentUsd))} left this week`);
-    }
-    if (dlBudgetUsedUp(budgets.gpt6) && dlBudgetUsedUp(budgets.deepseek)) return "limit reached this week";
+    if (model && b) return named(`${dlBudgetLeft(me, model.family, b)} this week`);
+    if (dlFamilyUsedUp(me, "gpt6") && dlFamilyUsedUp(me, "deepseek")) return "limit reached this week";
   }
   const pool = model ? me.pools?.[model.pool] : undefined;
   if (weekUsedUp(a) || (pool && pool.remaining <= 0)) return named("limit reached this week");
@@ -1614,7 +1804,7 @@ export function dlModelAllowanceLine(modelId: string, me: DlMe | null = lastKnow
   const model = DL_FREE_MODELS.find((entry) => entry.id === modelId);
   // Two budgets (newer servers): the model's own budget, dollars and tokens counted the normal way.
   const budget = model && me?.budgets?.[model.family];
-  if (me && budget && bothBudgets(me)) return dlBudgetText(budget, me.allowance.resetsAt || undefined);
+  if (me && budget && bothBudgets(me)) return dlBudgetText(budget, me.allowance.resetsAt || undefined, {}, dlTokenLimit(me, model.family));
   const pool = model && me?.pools?.[model.pool];
   if (!me || !pool) return undefined;
   // The limit that binds: the week's dollar cap when there is one, never "36M of 50M left" once it is spent.

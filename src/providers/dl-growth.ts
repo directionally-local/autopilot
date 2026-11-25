@@ -22,6 +22,8 @@ import {
   dlCheckout,
   dlProPrice,
   dlProPromptLine,
+  dlLimitName,
+  dlNamedProPrompt,
   dlQueuePlace,
   dlTrialEndedLine,
   dlTrialEndedTitle,
@@ -68,8 +70,11 @@ export function dlGptLimitTitle(resetsAt: string | undefined, o: DlTimeOpts & { 
 export const DL_SWITCH_DEEPSEEK_LABEL = "Switch to DeepSeek V4.1 Flash and continue";
 
 /** "You've used this week's free usage. It's back Mon 09:00." ("Pro usage" on Pro.) */
-export function dlLimitTitle(resetsAt: string | undefined, o: DlTimeOpts & { plan?: DlPlan } = {}): string {
-  return `You've used this week's ${o.plan === "pro" ? "Pro" : "free"} usage. It's back ${formatLocalTime(resetsAt ?? nextWeekStart(o.now), o)}.`;
+export function dlLimitTitle(resetsAt: string | undefined, o: DlTimeOpts & { plan?: DlPlan; limit?: string } = {}): string {
+  const plan = o.plan === "pro" ? "Pro" : "free";
+  // `limit` (dlLimitName): which of the week's limits ran out, when the refusal said.
+  const lead = o.limit ? `You've hit this week's ${plan} ${o.limit}.` : `You've used this week's ${plan} usage.`;
+  return `${lead} It's back ${formatLocalTime(resetsAt ?? nextWeekStart(o.now), o)}.`;
 }
 
 /** "You're #214 in line for free tokens (about 3 days, by Fri). Each friend who starts using dl moves you up." */
@@ -239,9 +244,10 @@ export function dlWinLine(link: string): string {
 export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & { plan?: DlPlan } = {}): string | undefined {
   const link = d.referralLink;
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
-    if (d.proPrompt && o.plan !== "pro") return `${dlProPromptLine(d.proPrompt, "cli")}. Or use your own key: \`autopilot connect\`.`;
+    const limit = dlLimitName(d.reason, d.family);
+    if (d.proPrompt && o.plan !== "pro") return `${dlProPromptLine(dlNamedProPrompt(d.proPrompt, limit), "cli")}. Or use your own key: \`autopilot connect\`.`;
     const pro = d.offers?.pro && o.plan !== "pro" ? ` Get dl Pro for ${dlProPrice(d.offers.pro)}: \`${DL_UPGRADE_COMMAND}\`` : "";
-    return `${dlLimitTitle(d.resetsAt, o)} To keep going now, use your own key: \`autopilot connect\`.${pro}`;
+    return `${dlLimitTitle(d.resetsAt, { ...o, ...(limit ? { limit } : {}) })} To keep going now, use your own key: \`autopilot connect\`.${pro}`;
   }
   if (code === "trial_ended") return dlTrialEndedLine(d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens, { where: "cli", ...(d.offers ? { offers: d.offers } : {}) });
   if (code === "gpt_limit") {
@@ -387,7 +393,7 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 /** A screen the session shows: out of tokens, queued, or /upgrade. */
 export type DlScreen =
   /** `proPrompt`: dl Pro's prompt from the service (the free week's open models are used up), shown as the title. */
-  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan; proPrompt?: string }
+  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan; proPrompt?: string; limit?: string }
   /** `message`: the service's own sentence when the limit has a reason (e.g. "security"), shown instead of the allowance title. */
   | { kind: "gpt"; resetsAt?: string; alternative: string; reason?: string; message?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   /** A new account's one-time trial is used up (402 trial_ended): Pro or a top-up, no reset. */
@@ -417,8 +423,10 @@ export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallback
   const referralLink = d.referralLink ?? fallbackLink;
   const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}), ...(plan ? { plan } : {}) };
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
-    const proPrompt = d.proPrompt && plan !== "pro" ? d.proPrompt.text : undefined;
-    return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...(proPrompt ? { proPrompt } : {}), ...common };
+    // Which limit ran out (the token allowance or the dollar one), named in the title.
+    const limit = dlLimitName(d.reason, d.family);
+    const proPrompt = d.proPrompt && plan !== "pro" ? dlNamedProPrompt(d.proPrompt, limit).text : undefined;
+    return { kind: "quota", ...(d.resetsAt ? { resetsAt: d.resetsAt } : {}), ...(d.request ? { request: d.request } : {}), ...(proPrompt ? { proPrompt } : {}), ...(limit ? { limit } : {}), ...common };
   }
   if (code === "trial_ended") {
     const tokens = d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens;
@@ -441,7 +449,7 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
   const choices = dlScreenChoices(screen.kind, screen);
   const title =
     screen.kind === "quota"
-      ? screen.proPrompt ?? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
+      ? screen.proPrompt ?? dlLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}), ...(screen.limit ? { limit: screen.limit } : {}) })
       : screen.kind === "gpt"
         ? screen.message ?? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
         : screen.kind === "trial"
