@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DlConfigError, loadDlServerConfig } from "./dl-workspaces.js";
-import type { DlStore, CreatedDlCredential } from "./dl-store.js";
+import type { DlStore, CreatedDlCredential, DlCredentialCheck } from "./dl-store.js";
 
 /**
  * Pairing a client (the laptop CLI, later a desktop app) with this server without
@@ -23,6 +23,10 @@ const LEGACY_OWNER_COOKIE = "aster_owner";
 export const CLIENT_CREDENTIAL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 export const OWNER_CREDENTIAL_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 export const OWNER_CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
+/** Renewal requests allowed per client address per window, before credentials are even looked up. */
+const RENEW_ATTEMPTS_PER_WINDOW = 10;
+const RENEW_WINDOW_MS = 60 * 1000;
+const renewAttempts = new Map<string, { count: number; windowStart: number }>();
 
 /** Handles the unauthenticated pairing routes; returns false for every other path. */
 export async function handleDlPairing(req: IncomingMessage, res: ServerResponse, url: URL, store: DlStore): Promise<boolean> {
@@ -34,7 +38,15 @@ export async function handleDlPairing(req: IncomingMessage, res: ServerResponse,
     const body = await readJsonBody(req);
     const clientName = typeof body.clientName === "string" ? body.clientName.trim() : "Autopilot CLI";
     if (!CLIENT_NAME_RE.test(clientName)) return sendError(res, 400, "invalid_client_name", "clientName must be 1-60 letters, digits, spaces, or ._'()@-");
-    const started = store.createDeviceAuthorization({ clientName, ttlMs: DEVICE_CODE_TTL_MS, maxPending: MAX_PENDING_DEVICE_CODES });
+    // replacesToken: the device's expired credential. It only marks which credential the owner's
+    // approval renews; it never grants anything itself, and the response is the same whether or
+    // not it matched, so an unauthenticated caller learns nothing about it.
+    const started = store.createDeviceAuthorization({
+      clientName,
+      ttlMs: DEVICE_CODE_TTL_MS,
+      maxPending: MAX_PENDING_DEVICE_CODES,
+      replacesToken: body.replacesToken,
+    });
     if (!started) return sendError(res, 429, "too_many_pending", "Too many pairings are waiting for approval; try again later");
     const verificationUri = `${publicBaseUrl(req)}${AUTH_PREFIX}/approve`;
     return json(res, 200, {
@@ -56,7 +68,34 @@ export async function handleDlPairing(req: IncomingMessage, res: ServerResponse,
       case "slow_down": return sendError(res, 400, "slow_down", "Polling too fast; wait the advertised interval");
       case "denied": return sendError(res, 400, "access_denied", "The owner denied this pairing");
       case "expired": return sendError(res, 400, "expired_token", "This pairing code expired or was already used; start again");
-      case "issued": return json(res, 200, publicCredential(result.credential));
+      case "issued":
+        if (result.renewed) auditLog(`credential ${result.credential.id} renewed by an approved pairing; expires ${new Date(result.credential.expiresAt).toISOString()}`);
+        return json(res, 200, publicCredential(result.credential));
+    }
+  }
+
+  if (path === `${AUTH_PREFIX}/renew` && method === "POST") {
+    if (!allowRenewAttempt(req)) {
+      res.setHeader("Retry-After", String(Math.ceil(RENEW_WINDOW_MS / 1000)));
+      return sendError(res, 429, "rate_limited", "Too many renewal attempts; try again later");
+    }
+    await readJsonBody(req);
+    const result = store.renewCredential(req.headers.authorization);
+    switch (result.kind) {
+      case "invalid":
+      case "expired":
+      case "revoked":
+        return sendCredentialError(res, result);
+      case "superseded":
+        return sendError(res, 409, "credential_already_renewed", "This token was already renewed; use the newer token or pair again");
+      case "not_renewable":
+        return sendError(res, 403, "credential_not_renewable", "This credential can't be renewed; create a new one");
+      case "too_soon":
+        res.setHeader("Retry-After", String(Math.ceil(result.retryAfterMs / 1000)));
+        return sendError(res, 429, "slow_down", "This credential was renewed moments ago; try again later");
+      case "renewed":
+        auditLog(`credential ${result.credential.id} renewed; expires ${new Date(result.credential.expiresAt).toISOString()}`);
+        return json(res, 200, publicCredential(result.credential));
     }
   }
 
@@ -94,7 +133,7 @@ export async function handleDlPairing(req: IncomingMessage, res: ServerResponse,
     const pending = store.listPendingDeviceAuthorizations();
     return html(res, 200, "Approve a device", `
       <h1>Approve a device</h1>
-      ${device && device.status === "pending" ? approvalForm(device.userCode, device.clientName) : `
+      ${device && device.status === "pending" ? approvalForm(device.userCode, device.clientName, device.renewsCredentialName) : `
         <form method="post" action="${AUTH_PREFIX}/approve">
           <label>Code shown on the device <input name="code" autocomplete="off" autofocus value="${escapeHtml(code ?? "")}" placeholder="BCDF-GHJK"></label>
           <button type="submit" name="decision" value="approve">Approve</button>
@@ -123,6 +162,44 @@ export async function handleDlPairing(req: IncomingMessage, res: ServerResponse,
   }
 
   return sendError(res, 404, "not_found", "dl server endpoint not found");
+}
+
+/**
+ * The 401 for a refused bearer token. Expired and revoked are told apart only to a caller that
+ * presents the token itself; anything malformed or unknown is just invalid.
+ */
+export function sendCredentialError(res: ServerResponse, check: Exclude<DlCredentialCheck, { kind: "active" }>): true {
+  switch (check.kind) {
+    case "expired": return sendError(res, 401, "credential_expired", "This dl server credential expired; pair this device again");
+    case "revoked": return sendError(res, 401, "credential_revoked", "This dl server credential was revoked; pair this device again");
+    case "invalid": return sendError(res, 401, "invalid_credential", "A valid dl server bearer credential is required");
+  }
+}
+
+/** Credential lifecycle events for the server log. Ids and times only, never tokens. */
+function auditLog(message: string): void {
+  if (process.env.NODE_TEST_CONTEXT) return;
+  console.log(`[dl-auth] ${new Date().toISOString()} ${message}`);
+}
+
+/** A fixed window per client address, so renewal can't be used to probe tokens quickly. */
+function allowRenewAttempt(req: IncomingMessage, now = Date.now()): boolean {
+  const key = req.socket.remoteAddress ?? "unknown";
+  for (const [address, entry] of renewAttempts) {
+    if (now - entry.windowStart >= RENEW_WINDOW_MS) renewAttempts.delete(address);
+  }
+  const entry = renewAttempts.get(key);
+  if (!entry) {
+    renewAttempts.set(key, { count: 1, windowStart: now });
+    return true;
+  }
+  entry.count += 1;
+  return entry.count <= RENEW_ATTEMPTS_PER_WINDOW;
+}
+
+/** Test hook: forget renewal attempts. */
+export function resetRenewRateLimit(): void {
+  renewAttempts.clear();
 }
 
 /** The pairing outcome a client receives; the token is shown once. */
@@ -198,9 +275,10 @@ function notOwnerBody(code: string | null): string {
     <p class="muted">Without Directionally Local: <code>autopilot server pair approve ${escapeHtml(code ?? "<code>")}</code></p>`;
 }
 
-function approvalForm(userCode: string, clientName: string): string {
+function approvalForm(userCode: string, clientName: string, renewsCredentialName: string | null): string {
   return `
     <p><strong>${escapeHtml(clientName)}</strong> wants to use this server.</p>
+    ${renewsCredentialName !== null ? `<p>Approving renews the expired access of <strong>${escapeHtml(renewsCredentialName)}</strong>, so its chats stay with this device.</p>` : ""}
     <p class="code">${escapeHtml(userCode)}</p>
     <p class="muted">Approve only if this matches the code shown on your device.</p>
     <form method="post" action="${AUTH_PREFIX}/approve">

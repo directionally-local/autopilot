@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { DlStore } from "./dl-store.js";
+import { CREDENTIAL_RENEWAL_GRACE_MS, CREDENTIAL_RENEWAL_MIN_INTERVAL_MS, DL_CLIENT_SCOPES, DlStore } from "./dl-store.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -331,6 +331,220 @@ describe("DlStore", () => {
       assert.equal(store.resolveDeviceAuthorization(stale.userCode, "approve", { workspaceIds: ["default"], credentialTtlMs: 60_000 }, now + 2_000), "expired");
       assert.equal(store.redeemDeviceAuthorization(stale.deviceCode, now + 2_000).kind, "expired");
       assert.equal(store.resolveDeviceAuthorization("ZZZZ-ZZZZ", "approve", { workspaceIds: ["default"], credentialTtlMs: 60_000 }, now), "not_found");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("renews a credential in place: same id, new token and expiry, old token valid for a grace period", async () => {
+    const root = await fixture();
+    const store = new DlStore(join(root, "state", "dl.db"));
+    try {
+      const issuedAt = Date.now();
+      const phone = store.createCredential({ name: "iPhone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: issuedAt + 90 * 24 * 60 * 60 * 1000 });
+      const lifetime = phone.expiresAt - phone.createdAt;
+      store.reserveCellConversation({ conversationId: "conv-1", credentialId: phone.id, workspaceId: "default", model: "m", sessionId: "s-1", cellName: "cell-1", idempotencyKey: "k-1" });
+
+      const at = issuedAt + 80 * 24 * 60 * 60 * 1000;
+      const renewal = store.renewCredential(`Bearer ${phone.token}`, at);
+      assert.ok(renewal.kind === "renewed");
+      assert.equal(renewal.credential.id, phone.id, "renewal keeps the credential, and with it the conversations");
+      assert.notEqual(renewal.credential.token, phone.token);
+      assert.equal(renewal.credential.expiresAt, at + lifetime, "the same lifetime it was granted, counted from now");
+      assert.equal(renewal.credential.name, "iPhone");
+      assert.deepEqual(renewal.credential.scopes, DL_CLIENT_SCOPES);
+      assert.equal(renewal.previousTokenValidUntil, at + CREDENTIAL_RENEWAL_GRACE_MS);
+      assert.equal(store.getCredentialCellMapping("conv-1", renewal.credential.id)?.credentialId, phone.id);
+
+      const fresh = store.checkCredential(`Bearer ${renewal.credential.token}`, at + 1);
+      assert.ok(fresh.kind === "active");
+      assert.equal(fresh.principal.credentialId, phone.id);
+      assert.equal(fresh.principal.expiresAt, at + lifetime);
+      assert.equal(fresh.principal.superseded, false);
+
+      // The old token keeps working (with its grace expiry) only until the grace period ends.
+      const inGrace = store.checkCredential(`Bearer ${phone.token}`, at + CREDENTIAL_RENEWAL_GRACE_MS - 1);
+      assert.ok(inGrace.kind === "active");
+      assert.equal(inGrace.principal.credentialId, phone.id);
+      assert.equal(inGrace.principal.superseded, true);
+      assert.equal(inGrace.principal.expiresAt, at + CREDENTIAL_RENEWAL_GRACE_MS);
+      assert.equal(store.checkCredential(`Bearer ${phone.token}`, at + CREDENTIAL_RENEWAL_GRACE_MS).kind, "expired");
+      assert.equal(store.authenticate(`Bearer ${renewal.credential.token}`, at + CREDENTIAL_RENEWAL_GRACE_MS)?.credentialId, phone.id);
+
+      // A replaced token can't renew again, and renewals are spaced out.
+      assert.equal(store.renewCredential(`Bearer ${phone.token}`, at + 1_000).kind, "superseded");
+      const tooSoon = store.renewCredential(`Bearer ${renewal.credential.token}`, at + 1_000);
+      assert.ok(tooSoon.kind === "too_soon");
+      assert.equal(tooSoon.retryAfterMs, CREDENTIAL_RENEWAL_MIN_INTERVAL_MS - 1_000);
+      const later = at + CREDENTIAL_RENEWAL_MIN_INTERVAL_MS;
+      const second = store.renewCredential(`Bearer ${renewal.credential.token}`, later);
+      assert.ok(second.kind === "renewed");
+      assert.equal(second.credential.expiresAt, later + lifetime);
+      assert.equal(store.checkCredential(`Bearer ${phone.token}`, later + 1).kind, "invalid", "only the latest replaced token has a grace period");
+
+      assert.deepEqual(store.listCredentialAudit(phone.id).map((entry) => [entry.event, entry.createdAt]), [["renewed", at], ["renewed", later]]);
+      const auditRows = JSON.stringify(store.listCredentialAudit(phone.id));
+      for (const token of [phone.token, renewal.credential.token, second.credential.token]) assert.ok(!auditRows.includes(token));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refuses to renew expired, revoked, unknown, or owner credentials, and tells expired from revoked", async () => {
+    const root = await fixture();
+    const store = new DlStore(join(root, "state", "dl.db"));
+    try {
+      const now = Date.now();
+      const expiring = store.createCredential({ name: "Old", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 60_000 });
+      assert.equal(store.renewCredential(`Bearer ${expiring.token}`, now + 60_000).kind, "expired");
+      assert.equal(store.checkCredential(`Bearer ${expiring.token}`, now + 60_000).kind, "expired");
+
+      const revoked = store.createCredential({ name: "Lost", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 60_000 });
+      store.revokeCredential(revoked.id, now);
+      assert.equal(store.renewCredential(`Bearer ${revoked.token}`, now).kind, "revoked");
+      assert.equal(store.checkCredential(`Bearer ${revoked.token}`, now).kind, "revoked");
+      assert.equal(store.checkCredential(`Bearer ${revoked.token}`, now + 120_000).kind, "revoked", "revocation wins over expiry");
+
+      assert.equal(store.renewCredential(`Bearer dl_${"x".repeat(43)}`, now).kind, "invalid");
+      assert.equal(store.renewCredential("Bearer nope", now).kind, "invalid");
+      assert.equal(store.renewCredential(undefined, now).kind, "invalid");
+      assert.equal(store.checkCredential(`Basic ${expiring.token}`, now).kind, "invalid");
+
+      const owner = store.createCredential({ name: "Owner (browser)", workspaceIds: ["default"], scopes: ["pairing:approve"], expiresAt: now + 60_000 });
+      assert.equal(store.renewCredential(`Bearer ${owner.token}`, now).kind, "not_renewable");
+
+      // Revoking a renewed credential also ends its old token's grace period.
+      const phone = store.createCredential({ name: "Phone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 60_000 });
+      const renewed = store.renewCredential(`Bearer ${phone.token}`, now);
+      assert.ok(renewed.kind === "renewed");
+      store.revokeCredential(phone.id, now + 1);
+      assert.equal(store.checkCredential(`Bearer ${phone.token}`, now + 2).kind, "revoked");
+      assert.equal(store.checkCredential(`Bearer ${renewed.credential.token}`, now + 2).kind, "revoked");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("renews an expired, unrevoked credential through an approved pairing that offers it", async () => {
+    const root = await fixture();
+    const store = new DlStore(join(root, "state", "dl.db"));
+    try {
+      const now = Date.now();
+      const grant = { workspaceIds: ["default"], credentialTtlMs: 90 * 24 * 60 * 60 * 1000 };
+      const phone = store.createCredential({ name: "iPhone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 60_000 });
+      store.reserveCellConversation({ conversationId: "conv-1", credentialId: phone.id, workspaceId: "default", model: "m", sessionId: "s-1", cellName: "cell-1", idempotencyKey: "k-1" });
+      const later = now + 120_000;
+
+      const pairing = store.createDeviceAuthorization({ clientName: "iPhone", ttlMs: 600_000, maxPending: 5, replacesToken: phone.token }, later)!;
+      assert.equal(store.getDeviceAuthorization(pairing.userCode, later)?.renewsCredentialName, "iPhone", "the owner sees what approval renews");
+      // Offering the token grants nothing by itself.
+      assert.equal(store.redeemDeviceAuthorization(pairing.deviceCode, later).kind, "pending");
+      assert.equal(store.checkCredential(`Bearer ${phone.token}`, later).kind, "expired");
+
+      assert.equal(store.resolveDeviceAuthorization(pairing.userCode, "approve", grant, later), "approved");
+      const issued = store.redeemDeviceAuthorization(pairing.deviceCode, later + 10_000);
+      assert.ok(issued.kind === "issued");
+      assert.equal(issued.renewed, true);
+      assert.equal(issued.credential.id, phone.id, "the same credential, so its conversations stay with the phone");
+      assert.equal(issued.credential.expiresAt, later + 10_000 + grant.credentialTtlMs);
+      assert.notEqual(issued.credential.token, phone.token);
+      assert.equal(store.authenticate(`Bearer ${issued.credential.token}`, later + 10_000)?.credentialId, phone.id);
+      assert.equal(store.checkCredential(`Bearer ${phone.token}`, later + 10_000).kind, "invalid", "the expired token gets no grace period");
+      assert.equal(store.getCredentialCellMapping("conv-1", phone.id)?.credentialId, phone.id);
+      assert.deepEqual(store.listCredentialAudit(phone.id).map((entry) => entry.event), ["renewed_by_pairing"]);
+      assert.equal(store.listCredentials(later + 10_000).length, 1, "no second credential was created");
+
+      // A second pairing offering the same (now replaced) token gets a new credential.
+      const again = store.createDeviceAuthorization({ clientName: "iPhone", ttlMs: 600_000, maxPending: 5, replacesToken: phone.token }, later + 20_000)!;
+      assert.equal(store.getDeviceAuthorization(again.userCode, later + 20_000)?.renewsCredentialName, null);
+      store.resolveDeviceAuthorization(again.userCode, "approve", grant, later + 20_000);
+      const separate = store.redeemDeviceAuthorization(again.deviceCode, later + 30_000);
+      assert.ok(separate.kind === "issued");
+      assert.equal(separate.renewed, false);
+      assert.notEqual(separate.credential.id, phone.id);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("never revives a revoked credential and ignores replacesToken that doesn't qualify", async () => {
+    const root = await fixture();
+    const store = new DlStore(join(root, "state", "dl.db"));
+    try {
+      const now = Date.now();
+      const later = now + 120_000;
+      const grant = { workspaceIds: ["default"], credentialTtlMs: 60_000 };
+      const pairAndRedeem = (replacesToken: unknown, revokeBeforeRedeem?: string) => {
+        const pairing = store.createDeviceAuthorization({ clientName: "iPhone", ttlMs: 600_000, maxPending: 50, replacesToken }, later)!;
+        if (revokeBeforeRedeem) store.revokeCredential(revokeBeforeRedeem, later);
+        assert.equal(store.resolveDeviceAuthorization(pairing.userCode, "approve", grant, later), "approved");
+        const issued = store.redeemDeviceAuthorization(pairing.deviceCode, later + 10_000);
+        assert.ok(issued.kind === "issued");
+        return issued;
+      };
+
+      const revoked = store.createCredential({ name: "Stolen phone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 60_000 });
+      store.revokeCredential(revoked.id, now);
+      const afterRevoked = pairAndRedeem(revoked.token);
+      assert.equal(afterRevoked.renewed, false);
+      assert.notEqual(afterRevoked.credential.id, revoked.id);
+      assert.equal(store.checkCredential(`Bearer ${revoked.token}`, later).kind, "revoked");
+
+      // Revoked between starting the pairing and redeeming it: still not revived.
+      const revokedLate = store.createCredential({ name: "Phone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 60_000 });
+      const afterRevokedLate = pairAndRedeem(revokedLate.token, revokedLate.id);
+      assert.equal(afterRevokedLate.renewed, false);
+      assert.notEqual(afterRevokedLate.credential.id, revokedLate.id);
+      assert.equal(store.listCredentials(later).find((entry) => entry.id === revokedLate.id)?.status, "revoked");
+
+      // Still active: renew instead; pairing doesn't take it over.
+      const active = store.createCredential({ name: "Laptop", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 10 * 60_000 });
+      const afterActive = pairAndRedeem(active.token);
+      assert.equal(afterActive.renewed, false);
+      assert.equal(store.authenticate(`Bearer ${active.token}`, later)?.credentialId, active.id, "the active credential is untouched");
+
+      // The owner's browser credential is never taken over by a client.
+      const owner = store.createCredential({ name: "Owner (browser)", workspaceIds: ["default"], scopes: ["pairing:approve"], expiresAt: now + 60_000 });
+      assert.equal(pairAndRedeem(owner.token).renewed, false);
+
+      for (const offered of [`dl_${"x".repeat(43)}`, "not a token", 42, "", `Bearer ${active.token}`, "x".repeat(10_000), undefined]) {
+        assert.equal(pairAndRedeem(offered).renewed, false);
+      }
+
+      // A denied pairing renews nothing.
+      const expired = store.createCredential({ name: "Tablet", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: now + 60_000 });
+      const denied = store.createDeviceAuthorization({ clientName: "Tablet", ttlMs: 600_000, maxPending: 50, replacesToken: expired.token }, later)!;
+      store.resolveDeviceAuthorization(denied.userCode, "deny", grant, later);
+      assert.equal(store.redeemDeviceAuthorization(denied.deviceCode, later).kind, "denied");
+      assert.equal(store.checkCredential(`Bearer ${expired.token}`, later).kind, "expired");
+      assert.deepEqual(store.listCredentialAudit(expired.id), []);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("adds the renewal columns to a database created before them", async () => {
+    const root = await fixture();
+    const dbPath = join(root, "state", "dl.db");
+    await mkdir(join(root, "state"), { recursive: true });
+    const legacy = new SqliteDatabase(dbPath);
+    legacy.exec(`CREATE TABLE aster_credentials (id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+      workspace_ids_json TEXT NOT NULL, scopes_json TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+      revoked_at INTEGER, last_used_at INTEGER);
+      CREATE TABLE aster_device_authorizations (device_code_hash TEXT PRIMARY KEY, user_code TEXT NOT NULL UNIQUE, client_name TEXT NOT NULL,
+      status TEXT NOT NULL, workspace_ids_json TEXT, credential_ttl_ms INTEGER, credential_id TEXT, created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, resolved_at INTEGER, last_polled_at INTEGER);`);
+    const now = Date.now();
+    const token = `dl_${"a".repeat(43)}`;
+    legacy.prepare("INSERT INTO aster_credentials (id, name, token_hash, workspace_ids_json, scopes_json, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("legacy-id", "Old iPhone", createHash("sha256").update(token).digest("hex"), JSON.stringify(["default"]), JSON.stringify(DL_CLIENT_SCOPES), now - 1_000, now + 59_000);
+    legacy.close();
+    const store = new DlStore(dbPath);
+    try {
+      const renewal = store.renewCredential(`Bearer ${token}`, now);
+      assert.ok(renewal.kind === "renewed");
+      assert.equal(renewal.credential.id, "legacy-id");
+      assert.equal(renewal.credential.expiresAt, now + 60_000, "lifetime from the original grant");
     } finally {
       store.close();
     }

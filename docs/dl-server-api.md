@@ -161,6 +161,15 @@ A laptop CLI or desktop app pairs itself with a device code, like `gh auth login
 
 Codes are 8 letters without vowels and expire after 10 minutes. At most 20 can wait at once (`429 too_many_pending`). `verificationUri` uses `AUTOPILOT_PUBLIC_URL` when set; otherwise it uses the request's `X-Forwarded-Host`/`Host` and `X-Forwarded-Proto` (`https` unless the host is loopback). All pairing routes live under `/api/v1`, so a gateway that proxies only the dl server API keeps working.
 
+### Renewing a credential
+
+A client keeps its credential (and so its conversations, which belong to the credential) without pairing again:
+
+- **Before it expires:** `POST /api/v1/auth/renew` with the current token as the Bearer and an empty JSON body (`{}`). It returns `200` with the same shape as pairing, `{token, credentialId, name, workspaceIds, scopes, expiresAt}`: the same `credentialId`, a new token, and a new expiry one granted lifetime from now (90 days for a paired client). The old token keeps working for 10 minutes so requests already in flight don't fail, then stops. Errors: `401` (`credential_expired`, `credential_revoked`, `invalid_credential`), `409 credential_already_renewed` when the token presented was itself already replaced, `403 credential_not_renewable` for the owner's browser credential, and `429` (`slow_down` within a minute of the last renewal, `rate_limited` after 10 attempts a minute from one address) with `Retry-After`.
+- **After it expired:** pair again and send the expired token as `replacesToken` in `POST /api/v1/auth/device` (`{"clientName":"iPhone","replacesToken":"dl_…"}`). The owner still approves the code as usual; the approval page says which credential it renews. On approval the poll returns the same `credentialId` with a new token and expiry. `replacesToken` is ignored, and a new credential is issued as before, when it is malformed, unknown, not yet expired, already renewed, or revoked: a revoked credential is never revived. The response to `POST /api/v1/auth/device` is the same either way.
+
+`GET /api/v1/health` reports the calling token's own expiry in `credential.expiresAt`. A refused Bearer gets `401` with `credential_expired`, `credential_revoked`, or `invalid_credential` (malformed or unknown), so a client can tell an expiry from a revocation; only a caller holding the token learns which. Tokens are stored only as SHA-256 hashes, including a renewed token's predecessor during its grace period. Renewals are recorded in the `aster_credential_audit` table and logged as `[dl-auth] credential <id> renewed` (ids and times only, never tokens).
+
 ## API contract
 
 All paths below require the scoped Bearer credential. Unknown IDs outside the token’s workspace scope are returned as `404` to avoid disclosing their existence. JSON errors use `{ "error": { "code": "...", "message": "..." } }`.
@@ -175,7 +184,8 @@ All paths below require the scoped Bearer credential. Unknown IDs outside the to
   "service": "autopilot",
   "apiVersion": "v1",
   "serviceVersion": "1.5.0",
-  "capabilities": ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals"]
+  "credential": {"id": "4c1f…", "expiresAt": "2027-02-23T09:30:00.000Z"},
+  "capabilities": ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "credential-renewal"]
 }
 ```
 

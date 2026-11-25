@@ -23,7 +23,7 @@ import { cellRetentionReason, orderRetentionCandidates, type RetentionCandidate,
 import { DlGitHubProxy, createDlGitHubGrantToken } from "./dl-github-proxy.js";
 import { finalAssistantMessage, pullRequestBody, pullRequestTitle, type DlTurnEvent } from "./dl-pull-request.js";
 import { DlPush } from "./dl-push.js";
-import { handleDlPairing, PairingRequestError } from "./dl-pairing.js";
+import { handleDlPairing, PairingRequestError, sendCredentialError } from "./dl-pairing.js";
 import { containsLikelyProviderSecret, createDlTools, findLikelyProviderSecret, redactLikelySecrets, assertDlCellPath } from "./dl-tools.js";
 
 const API_PREFIX = "/api/v1";
@@ -210,11 +210,12 @@ export class DlApi {
       const store = this.getStore();
       // Device pairing and owner claim run before bearer auth: they are how a client gets one.
       if (await handleDlPairing(req, res, url, store)) return;
-      const principal = store.authenticate(req.headers.authorization);
-      if (!principal) {
-        sendError(res, 401, "invalid_credential", "A valid dl server bearer credential is required");
+      const check = store.checkCredential(req.headers.authorization);
+      if (check.kind !== "active") {
+        sendCredentialError(res, check);
         return;
       }
+      const principal = check.principal;
       await this.ensureRecovered(store);
       this.startCellRetentionSweep(store);
       const config = await loadDlServerConfig();
@@ -229,7 +230,9 @@ export class DlApi {
           apiVersion: "v1",
           serviceVersion: getAppVersion(),
           cellRetention: this.cellRetentionSnapshot(),
-          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "conversation-list", "patch-upload", ...(this.runtime.listConversationCells && this.runtime.destroyCell ? ["cell-retention"] : []), ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "catalog" ? ["model-catalog"] : [])],
+          // The calling token's own expiry, so a client can renew before it lapses.
+          credential: { id: principal.credentialId, expiresAt: new Date(principal.expiresAt).toISOString() },
+          capabilities: ["workspaces", "conversations", "turns", "event-replay", "cancellation", "human-approvals", "hotcell-per-conversation", "pause-resume", "destroy", "autonomous-cells", "tool-output", "checkpoints", "model-switch", "artifacts", "memory", "push", "pull-requests", "device-pairing", "credential-renewal", "conversation-list", "patch-upload", ...(this.runtime.listConversationCells && this.runtime.destroyCell ? ["cell-retention"] : []), ...(this.github.configured ? ["github"] : []), ...(config.modelCatalog === "catalog" ? ["model-catalog"] : [])],
         });
       }
 
