@@ -15,6 +15,7 @@
 
 import { dlOrigin } from "./providers/dl-endpoint.js";
 import { BUG_REPORT_EMAIL, BUG_REPORT_URL } from "./ui/bug-report.js";
+import { hasPasteChip, PASTE_CHIP_PROBLEM, withoutPasteChips } from "./ui/paste-chips.js";
 
 export const FEEDBACK_MAX_CHARS = 5000;
 export const FEEDBACK_EMAIL = BUG_REPORT_EMAIL;
@@ -180,6 +181,13 @@ export async function runFeedback(o: { inline?: string }, deps: FeedbackDeps): P
       if (typed === null) return { text: FEEDBACK_NOT_SENT_LINE, severity: "info" };
       message = typed.trim();
       if (!message) return { text: FEEDBACK_NOT_SENT_LINE, severity: "info" };
+      if (hasPasteChip(message)) {
+        // An older renderer handed back the paste's placeholder, not the paste:
+        // never email "[Pasted text #1 +22 lines]". Ask again with the rest kept.
+        problem = PASTE_CHIP_PROBLEM;
+        draft = withoutPasteChips(typed);
+        continue;
+      }
       if (message.length <= FEEDBACK_MAX_CHARS) break;
       problem = `${message.length} characters; shorten it to ${FEEDBACK_MAX_CHARS}`;
       draft = typed;

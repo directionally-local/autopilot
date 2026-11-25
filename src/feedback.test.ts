@@ -122,6 +122,25 @@ describe("/feedback flow", () => {
     assert.deepStrictEqual(post!.body, { message: "works with my own key", email: "me@example.net", client: { ...CLIENT, provider: "own-key" } });
   });
 
+  it("a collapsed-paste placeholder is never sent: asks again, keeping the typed rest", async () => {
+    const { fetchImpl, calls } = stubFetch();
+    const pasted = Array.from({ length: 22 }, (_, i) => `line ${i + 1}`).join("\n");
+    const { d, shown } = deps({ fetchImpl, messages: ["crash log:\n[Pasted text #1 +22 lines]", `crash log:\n${pasted}`], emails: [""] });
+    const line = await runFeedback({}, d);
+    assert.strictEqual(line.severity, "info");
+    assert.deepStrictEqual(shown.message, [{}, { problem: "a long paste didn't come through; paste it again or type it", draft: "crash log:" }]);
+    const sent = posts(calls).map((c) => (c.body as { message: string }).message);
+    assert.deepStrictEqual(sent, [`crash log:\n${pasted}`]);
+  });
+
+  it("a placeholder-only message and Esc on the re-ask sends nothing", async () => {
+    const { fetchImpl, calls } = stubFetch();
+    const { d } = deps({ fetchImpl, messages: ["[Pasted text #1 +22 lines]", null] });
+    const line = await runFeedback({}, d);
+    assert.deepStrictEqual(line, { text: FEEDBACK_NOT_SENT_LINE, severity: "info" });
+    assert.strictEqual(posts(calls).length, 0);
+  });
+
   it("text typed after the command skips the message input", async () => {
     const { fetchImpl, calls } = stubFetch();
     const { d, shown } = deps({ fetchImpl, emails: [""] });
