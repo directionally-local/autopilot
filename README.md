@@ -558,6 +558,46 @@ A message you send mid-turn is triaged instead of always waiting in line:
 
 Clear phrasing is decided instantly; ambiguous messages get a quick model check (OpenRouter only), and anything uncertain is queued. Use `/subagents cancel <n>` to stop a single subagent.
 
+## Use dl in Zed (ACP)
+
+`autopilot acp` runs Autopilot as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio, so editors that speak ACP (Zed, T3 Code, JetBrains IDEs and others) can use it as their coding agent. It is the same Autopilot: your provider and model, the free tier sign-in, your hooks, permission rules, MCP servers and sessions.
+
+**Zed.** With dl installed, run:
+
+```sh
+dl zed
+```
+
+It signs you in (the free tier, unless Autopilot already has a provider), backs up Zed's `settings.json` and adds one entry under `agent_servers`, leaving the rest of the file as it was. Then start a thread with **Autopilot by dl.new** from Zed's Agent Panel. `dl zed remove` takes the entry out again. To set it up by hand, add this to `~/.config/zed/settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "Autopilot by dl.new": {
+      "type": "custom",
+      "command": "dl",
+      "args": ["acp"]
+    }
+  }
+}
+```
+
+(`"command": "autopilot", "args": ["acp"]` works the same with Autopilot installed on its own.) Zed starts the agent from your login shell's environment; if `dl` isn't found there, use its full path (`which dl`).
+
+**Other ACP clients.** Give them `dl acp` (or `autopilot acp`) as the agent command. In T3 Code: add a provider, **Local ACP command**, `dl acp`.
+
+What works over ACP:
+
+- **Sessions**: every thread is an Autopilot session, saved like any other: `session/list` and `session/load` show them (Zed's *Import Threads*), and `autopilot resume` reopens one in the terminal.
+- **Streaming**: the reply, the model's reasoning, tool calls with the files they touch (edits as diffs), the task list as the plan, and context usage.
+- **Permissions**: the modes are the terminal's: **Edit** (the default for editor threads; asks before edits and commands), **Plan** (read-only) and **Auto** (runs without asking). Irreversible actions (`terraform destroy`, a force push, dropping a database…) are asked about in every mode, Auto included, and only ever allowed once. `ACP_PERMISSION_MODE=auto|plan|edit` sets the starting mode; Zed's `default_mode` setting does too.
+- **Model**: the model picker lists your provider's models (on OpenRouter: the best current ones, plus whatever you have configured); the choice applies to that thread.
+- **MCP**: the editor's MCP servers (stdio, HTTP and SSE) are added to the ones in your `config.json`.
+- **Cancel** stops the turn.
+- **Sign-in**: with no provider set up, the editor offers **Sign in to dl**, which runs `autopilot acp --login` (the free tier's GitHub sign-in) in a terminal, or opens it in the browser.
+
+Free tier requests from an ACP thread are Autopilot's own, with Autopilot's full allowance, as in the terminal. Logs go to stderr (Zed: `dev: open acp logs`).
+
 ## Running inside herdr
 
 [herdr](https://github.com/herdrdev/herdr) is a terminal multiplexer for coding agents. Run `autopilot` (or `autopilot -p "…"`) in a herdr pane and it reports its own state there, so herdr doesn't have to guess from the screen:

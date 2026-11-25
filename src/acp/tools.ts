@@ -1,18 +1,25 @@
+import { resolve } from "node:path";
 import type {
+  PermissionOption,
+  RequestPermissionOutcome,
   ToolCall as AcpToolCall,
   ToolCallContent,
   ToolCallUpdate,
   ToolKind,
   ToolCallLocation,
 } from "@agentclientprotocol/sdk";
-import type { ToolCall } from "#kimiflare/agent/messages.js";
-import type { ToolResult } from "#kimiflare/tools/executor.js";
-import type { ToolSpec } from "#kimiflare/tools/registry.js";
+import type { ToolCall } from "../agent/messages.js";
+import type { PermissionDecisionResult, ToolResult } from "../tools/executor.js";
 
 /**
- * Map a kimiflare tool name to an ACP ToolKind.
+ * Map a Autopilot tool name to an ACP ToolKind.
  */
-function toolKind(name: string): ToolKind {
+/** ACP wants absolute paths; tools take paths relative to the session's folder. */
+function absolute(path: string, cwd: string | undefined): string {
+  return cwd ? resolve(cwd, path) : path;
+}
+
+export function toolKind(name: string): ToolKind {
   switch (name) {
     case "read":
       return "read";
@@ -35,9 +42,9 @@ function toolKind(name: string): ToolKind {
 }
 
 /**
- * Build a human-readable title for an ACP tool call from kimiflare's tool call.
+ * Build a human-readable title for an ACP tool call from Autopilot's tool call.
  */
-function toolTitle(name: string, args: Record<string, unknown>): string {
+export function toolTitle(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case "read": {
       const path = typeof args.path === "string" ? args.path : "file";
@@ -97,8 +104,9 @@ function toolTitle(name: string, args: Record<string, unknown>): string {
 function toolLocations(
   name: string,
   args: Record<string, unknown>,
+  cwd?: string,
 ): ToolCallLocation[] {
-  const path = typeof args.path === "string" ? args.path : null;
+  const path = typeof args.path === "string" ? absolute(args.path, cwd) : null;
   if (!path) return [];
   switch (name) {
     case "read":
@@ -117,16 +125,17 @@ function toolLocations(
 }
 
 /**
- * Build the initial ACP ToolCallContent from a kimiflare tool call.
+ * Build the initial ACP ToolCallContent from a Autopilot tool call.
  * For write/edit, we send diff content blocks. For everything else, empty.
  */
 function toolContent(
   name: string,
   args: Record<string, unknown>,
+  cwd?: string,
 ): ToolCallContent[] {
   switch (name) {
     case "write": {
-      const path = typeof args.path === "string" ? args.path : "";
+      const path = typeof args.path === "string" ? absolute(args.path, cwd) : "";
       const content = typeof args.content === "string" ? args.content : "";
       return [
         {
@@ -138,7 +147,7 @@ function toolContent(
       ];
     }
     case "edit": {
-      const path = typeof args.path === "string" ? args.path : "";
+      const path = typeof args.path === "string" ? absolute(args.path, cwd) : "";
       const oldText =
         typeof args.old_string === "string" ? args.old_string : "";
       const newText =
@@ -158,9 +167,9 @@ function toolContent(
 }
 
 /**
- * Convert a finalized kimiflare ToolCall into an ACP tool_call SessionUpdate.
+ * Convert a finalized Autopilot ToolCall into an ACP tool_call SessionUpdate.
  */
-export function toAcpToolCall(tc: ToolCall): AcpToolCall {
+export function toAcpToolCall(tc: ToolCall, cwd?: string): AcpToolCall {
   let args: Record<string, unknown> = {};
   try {
     args = JSON.parse(tc.function.arguments || "{}");
@@ -175,14 +184,14 @@ export function toAcpToolCall(tc: ToolCall): AcpToolCall {
     title: toolTitle(tc.function.name, args),
     kind: toolKind(tc.function.name),
     status: "in_progress",
-    content: toolContent(tc.function.name, args),
-    locations: toolLocations(tc.function.name, args),
+    content: toolContent(tc.function.name, args, cwd),
+    locations: toolLocations(tc.function.name, args, cwd),
     rawInput: args,
   };
 }
 
 /**
- * Convert a kimiflare ToolResult into an ACP tool_call_update SessionUpdate.
+ * Convert a Autopilot ToolResult into an ACP tool_call_update SessionUpdate.
  */
 export function toAcpToolUpdate(result: ToolResult): ToolCallUpdate {
   const content: ToolCallContent[] = [];
@@ -202,39 +211,39 @@ export function toAcpToolUpdate(result: ToolResult): ToolCallUpdate {
   };
 }
 
-/**
- * Map a kimiflare ToolSpec to an ACP PermissionOption set for requestPermission.
- */
-export function permissionOptions(): Array<{
-  optionId: string;
-  name: string;
-  kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
-}> {
+/** The choices shown for an ordinary permission request. */
+export function permissionOptions(): PermissionOption[] {
   return [
     { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
-    {
-      optionId: "allow_session",
-      name: "Allow for this session",
-      kind: "allow_always",
-    },
+    { optionId: "allow_session", name: "Allow for this session", kind: "allow_always" },
     { optionId: "deny", name: "Deny", kind: "reject_once" },
   ];
 }
 
+/** The choices for an irreversible action: only ever once, never for the session. */
+export function destructivePermissionOptions(): PermissionOption[] {
+  return [
+    { optionId: "allow_once", name: "Run it (can't be undone)", kind: "allow_once" },
+    { optionId: "deny", name: "Don't run it", kind: "reject_once" },
+  ];
+}
+
 /**
- * Convert an ACP permission outcome to a kimiflare PermissionDecision.
+ * Convert the client's answer to Autopilot's decision. A cancelled request
+ * (the turn was cancelled, or the client closed the prompt) is a deny. For an
+ * irreversible action, an allow is a confirmed one: a person was asked.
  */
 export function fromAcpPermissionOutcome(
-  outcome: { outcome: "cancelled" } | { outcome: "selected"; optionId: string },
-): "allow" | "allow_session" | "deny" {
-  if (outcome.outcome === "cancelled") return "deny";
+  outcome: RequestPermissionOutcome,
+  opts: { destructive?: boolean } = {},
+): PermissionDecisionResult {
+  if (outcome.outcome !== "selected") return { decision: "deny", scope: "once" };
   switch (outcome.optionId) {
     case "allow_once":
-      return "allow";
+      return opts.destructive ? { decision: "allow", scope: "once", irreversibleConfirmed: true } : { decision: "allow", scope: "once" };
     case "allow_session":
-      return "allow_session";
-    case "deny":
+      return opts.destructive ? { decision: "deny", scope: "once" } : { decision: "allow", scope: "session" };
     default:
-      return "deny";
+      return { decision: "deny", scope: "once" };
   }
 }

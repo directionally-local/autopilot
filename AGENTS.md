@@ -46,7 +46,7 @@ Tests never touch the real home. scripts/test-setup.mjs is loaded with `--import
 - src/eval/, evals/ — headless eval runner (`autopilot eval run` / `autopilot eval compare`): runs the agent on a task set under a harness config and compares arms with a paired McNemar test; evals/tasks/autopilot-bench holds 20 tasks mined from this repo's merged PRs (recipe in evals/README.md).
 - src/code-mode/ — generated TypeScript tool execution and sandboxing.
 - src/hooks/, src/intent/, src/cost-attribution/, src/util/ — lifecycle hooks, intent routing, cost reporting, and shared utilities.
-- acp/ — standalone Zed Agent Client Protocol package.
+- src/acp/ — `autopilot acp`: the Agent Client Protocol agent for Zed, T3 Code and other ACP editors (stdio).
 - feedback-worker/ — separate feedback service; docs/ and functions/ support the GitHub Pages site.
 - bin/ — published CLI shims; dist/ is generated output.
 

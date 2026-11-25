@@ -924,31 +924,10 @@ authCommand.addCommand(
     .description("Sign in to the Directionally Local free tier with GitHub (device code) and make it the active provider")
     .option("--referral <code>", "an invite code (or dl.new/r/<code> link) to send with the sign-in; DL_REFERRAL works too")
     .action(async (cmdOpts: { referral?: string }) => {
-      const dl = await import("./providers/directionally-local.js");
-      const { switchProvider } = await import("./providers/keys.js");
-      const { openBrowser } = await import("./ui/app-helpers.js");
-      try {
-        console.log(`Free: DeepSeek V4.1 Flash, ${dl.formatTokens(dl.DL_FREE_WEEKLY_TOKENS)} tokens a week, no card.`);
-        console.log(dl.DL_DISCLOSURE);
-        await dl.dlSignIn(
-          (code) => {
-            const opened = openBrowser(code.verificationUriComplete);
-            console.log(`\nYour code: ${code.userCode}`);
-            console.log(`${opened ? "Opened" : "Open"} ${code.verificationUriComplete} — sign in with GitHub and approve it (enter an invite code there if asked).`);
-            console.log("Waiting for you to approve…");
-          },
-          { where: "cli", ...(cmdOpts.referral ? { referralCode: cmdOpts.referral } : {}) },
-        );
-        await switchProvider(await loadConfig().catch(() => null), "directionally-local");
-        const me = await dl.fetchDlMe().catch(() => null);
-        console.log(dl.dlSignedInLine(me));
-        const invite = dl.dlSignedInInviteLine(me, "cli");
-        if (invite) console.log(invite);
-        console.log("Directionally Local, free is now the active provider. Run `autopilot` to start; /usage shows what's left this week.");
-      } catch (e) {
-        console.error(e instanceof Error ? e.message : String(e));
-        process.exit(1);
-      }
+      const { runDlSignIn } = await import("./providers/dl-signin-cli.js");
+      const code = await runDlSignIn(cmdOpts.referral ? { referral: cmdOpts.referral } : {});
+      if (code !== 0) process.exit(code);
+      console.log("Directionally Local, free is now the active provider. Run `autopilot` to start; /usage shows what's left this week.");
     }),
 );
 
@@ -1006,6 +985,22 @@ authCommand.addCommand(
         }
       }),
   );
+
+program
+  .command("acp")
+  .description("Run as an ACP agent over stdio, for Zed, T3 Code and other Agent Client Protocol editors (dl zed sets up Zed)")
+  .option("--login", "sign in to the dl free tier in this terminal (what an editor runs for the agent's sign-in), then exit")
+  .action(async (cmdOpts: { login?: boolean }) => {
+    if (cmdOpts.login) {
+      const { runAcpLogin } = await import("./acp/index.js");
+      process.exit(await runAcpLogin());
+    }
+    const { runAcpServer } = await import("./acp/index.js");
+    await runAcpServer();
+    const { runShutdownTasks } = await import("./util/exit.js");
+    await runShutdownTasks();
+    process.exit(0);
+  });
 
 program
   .command("serve")
