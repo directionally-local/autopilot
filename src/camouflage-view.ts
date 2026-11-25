@@ -34,6 +34,7 @@ import { cachedDlProviders, DL_FALLBACK_PROVIDERS, dlFreeModelOption, dlLockedPr
 import { DL_FREE_MODEL, DL_PROVIDER_ID, DlError, dlAccessToken, dlAuthPrompt, dlCheckout, dlGpt6Paused, dlModelAllowanceLine, dlStartLine, dlSignedInAgentsLine, dlSignedInInviteLine, dlSignedInLine, fetchDlMe, isDlAuthError, isDlGpt6Model, lastKnownDlMe, type DlMe } from "./providers/directionally-local.js";
 import { runDlScreen, type DlScreen, type DlScreenDeps } from "./providers/dl-growth.js";
 import { getAppVersion } from "./util/version.js";
+import { hasPasteChip, PASTE_CHIP_PROBLEM, withoutPasteChips } from "./ui/paste-chips.js";
 import { FEEDBACK_FALLBACK_LINE, FEEDBACK_MESSAGE_PROMPT, runFeedback, type FeedbackLine, type FeedbackRequest } from "./feedback.js";
 import {
   ACCESS_BUILDING_MAX,
@@ -1463,7 +1464,10 @@ export class View implements AppBridge {
       });
       if (r.cancelled || !r.values) return a.closeModal("commandWizard");
       draft = { name: r.values.name?.trim() ?? "", description: r.values.description?.trim() ?? "", template: r.values.template ?? "" };
-      problem = validateCommandName(draft.name, others) ?? (draft.template.trim() ? "" : "the template can't be empty");
+      problem =
+        validateCommandName(draft.name, others) ??
+        (!draft.template.trim() ? "the template can't be empty" : hasPasteChip(draft.template) ? PASTE_CHIP_PROBLEM : "");
+      if (problem === PASTE_CHIP_PROBLEM) draft.template = withoutPasteChips(draft.template);
       if (!problem) break;
     }
 
@@ -1615,6 +1619,11 @@ export class View implements AppBridge {
       ],
     });
     if (f.cancelled || !f.values?.command?.trim()) return null;
+    if (hasPasteChip(f.values.command)) {
+      // Never save a placeholder as a shell command.
+      this.cam.send("RuntimeError", { message: `Hook not saved: ${PASTE_CHIP_PROBLEM}`, severity: "error" });
+      return null;
+    }
     const v = f.values;
     const scope = await this.select("Save to", [
       { value: "project", label: "project", description: ".autopilot/settings.json" },
