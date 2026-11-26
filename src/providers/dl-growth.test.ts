@@ -536,6 +536,19 @@ describe("free tier growth", () => {
       ].join("\n"));
     });
 
+    it("hides the invite bonus when the service says it isn't added to this allowance", () => {
+      const allowance = { tokensPerWeek: 50e6, usedThisWeek: 10e6, remaining: 40e6, resetsAt: RESETS };
+      const referral = { link: LINK, joined: 1, activeThisWeek: 1, bonusTokensPerWeek: 10_000_000 };
+      const hidden = normalizeDlMe({ login: "octo", plan: "free", allowance, referral: { ...referral, bonusApplies: false } })!;
+      assert.strictEqual(hidden.referral?.bonusApplies, false);
+      assert.doesNotMatch(renderDlUsage(hidden, NOW, TZ), /invite bonus/);
+      const applies = normalizeDlMe({ login: "octo", plan: "free", allowance, referral: { ...referral, bonusApplies: true } })!;
+      assert.match(renderDlUsage(applies, NOW, TZ), /\n {2}invite bonus {4}\+10M a week \(1 joined, 1 active this week\)\n/);
+      const older = normalizeDlMe({ login: "octo", plan: "free", allowance, referral })!;
+      assert.strictEqual(older.referral?.bonusApplies, undefined);
+      assert.match(renderDlUsage(older, NOW, TZ), /\n {2}invite bonus {4}\+10M a week/, "an older server: shown as before");
+    });
+
     it("reads an older /v1/me (no plan, offers, referral or queue) as before", () => {
       const old = normalizeDlMe({ login: "octo", allowance: { tokensPerWeek: 50e6, usedThisWeek: 0, remaining: 50e6, resetsAt: RESETS } })!;
       assert.strictEqual(old.plan, undefined);
