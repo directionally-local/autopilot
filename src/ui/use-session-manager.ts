@@ -32,6 +32,7 @@ import type { Mode } from "../mode.js";
 import { DEFAULT_AUTO_FRESH_SUGGESTION_TURNS } from "./app-helpers.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
 import { buildResumeReplay } from "./resume-replay.js";
+import { buildWhereYouLeftOff, formatWhereYouLeftOff, type WhereYouLeftOff } from "./resume-summary.js";
 import { plumbingModelOf, tuiMemoryEnabled } from "../config.js";
 
 /**
@@ -152,6 +153,16 @@ export interface SessionManager {
    *  before the message is added). */
   ensureSessionId: (firstPrompt?: string) => string;
   saveSessionSafe: () => Promise<void>;
+  /**
+   * Save now in the background, coalescing calls that arrive while a save is
+   * running into one more save. Called mid-turn (after each model reply and
+   * tool result) so a crash or closed terminal loses at most the step in
+   * flight, and the call that was running is recorded as interrupted.
+   */
+  saveSessionSoon: () => void;
+  /** A reopened conversation stopped mid-task: offer to continue it (null when not offered). */
+  resumeOffer: WhereYouLeftOff | null;
+  setResumeOffer: (s: WhereYouLeftOff | null) => void;
   openResumePicker: () => Promise<void>;
   doResumeSession: (filePath: string, checkpointId?: string) => Promise<void>;
   handleResumePick: (picked: SessionSummary | null) => Promise<void>;
@@ -196,6 +207,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
   const [resumeSessions, setResumeSessions] = useState<SessionSummary[] | null>(null);
   const [checkpointSession, setCheckpointSession] = useState<SessionSummary | null>(null);
   const [checkpointList, setCheckpointList] = useState<Checkpoint[]>([]);
+  const [resumeOffer, setResumeOffer] = useState<WhereYouLeftOff | null>(null);
   // Stash deps in a ref so the public callbacks keep stable identities.
   // Same pattern as M4.1's PermissionController and M4.2's PickerController.
   const depsRef = useRef(deps);
@@ -304,6 +316,26 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     }
   }, [ensureSessionId]);
 
+  const progressSaveRef = useRef({ running: false, again: false });
+  const saveSessionSoon = useCallback(() => {
+    const s = progressSaveRef.current;
+    if (s.running) {
+      s.again = true;
+      return;
+    }
+    s.running = true;
+    void (async () => {
+      try {
+        do {
+          s.again = false;
+          await saveSessionSafe();
+        } while (s.again);
+      } finally {
+        s.running = false;
+      }
+    })();
+  }, [saveSessionSafe]);
+
   const openResumePicker = useCallback(async () => {
     const sessions = await listSessions(200, process.cwd());
     setResumeSessions(sessions);
@@ -359,6 +391,13 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         // Show the conversation as it was — the last few requests and the
         // start of each answer — then where it continues. No model call.
         d.setEvents(resumeReplayEvents(file, d.mkKey, checkpointId ? "checkpoint" : undefined));
+        // Stopped mid-task (crash, Ctrl-C, closed terminal, dropped
+        // connection): say where, and offer to continue. No model call.
+        const leftOff = checkpointId ? null : buildWhereYouLeftOff(file.messages);
+        if (leftOff?.stoppedMidTask) {
+          d.setEvents((es) => [...es, { kind: "info", key: d.mkKey(), text: formatWhereYouLeftOff(leftOff, { updatedAt: file.updatedAt }) }]);
+        }
+        setResumeOffer(null);
 
         // The model's own context restoration is unchanged: the handoff
         // summary is still added to its messages, but no longer shown.
@@ -383,6 +422,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
           }
         }
 
+        // Offer Continue once the model's context is restored, so the
+        // Continue prompt lands after the handoff summary.
+        if (leftOff?.stoppedMidTask) setResumeOffer(leftOff);
 
         // Suggest /fresh for long auto/edit sessions resumed without a checkpoint
         if (!checkpointId) {
@@ -492,6 +534,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     hasPickerOpen: resumeSessions !== null || checkpointSession !== null,
     ensureSessionId,
     saveSessionSafe,
+    saveSessionSoon,
+    resumeOffer,
+    setResumeOffer,
     openResumePicker,
     doResumeSession,
     handleResumePick,

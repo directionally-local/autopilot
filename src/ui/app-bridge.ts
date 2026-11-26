@@ -118,6 +118,8 @@ export interface AppSnapshot {
   dlScreen?: DlScreen | null;
   /** The GitHub star ask's line, to show once no turn is running (see star-ask.ts). */
   starAsk?: string | null;
+  /** A reopened conversation stopped mid-task: offer Continue / Not now (ui/resume-summary.ts). */
+  resumeOffer?: { goal: string } | null;
   /** A push or pull request is waiting on GitHub access (see github-access.ts). */
   githubAccess?: GithubAccessRequest | null;
   /** `/feedback` is open: the message typed after the command, if any, and the active provider (see feedback.ts). */
@@ -170,6 +172,8 @@ export interface AppActions {
   dlScreenDone?: (outcome: DlScreenOutcome) => void;
   /** The star ask was answered (starred or dismissed). */
   starAskDone?: () => void;
+  /** The resume offer was answered: "continue" sends the Continue prompt, null dismisses it. */
+  resumeOfferDone?: (choice: "continue" | null) => void;
   /** The GitHub access question was answered: the waiting push or pull request goes on. */
   githubAccessDone?: (outcome: GithubAccessOutcome) => void;
   /** `/feedback` ended: the line to add to the transcript (sent, not sent, or why not). */

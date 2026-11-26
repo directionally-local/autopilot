@@ -22,6 +22,9 @@ export interface ResumeReplay {
   line: string;
 }
 
+/** Starts the prompt "Continue" sends (ui/resume-summary.ts continuePrompt). */
+export const CONTINUE_MARKER = "[Continue where it left off]";
+
 const USER_MAX_CHARS = 300;
 const USER_MAX_LINES = 4;
 const ANSWER_MAX_CHARS = 400;
@@ -82,7 +85,8 @@ export function buildResumeReplay(
       // Skip empty turns and notices the agent loop added on the user's behalf.
       if (!text || text.startsWith("[Automatic notice")) continue;
       if (current) exchanges.push(current);
-      current = { user: text, answer: "" };
+      // The Continue prompt carries the whole summary: show it as it was asked.
+      current = { user: text.startsWith(CONTINUE_MARKER) ? "Continue where it left off" : text, answer: "" };
     } else if (m.role === "assistant" && current) {
       const text = textOf(m);
       if (text) current.answer = text;
