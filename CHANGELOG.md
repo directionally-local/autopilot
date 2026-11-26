@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.34.0](https://github.com/directionally-local/autopilot/compare/v3.33.0...v3.34.0) (2026-11-26)
+
+
+### Features
+
+* "Where you left off" when reopening a task that stopped mid-way ([#1314](https://github.com/directionally-local/autopilot/issues/1314)) ([2fb24af](https://github.com/directionally-local/autopilot/commit/2fb24afe4f09fb82f852f98c298454abb2b27d43))
+
 ## [3.33.0](https://github.com/directionally-local/autopilot/compare/v3.32.0...v3.33.0) (2026-11-26)
 
 
