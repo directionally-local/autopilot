@@ -358,6 +358,12 @@ export interface DlReferral {
   /** The most bonus tokens a week invites can earn. */
   bonusCapPerWeek?: number;
   /**
+   * Whether the bonus is added to this account's allowance (`referral.bonusApplies` in /v1/me).
+   * False: it isn't (e.g. Pro, or a smaller free allowance), so `/usage` hides it. Undefined: an
+   * older server that doesn't say; shown as before.
+   */
+  bonusApplies?: boolean;
+  /**
    * What inviting earns, worded by the service (`referral.offer` in /v1/me), e.g. a credit on
    * a model. Shown as sent; without it the client shows only the link and the count, never a
    * reward of its own.
@@ -432,6 +438,7 @@ export function parseDlReferral(raw: unknown): DlReferral | undefined {
     activeThisWeek: Math.max(0, numOf(raw, "activeThisWeek", "active_this_week") ?? 0),
     bonusTokensPerWeek: Math.max(0, numOf(raw, "bonusTokensPerWeek", "bonus_tokens_per_week") ?? 0),
     ...(cap !== undefined && cap > 0 ? { bonusCapPerWeek: cap } : {}),
+    ...(typeof raw.bonusApplies === "boolean" ? { bonusApplies: raw.bonusApplies } : {}),
     ...(offer && offer.length <= 80 ? { offer } : {}),
   };
 }
@@ -1660,7 +1667,8 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
   }
   if (topupUsd) lines.push(`  top-up          ${topupUsd}`);
   if (me.topupTokensLeft !== undefined && me.topupTokensLeft > 0) lines.push(`  top-up left     ${formatTokens(me.topupTokensLeft)} tokens`);
-  if (me.referral && (me.referral.bonusTokensPerWeek > 0 || me.referral.joined > 0)) {
+  // Only when the bonus is added to this allowance (an older server doesn't say: shown as before).
+  if (me.referral && me.referral.bonusApplies !== false && (me.referral.bonusTokensPerWeek > 0 || me.referral.joined > 0)) {
     lines.push(`  invite bonus    ${referralBonusText(me.referral)} (${me.referral.joined} joined, ${me.referral.activeThisWeek} active this week)`);
   }
   lines.push(`  resets          ${formatReset(a.resetsAt || undefined, now, timeZone)}`);
