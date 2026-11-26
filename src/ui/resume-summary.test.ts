@@ -147,3 +147,56 @@ describe("check outcomes", () => {
     assert.ok(displayCommand(`npm test -- ${"x".repeat(100)}`).endsWith("…"));
   });
 });
+
+describe("where you left off in Code Mode", () => {
+  const taskList = (statuses: string[]) =>
+    `await api.tasks_set({ tasks: [\n${["Run npm test", "Add mul to math.js", "Run tests with: sleep 40 && npm test", "Document add, sub, mul in README.md"]
+      .map((title, i) => `  { id: "${i + 1}", status: "${statuses[i]}", title: "${title}" },`)
+      .join("\n")}\n]});\n`;
+  const code = (src: string, reasoning?: string) => call("execute_code", { code: src, ...(reasoning ? { reasoning } : {}) });
+
+  /** The calls live inside execute_code scripts; the last one was cut off when the terminal closed. */
+  function codeModeHistory(): ChatMessage[] {
+    const c1 = code(`${taskList(["in_progress", "pending", "pending", "pending"])}const out = await api.bash({ command: "cd /root/p && npm test 2>&1", timeout_ms: 60000 });\nconsole.log(out);`);
+    const c2 = code(`${taskList(["completed", "in_progress", "pending", "pending"])}const r = await api.edit({\n  path: "/root/p/math.js",\n  old_string: \`a\`,\n  new_string: \`export function mul(a, b) { return a * b; }\`,\n});\nconsole.log(r);`);
+    const c3 = code(`const out = await api.bash({ command: "cd /root/p && npm test 2>&1" });\nconsole.log(out);`);
+    const c4 = code(`${taskList(["completed", "completed", "in_progress", "pending"])}const out = await api.bash({ command: "cd /root/p && sleep 40 && npm test 2>&1", timeout_ms: 120000 });\nconsole.log(out);`, "Run the tests");
+    return [
+      user("Make a task list, add mul, run the tests, then update the README"),
+      c1.msg, result(c1.id, "exit=1\n--- stdout ---\n✔ add\n✖ sub\nℹ tests 2\nℹ pass 1\nℹ fail 1"),
+      c2.msg, result(c2.id, "Replaced 1 occurrence(s) in /root/p/math.js."),
+      c3.msg, result(c3.id, "exit=0\n--- stdout ---\nℹ tests 3\nℹ pass 3\nℹ fail 0"),
+      c4.msg, result(c4.id, "Error: The Code Mode sandbox was shut down.\n\nOutput:\n"),
+    ];
+  }
+
+  it("reads tasks, changed files, checks and the cut-off command from the scripts", () => {
+    const s = buildWhereYouLeftOff(codeModeHistory())!;
+    assert.deepStrictEqual(s.done, ["Run npm test", "Add mul to math.js"]);
+    assert.deepStrictEqual(s.filesChanged, ["/root/p/math.js"]);
+    assert.deepStrictEqual(s.checks, [{ command: "npm test", outcome: "passed", detail: "3 passed" }]);
+    assert.deepStrictEqual(s.inProgress, ["Run tests with: sleep 40 && npm test", "sleep 40 && npm test — interrupted"]);
+    assert.deepStrictEqual(s.pending, ["Document add, sub, mul in README.md"]);
+    assert.equal(s.interrupted, 1);
+    assert.equal(s.stoppedMidTask, true);
+    assert.equal(s.hasTaskList, true);
+  });
+
+  it("shows a failed check from a script's output", () => {
+    const h = codeModeHistory().slice(0, 3);
+    const s = buildWhereYouLeftOff(h)!;
+    assert.deepStrictEqual(s.checks, [{ command: "npm test", outcome: "failed", detail: "1 passed, 1 failed" }]);
+  });
+
+  it("labels a cut-off script without commands by its reasoning", () => {
+    const c = code("const x = await api.read({ path: 'a.ts' });\nconsole.log(x);", "Read the parser");
+    const s = buildWhereYouLeftOff([user("Fix the parser"), c.msg])!;
+    assert.deepStrictEqual(s.inProgress, ["Read the parser — interrupted"]);
+  });
+
+  it("doesn't attribute one output to several checks in a script", () => {
+    const c = code(`const a = await api.bash({ command: 'npm test' });\nconst b = await api.bash({ command: 'npm run lint' });\nconsole.log(a, b);`);
+    const s = buildWhereYouLeftOff([user("Check everything"), c.msg, result(c.id, "exit=0\nℹ pass 3"), text("All good.")])!;
+    assert.deepStrictEqual(s.checks, []);
+  });
+});

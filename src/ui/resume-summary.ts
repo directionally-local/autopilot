@@ -14,6 +14,12 @@
  *  - tool calls that never finished: saved with a `(stopped)` result by the
  *    interrupt handler, or healed into one on load (repairDanglingToolCalls)
  *    after a crash or a closed terminal. They show as "interrupted".
+ *
+ * In Code Mode the calls above happen inside `execute_code` scripts, whose
+ * inner results aren't saved (only the script's output is), so they are read
+ * from the script source: `api.tasks_set({ tasks: [...] })`,
+ * `api.bash({ command: "..." })`, `api.edit/write({ path: "..." })`. A
+ * script cut off by the sandbox shutting down counts as interrupted.
  */
 
 import type { ChatMessage } from "../agent/messages.js";
@@ -97,7 +103,7 @@ function parseArgs(raw: string | undefined): Record<string, unknown> {
 /** The command as a person would recognise it: first line, without a leading `cd … &&`. */
 export function displayCommand(command: string): string {
   const first = command.trim().split("\n")[0] ?? "";
-  const bare = first.replace(/^cd\s+\S+\s*&&\s*/, "").trim();
+  const bare = first.replace(/^cd\s+\S+\s*&&\s*/, "").replace(/\s+2>&1\s*$/, "").trim();
   return bare.length > COMMAND_MAX_CHARS ? `${bare.slice(0, COMMAND_MAX_CHARS - 1).trimEnd()}…` : bare;
 }
 
@@ -129,9 +135,89 @@ export function checkOutcome(content: string): { outcome: CheckOutcome; detail?:
   return { outcome: "ran" };
 }
 
+const SANDBOX_SHUT_DOWN = "The Code Mode sandbox was shut down.";
+
 function isStopped(content: string): boolean {
   const c = content.trim();
-  return c === STOPPED_TOOL_RESULT || c.startsWith("(aborted");
+  return c === STOPPED_TOOL_RESULT || c.startsWith("(aborted") || c.startsWith(`Error: ${SANDBOX_SHUT_DOWN}`);
+}
+
+/** A JS string literal starting at `src[i]` ("…", '…' or `…` without ${}), decoded. */
+function readStringLiteral(src: string, i: number): string | undefined {
+  const q = src[i];
+  if (q !== '"' && q !== "'" && q !== "`") return undefined;
+  let out = "";
+  for (let j = i + 1; j < src.length; j++) {
+    const ch = src[j]!;
+    if (ch === q) return out;
+    if (q === "`" && ch === "$" && src[j + 1] === "{") return undefined;
+    if (ch === "\\") {
+      const n = src[++j];
+      out += n === "n" ? "\n" : n === "t" ? "\t" : n === "r" ? "" : (n ?? "");
+      continue;
+    }
+    out += ch;
+  }
+  return undefined;
+}
+
+/** Every string value of `key:` in `src`, in order (e.g. key "command" in `api.bash({ command: "…" })`). */
+function stringProps(src: string, key: string): string[] {
+  const values: string[] = [];
+  for (const m of src.matchAll(new RegExp(`(?:^|[\\s{,])["']?${key}["']?\\s*:\\s*`, "g"))) {
+    const v = readStringLiteral(src, m.index! + m[0].length);
+    if (v !== undefined) values.push(v);
+  }
+  return values;
+}
+
+/** The api calls of one tool in a Code Mode script, as the source of each call's argument object. */
+function apiCallSources(code: string, tool: string): string[] {
+  const calls: string[] = [];
+  for (const m of code.matchAll(new RegExp(`\\bapi\\.${tool}\\s*\\(`, "g"))) {
+    // Up to the matching close paren, skipping strings.
+    let depth = 1;
+    let j = m.index! + m[0].length;
+    const startArgs = j;
+    for (; j < code.length && depth > 0; j++) {
+      const ch = code[j]!;
+      if (ch === '"' || ch === "'" || ch === "`") {
+        let k = j + 1;
+        while (k < code.length && code[k] !== ch) k += code[k] === "\\" ? 2 : 1;
+        j = k;
+      } else if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+    }
+    calls.push(code.slice(startArgs, j - 1));
+  }
+  return calls;
+}
+
+/** Task objects (`{ status: "…", title: "…" }`) in a script that calls tasks_set; the last list wins. */
+function codeTasks(code: string): LeftOffTask[] | null {
+  if (!/\bapi\.tasks_set\s*\(/.test(code)) return null;
+  const tasks: LeftOffTask[] = [];
+  for (const m of code.matchAll(/\{[^{}]*\}/g)) {
+    const title = stringProps(m[0], "title")[0]?.trim();
+    const status = stringProps(m[0], "status")[0];
+    if (!title || status === undefined) continue;
+    tasks.push({ title, status: status === "completed" || status === "in_progress" ? status : "pending" });
+  }
+  return tasks.length > 0 ? tasks : null;
+}
+
+interface CodeCalls {
+  tasks: LeftOffTask[] | null;
+  commands: string[];
+  files: string[];
+}
+
+function codeCalls(code: string): CodeCalls {
+  const commands = apiCallSources(code, "(?:bash|job_start)").flatMap((a) => stringProps(a, "command").slice(0, 1));
+  const files = apiCallSources(code, "(?:edit|write)").flatMap((a) =>
+    [...stringProps(a, "path"), ...stringProps(a, "file_path")].slice(0, 1),
+  );
+  return { tasks: codeTasks(code), commands, files };
 }
 
 function isFailedResult(content: string): boolean {
@@ -139,7 +225,13 @@ function isFailedResult(content: string): boolean {
 }
 
 function callLabel(name: string, args: Record<string, unknown>): string {
-  if (name === "bash" && typeof args.command === "string") return displayCommand(args.command);
+  if ((name === "bash" || name === "job_start") && typeof args.command === "string") return displayCommand(args.command);
+  if (name === "execute_code" && typeof args.code === "string") {
+    const { commands } = codeCalls(args.code);
+    if (commands.length > 0) return commands.map(displayCommand).join("; ");
+    if (typeof args.reasoning === "string" && args.reasoning.trim()) return cutAtWord(args.reasoning.trim(), COMMAND_MAX_CHARS);
+    return "a code step";
+  }
   const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : "";
   return path ? `${name} ${path}` : name;
 }
@@ -181,6 +273,9 @@ export function buildWhereYouLeftOff(messages: ChatMessage[], o: { running?: boo
       const name = tc.function?.name ?? "";
       const args = parseArgs(tc.function?.arguments);
       const result = results.get(tc.id);
+      const code = name === "execute_code" && typeof args.code === "string" ? codeCalls(args.code) : null;
+      // The task list is set when the script starts, even if it is cut off later.
+      if (code?.tasks) tasks = code.tasks;
       if (name === "tasks_set" && Array.isArray(args.tasks)) {
         tasks = (args.tasks as unknown[])
           .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
@@ -202,6 +297,18 @@ export function buildWhereYouLeftOff(messages: ChatMessage[], o: { running?: boo
       }
       if ((name === "edit" || name === "write") && typeof args.path === "string" && !isFailedResult(result)) {
         if (!files.includes(args.path)) files.push(args.path);
+        continue;
+      }
+      if (code) {
+        if (!isFailedResult(result)) for (const f of code.files) if (!files.includes(f)) files.push(f);
+        // Pass/fail comes from the script's output, so only a script with one check is attributed.
+        const checkCommands = code.commands.filter(isCheckCommand);
+        if (checkCommands.length === 1) {
+          const command = displayCommand(checkCommands[0]!);
+          const outcome = checkOutcome(result);
+          checks.delete(command);
+          checks.set(command, { command, ...(isFailedResult(result) && outcome.outcome === "ran" ? { outcome: "failed", detail: "error" } : outcome) });
+        }
         continue;
       }
       if (name === "bash" && typeof args.command === "string" && isCheckCommand(args.command)) {
