@@ -5,9 +5,10 @@ import {
   toAcpToolUpdate,
   permissionOptions,
   fromAcpPermissionOutcome,
+  destructivePermissionOptions,
 } from "./tools.js";
-import type { ToolCall } from "#kimiflare/agent/messages.js";
-import type { ToolResult } from "#kimiflare/tools/executor.js";
+import type { ToolCall } from "../agent/messages.js";
+import type { ToolResult } from "../tools/executor.js";
 
 // ---------------------------------------------------------------------------
 // toAcpToolCall
@@ -318,35 +319,37 @@ describe("permissionOptions", () => {
 // ---------------------------------------------------------------------------
 
 describe("fromAcpPermissionOutcome", () => {
-  it("maps cancelled to deny", () => {
-    assert.strictEqual(fromAcpPermissionOutcome({ outcome: "cancelled" }), "deny");
+  const selected = (optionId: string) => ({ outcome: "selected" as const, optionId });
+
+  it("maps cancelled, deny and unknown options to deny", () => {
+    for (const outcome of [{ outcome: "cancelled" as const }, selected("deny"), selected("unknown_thing")]) {
+      assert.deepStrictEqual(fromAcpPermissionOutcome(outcome), { decision: "deny", scope: "once" });
+    }
   });
 
-  it("maps allow_once to allow", () => {
-    assert.strictEqual(
-      fromAcpPermissionOutcome({ outcome: "selected", optionId: "allow_once" }),
-      "allow",
-    );
+  it("maps allow_once and allow_session to their scopes", () => {
+    assert.deepStrictEqual(fromAcpPermissionOutcome(selected("allow_once")), { decision: "allow", scope: "once" });
+    assert.deepStrictEqual(fromAcpPermissionOutcome(selected("allow_session")), { decision: "allow", scope: "session" });
   });
 
-  it("maps allow_session to allow_session", () => {
-    assert.strictEqual(
-      fromAcpPermissionOutcome({ outcome: "selected", optionId: "allow_session" }),
-      "allow_session",
+  it("an irreversible action is confirmed only by allow_once, never for the session", () => {
+    assert.deepStrictEqual(fromAcpPermissionOutcome(selected("allow_once"), { destructive: true }), {
+      decision: "allow",
+      scope: "once",
+      irreversibleConfirmed: true,
+    });
+    assert.deepStrictEqual(fromAcpPermissionOutcome(selected("allow_session"), { destructive: true }), { decision: "deny", scope: "once" });
+    assert.deepStrictEqual(
+      destructivePermissionOptions().map((o) => o.kind),
+      ["allow_once", "reject_once"],
     );
   });
+});
 
-  it("maps deny to deny", () => {
-    assert.strictEqual(
-      fromAcpPermissionOutcome({ outcome: "selected", optionId: "deny" }),
-      "deny",
-    );
-  });
-
-  it("maps unknown optionId to deny", () => {
-    assert.strictEqual(
-      fromAcpPermissionOutcome({ outcome: "selected", optionId: "unknown_thing" }),
-      "deny",
-    );
+describe("toAcpToolCall paths", () => {
+  it("resolves relative paths against the session folder (ACP wants absolute paths)", () => {
+    const call = toAcpToolCall({ id: "c1", type: "function", function: { name: "edit", arguments: JSON.stringify({ path: "src/a.ts", old_string: "a", new_string: "b" }) } }, "/work/repo");
+    assert.deepStrictEqual(call.locations, [{ path: "/work/repo/src/a.ts" }]);
+    assert.strictEqual((call.content?.[0] as { path: string }).path, "/work/repo/src/a.ts");
   });
 });
