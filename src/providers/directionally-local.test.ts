@@ -640,7 +640,7 @@ describe("Directionally Local free tier", () => {
       assert.match(describeDlError("not_invited")!, /^This GitHub account isn't on the free tier\. Your own key works now: \/provider$/);
       assert.match(describeDlError("suspended")!, /account is suspended.*Your own key works now: \/provider$/);
       assert.strictEqual(describeDlError("dl_only", { message: "From the service." }), "From the service.");
-      assert.strictEqual(describeDlError("dl_only"), "Free tokens work inside dl only. Run dl to keep using them, or use your own API key in any tool.");
+      assert.strictEqual(describeDlError("dl_only"), "Your dl sign-in works inside dl only. To use free tokens in another tool, make an API key for it: run dl api-key. Or use your own API key in that tool.");
       assert.strictEqual(describeDlError("below_bar", { message: "From the service." }), "From the service.");
       assert.match(describeDlError("below_bar")!, /contact@directionallylocal\.com/);
       assert.strictEqual(describeDlError("rate_limited", { retryAfter: 12 }), "Directionally Local is limiting how fast you send requests; try again in 12 seconds.");
@@ -721,7 +721,7 @@ describe("Directionally Local free tier", () => {
       [402, { error: { code: "quota_exceeded", message: "quota", resetsAt: "2026-11-09T00:00:00.000Z", reason: "spend" } }, /You've hit this week's free spending limit\. It's back \w{3} \d\d:\d\d\./, 1],
       [403, { error: { code: "not_invited" } }, /isn't on the free tier.*\/provider$/, 1],
       [403, { error: { code: "suspended" } }, /account is suspended/, 1],
-      [403, { error: { code: "dl_only", message: "Free tokens work inside dl only. Run dl to keep using them, or use your own API key in any tool." } }, /^autopilot: Free tokens work inside dl only\. Run dl to keep using them, or use your own API key in any tool\.$/, 1],
+      [403, { error: { code: "dl_only", message: "Your dl sign-in works inside dl only. To use free tokens in another tool, make an API key for it: run dl api-key. Or use your own API key in that tool." } }, /^autopilot: Your dl sign-in works inside dl only\. To use free tokens in another tool, make an API key for it: run dl api-key\. Or use your own API key in that tool\.$/, 1],
       [403, { error: { code: "below_bar", message: "Free tokens are for established GitHub accounts. Email contact@directionallylocal.com." } }, /^autopilot: Free tokens are for established GitHub accounts\. Email contact@directionallylocal\.com\.$/, 1],
       [503, { error: { code: "service_paused" } }, /Free tokens are paused for everyone\. Your own key works now: \/provider$/, 1],
       [503, { error: { code: "service_paused", reason: "weekly_budget", resetsAt: "2026-11-09T00:00:00.000Z" } }, /Free tokens are paused for everyone until \w{3} \d\d:\d\d\. Your own key works now: \/provider$/, 1],
