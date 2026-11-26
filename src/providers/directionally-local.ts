@@ -793,7 +793,7 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       );
     case "dl_only":
       // Free tokens were used from another tool; the service's sentence says what to do.
-      return extra.message ?? "Free tokens work inside dl only. Run dl to keep using them, or use your own API key in any tool.";
+      return extra.message ?? "Your dl sign-in works inside dl only. To use free tokens in another tool, make an API key for it: run dl api-key. Or use your own API key in that tool.";
     case "rate_limited": {
       const s = extra.retryAfter && extra.retryAfter > 0 ? Math.ceil(extra.retryAfter) : undefined;
       return `Directionally Local is limiting how fast you send requests; try again${s ? ` in ${s} second${s === 1 ? "" : "s"}` : " shortly"}.`;
