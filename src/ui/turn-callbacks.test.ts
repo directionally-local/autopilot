@@ -78,6 +78,19 @@ describe("createTurnCallbacks", () => {
     assert.strictEqual(h.log.at(-1), "end");
   });
 
+  it("asks for a save after each model reply and each tool result, so a crash mid-turn loses at most the step in flight", () => {
+    const h = harness();
+    let saves = 0;
+    const cb = createTurnCallbacks({ ...h.deps, onProgress: () => saves++ });
+    cb.onAssistantStart!();
+    cb.onToolCallFinalized!(call("c1"));
+    assert.strictEqual(saves, 0);
+    cb.onAssistantFinal!({ role: "assistant", content: null, tool_calls: [call("c1")] });
+    assert.strictEqual(saves, 1, "the call is saved before it runs");
+    cb.onToolResult!({ tool_call_id: "c1", ok: true, content: "file body" } as never);
+    assert.strictEqual(saves, 2);
+  });
+
   it("surfaces guardrail notices except loop recovery, and memory recall with correct plurals", () => {
     const h = harness();
     const cb = createTurnCallbacks(h.deps);

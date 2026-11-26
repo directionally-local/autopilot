@@ -113,6 +113,8 @@ export interface TurnCallbackDeps {
   askPermission: PermissionAsker;
   /** Project context looks stale (shown once per session). */
   onKimiMdStale(): void;
+  /** The history grew (a model reply or a tool result): persist it (coalesced; see saveSessionSoon). */
+  onProgress?(): void;
   now?: () => number;
 }
 
@@ -166,6 +168,8 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
       // No tool calls finalized: the turn is effectively done. Return to idle
       // now rather than waiting for the supervisor's onDone.
       if (deps.pendingToolCallsRef.current.size === 0) deps.endTurn();
+      // The reply (and any tool calls it is about to run) is in the history now.
+      deps.onProgress?.();
     },
     onToolCallFinalized: (call) => {
       deps.pendingToolCallsRef.current.set(call.id, call.function.name);
@@ -188,6 +192,7 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
         deps.endTurn();
       }
       deps.updateTool(r.tool_call_id, toolResultPatch(r));
+      deps.onProgress?.();
     },
     onUsage: deps.onUsage,
     onUsageFinal: deps.onUsageFinal,

@@ -48,6 +48,8 @@ export const CATEGORIES: Category[] = [
     label: "Session",
     commands: [
       { command: "/resume", description: "pick a past conversation" },
+      { command: "/status", description: "where the current request stands: done, checks run, in progress, still to do" },
+      { command: "/continue", description: "pick up a request that stopped mid-task" },
       { command: "/compact", description: "summarize old turns to free context" },
       { command: "/clear", description: "clear current conversation" },
       { command: "/undo", description: "put back what the last destructive file or git action deleted or overwrote" },

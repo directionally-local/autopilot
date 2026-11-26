@@ -1242,6 +1242,21 @@ export class View implements AppBridge {
         a.githubAccessDone?.(outcome);
       });
     }
+    if (s.resumeOffer && !s.turnRunning) {
+      const offer = s.resumeOffer;
+      return want("resumeOffer", async () => {
+        const r = await this.select(
+          "Pick up where it left off?",
+          [
+            { value: "continue", label: "Continue", description: "carry on from the step in progress, with the summary above as context" },
+            { value: "later", label: "Not now", description: "type a new request; /continue picks it up later" },
+          ],
+          "continue",
+          truncateText(offer.goal, 80),
+        ).catch(() => null);
+        a.resumeOfferDone?.(r === "continue" ? "continue" : null);
+      });
+    }
     if (s.starAsk && !s.turnRunning) {
       const line = s.starAsk;
       return want("starAsk", async () => {

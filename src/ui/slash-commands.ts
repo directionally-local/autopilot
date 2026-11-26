@@ -7,6 +7,7 @@
  * registry. Behaviorally identical to the previous in-component
  * `handleSlash` callback.
  */
+import { buildWhereYouLeftOff, formatWhereYouLeftOff, type WhereYouLeftOff } from "./resume-summary.js";
 import { setupImportReport } from "../import/setup.js";
 import { importedMcpListLines } from "../import/mcp.js";
 import React from "react";
@@ -168,6 +169,8 @@ export interface SlashContext {
   startTour?: (force: boolean) => void;
   /** Open the product tour (`/tour`): the view runs it (ui/product-tour.ts). */
   openProductTour?: () => void;
+  /** Send the "continue where it left off" prompt for this summary (`/continue`, the resume offer). */
+  continueTask?: (s: WhereYouLeftOff) => void;
 
   // Refs
   lspManagerRef: React.MutableRefObject<LspManager>;
@@ -1421,6 +1424,35 @@ const handleMemory: Handler = (ctx, rest, arg) => {
   return true;
 };
 
+/** `/status`: where the current request stands (ui/resume-summary.ts), from the history, no model call. */
+const handleStatus: Handler = (ctx) => {
+  const { setEvents, mkKey } = ctx;
+  const s = buildWhereYouLeftOff(ctx.messagesRef.current, { running: ctx.busy });
+  const text = !s
+    ? "Nothing to report yet: no request in this conversation."
+    : formatWhereYouLeftOff(s, {
+        heading: ctx.busy ? "Status: working" : s.stoppedMidTask ? "Status: stopped mid-task (/continue picks it up)" : "Status: last request finished",
+      });
+  setEvents((e) => [...e, { kind: "info", key: mkKey(), text }]);
+  return true;
+};
+
+/** `/continue`: pick up a request that stopped mid-task, with the summary as context. */
+const handleContinue: Handler = (ctx) => {
+  const { setEvents, mkKey } = ctx;
+  if (ctx.busy) {
+    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "A turn is running; /continue is for picking up a request that stopped." }]);
+    return true;
+  }
+  const s = buildWhereYouLeftOff(ctx.messagesRef.current);
+  if (!s || !s.stoppedMidTask || !ctx.continueTask) {
+    setEvents((e) => [...e, { kind: "info", key: mkKey(), text: "Nothing to continue: the last request finished. /status shows what it did." }]);
+    return true;
+  }
+  ctx.continueTask(s);
+  return true;
+};
+
 const handleResume: Handler = (ctx) => {
   void ctx.openResumePicker();
   return true;
@@ -2224,6 +2256,8 @@ const handlers: Record<string, Handler> = {
   "/skills": handleSkills,
   "/memory": handleMemory,
   "/resume": handleResume,
+  "/status": handleStatus,
+  "/continue": handleContinue,
   "/checkpoint": handleCheckpoint,
   "/undo": handleUndo,
   "/audit": handleAudit,

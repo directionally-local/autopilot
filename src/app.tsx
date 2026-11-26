@@ -96,6 +96,7 @@ import { runCompact as runCompactImpl } from "./agent/run-compact.js";
 import { compactAfterTurn, compactMidTurn, compactOnIdleReturn, type AutoCompactionDeps } from "./agent/auto-compaction.js";
 import { prepareAutoFresh } from "./agent/auto-fresh.js";
 import { classifyTurnFailure, createTurnCallbacks, settleTurnEvents } from "./ui/turn-callbacks.js";
+import { continuePrompt, type WhereYouLeftOff } from "./ui/resume-summary.js";
 import { buildPromptContent, expandCustomCommand, turnReasoningEffort } from "./ui/prepare-prompt.js";
 import { freshSuggestion, INIT_TIP, turnNudges } from "./ui/turn-nudges.js";
 import { classifyNextMessage, makeTurnId } from "./trace/index.js";
@@ -486,6 +487,9 @@ function App({
     checkpointList,
     ensureSessionId,
     saveSessionSafe,
+    saveSessionSoon,
+    resumeOffer,
+    setResumeOffer,
     openResumePicker,
     doResumeSession,
     handleResumePick,
@@ -496,6 +500,14 @@ function App({
     turnHistoryRef,
     noteTurnEnded,
   } = sessionMgr;
+  // Pick up a request that stopped mid-task: the summary rides along as context.
+  const continueTask = useCallback(
+    (s: WhereYouLeftOff) => {
+      setResumeOffer(null);
+      submitRef.current(continuePrompt(s), "Continue where it left off");
+    },
+    [setResumeOffer],
+  );
 
   // Batched streaming delta refs to reduce React re-render frequency
   const pendingTextRef = useRef<Map<number, { text: string; reasoning: string }>>(new Map());
@@ -1105,6 +1117,7 @@ function App({
     openFeedback: setFeedback,
     openAccessRequest: setAccessRequest,
     openProductTour,
+    continueTask,
   }), [
     exit, busy, cfg, mode, lspScope, lspProjectPath,
     setCfg, setMode, setEvents, setUsage, setSessionUsage,
@@ -1116,7 +1129,7 @@ function App({
     setCommandWizard, setCommandPicker,
     turn.setShowReasoning, turn.setTasks,
     resetSession, clearTaskTracking, openResumePicker, runCompact, runInit,
-    initMcp, initLsp, ensureSessionId, startTour,
+    initMcp, initLsp, ensureSessionId, startTour, continueTask,
   ]);
 
   const handlePlanCompletePick = useCallback(
@@ -1466,6 +1479,7 @@ function App({
       // lifecycle and the turn's abort signal.
 
       const sharedCallbacks = createTurnCallbacks({
+        onProgress: saveSessionSoon,
         mkKey,
         mkAssistantId,
         setEvents,
@@ -2035,7 +2049,7 @@ function App({
           }
           return;
         case "subagent-command":
-          // Subagent management must work mid-turn: queueing it would make it useless.
+          // Subagent management and /status must work mid-turn: queueing them would make them useless.
           setHistory((h) => pushHistory(h, trimmedDisplay));
           clearInput();
           void handleSlash(trimmedFull);
@@ -2309,6 +2323,11 @@ function App({
         }
       },
       starAskDone: () => setStarAsk(null),
+      resumeOfferDone: (choice) => {
+        const offer = resumeOffer;
+        setResumeOffer(null);
+        if (choice === "continue" && offer) continueTask(offer);
+      },
       productTourDone: () => setProductTour(false),
       feedbackDone: (line: FeedbackLine) => {
         setFeedback(null);
@@ -2393,6 +2412,7 @@ function App({
       hooks: configuredHooks(),
       dlScreen,
       starAsk,
+      resumeOffer: resumeOffer && !busy ? { goal: resumeOffer.goal } : null,
       githubAccess,
       feedback,
       accessRequest,
