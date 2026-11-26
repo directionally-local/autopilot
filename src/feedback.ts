@@ -13,7 +13,7 @@
  * code.
  */
 
-import { dlOrigin } from "./providers/dl-endpoint.js";
+import { dlOrigin, isDlApiKey } from "./providers/dl-endpoint.js";
 import { BUG_REPORT_EMAIL, BUG_REPORT_URL } from "./ui/bug-report.js";
 import { hasPasteChip, PASTE_CHIP_PROBLEM, withoutPasteChips } from "./ui/paste-chips.js";
 
@@ -95,7 +95,7 @@ export async function fetchReplyAddress(token: string, o: { fetchImpl?: typeof f
   }
 }
 
-/** POST /v1/feedback. A rejected token (401) is retried once without it, so the message still goes out. */
+/** POST /v1/feedback. A rejected token (401) is retried once without it, so the message still goes out; a dl key is never sent. */
 export async function sendFeedback(
   body: FeedbackBody,
   o: { token?: string; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {},
@@ -110,8 +110,10 @@ export async function sendFeedback(
     });
   let res: Response;
   try {
-    res = await post(o.token);
-    if (res.status === 401 && o.token) res = await post(undefined);
+    // A dl key (dl_sk_) isn't taken here (it's for the model APIs): sent without it, like signed out.
+    const token = isDlApiKey(o.token) ? undefined : o.token;
+    res = await post(token);
+    if (res.status === 401 && token) res = await post(undefined);
   } catch {
     return { kind: "failed" };
   }

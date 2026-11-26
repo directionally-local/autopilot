@@ -217,8 +217,8 @@ describe("modelOptions while GPT-6 is paused on the free tier", () => {
   });
 });
 
-describe("modelOptions on the free tier: provider and speed", () => {
-  it("shows who serves each free model and its measured tok/s, from the cached /v1/providers", () => {
+describe("modelOptions on the free tier: speed, never who serves it", () => {
+  it("shows each free model's measured tok/s from the cached /v1/providers, never its provider", () => {
     const m = (id: string, name: string, tps: number | null) => ({ id, name, family: "gpt6", contextWindow: 1, access: "free", status: "on", tokensPerSecond: tps, ttftMs: null, successRate24h: null, measuredAt: null });
     setDlProvidersCache(
       parseDlProviders({
@@ -233,8 +233,9 @@ describe("modelOptions on the free tier: provider and speed", () => {
     registerProviderModels(DL_PROVIDER_ID, models);
     try {
       const opts = modelOptions(models, "deepseek/deepseek-v4.1-flash-1017");
-      assert.ok(opts.find((o) => o.value === "deepseek/deepseek-v4.1-flash-1017")!.columns!.includes("Luminal · ~85 tok/s"));
-      assert.ok(opts.find((o) => o.value === "gpt-6-luna")!.columns!.includes("OpenAI"), "provider alone when not measured");
+      assert.ok(opts.find((o) => o.value === "deepseek/deepseek-v4.1-flash-1017")!.columns!.includes("~85 tok/s"));
+      assert.ok(!opts.some((o) => o.columns!.some((c) => /Luminal|OpenAI/.test(c))), "no provider names");
+      assert.equal(opts.find((o) => o.value === "gpt-6-luna")!.columns!.length, 2, "nothing added when not measured");
       assert.equal(opts.find((o) => o.value === "gpt-6.1-sol")!.columns!.length, 2, "nothing added for a model no provider lists");
     } finally {
       setDlProvidersCache(null);
@@ -250,7 +251,7 @@ describe("Camouflage first run: Pick a free model", () => {
   ];
   type Pick = { pickFreeModel: (c: unknown) => Promise<string> };
 
-  it("lists model · provider with tok/s, DeepSeek preselected, and returns the choice", async () => {
+  it("lists each model with its tok/s (never who serves it), DeepSeek preselected, and returns the choice", async () => {
     const { view, prompts } = await fakeView({ select: ["gpt-6-luna"] });
     let token: string | undefined;
     view.providerCalls = { ...view.providerCalls, dlFreeModels: async (t) => ((token = t), usable) };
@@ -260,7 +261,7 @@ describe("Camouflage first run: Pick a free model", () => {
     const spec = prompts[0]!.payload as { prompt: string; default: string; options: { label: string; columns: string[] }[] };
     assert.equal(spec.prompt, "Pick a free model");
     assert.equal(spec.default, "deepseek/deepseek-v4.1-flash-1017");
-    assert.deepEqual(spec.options.map((o) => [o.label, o.columns[0]]), [["DeepSeek V4.1 Flash · Luminal", "~85 tok/s"], ["GPT-6 Luna · OpenAI", ""]]);
+    assert.deepEqual(spec.options.map((o) => [o.label, o.columns[0]]), [["DeepSeek V4.1 Flash", "~85 tok/s"], ["GPT-6 Luna", ""]]);
     view.dispose();
   });
 

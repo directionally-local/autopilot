@@ -184,8 +184,8 @@ describe("loadUsableDlModels", () => {
       url.endsWith("/v1/providers") ? json(body) : json({ data: [{ id: "deepseek/deepseek-v4.1-flash-1017" }, { id: "gpt-6-luna" }] })) as unknown as typeof fetch;
     const rows = (await loadUsableDlModels("tok", { fetchImpl, env })).map(dlFreeModelOption);
     assert.deepEqual(rows, [
-      { value: "deepseek/deepseek-v4.1-flash-1017", label: "DeepSeek V4.1 Flash · Luminal", columns: ["~85 tok/s"] },
-      { value: "gpt-6-luna", label: "GPT-6 Luna · Luminal", columns: ["~120 tok/s"] },
+      { value: "deepseek/deepseek-v4.1-flash-1017", label: "DeepSeek V4.1 Flash", columns: ["~85 tok/s"] },
+      { value: "gpt-6-luna", label: "GPT-6 Luna", columns: ["~120 tok/s"] },
     ]);
   });
 });
@@ -196,10 +196,10 @@ describe("formatting", () => {
     assert.equal(formatTokPerSec(null), "");
     assert.equal(formatTokPerSec(0), "");
   });
-  it("dlModelProviderLine for /model: provider and speed, provider alone when not measured", () => {
+  it("dlModelProviderLine for /model: the speed only, never who serves it", () => {
     const list = parseDlProviders(body)!;
-    assert.equal(dlModelProviderLine("deepseek/deepseek-v4.1-flash-1017", list), "Luminal · ~85 tok/s");
-    assert.equal(dlModelProviderLine("gpt-6.1-sol", list), "OpenAI");
+    assert.equal(dlModelProviderLine("deepseek/deepseek-v4.1-flash-1017", list), "~85 tok/s");
+    assert.equal(dlModelProviderLine("gpt-6.1-sol", list), undefined);
     assert.equal(dlModelProviderLine("nope", list), undefined);
     assert.equal(dlModelProviderLine("gpt-6-luna", null), undefined);
   });
@@ -209,13 +209,13 @@ describe("free models this Autopilot doesn't know yet", () => {
   const kimi = { id: "moonshotai/kimi-k3.1-pro", name: "Kimi K3.1 Pro", family: "kimi", contextWindow: 262_144, access: "free", status: "on", tokensPerSecond: 64, ttftMs: 990, successRate24h: 0.99, measuredAt: "2026-11-23T08:00:00.000Z" };
   const withKimi = { ...body, providers: [...body.providers, { id: "liquid", name: "Liquid Inference", website: "https://liquidinference.ai", url: "https://liquidinference.ai/", logo: "/logos/liquid.svg", models: [kimi] }] };
 
-  it("are offered when /v1/models serves them, with provider and speed", () => {
+  it("are offered when /v1/models serves them, with their speed", () => {
     const list = parseDlProviders(withKimi)!;
     assert.ok(!usableDlModels(list).some((m) => m.id === kimi.id), "not without /v1/models: the catalog would have no entry for it");
     const usable = usableDlModels(list, { modelIds: new Set(["deepseek/deepseek-v4.1-flash-1017", kimi.id]) });
     assert.deepEqual(usable.map(dlFreeModelOption), [
-      { value: "deepseek/deepseek-v4.1-flash-1017", label: "DeepSeek V4.1 Flash · Luminal", columns: ["~85 tok/s"] },
-      { value: kimi.id, label: "Kimi K3.1 Pro · Liquid Inference", columns: ["~64 tok/s"] },
+      { value: "deepseek/deepseek-v4.1-flash-1017", label: "DeepSeek V4.1 Flash", columns: ["~85 tok/s"] },
+      { value: kimi.id, label: "Kimi K3.1 Pro", columns: ["~64 tok/s"] },
     ]);
   });
 
@@ -279,15 +279,15 @@ describe("402 provider_limit: switch to the alternative and resend once", () => 
     assert.equal(dlHeadlessLine("provider_limit", { message: "Kimi K3.1 Pro is paused." }), "Kimi K3.1 Pro is paused. Run with `-m deepseek/deepseek-v4.1-flash-1017` to use another free model.");
   });
 
-  it("switches any free model to the alternative, with one line naming model and provider", () => {
+  it("switches any free model to the alternative, with one line naming the model, never who serves it", () => {
     assert.deepEqual(dlProviderLimitAutoSwitch(base), {
       model: "deepseek/deepseek-v4.1-flash-1017",
-      notice: "Kimi K3.1 Pro on Liquid Inference is at its limit for now; switched to DeepSeek V4.1 Flash.",
+      notice: "Kimi K3.1 Pro is at its limit for now; switched to DeepSeek V4.1 Flash.",
     });
     // A provider given by name, or none (then whoever /v1/providers says serves it); GPT-6 too.
-    assert.match(dlProviderLimitAutoSwitch({ ...base, servedBy: "Liquid Inference" })!.notice, /^Kimi K3\.1 Pro on Liquid Inference is/);
-    assert.match(dlProviderLimitAutoSwitch({ ...base, servedBy: undefined })!.notice, /^Kimi K3\.1 Pro on Liquid Inference is/);
-    assert.equal(dlProviderLimitAutoSwitch({ ...base, model: "gpt-6-luna", servedBy: "openai", list: null })!.notice, "GPT-6 Luna on openai is at its limit for now; switched to DeepSeek V4.1 Flash.");
+    assert.match(dlProviderLimitAutoSwitch({ ...base, servedBy: "Liquid Inference" })!.notice, /^Kimi K3\.1 Pro is/);
+    assert.match(dlProviderLimitAutoSwitch({ ...base, servedBy: undefined })!.notice, /^Kimi K3\.1 Pro is/);
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, model: "gpt-6-luna", servedBy: "openai", list: null })!.notice, "GPT-6 Luna is at its limit for now; switched to DeepSeek V4.1 Flash.");
     assert.equal(dlProviderLimitAutoSwitch({ ...base, servedBy: undefined, list: null })!.notice, "moonshotai/kimi-k3.1-pro is at its limit for now; switched to DeepSeek V4.1 Flash.");
   });
 
@@ -366,9 +366,9 @@ describe("dl Pro only models (Kimi K3.1 Pro)", () => {
     const withGlm = { ...withKimi, providers: [...withKimi.providers, { id: "openrelay", name: "Open Relay", website: "", url: "", logo: "", models: [{ ...withKimi.providers[0]!.models[0]!, id: GLM, name: "GLM 5.3 Flash", access: "free" as const }] }] };
     const base = { provider: "directionally-local", model: GLM, code: "provider_limit", alternative: "deepseek/deepseek-v4.1-flash-1017", servedBy: "openrelay", resetsAt: "2026-11-30T00:00:00.000Z", timeZone: "UTC", retried: false, list: withGlm };
     assert.deepEqual(dlProviderLimitAutoSwitch({ ...base, reason: "person_cap" }), { model: "deepseek/deepseek-v4.1-flash-1017", notice: "This week's free GLM 5.3 Flash is used up (it resets Monday 30 Nov); switched to DeepSeek V4.1 Flash." });
-    assert.equal(dlProviderLimitAutoSwitch({ ...base, reason: "weekly_budget" })!.notice, "GLM 5.3 Flash on Open Relay has used its free budget for this week (it resets Monday 30 Nov); switched to DeepSeek V4.1 Flash.");
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, reason: "weekly_budget" })!.notice, "GLM 5.3 Flash has used its free budget for this week (it resets Monday 30 Nov); switched to DeepSeek V4.1 Flash.");
     // No reset day for a pause or the credit.
-    assert.equal(dlProviderLimitAutoSwitch({ ...base, reason: "out_of_credit", resetsAt: undefined })!.notice, "GLM 5.3 Flash on Open Relay is at its limit for now; switched to DeepSeek V4.1 Flash.");
+    assert.equal(dlProviderLimitAutoSwitch({ ...base, reason: "out_of_credit", resetsAt: undefined })!.notice, "GLM 5.3 Flash is at its limit for now; switched to DeepSeek V4.1 Flash.");
   });
 
   it("Pro's used-up ration: the reset day, then DeepSeek", () => {

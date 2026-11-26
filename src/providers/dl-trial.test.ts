@@ -102,10 +102,11 @@ describe("the sign-in line", () => {
   });
 
   it("says the weekly allowance as the other screens do, never a stale 50M", () => {
-    assert.strictEqual(dlSignedInLine(me(), TZ), "✓ Signed in as @octo · $2 GPT-6 + $8 DeepSeek free each week · back every Monday");
+    // Free accounts: DeepSeek only, in tokens with the caching label, never GPT-6 dollars.
+    assert.strictEqual(dlSignedInLine(me(), TZ), "✓ Signed in as @octo · Free: DeepSeek V4.1 Flash, 10M tokens a week (95.5% caching applied) · back every Monday");
     assert.strictEqual(
       dlSignedInLine(me({ budgets: { gpt6: { usdPerWeek: 2, spentUsd: 0 }, deepseek: { usdPerWeek: null, spentUsd: 0 } } }), TZ),
-      "✓ Signed in as @octo · $2 GPT-6 + DeepSeek uncapped free each week · back every Monday",
+      "✓ Signed in as @octo · Free: DeepSeek V4.1 Flash, 10M tokens a week (95.5% caching applied) · back every Monday",
     );
     assert.strictEqual(dlSignedInLine(me({ plan: "pro" }), TZ), "✓ Signed in as @octo · dl Pro: $2 GPT-6 + $8 DeepSeek each week · back every Monday");
     assert.strictEqual(

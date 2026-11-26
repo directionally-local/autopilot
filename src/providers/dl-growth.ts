@@ -46,6 +46,8 @@ import {
   type DlUsdTopupOffer,
   type DlWhere,
 } from "./directionally-local.js";
+import { dlKeyMode } from "./dl-endpoint.js";
+import { DL_PLANS_URL } from "./dl-plan.js";
 
 /** What each friend who starts using dl adds a week, for both of you. */
 export const DL_REFERRAL_BONUS_TOKENS = DL_INVITE_BONUS_TOKENS;
@@ -356,6 +358,12 @@ export interface PurchaseDeps {
  * is said); false when it failed, timed out or was cancelled (said too).
  */
 export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { continuing: boolean; quantity?: number }): Promise<boolean> {
+  // A dl key: plans are bought and changed at dl.new, not through the free tier's checkout.
+  if (dlKeyMode()) {
+    const opened = deps.openBrowser(DL_PLANS_URL);
+    deps.say(opened ? `Opened ${DL_PLANS_URL}: pick or change your plan there.` : `Pick or change your plan at ${DL_PLANS_URL}.`);
+    return false;
+  }
   const before = await deps.fetchMe().catch(() => null);
   let url: string;
   try {

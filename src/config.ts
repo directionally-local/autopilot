@@ -8,8 +8,8 @@ import { DEFAULT_AUTO_COMPACT_CAP_TOKENS } from "./agent/context-budget.js";
 import type { OpenRouterProviderPrefs } from "./agent/client.js";
 import type { SubagentPolicy } from "./intent/subagent-policy.js";
 import type { ModelRoutingConfig } from "./intent/model-routing.js";
-import { readEnv } from "./util/env.js";
-import { DL_FREE_DEFAULT_MODEL } from "./providers/dl-endpoint.js";
+import { launchedByDl, readEnv } from "./util/env.js";
+import { DL_FREE_DEFAULT_MODEL, dlKeyMode } from "./providers/dl-endpoint.js";
 import { defaultCoauthor } from "./util/dl-identity.js";
 import { configPath as userConfigPath } from "./util/app-dirs.js";
 
@@ -451,7 +451,13 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
   };
 
   // Every LLM default below follows the active provider.
-  const active = resolveActiveProvider(providerFields);
+  let active = resolveActiveProvider(providerFields);
+  // Started by dl with a dl key (dl_sk_): when Autopilot's own provider can't take requests (its
+  // key is gone), dl's plan is the provider instead of the first-run question. Not saved.
+  if (!isProviderUsable(active) && launchedByDl() && dlKeyMode()) {
+    providerFields.provider = DL_FREE_PROVIDER;
+    active = resolveActiveProvider(providerFields);
+  }
   if (!isProviderUsable(active)) return null;
   noteActiveProvider(active.id);
   const preset = active.preset;

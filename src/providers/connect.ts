@@ -17,6 +17,7 @@ import { detectEnvProviders, resolveActiveProvider, resolveProviderKey } from ".
 import { checkProviderKey, patchProviderSettings, saveProviderKey, switchProvider } from "./keys.js";
 import { DL_DISCLOSURE, DL_FREE_MODEL, DL_FREE_WEEKLY_TOKENS, dlNotFreeLine, dlPickerHint, formatTokens, type DlDeviceCode } from "./directionally-local.js";
 import { DL_STATUS_OPEN, dlPausedLine, dlWaitlistText, type DlFreeStatus } from "./dl-status.js";
+import { DL_FREE_PLAN_LINE } from "./dl-plan.js";
 
 /** Every provider we offer, in order, with a one-line hint. */
 export const PROVIDER_CHOICES: ReadonlyArray<{ id: ProviderId; hint: string }> = [
@@ -310,8 +311,8 @@ export function dlWaitingText(code: DlDeviceCode, opened = false): string {
 /** Said when someone backs out of the free tier's sign-in: nothing was saved, and the question is asked again. */
 export const DL_SIGN_IN_NEEDED = "Free-tier sign-in cancelled; nothing was saved.";
 
-/** The free tier's model and who serves it, under the first-run question (a plain fact, and their site). */
-export const DL_FREE_MODEL_LINE = "Free: DeepSeek V4.1 Flash on Luminal";
+/** The free tier's model and weekly tokens, under the first-run question (never who serves it), and where plans are. */
+export const DL_FREE_MODEL_LINE = `${DL_FREE_PLAN_LINE} · plans at dl.new/plans`;
 
 /** The first-run question's answers. */
 export type FirstRunChoice = "free" | "own-key" | "gpus";
