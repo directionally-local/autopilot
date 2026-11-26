@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.32.0](https://github.com/directionally-local/autopilot/compare/v3.31.0...v3.32.0) (2026-11-26)
+
+
+### Features
+
+* **acp:** autopilot acp, the Agent Client Protocol agent for Zed and T3 Code ([#1305](https://github.com/directionally-local/autopilot/issues/1305)) ([6b0fba0](https://github.com/directionally-local/autopilot/commit/6b0fba090b06b30a387899d91203ce0ab6c5d6ee))
+
+
+### Bug Fixes
+
+* **deps:** bump camouflage-tui to 2.13.2 ([#1310](https://github.com/directionally-local/autopilot/issues/1310)) ([cd601df](https://github.com/directionally-local/autopilot/commit/cd601dfea1a65dfcafeab0505e5e359845a5f3ec))
+
 ## [3.31.0](https://github.com/directionally-local/autopilot/compare/v3.30.0...v3.31.0) (2026-11-26)
 
 
