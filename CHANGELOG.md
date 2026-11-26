@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.31.0](https://github.com/directionally-local/autopilot/compare/v3.30.0...v3.31.0) (2026-11-26)
+
+
+### Features
+
+* **dl:** say when a free model's weekly cap resets on the provider_limit switch ([#1295](https://github.com/directionally-local/autopilot/issues/1295)) ([25f1804](https://github.com/directionally-local/autopilot/commit/25f1804b3fd68b62653d9222ba1c63c5600ffc5d))
+
+
+### Bug Fixes
+
+* **deps:** camouflage-tui 2.13.1 (Backspace in terminals that send ^H) ([#1298](https://github.com/directionally-local/autopilot/issues/1298)) ([ee267c5](https://github.com/directionally-local/autopilot/commit/ee267c57c8c240fc4e1d0e9881cc4602c0e63640))
+* **dl:** /usage shows the binding limit, and limit errors name it ([#1307](https://github.com/directionally-local/autopilot/issues/1307)) ([48a3f01](https://github.com/directionally-local/autopilot/commit/48a3f0164673f09a42355bc6eda3fe06649f6360))
+* **feedback:** never send a collapsed-paste placeholder ([#1306](https://github.com/directionally-local/autopilot/issues/1306)) ([30b6bf6](https://github.com/directionally-local/autopilot/commit/30b6bf6507cc848ba7b11d520641fb1a9050bc16))
+
 ## [3.30.0](https://github.com/directionally-local/autopilot/compare/v3.29.0...v3.30.0) (2026-11-23)
 
 
