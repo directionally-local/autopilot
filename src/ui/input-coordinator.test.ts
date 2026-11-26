@@ -22,6 +22,11 @@ describe("decideSubmit", () => {
     assert.deepStrictEqual(decideSubmit("/now", "/now", idle), { do: "run-now" });
   });
 
+  it("/status reports on the running turn instead of waiting in the queue", () => {
+    assert.deepStrictEqual(decideSubmit("/status", "/status", { ...idle, busy: true }), { do: "subagent-command" });
+    assert.deepStrictEqual(decideSubmit("/status", "/status", idle), { do: "run" });
+  });
+
   it("/queue plan needs two groupable chat prompts", () => {
     assert.match(String((decideSubmit("/queue plan", "/queue plan", { ...idle, queue: [q("a")] }) as { notice?: string }).notice), /at least two/);
     assert.match(String((decideSubmit("/queue plan", "/queue plan", { ...idle, queue: [q("a"), q("b", "/model")] }) as { notice?: string }).notice), /only groups chat prompts/);

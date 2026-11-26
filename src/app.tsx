@@ -2049,7 +2049,7 @@ function App({
           }
           return;
         case "subagent-command":
-          // Subagent management must work mid-turn: queueing it would make it useless.
+          // Subagent management and /status must work mid-turn: queueing them would make them useless.
           setHistory((h) => pushHistory(h, trimmedDisplay));
           clearInput();
           void handleSlash(trimmedFull);

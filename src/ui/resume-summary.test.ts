@@ -3,7 +3,7 @@ import assert from "node:assert";
 import type { ChatMessage } from "../agent/messages.js";
 import { loadSession, saveSession } from "../sessions.js";
 import { buildResumeReplay } from "./resume-replay.js";
-import { buildWhereYouLeftOff, checkOutcome, continuePrompt, displayCommand, formatWhereYouLeftOff } from "./resume-summary.js";
+import { buildWhereYouLeftOff, checkOutcome, continuePrompt, displayCommand, formatWhereYouLeftOff, isCheckCommand } from "./resume-summary.js";
 
 const user = (content: string): ChatMessage => ({ role: "user", content });
 const text = (content: string): ChatMessage => ({ role: "assistant", content });
@@ -140,6 +140,15 @@ describe("check outcomes", () => {
     assert.deepStrictEqual(checkOutcome("exit=2\nerror TS2322"), { outcome: "failed", detail: "exit 2" });
     assert.deepStrictEqual(checkOutcome("(timed out after 120000ms)"), { outcome: "failed", detail: "timed out" });
     assert.deepStrictEqual(checkOutcome("[artifact a1: 4 KB]"), { outcome: "ran" });
+  });
+
+  it("spots checks by command word, not words inside paths", () => {
+    for (const c of ["npm test", "cd /repo && npm run test:unit", "pytest -q tests/", "make check", "node --test", "./node_modules/.bin/jest", "npx tsc --noEmit", "cargo clippy"]) {
+      assert.equal(isCheckCommand(c), true, c);
+    }
+    for (const c of ["ls -la /root/rs-test && cat /root/rs-test/package.json", "cat src/build-info.ts", "git status", "sleep 5"]) {
+      assert.equal(isCheckCommand(c), false, c);
+    }
   });
 
   it("shows commands without a leading cd and cut to one line", () => {

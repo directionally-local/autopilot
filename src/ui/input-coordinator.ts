@@ -54,6 +54,9 @@ export type SubmitDecision =
   | { do: "enqueue"; isChatPrompt: boolean }
   | { do: "run" };
 
+/** Read-only commands that report on the running turn: queueing them would make them useless. */
+const IMMEDIATE_WHILE_BUSY = /^\/status\s*$/i;
+
 export function decideSubmit(full: string, display: string, state: SubmitState): SubmitDecision {
   if (!full) return { do: "ignore" };
 
@@ -75,7 +78,7 @@ export function decideSubmit(full: string, display: string, state: SubmitState):
   }
 
   if (isRunNowCommand(full)) return { do: "run-now" };
-  if (state.busy && isImmediateSubagentCommand(full)) return { do: "subagent-command" };
+  if (state.busy && (isImmediateSubagentCommand(full) || IMMEDIATE_WHILE_BUSY.test(full.trim()))) return { do: "subagent-command" };
   if (state.busy) return { do: "enqueue", isChatPrompt: !full.startsWith("/") && parseBangCommand(full) === null };
   return { do: "run" };
 }

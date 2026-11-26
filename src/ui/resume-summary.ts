@@ -62,8 +62,9 @@ export interface WhereYouLeftOff {
   hasTaskList: boolean;
 }
 
-const CHECK_COMMAND =
-  /\b(test|tests|vitest|jest|mocha|ava|pytest|tox|tsc|typecheck|type-check|types|lint|eslint|biome|ruff|mypy|pyright|flake8|clippy|build|check|vet|ci)\b/i;
+/** A check's command word (`npm test`, `pytest`, `make check`, `node --test`, `npm run test:unit`, `./node_modules/.bin/jest`). */
+const CHECK_WORD =
+  /^(?:--)?(?:test|tests|vitest|jest|mocha|ava|pytest|tox|tsc|typecheck|type-check|types|lint|eslint|biome|ruff|mypy|pyright|flake8|clippy|build|check|vet|ci)(?::[\w:-]+)?$/i;
 /** Short follow-ups that don't restate the task: the goal is the request before them. */
 const FOLLOW_UP = /^(continue|go on|keep going|carry on|resume|proceed|yes|y|ok|okay|go|do it|please continue)\b[\s.!]*$/i;
 
@@ -107,8 +108,10 @@ export function displayCommand(command: string): string {
   return bare.length > COMMAND_MAX_CHARS ? `${bare.slice(0, COMMAND_MAX_CHARS - 1).trimEnd()}…` : bare;
 }
 
+/** Whether a command runs tests, a build, a linter or a type check. Words inside paths (`~/my-tests/`) don't count. */
 export function isCheckCommand(command: string): boolean {
-  return CHECK_COMMAND.test(command.split("\n")[0] ?? "");
+  const words = (command.split("\n")[0] ?? "").split(/[\s;&|()]+/);
+  return words.some((w) => CHECK_WORD.test(w.replace(/^["']|["']$/g, "").split("/").pop() ?? ""));
 }
 
 function lastNumber(text: string, re: RegExp): number | undefined {
