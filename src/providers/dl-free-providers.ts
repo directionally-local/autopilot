@@ -6,12 +6,13 @@
  *
  * Kept fast: a 2 s timeout and a 10 minute cache. When the endpoint can't be
  * read (not deployed yet, 404, offline, a malformed body) the built-in list
- * stands in: DeepSeek V4.1 Flash on Luminal, with no speeds.
+ * stands in: DeepSeek V4.1 Flash, with no speeds. Who serves a model is never
+ * shown: the screens name the model and its measured speed only.
  */
 
 import { getUserAgent } from "../util/version.js";
-import { DL_FREE_DEFAULT_MODEL, dlOrigin } from "./dl-endpoint.js";
-import { DL_DEEPSEEK_MODEL, DL_FREE_MODELS, DL_PROVIDER_ID, dlFreeModelEntries, type DlMe } from "./directionally-local.js";
+import { DL_FREE_DEFAULT_MODEL, dlOrigin, isDlApiKey } from "./dl-endpoint.js";
+import { DL_DEEPSEEK_MODEL, DL_FREE_MODELS, DL_PROVIDER_ID, dlFreeModelEntries, dlFreeModelEntry, type DlMe } from "./directionally-local.js";
 import { getModel, type ModelEntry } from "../models/registry.js";
 
 export type DlModelAccess = "free" | "trusted" | "opt-in" | "pro";
@@ -53,7 +54,7 @@ export const DL_PROVIDERS_CACHE_MS = 10 * 60_000;
 /** How long a failed read is reused before trying again (short: the endpoint may just be new). */
 const FAILED_CACHE_MS = 60_000;
 
-/** The built-in list: DeepSeek V4.1 Flash on Luminal, no speeds. */
+/** The built-in list: DeepSeek V4.1 Flash, no speeds. */
 export const DL_FALLBACK_PROVIDERS: DlProviders = {
   updatedAt: null,
   live: false,
@@ -244,6 +245,7 @@ export async function loadDlCatalog(token: string | undefined, o: { fetchImpl?: 
   if (!token) return builtIn;
   const call = { ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}), ...(o.env ? { env: o.env } : {}) };
   const [served, list] = await Promise.all([fetchDlServedModels(token, call), fetchDlProviders(call)]);
+  if (isDlApiKey(token)) return dlPlanCatalog(served, list);
   const known = new Set(builtIn.map((m) => m.id));
   const extra = (served ?? []).filter((m) => !known.has(m.id)).map((m) => dlServedModelEntry(m, list));
   // dl Pro perks /v1/models doesn't serve this person (a free account): listed so /model can show
@@ -253,6 +255,18 @@ export async function loadDlCatalog(token: string | undefined, o: { fetchImpl?: 
     .filter((m) => !listedIds.has(m.id))
     .map((m) => ({ ...dlServedModelEntry({ id: m.id, name: m.name }, list), name: `${m.name} (Pro)` }));
   return [...builtIn, ...extra, ...pro];
+}
+
+/**
+ * A dl key's catalog: exactly the models dl's plan serves this person (/v1/models: DeepSeek V4.1
+ * Flash, Kimi K3.1 when the plan has it, GPT-6.1 Sol when the service serves it), DeepSeek first
+ * and always there. Names without " (free)": a paid plan's models aren't free.
+ */
+export function dlPlanCatalog(served: DlServedModel[] | undefined, list: DlProviders | null = cachedDlProviders()): ModelEntry[] {
+  const plain = (m: ModelEntry): ModelEntry => ({ ...m, name: (m.name ?? m.id).replace(/ \(free\)$/, "") });
+  const entry = (m: DlServedModel) => plain(DL_FREE_MODELS.some((b) => b.id === m.id) ? dlFreeModelEntry(m.id) : dlServedModelEntry(m, list));
+  const deepseek = plain(dlFreeModelEntry(DL_FREE_DEFAULT_MODEL));
+  return [deepseek, ...(served ?? []).filter((m) => m.id !== DL_FREE_DEFAULT_MODEL).map(entry)];
 }
 
 /** A free model this person can pick, with who serves it and how fast it measured. */
@@ -318,8 +332,9 @@ export function formatTokPerSec(tps: number | null | undefined): string {
 }
 
 /**
- * For the /model picker: "Luminal · ~85 tok/s" for a free model, from the cached
- * list (fastest provider serving it). Undefined when nothing is cached or no provider lists it.
+ * For the /model picker: "~85 tok/s" for a free model, from the cached list (the fastest
+ * measurement of it), never who serves it. Undefined when nothing is cached, nothing lists
+ * it or it isn't measured.
  */
 export function dlModelProviderLine(modelId: string, list: DlProviders | null = cachedDlProviders()): string | undefined {
   if (!list) return undefined;
@@ -331,8 +346,7 @@ export function dlModelProviderLine(modelId: string, list: DlProviders | null = 
     }
   }
   if (!best) return undefined;
-  const speed = formatTokPerSec(best.tps);
-  return speed ? `${best.provider} · ${speed}` : best.provider;
+  return formatTokPerSec(best.tps) || undefined;
 }
 
 /**
@@ -350,9 +364,9 @@ export async function loadUsableDlModels(
   return usable.length > 0 ? usable : usableDlModels(DL_FALLBACK_PROVIDERS);
 }
 
-/** One row of the "Pick a free model" screen: "DeepSeek V4.1 Flash · Luminal", then "~85 tok/s" (blank when not measured). */
+/** One row of the "Pick a free model" screen: "DeepSeek V4.1 Flash", then "~85 tok/s" (blank when not measured). */
 export function dlFreeModelOption(m: DlUsableModel): { value: string; label: string; columns: string[] } {
-  return { value: m.id, label: `${m.name} · ${m.provider}`, columns: [formatTokPerSec(m.tokensPerSecond)] };
+  return { value: m.id, label: m.name, columns: [formatTokPerSec(m.tokensPerSecond)] };
 }
 
 /** A free model's display name: built in, else /v1/providers, else the catalog (without " (free)" or " (Pro)"), else its id. */
@@ -363,12 +377,6 @@ export function dlModelName(id: string, list: DlProviders | null = cachedDlProvi
   if (listed) return listed;
   const name = getModel(id)?.name?.replace(/ \((free|Pro)\)$/, "");
   return name || id;
-}
-
-/** The provider's name for a provider_limit: the error's provider (an id or a name), else whoever /v1/providers says serves the model. */
-function dlProviderName(provider: string | undefined, modelId: string, list: DlProviders | null): string | undefined {
-  if (provider) return list?.providers.find((p) => p.id === provider)?.name ?? provider;
-  return list?.providers.find((p) => p.models.some((m) => m.id === modelId))?.name;
 }
 
 /** 140000 → "140K", 1200000 → "1.2M": the "about N tokens" of a Pro ration. */
@@ -433,10 +441,9 @@ export function dlProviderLimitAutoSwitch(o: {
   // A weekly limit (this person's free cap, or the provider's weekly budget) says when it is back.
   const day = o.reason === "person_cap" || o.reason === "weekly_budget" ? dlResetDay(o.resetsAt, o.timeZone) : undefined;
   if (o.reason === "person_cap" && day) return { model: alternative, notice: `This week's free ${name} is used up (it resets ${day}); ${switched}.` };
-  const servedBy = dlProviderName(o.servedBy, o.model, list);
-  const what = servedBy ? `${name} on ${servedBy}` : name;
-  if (day) return { model: alternative, notice: `${what} has used its free budget for this week (it resets ${day}); ${switched}.` };
-  return { model: alternative, notice: `${what} is at its limit for now; ${switched}.` };
+  // Who serves the model is never named.
+  if (day) return { model: alternative, notice: `${name} has used its free budget for this week (it resets ${day}); ${switched}.` };
+  return { model: alternative, notice: `${name} is at its limit for now; ${switched}.` };
 }
 
 // ─── dl Pro only models (Kimi K3.1 Pro) ─────────────────────────────────────

@@ -14,7 +14,7 @@
  * (https://models.dev/api.json) on 2026-10-20.
  */
 
-import { DL_FREE_DEFAULT_MODEL, dlApiBase } from "./dl-endpoint.js";
+import { DL_FREE_DEFAULT_MODEL, dlApiBase, dlKeyMode } from "./dl-endpoint.js";
 
 export const PROVIDER_IDS = [
   "directionally-local",
@@ -164,7 +164,8 @@ const NO_OPENROUTER_FEATURES: ProviderCapabilities = {
 export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
   "directionally-local": {
     id: "directionally-local",
-    name: "Directionally Local, free",
+    // With dl's key (dl_sk_) it's the person's dl plan, which may be paid.
+    name: dlKeyMode() ? "dl" : "Directionally Local, free",
     // The managed free tier: OpenAI-compatible, GitHub device sign-in instead of a pasted
     // key (`autopilot auth directionally-local`), tokens refreshed automatically. The env var
     // is for sandboxes and short headless runs (no refresh).

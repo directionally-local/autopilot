@@ -22,7 +22,7 @@ import { onShutdown, SHUTDOWN_PHASE, withDeadline } from "../util/exit.js";
 import { getAppVersion, getUserAgent } from "../util/version.js";
 import type { AgentCallbacks } from "../agent/loop.js";
 import { DL_PROVIDER_ID, dlAccessToken } from "./directionally-local.js";
-import { dlOrigin } from "./dl-endpoint.js";
+import { dlOrigin, isDlApiKey } from "./dl-endpoint.js";
 
 export type DlEventType = "session.start" | "session.end" | "turn.end" | "pr.opened" | "error";
 
@@ -196,6 +196,8 @@ async function post(batch: DlEvent[]): Promise<boolean> {
   try {
     const token = await dlAccessToken({ fetchImpl });
     if (!token) return true; // signed out: drop, nothing to send as
+    // A dl key (dl_sk_): the service meters the plan itself and /v1/events takes no dl keys: drop.
+    if (isDlApiKey(token)) return true;
     const res = await fetchImpl(`${dlOrigin()}/v1/events`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },

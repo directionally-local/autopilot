@@ -8,7 +8,8 @@
  * service: never to the log, the session trace or usage events.
  */
 
-import { dlOrigin } from "./providers/dl-endpoint.js";
+import { dlKeyMode, dlOrigin } from "./providers/dl-endpoint.js";
+import { DL_PLANS_URL } from "./providers/dl-plan.js";
 import { DL_PROVIDER_ID, DL_REQUEST_HINT, describeDlError, dlSignedOutLine, parseDlError } from "./providers/directionally-local.js";
 import { getUserAgent } from "./util/version.js";
 
@@ -33,6 +34,8 @@ export const ACCESS_CANCELLED_LINE = "request not sent.";
 export function accessNotFreeTierLine(providerName = "another provider"): string {
   return `/request is for the Directionally Local free tier; you're on ${providerName}. /provider switches to it.`;
 }
+/** /request on a dl key (dl.new plans): there is nothing to request. */
+export const ACCESS_DL_KEY_LINE = `more tokens come with a plan: ${DL_PLANS_URL}`;
 export const ACCESS_UNAVAILABLE_LINE = "asking for more free tokens isn't available on this free tier server yet.";
 export const ACCESS_FAILED_LINE = "couldn't reach the free tier; nothing was sent. try /request again shortly.";
 export const ACCESS_CHECK_FAILED_LINE = "couldn't check your request with the free tier; try /request again shortly.";
@@ -231,6 +234,8 @@ export interface AccessRequestDeps {
 /** The whole flow: status, the two questions, the send. Returns the line to show. */
 export async function runAccessRequest(deps: AccessRequestDeps): Promise<AccessRequestLine> {
   if (deps.providerId !== DL_PROVIDER_ID) return { text: accessNotFreeTierLine(deps.providerName), severity: "info" };
+  // On a dl key, more tokens come with a plan, not a request.
+  if (dlKeyMode(deps.env ?? process.env)) return { text: ACCESS_DL_KEY_LINE, severity: "info" };
   const calls: CallOpts = { token: deps.token, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.env ? { env: deps.env } : {}) };
 
   deps.status?.("Checking your request…");

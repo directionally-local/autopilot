@@ -23,7 +23,8 @@ import { configPath, patchPersistedConfig, setSessionModelFallback, type Autopil
 import { getUserAgent } from "../util/version.js";
 import type { ProviderSettings } from "./resolve.js";
 import type { ModelEntry } from "../models/registry.js";
-import { DL_FREE_DEFAULT_MODEL, dlOrigin } from "./dl-endpoint.js";
+import { DL_FREE_DEFAULT_MODEL, dlKeyMode, dlOrigin, isDlApiKey } from "./dl-endpoint.js";
+import { DL_FREE_PLAN_LINE, DL_PLANS_URL, dlPlanHeaderLine, dlPlanSignedInLine, fetchDlPlanUsage, renderDlPlanUsage, type DlPlanUsage } from "./dl-plan.js";
 import { launchedByDl, type EnvLike } from "../util/env.js";
 
 export { DL_FREE_DEFAULT_URL, dlApiBase, dlOrigin } from "./dl-endpoint.js";
@@ -67,8 +68,11 @@ export const DL_SIGN_IN_COMMAND = "autopilot auth directionally-local";
 export const DL_FREE_SIGN_IN_AGAIN = "Run /provider and choose Free to sign in again.";
 /** The sentence for a dead sign-in: dl names /provider, standalone the `autopilot auth` command. */
 export function dlSignInExpiredLine(env: EnvLike = process.env): string {
+  if (dlKeyMode(env as NodeJS.ProcessEnv)) return DL_KEY_REFUSED_LINE;
   return launchedByDl(env) ? `Your free-tier sign-in expired. ${DL_FREE_SIGN_IN_AGAIN}` : `Your Directionally Local sign-in has expired; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
 }
+/** A dl key (dl_sk_) the service refused: it comes from dl's sign-in, so dl renews it. */
+export const DL_KEY_REFUSED_LINE = "dl didn't accept your dl key. Run dl login to sign in again, or make a new key at dl.new/keys.";
 /** Not signed in at all. */
 export function dlSignedOutLine(env: EnvLike = process.env): string {
   return launchedByDl(env) ? "You're not signed in to the free tier. Run /provider and choose Free to sign in." : `You're not signed in to Directionally Local; sign in with \`${DL_SIGN_IN_COMMAND}\`.`;
@@ -114,7 +118,9 @@ export function dlNotFreeLine(what: string): string {
 }
 
 /** The picker's one-line hint. */
-export function dlPickerHint(): string {
+export function dlPickerHint(env: NodeJS.ProcessEnv = process.env): string {
+  // dl's key: the plan dl signed into at dl.new; nothing to sign in to here.
+  if (dlKeyMode(env)) return "your dl plan — signed in through dl";
   return "free to try — DeepSeek V4.1 Flash, sign in with GitHub";
 }
 
@@ -216,7 +222,7 @@ export class DlError extends Error {
 }
 
 /** The codes that mean the sign-in must be renewed (not a transient failure). */
-const DL_AUTH_CODES = new Set(["invalid_grant", "invalid_token", "signed_out", "expired_token"]);
+const DL_AUTH_CODES = new Set(["invalid_grant", "invalid_token", "invalid_key", "signed_out", "expired_token"]);
 
 /** True when `err` is a Directionally Local auth failure that needs a new sign-in. */
 export function isDlAuthError(err: unknown): err is DlError {
@@ -751,7 +757,10 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       return "The sign-in was declined in the browser, so nothing was saved.";
     case "invalid_grant":
       return dlSignInExpiredLine(extra.env);
+    case "invalid_key":
+      return DL_KEY_REFUSED_LINE;
     case "invalid_token":
+      if (dlKeyMode((extra.env ?? process.env) as NodeJS.ProcessEnv)) return DL_KEY_REFUSED_LINE;
       return launchedByDl(extra.env ?? process.env)
         ? `The free tier didn't accept your sign-in. ${DL_FREE_SIGN_IN_AGAIN}`
         : `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
@@ -793,7 +802,7 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
       );
     case "dl_only":
       // Free tokens were used from another tool; the service's sentence says what to do.
-      return extra.message ?? "Free tokens work inside dl only. Run dl to keep using them, or use your own API key in any tool.";
+      return extra.message ?? `Free tokens work inside dl only. For any other tool, pick a plan at ${DL_PLANS_URL}.`;
     case "rate_limited": {
       const s = extra.retryAfter && extra.retryAfter > 0 ? Math.ceil(extra.retryAfter) : undefined;
       return `Directionally Local is limiting how fast you send requests; try again${s ? ` in ${s} second${s === 1 ? "" : "s"}` : " shortly"}.`;
@@ -1208,6 +1217,8 @@ export interface DlMe {
    * says; undefined for accounts on the weekly free allowance and on older servers.
    */
   trial?: DlTrial;
+  /** A dl key's plan and this week's usage (/v1/usage), read with /v1/me in key mode. */
+  planUsage?: DlPlanUsage;
 }
 
 /** The one-time free trial: tokens counted as prompt (cached included) plus completion, every free model together. */
@@ -1352,6 +1363,8 @@ export async function fetchDlMe(opts: { fetchImpl?: typeof fetch; env?: NodeJS.P
     });
   let token = opts.token ?? (await dlAccessToken({ fetchImpl, ...(opts.env ? { env: opts.env } : {}) }));
   if (!token) throw new DlError("signed_out", dlSignedOutLine(opts.env));
+  // A dl key (dl_sk_): its plan's usage too, read alongside (never fails the account read).
+  const planUsage = isDlApiKey(token) ? fetchDlPlanUsage(token, { fetchImpl, ...(opts.env ? { env: opts.env } : {}) }) : undefined;
   let res = await call(token);
   if (res.status === 401 && !opts.token) {
     const err = parseDlError(await readJson(res.clone()));
@@ -1363,6 +1376,8 @@ export async function fetchDlMe(opts: { fetchImpl?: typeof fetch; env?: NodeJS.P
   if (!res.ok) throw await errorFrom(res, "Reading your Directionally Local allowance");
   const me = normalizeDlMe(await readJson(res));
   if (!me) throw new DlError("bad_response", "Directionally Local returned an unexpected account response.");
+  const plan = await planUsage;
+  if (plan) me.planUsage = plan;
   if (me.allowance.tokensPerWeek > 0) knownWeeklyTokens = me.allowance.tokensPerWeek;
   lastMe = me;
   return me;
@@ -1604,6 +1619,7 @@ export function dlTopupUsdText(me: Pick<DlMe, "topupUsdLeft" | "topupUsdExpiresA
 
 /** `/usage`: plan, this week's usage against the limit that binds, top-ups, invite bonus, queue, and when it resets (in local time). */
 export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): string {
+  if (me.planUsage) return renderDlPlanUsage(me.planUsage, timeZone ? { timeZone } : {});
   const a = me.allowance;
   const tz = timeZone ? { timeZone } : {};
   const t: DlTimeOpts = { now, ...tz };
@@ -1690,12 +1706,17 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
  * The sign-in success line, from /v1/me:
  *
  *   ✓ Signed in as @octo · 10M free tokens to try dl                          (a new account's trial)
- *   ✓ Signed in as @octo · $2 GPT-6 + $8 DeepSeek free each week · back every Monday   (the weekly allowance)
+ *   ✓ Signed in as @octo · Free: DeepSeek V4.1 Flash, 10M tokens a week (95.5% caching applied) · back every Monday
  *   ✓ Signed in as @octo · dl Pro: $2 GPT-6 + $8 DeepSeek each week · back every Monday
+ *   ✓ Signed in with your dl key · Starter: DeepSeek V4.1 Flash 62M tokens a week (95.5% caching applied)   (a dl key)
+ *
+ * Free accounts get DeepSeek only: no GPT-6 on the free line.
  *
  * An older server without both budgets: its weekly tokens. No account read: just "✓ Signed in".
  */
 export function dlSignedInLine(me: DlMe | null, o: DlTimeOpts = {}): string {
+  if (me?.planUsage) return dlPlanSignedInLine(me.planUsage);
+  if (dlKeyMode()) return dlPlanSignedInLine(undefined);
   const who = `✓ Signed in${me?.login ? ` as @${me.login}` : ""}`;
   if (!me) return who;
   const trial = dlActiveTrial(me);
@@ -1706,8 +1727,10 @@ export function dlSignedInLine(me: DlMe | null, o: DlTimeOpts = {}): string {
   if (budgets) {
     const part = (b: DlBudget, name: string) => (b.usdPerWeek === null ? `${name} uncapped` : `${formatUsd(b.usdPerWeek)} ${name}`);
     if (!pro && budgets.gpt6.usdPerWeek === 0 && budgets.deepseek.usdPerWeek === 0) return `${who} · no free usage on this account yet: /request`;
-    const each = `${part(budgets.gpt6, "GPT-6")} + ${part(budgets.deepseek, "DeepSeek")}`;
-    return `${who} · ${pro ? `dl Pro: ${each} each week` : `${each} free each week`} · ${back}`;
+    if (pro) return `${who} · dl Pro: ${part(budgets.gpt6, "GPT-6")} + ${part(budgets.deepseek, "DeepSeek")} each week · ${back}`;
+    const tokens = dlTokenLimit(me, "deepseek");
+    const free = tokens ? `Free: DeepSeek V4.1 Flash, ~${formatTokens(tokens.realLimit)} tokens a week (${tokens.label})` : DL_FREE_PLAN_LINE;
+    return `${who} · ${free} · ${back}`;
   }
   if (me.allowance.tokensPerWeek > 0) return `${who} · ${formatTokens(me.allowance.tokensPerWeek)} ${pro ? "Pro" : "free"} tokens a week · ${back}`;
   return who;
@@ -1718,7 +1741,7 @@ export function dlSignedInLine(me: DlMe | null, o: DlTimeOpts = {}): string {
  * (/invite)". Undefined on Pro, without a link, or once invites can't add more.
  */
 export function dlSignedInInviteLine(me: DlMe | null, where: DlWhere = "signin"): string | undefined {
-  if (!dlInviteCanAdd(me)) return undefined;
+  if (me?.planUsage || !dlInviteCanAdd(me)) return undefined;
   return `Your invite link: ${me.referral.link} (${where === "cli" ? "`autopilot invite`" : "/invite"})`;
 }
 
@@ -1731,7 +1754,8 @@ export const DL_OTHER_AGENTS_LINE = "Already use Claude Code or OpenCode? Run dl
  * with nothing free to use (a used-up trial, or no free usage yet).
  */
 export function dlSignedInAgentsLine(me: DlMe | null, env: EnvLike = process.env): string | undefined {
-  if (!launchedByDl(env)) return undefined;
+  // With a dl key, dl itself is what opened this: it already offers the other agents.
+  if (!launchedByDl(env) || dlKeyMode(env as NodeJS.ProcessEnv) || me?.planUsage) return undefined;
   if (me) {
     if (me.plan === "pro") return undefined;
     if (dlActiveTrial(me)?.ended) return undefined;
@@ -1747,6 +1771,7 @@ export function dlSignedInAgentsLine(me: DlMe | null, env: EnvLike = process.env
  * account read, on Pro, or in the queue.
  */
 export function dlHeaderLine(me: DlMe | null): string | undefined {
+  if (me?.planUsage) return dlPlanHeaderLine(me.planUsage);
   if (!me || me.plan === "pro" || me.queue) return undefined;
   const trial = dlActiveTrial(me);
   if (trial) return `free · trial: ${dlTrialLeftText(trial)}`;
@@ -1754,6 +1779,8 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
   const budgets = bothBudgets(me);
   if (budgets) {
     const part = (family: DlFamily, b: DlBudget) => `${dlFamilyLabel(family)} ${dlBudgetLeft(me, family, b)}`;
+    // No GPT-6 budget (free accounts now): DeepSeek alone, never "GPT-6 $0 left".
+    if (budgets.gpt6.usdPerWeek === 0) return dlFamilyUsedUp(me, "deepseek") ? `free · limit reached` : `free · ${part("deepseek", budgets.deepseek)}`;
     if (dlFamilyUsedUp(me, "gpt6") && dlFamilyUsedUp(me, "deepseek")) return `free · limit reached`;
     return `free · ${part("gpt6", budgets.gpt6)} · ${part("deepseek", budgets.deepseek)}`;
   }
@@ -1773,6 +1800,7 @@ export function dlHeaderLine(me: DlMe | null): string | undefined {
  * Undefined without an account read, on Pro, or in the queue: nothing rather than a placeholder.
  */
 export function dlStartLine(me: DlMe | null | undefined, modelId?: string): string | undefined {
+  if (me?.planUsage) return dlPlanHeaderLine(me.planUsage, modelId);
   if (!me || me.plan === "pro" || me.queue) return undefined;
   // A new account's one-time trial: what's left of it (it never comes back Monday).
   const trial = dlActiveTrial(me);

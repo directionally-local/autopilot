@@ -25,6 +25,7 @@ import type { Cfg } from "./app.js";
 import { BUILTIN_COMMANDS, BUILTIN_COMMAND_NAMES } from "./commands/builtins.js";
 import type { CustomCommand, CommandSource } from "./commands/types.js";
 import { configPath, hasLegacyCloudflareConfig, loadConfig, readPersistedConfig, type ReasoningEffort } from "./config.js";
+import { isDlApiKey } from "./providers/dl-endpoint.js";
 import { onboardingCancelledMessage, ownKeyIntro, runFirstRun, type FirstRunOutcome } from "./camouflage-onboarding.js";
 import { onShutdown } from "./util/exit.js";
 import { warnIfNoTerminalSize } from "./util/terminal-size.js";
@@ -2125,8 +2126,8 @@ export class View implements AppBridge {
 
   /**
    * First run on the free tier, once signed in: "Pick a free model" from the models this
-   * person can use (status on, allowed by /v1/models and /v1/me), each with its provider
-   * and measured speed; DeepSeek V4.1 Flash preselected. With one model there is nothing
+   * person can use (status on, allowed by /v1/models and /v1/me), each with its measured
+   * speed; DeepSeek V4.1 Flash preselected. With one model there is nothing
    * to pick; Esc keeps the default.
    */
   private async pickFreeModel(connection: Connection): Promise<string> {
@@ -2136,7 +2137,7 @@ export class View implements AppBridge {
     // dl Pro perks (Kimi K3.1 Pro) a free account can't use: shown as "Pro" rows that are off.
     const locked = lockedDlProModels(cachedDlProviders() ?? DL_FALLBACK_PROVIDERS, lastKnownDlMe());
     const options = [...models.map(dlFreeModelOption), ...locked.map(dlLockedProOption)];
-    const r = await this.select("Pick a free model", options, preselect, "Provider · measured speed · switch any time with /model · Esc keeps DeepSeek V4.1 Flash");
+    const r = await this.select("Pick a free model", options, preselect, "Measured speed · switch any time with /model · Esc keeps DeepSeek V4.1 Flash");
     return r && models.some((m) => m.id === r) ? r : preselect;
   }
 
@@ -2166,6 +2167,8 @@ export class View implements AppBridge {
       return { kind: "connected", connection: res.connection };
     };
     const signedIn = resolveProviderKey(id, cfg);
+    // dl's key (dl_sk_): dl already signed in at dl.new, so there is nothing to ask.
+    if (signedIn && isDlApiKey(signedIn)) return verified(signedIn, "env");
     if (signedIn) {
       const r = await this.select(`Connect ${getPreset(id).name}`, [
         { value: "use", label: "Use your existing GitHub sign-in" },
@@ -3041,7 +3044,7 @@ export function modelOptions(models: ModelEntry[], current: string): PickOption[
     // On the free tier, each model's own weekly allowance is the useful third column.
     const free = activeProviderCatalog() === DL_PROVIDER_ID;
     const allowance = free ? dlModelAllowanceLine(m.id, me) : undefined;
-    // Who serves it and how fast it measured, from the cached /v1/providers ("Luminal · ~85 tok/s").
+    // How fast it measured, from the cached /v1/providers ("~85 tok/s"); never who serves it.
     const servedBy = free ? dlModelProviderLine(m.id) : undefined;
     // A Starter account gets DeepSeek only: say so on the GPT-6 rows, and leave DeepSeek active.
     const locked = starter && m.id !== "deepseek/deepseek-v4.1-flash-1017";
