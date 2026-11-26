@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.33.0](https://github.com/directionally-local/autopilot/compare/v3.32.0...v3.33.0) (2026-11-26)
+
+
+### Features
+
+* **dl:** run on dl's key and plan when dl starts Autopilot ([#1312](https://github.com/directionally-local/autopilot/issues/1312)) ([7458471](https://github.com/directionally-local/autopilot/commit/7458471508bc2193b625132faff5bfbc459db143))
+
 ## [3.32.0](https://github.com/directionally-local/autopilot/compare/v3.31.0...v3.32.0) (2026-11-26)
 
 
