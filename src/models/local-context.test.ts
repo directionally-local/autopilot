@@ -32,6 +32,8 @@ describe("local server context length", () => {
   it("reads max_model_len and the common equivalents", () => {
     assert.equal(contextLengthOf({ id: "m", max_model_len: 32768 }), 32768);
     assert.equal(contextLengthOf({ id: "m", context_length: 8192 }), 8192);
+    // dl.new's /v1/models: the window a dl plan serves (1M for DeepSeek, Kimi, GPT-6).
+    assert.equal(contextLengthOf({ id: "m", context_window: 1_048_576 }), 1_048_576);
     assert.equal(contextLengthOf({ id: "m", max_context_length: 131072 }), 131072);
     // LM Studio: the loaded context is what the server enforces.
     assert.equal(contextLengthOf({ id: "m", max_context_length: 131072, loaded_context_length: 4096 }), 4096);

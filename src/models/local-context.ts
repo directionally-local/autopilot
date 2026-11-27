@@ -9,7 +9,8 @@
  * answer, a failure included, for the life of the process:
  *
  *  - GET {baseUrl}/models, the model's entry: vLLM `max_model_len`, LM Studio
- *    `loaded_context_length` / `max_context_length`, or `context_length`.
+ *    `loaded_context_length` / `max_context_length`, `context_length`, or
+ *    `context_window` (what dl.new's /v1/models reports).
  *  - Ollama's OpenAI-compatible listing has none: POST {root}/api/show and
  *    read `model_info["<arch>.context_length"]`.
  *
@@ -27,7 +28,7 @@ const LOCAL_PROVIDERS: ReadonlySet<ProviderId> = new Set<ProviderId>(["vllm", "l
 export const LOCAL_CONTEXT_TIMEOUT_MS = 2_000;
 
 /** Fields servers use for a model's context length, most specific first. */
-const CONTEXT_FIELDS = ["loaded_context_length", "max_model_len", "context_length", "max_context_length"] as const;
+const CONTEXT_FIELDS = ["loaded_context_length", "max_model_len", "context_length", "context_window", "max_context_length"] as const;
 
 const lookups = new Map<string, Promise<number | null>>();
 /** Context lengths servers reported, by model id (read synchronously by the context budget). */

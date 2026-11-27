@@ -125,6 +125,14 @@ describe("local discovery", () => {
     const models = await discoverOpenAiModels("http://127.0.0.1:8000/v1", undefined, fetchImpl);
     assert.deepStrictEqual(models.map((m) => [m.id, m.contextWindow]), [["qwen", 24000], ["lm", 8192], ["plain", 32768]]);
   });
+
+  it("takes dl.new's context_window, not the 32,768 default", async () => {
+    // api.dl.new/v1/models reports the window each plan serves, e.g. 1M for DeepSeek V4.1 Flash.
+    const fetchImpl = (async () =>
+      json({ data: [{ id: "deepseek/deepseek-v4.1-flash-1017", object: "model", context_window: 1_048_576 }] })) as unknown as typeof fetch;
+    const models = await discoverOpenAiModels("https://api.dl.new/v1", "dl_sk_test", fetchImpl);
+    assert.deepStrictEqual(models.map((m) => [m.id, m.contextWindow]), [["deepseek/deepseek-v4.1-flash-1017", 1_048_576]]);
+  });
 });
 
 describe("registry with a provider catalog", () => {
