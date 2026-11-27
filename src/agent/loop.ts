@@ -13,6 +13,7 @@ import { drainFinishedHandoffs, renderHandoffCompletion } from "../jobs/handoff.
 import { toOpenAIToolDefs, type ToolSpec } from "../tools/registry.js";
 import { applyToolProfile } from "../tools/tool-profile.js";
 import type { ToolExecutor, PermissionAsker, ToolResult } from "../tools/executor.js";
+import { runtimeSecretsFromAuth, scrubToolResultSecrets } from "./secret-scrubber.js";
 import { mergeReasoningDetails, normalizeToolResults, recordToolResult, sanitizeString, stableStringify, stripOldImages } from "./messages.js";
 import type { ChatMessage, ReasoningDetail, ToolCall, Usage } from "./messages.js";
 import type { Task, PlanOption, RunWaitRequest } from "../tools/registry.js";
@@ -1828,7 +1829,8 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       // Sandbox warnings (e.g. isolated-vm fallback) as a separate UI notice.
       for (const w of sandboxResult.warnings ?? []) opts.callbacks.onWarning?.(w);
       const raw = sandboxResult.error ? `Error: ${sandboxResult.error}\n\nOutput:\n${sandboxResult.output}` : sandboxResult.output;
-      const content = truncate(tc, raw);
+      const scrubbed = scrubToolResultSecrets(raw, runtimeSecretsFromAuth(llmAuthOf(opts)));
+      const content = truncate(tc, scrubbed);
       const result: ToolResult = { tool_call_id: tc.id, name: "execute_code", content, ok: !sandboxResult.error };
       if (trace.enabled) {
         const rawBlob = trace.blob(raw) ?? "";

@@ -7,6 +7,8 @@ import { withFileLock } from "../util/file-lock.js";
 import { writeFileVerified } from "../util/safe-write.js";
 import { lockKeyFor } from "../util/file-lock.js";
 import { assertReadVersion, sha256 } from "./file-version.js";
+import { introducedRedactionPlaceholder } from "../secrets.js";
+import { ToolError } from "./tool-error.js";
 
 interface Args {
   path: string;
@@ -46,7 +48,17 @@ export const writeTool: ToolSpec<Args> = {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      if (before) assertReadVersion(ctx.fileReadHashes, key, before, args.path, "overwriting");
+      if (before) {
+        assertReadVersion(ctx.fileReadHashes, key, before, args.path, "overwriting");
+        const introduced = introducedRedactionPlaceholder(args.content, before.toString("utf8"));
+        if (introduced) {
+          throw new ToolError({
+            code: "policy_rejection",
+            message: `Refusing to write ${args.path}: the content contains the redaction placeholder "${introduced}" from a scrubbed tool result. Writing it back would replace the real secret on disk with the placeholder. Edit around the secret instead of rewriting the file.`,
+            suggestion: "use edit to change only the parts around the secret, or ask the user to make this change",
+          });
+        }
+      }
       await mkdir(dirname(abs), { recursive: true });
       await writeFileVerified(abs, args.content);
       ctx.fileReadHashes?.set(key, sha256(Buffer.from(args.content, "utf8")));

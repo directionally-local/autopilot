@@ -42,6 +42,19 @@ describe("edit tool", () => {
     assert.strictEqual(await readFile(file, "utf8"), "hello there\n");
   });
 
+  it("refuses to introduce a scrubbed redaction placeholder", async () => {
+    const dir = await tmp();
+    const file = join(dir, "config.json");
+    const before = '{\n  "api_key": "real-secret-1234567890"\n}\n';
+    await writeFile(file, before, "utf8");
+    const ctx: ToolContext = { cwd: dir };
+    await assert.rejects(
+      editTool.run({ path: "config.json", old_string: '"real-secret-1234567890"', new_string: '"<redacted>"' }, ctx),
+      /redaction placeholder "<redacted>".*edit around the secret/is,
+    );
+    assert.strictEqual(await readFile(file, "utf8"), before);
+  });
+
   it("fails on a missing or ambiguous old_string without touching the file", async () => {
     const dir = await tmp();
     const file = join(dir, "a.txt");

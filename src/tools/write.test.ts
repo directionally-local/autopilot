@@ -16,6 +16,29 @@ describe("write tool", () => {
     assert.strictEqual(await readFile(join(dir, "a/b/c.txt"), "utf8"), "two!");
   });
 
+  it("allows a new file that mentions a redaction placeholder", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "write-tool-"));
+    const ctx: ToolContext = { cwd: dir };
+    assert.strictEqual(
+      await writeTool.run({ path: "fixture.txt", content: "expected: dlk_****\n" }, ctx),
+      "Created fixture.txt (19 chars).",
+    );
+    assert.strictEqual(await readFile(join(dir, "fixture.txt"), "utf8"), "expected: dlk_****\n");
+  });
+
+  it("refuses to overwrite an existing secret with a scrubbed placeholder", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "write-tool-"));
+    const file = join(dir, "config.json");
+    const before = '{\n  "api_key": "real-secret-1234567890"\n}\n';
+    await writeFile(file, before, "utf8");
+    const ctx: ToolContext = { cwd: dir };
+    await assert.rejects(
+      writeTool.run({ path: "config.json", content: '{"api_key": "dlk_****"}' }, ctx),
+      /redaction placeholder "dlk_\*{4}".*edit around the secret/is,
+    );
+    assert.strictEqual(await readFile(file, "utf8"), before);
+  });
+
   it("never interleaves with a concurrent edit on the same path", async () => {
     const dir = await mkdtemp(join(tmpdir(), "write-tool-"));
     const file = join(dir, "f.txt");
