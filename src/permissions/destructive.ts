@@ -410,6 +410,9 @@ const REGENERABLE = new Set([
 
 const SYSTEM_DIRS = ["/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/opt", "/proc", "/sbin", "/srv", "/sys", "/usr", "/var", "/System", "/Library", "/Applications", "/private"];
 
+/** A top-level workspace folder that is disposable by name: tmp, temp, .tmp, scratch, scratch-1… */
+const WORKSPACE_SCRATCH_NAME = /^(?:tmp|temp|\.tmp|\.temp|scratch|\.scratch|tmp[-_].*|scratch[-_].*)$/i;
+
 function git(dir: string, args: string[], input?: string): string | null {
   try {
     return execFileSync("git", ["-C", dir, ...args], {
@@ -450,6 +453,37 @@ function scratchDirs(ctx: ClassifyContext): string[] {
   return ctx.scratchDirs ?? [tmpdir(), "/tmp", "/var/tmp", "/private/tmp", "/private/var/folders"];
 }
 
+/**
+ * Whether deleting `p` is scratch: a path strictly inside a system temp
+ * directory, or a top-level workspace folder named tmp/temp/scratch (or
+ * tmp-…/scratch-…) that holds nothing git tracks and no repository of its
+ * own. The temp roots themselves, the project, its parents, home and system
+ * directories are never scratch.
+ */
+function scratchTargetKind(p: string, ctx: ClassifyContext, root: string): "system" | "workspace" | null {
+  if (p === "/" || p === homedir() || p === root) return null;
+  // p is a parent of home or the project (deleting that would take real data with it).
+  if (isInside(homedir(), p) || isInside(root, p)) return null;
+  if (SYSTEM_DIRS.some((d) => p === d)) return null;
+  if (isInside(p, root)) {
+    const rel = relative(root, p);
+    const parts = rel.split(sep).filter(Boolean);
+    const top = parts[0];
+    if (!top || !WORKSPACE_SCRATCH_NAME.test(top) || parts.includes(".git")) return null;
+    try {
+      if (!lstatSync(join(root, top)).isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    if (existsSync(join(p, ".git"))) return null;
+    // Files a person tracks are not scratch, even inside a folder called tmp.
+    if (git(root, ["ls-files", "-z", "--", rel])) return null;
+    return "workspace";
+  }
+  // Strictly inside a temp dir: the temp root itself holds other programs' files.
+  return scratchDirs(ctx).some((s) => p !== s && isInside(p, s)) ? "system" : null;
+}
+
 function humanBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
@@ -480,6 +514,10 @@ export interface LossReport {
   outside: string[];
   /** The filesystem root, home, system directories, or the project itself. */
   dangerous: string[];
+  /** System-temp scratch targets: nothing is copied and they are safe. */
+  scratch: string[];
+  /** Workspace tmp/scratch targets: a recovery copy is still taken when it fits, but they are never irreversible. */
+  workspaceScratch: string[];
   repo: string | null;
 }
 
@@ -489,7 +527,7 @@ export function analyzeLoss(paths: string[], ctx: ClassifyContext, opts: { recur
   const root = projectRoot(ctx);
   const home = homedir();
   const scratch = scratchDirs(ctx);
-  const r: LossReport = { existing: [], copy: [], copyBytes: 0, overCap: false, gitRestores: 0, regenerable: [], repoHistory: [], outside: [], dangerous: [], repo: null };
+  const r: LossReport = { existing: [], copy: [], copyBytes: 0, overCap: false, gitRestores: 0, regenerable: [], repoHistory: [], outside: [], dangerous: [], scratch: [], workspaceScratch: [], repo: null };
   const seen = new Set<string>();
   const addCopy = (file: string, size: number) => {
     if (seen.has(file)) return;
@@ -544,7 +582,13 @@ export function analyzeLoss(paths: string[], ctx: ClassifyContext, opts: { recur
   for (const p of paths) {
     if (!existsSync(p) && !isSymlink(p)) continue;
     r.existing.push(p);
-    if (p === "/" || p === home || isInside(home, p) || isInside(root, p) || SYSTEM_DIRS.some((d) => p === d || (isInside(p, d) && !scratch.some((s) => isInside(p, s))))) {
+    const scratchKind = scratchTargetKind(p, ctx, root);
+    if (scratchKind === "system") {
+      r.scratch.push(p);
+      continue;
+    }
+    if (scratchKind === "workspace") r.workspaceScratch.push(p);
+    if (p === "/" || p === home || isInside(home, p) || isInside(root, p) || scratch.some((s) => p === s) || SYSTEM_DIRS.some((d) => p === d || (isInside(p, d) && !scratch.some((s) => isInside(p, s))))) {
       r.dangerous.push(p);
       continue; // never walked: far too much to copy
     }
@@ -630,6 +674,10 @@ function listShort(paths: string[], ctx: ClassifyContext, max = 3): string {
 function deletionFinding(action: string, verb: string, targets: string[], ctx: ClassifyContext, recursive: boolean): Finding | null {
   const loss = analyzeLoss(targets, ctx, { recursive });
   if (loss.existing.length === 0) return null;
+  // Only system-temp scratch was deleted: no copy, no scary confirmation.
+  if (loss.scratch.length === loss.existing.length) return null;
+  const targetsAreScratch =
+    loss.workspaceScratch.length > 0 && loss.existing.every((p) => loss.workspaceScratch.includes(p) || loss.scratch.includes(p));
   const what = listShort(loss.existing, ctx);
   const parts: string[] = [];
   if (loss.copy.length > 0) parts.push(`${loss.overCap ? "more than " : ""}${plural(loss.copy.length, "file")} git can't restore (${humanBytes(loss.copyBytes)}${loss.overCap ? "+" : ""})`);
@@ -650,7 +698,9 @@ function deletionFinding(action: string, verb: string, targets: string[], ctx: C
     verdict = "irreversible";
     reasons.push(`outside this project`);
   }
-  if (loss.overCap && loss.copy.length > 0) verdict = "irreversible";
+  // A workspace scratch folder is allowed to be large without the scary prompt;
+  // real targets in the same command still keep it. Its copy is taken when it fits.
+  if (loss.overCap && loss.copy.length > 0 && !targetsAreScratch) verdict = "irreversible";
   if (reasons.length) text += ` (${reasons.join("; ")})`;
 
   let recovery: string;
