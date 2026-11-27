@@ -13,7 +13,7 @@ import { drainFinishedHandoffs, renderHandoffCompletion } from "../jobs/handoff.
 import { toOpenAIToolDefs, type ToolSpec } from "../tools/registry.js";
 import { applyToolProfile } from "../tools/tool-profile.js";
 import type { ToolExecutor, PermissionAsker, ToolResult } from "../tools/executor.js";
-import { mergeReasoningDetails, sanitizeString, stableStringify, stripOldImages } from "./messages.js";
+import { mergeReasoningDetails, normalizeToolResults, recordToolResult, sanitizeString, stableStringify, stripOldImages } from "./messages.js";
 import type { ChatMessage, ReasoningDetail, ToolCall, Usage } from "./messages.js";
 import type { Task, PlanOption, RunWaitRequest } from "../tools/registry.js";
 import type { MemoryManager } from "../memory/manager.js";
@@ -1068,6 +1068,10 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       return withPlanReminder(withDirective, reminders || undefined);
     };
 
+    // Every request: each tool call has exactly one result, right after it
+    // (an interrupt or a late tool result may have left it otherwise).
+    const repairedResults = normalizeToolResults(opts.messages);
+    if (repairedResults > 0) logger.warn("history:tool_results_repaired", { sessionId: opts.sessionId, changes: repairedResults });
     let apiMessages = buildApiMessages();
     let promptTokens = estimatePromptTokens(apiMessages);
     // A local server's own context, asked once per process (models/local-context.ts):
@@ -1871,7 +1875,10 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         result = { ...result, content: `${result.content}\n\n${BOOKKEEPING_RESULT_NOTE}` };
       }
       toolResults.push(result);
-      opts.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: sanitizeString(result.content), name: result.name });
+      // One result per call: a late result after an interrupt replaces the
+      // "(stopped)" placeholder instead of becoming a second result.
+      const placed = recordToolResult(opts.messages, { role: "tool", tool_call_id: result.tool_call_id, content: sanitizeString(result.content), name: result.name });
+      if (placed !== "appended") logger.info("history:late_tool_result", { sessionId: opts.sessionId, toolCallId: result.tool_call_id, placed });
       transcript?.appendToolResult({ tool_call_id: result.tool_call_id, content: sanitizeString(result.content), ok: result.ok });
       opts.callbacks.onToolResult?.(result);
       // A Code Mode redirect isn't a repeated call; everything else feeds the loop guard.

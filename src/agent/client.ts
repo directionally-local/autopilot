@@ -3,7 +3,7 @@ import * as zlib from "node:zlib";
 import { readSSE } from "../util/sse.js";
 import { ApiError } from "../util/errors.js";
 import { getUserAgent } from "../util/version.js";
-import { jsonReplacer, mergeReasoningDetails, sanitizeString, stableStringify } from "./messages.js";
+import { jsonReplacer, mergeReasoningDetails, normalizeToolResults, sanitizeString, stableStringify } from "./messages.js";
 import type { ChatMessage, ReasoningDetail, ToolDef, Usage } from "./messages.js";
 import { sha256Hex } from "../trace/blobs.js";
 import type { TraceRecorder } from "../trace/recorder.js";
@@ -177,7 +177,7 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
   const body: Record<string, unknown> = {
     model: opts.model,
     messages: sanitizeMessagesForApi(
-      normalizeToolIds(stripReasoningEcho(opts.messages, preset.compat, entry.reasoningEchoField), preset.compat.toolIdFormat),
+      normalizeToolIds(stripReasoningEcho(validToolHistory(opts.messages), preset.compat, entry.reasoningEchoField), preset.compat.toolIdFormat),
     ),
     stream: true,
   };
@@ -1195,6 +1195,19 @@ export function normalizeUsage(usage: Usage): Usage {
   const cached = typeof u.prompt_cache_hit_tokens === "number" ? u.prompt_cache_hit_tokens : u.cached_tokens;
   if (typeof cached !== "number") return usage;
   return { ...usage, prompt_tokens_details: { ...(usage.prompt_tokens_details ?? {}), cached_tokens: cached } };
+}
+
+/**
+ * A copy of `messages` where every tool call has exactly one result right
+ * after it (normalizeToolResults), so no request, from any caller, is sent
+ * with a broken tool history. The caller's array is not changed.
+ */
+export function validToolHistory(messages: ChatMessage[]): ChatMessage[] {
+  const copy = messages.slice();
+  const changes = normalizeToolResults(copy);
+  if (changes === 0) return messages;
+  logger.warn("client:tool_history_repaired", { changes });
+  return copy;
 }
 
 function sanitizeMessagesForApi(messages: ChatMessage[]): ChatMessage[] {
