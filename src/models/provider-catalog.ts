@@ -21,6 +21,7 @@ import { registerProviderModels, type ModelEntry } from "./registry.js";
 import { contextLengthOf } from "./local-context.js";
 import { MODELS_DEV_SNAPSHOT } from "./models-dev-snapshot.js";
 import { PROVIDER_PRESETS, type ProviderId } from "../providers/presets.js";
+import { gatedFetch, type HostResolver, type PrivateHttpWarningTracker } from "../providers/resolve.js";
 import { getUserAgent } from "../util/version.js";
 import { configPath } from "../util/app-dirs.js";
 
@@ -211,11 +212,25 @@ export async function discoverOllamaModels(baseUrl: string, fetchImpl: typeof fe
 }
 
 /** Models from an OpenAI-compatible `GET /models` (LM Studio, vLLM, custom gateways). Ids and context length when listed; capabilities unknown. */
-export async function discoverOpenAiModels(baseUrl: string, apiKey: string | undefined, fetchImpl: typeof fetch = fetch): Promise<ModelEntry[]> {
-  const res = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/models`, {
-    headers: { Accept: "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-    signal: AbortSignal.timeout(5_000),
-  });
+export async function discoverOpenAiModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  fetchImpl?: typeof fetch,
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver,
+  /** The caller's per-session key-travel warning tracker. */
+  warnings?: PrivateHttpWarningTracker,
+): Promise<ModelEntry[]> {
+  // Discovery carries the key: the same gated helper as the chat path refuses a
+  // public http address before the request and pins the checked addresses.
+  const res = await gatedFetch(
+    `${baseUrl.replace(/\/+$/, "")}/models`,
+    {
+      headers: { Accept: "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+      signal: AbortSignal.timeout(5_000),
+    },
+    { hasKey: !!apiKey, ...(warnings ? { warnings } : {}), ...(resolver ? { resolver } : {}), ...(fetchImpl ? { fetchImpl } : {}) },
+  );
   if (!res.ok) throw new Error(`GET /models returned HTTP ${res.status}`);
   const body = (await res.json()) as { data?: Array<{ id: string; created?: number }> };
   return (body.data ?? [])
@@ -236,16 +251,28 @@ export async function discoverOpenAiModels(baseUrl: string, apiKey: string | und
  * underlying model is looked up in OpenAI's models.dev entry for limits,
  * capabilities and pricing.
  */
-export async function discoverAzureDeployments(baseUrl: string, apiKey: string, fetchImpl: typeof fetch = fetch): Promise<ModelEntry[]> {
+export async function discoverAzureDeployments(
+  baseUrl: string,
+  apiKey: string,
+  fetchImpl?: typeof fetch,
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver,
+  /** The caller's per-session key-travel warning tracker. */
+  warnings?: PrivateHttpWarningTracker,
+): Promise<ModelEntry[]> {
   // The v1 base is https://<resource>.openai.azure.com/openai/v1; deployments are listed by the data-plane API.
   const root = baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
-  const res = await fetchImpl(`${root}/deployments?api-version=2022-12-01`, {
-    headers: { "api-key": apiKey, Accept: "application/json" },
-    signal: AbortSignal.timeout(10_000),
-  });
+  // Deployment discovery carries the key too: the same gated helper as the chat
+  // path refuses a public http address before the request and pins the checked
+  // addresses.
+  const res = await gatedFetch(
+    `${root}/deployments?api-version=2022-12-01`,
+    { headers: { "api-key": apiKey, Accept: "application/json" }, signal: AbortSignal.timeout(10_000) },
+    { hasKey: !!apiKey, ...(warnings ? { warnings } : {}), ...(resolver ? { resolver } : {}), ...(fetchImpl ? { fetchImpl } : {}) },
+  );
   if (!res.ok) throw new Error(`Azure deployments returned HTTP ${res.status}`);
   const body = (await res.json()) as { data?: Array<{ id: string; model?: string; status?: string }> };
-  const openai = await loadModelsDevProvider("openai", { fetchImpl });
+  const openai = await loadModelsDevProvider("openai", { fetchImpl: fetchImpl ?? fetch });
   const out: ModelEntry[] = [];
   for (const d of body.data ?? []) {
     if (d.status && d.status !== "succeeded") continue;
@@ -268,23 +295,26 @@ export async function discoverAzureDeployments(baseUrl: string, apiKey: string, 
 export async function ensureProviderCatalog(
   id: ProviderId,
   endpoint: { baseUrl?: string; apiKey?: string },
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
+  resolver?: HostResolver,
+  warnings?: PrivateHttpWarningTracker,
 ): Promise<number> {
   const preset = PROVIDER_PRESETS[id];
+  const impl = fetchImpl ?? fetch;
   let models: ModelEntry[] = [];
   try {
     if (preset.catalog === "models.dev" && preset.modelsDevId) {
-      const p = await loadModelsDevProvider(preset.modelsDevId, { fetchImpl });
+      const p = await loadModelsDevProvider(preset.modelsDevId, { fetchImpl: impl });
       models = p ? mapModelsDevProvider(p) : [];
     } else if (preset.catalog === "copilot" && endpoint.baseUrl && endpoint.apiKey) {
       const { loadCopilotModels } = await import("../providers/copilot.js");
-      models = await loadCopilotModels(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
+      models = await loadCopilotModels(endpoint.baseUrl, endpoint.apiKey, fetchImpl, resolver, warnings);
     } else if (preset.catalog === "azure" && endpoint.baseUrl && endpoint.apiKey) {
-      models = await discoverAzureDeployments(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
+      models = await discoverAzureDeployments(endpoint.baseUrl, endpoint.apiKey, fetchImpl, resolver, warnings);
     } else if (preset.catalog === "chatgpt") {
       // OpenAI's catalog, limited to the models token sharing serves; billed by plan.
       const { CHATGPT_MODELS } = await import("../providers/chatgpt.js");
-      const p = await loadModelsDevProvider("openai", { fetchImpl });
+      const p = await loadModelsDevProvider("openai", { fetchImpl: impl });
       models = (p ? mapModelsDevProvider(p) : [])
         .filter((m) => CHATGPT_MODELS.has(m.id))
         .map((m) => ({ ...m, pricing: { inputPerMtok: 0, outputPerMtok: 0 } }));
@@ -292,11 +322,15 @@ export async function ensureProviderCatalog(
       // Free only: the models the free tier serves, never anything else. Built in, plus any
       // model /v1/models serves this person that this Autopilot doesn't know yet.
       const { loadDlCatalog } = await import("../providers/dl-free-providers.js");
-      models = await loadDlCatalog(endpoint.apiKey, { fetchImpl });
+      models = await loadDlCatalog(endpoint.apiKey, {
+        ...(fetchImpl ? { fetchImpl } : {}),
+        ...(resolver ? { resolver } : {}),
+        ...(warnings ? { warnings } : {}),
+      });
     } else if (preset.catalog === "ollama" && endpoint.baseUrl) {
-      models = await discoverOllamaModels(endpoint.baseUrl, fetchImpl);
+      models = await discoverOllamaModels(endpoint.baseUrl, impl);
     } else if ((preset.catalog === "openai-models" || preset.catalog === "none") && endpoint.baseUrl) {
-      models = await discoverOpenAiModels(endpoint.baseUrl, endpoint.apiKey, fetchImpl);
+      models = await discoverOpenAiModels(endpoint.baseUrl, endpoint.apiKey, fetchImpl, resolver, warnings);
     }
   } catch {
     models = [];

@@ -106,3 +106,19 @@ describe("askJev", () => {
     );
   });
 });
+
+describe("askJev gate", () => {
+  it("refuses a public-resolving cleartext base before the key is sent", async () => {
+    process.env.OPENROUTER_BASE_URL = "http://proxy:8080/api/v1";
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      () => askJev("sk-or-secret", { kind: "yes", prompt: "q" }, { fetchImpl, signal: noTimeout, resolver: async () => [{ address: "203.0.113.9", family: 4 }] }),
+      /base URL must use https/,
+    );
+    assert.strictEqual(called, false);
+  });
+});

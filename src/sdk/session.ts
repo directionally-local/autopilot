@@ -36,6 +36,7 @@ import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 import { dataPath, migrateLegacyDirs } from "../util/app-dirs.js";
 import { resolveCoauthor } from "../util/dl-identity.js";
+import { PrivateHttpWarningTracker } from "../providers/resolve.js";
 
 export async function createAgentSession(
   opts: CreateSessionOptions,
@@ -251,6 +252,8 @@ class InternalSession implements AutopilotSession {
   /** Persisted compaction state (session state + archived artifacts). */
   private readonly compactionState: Pick<SessionFile, "sessionState" | "artifactStore">;
   private readonly compaction: CompactionTarget;
+  /** Per-session cleartext key-travel warning accounting (never a module global). */
+  private readonly privateHttpWarnings = new PrivateHttpWarningTracker();
 
   /** Stops forwarding hook failures as `hook.failed` events. */
   private unsubscribeHookFailures: () => void;
@@ -696,12 +699,14 @@ class InternalSession implements AutopilotSession {
         this.onKimiMdStale?.();
       },
     };
+    this.privateHttpWarnings.setHandler(callbacks.onWarning);
 
     // SessionCore: classification, subagent policy (the subagent tool is only
     // offered when guidance allows it) and the completion check, as in every host.
     const policy = await resolveTurnPolicy({ cfg: this.config, prompt: lastUserText(this.messages), tools: this.allTools, signal });
     await runAgentTurn(assembleTurn({ cfg: this.config, policy, host: {
       ...llmAuthFromConfig(this.config),
+      privateHttpWarnings: this.privateHttpWarnings,
       // The SDK's `provider` option is OpenRouter routing preferences; it only
       // applies when OpenRouter is the active provider.
       ...(this.provider && providerIdOf(llmAuthFromConfig(this.config)) === "openrouter"

@@ -364,3 +364,157 @@ describe("runKimi: OpenRouter HTTP errors", () => {
     assert.match(err.message, /Moonshot AI: context too long/);
   });
 });
+
+describe("runKimi: http resolution gate and pin", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let requests: Array<{ url: string; init: RequestInit & { dispatcher?: unknown } }> = [];
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    delete process.env.KIMIFLARE_BASE_URL;
+    delete process.env.KIMIFLARE_API_KEY;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init: init ?? {} });
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+  });
+  after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  beforeEach(() => {
+    requests = [];
+  });
+
+  const base: RunKimiOpts = {
+    customEndpoint: { baseUrl: "http://proxy:8080/v1", apiKey: "sk-secret-key" },
+    model: "m",
+    messages: [{ role: "user", content: "hi" }],
+  };
+  const drain = async (opts: Partial<RunKimiOpts>) => {
+    for await (const _ of runKimi({ ...base, fetchImpl: globalThis.fetch, ...opts })) {
+      /* drain */
+    }
+  };
+
+  it("refuses a name that resolves public before any request carries the key", async () => {
+    await assert.rejects(
+      () => drain({ hostResolver: async () => [{ address: "203.0.113.9", family: 4 }] }),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(requests.length, 0, "no request was sent, so the key never left");
+  });
+
+  it("refuses a mixed private+public answer", async () => {
+    await assert.rejects(
+      () => drain({ hostResolver: async () => [{ address: "192.168.1.9", family: 4 }, { address: "203.0.113.9", family: 4 }] }),
+      /base URL must use https/,
+    );
+    assert.strictEqual(requests.length, 0);
+  });
+
+  it("pins the connection to the checked addresses with the URL and Host header intact", async () => {
+    await drain({ hostResolver: async () => [{ address: "127.0.0.1", family: 4 }] });
+    const chat = requests.find((r) => r.url.endsWith("/chat/completions"));
+    assert.ok(chat, "the chat request was sent");
+    assert.strictEqual(chat.url, "http://proxy:8080/v1/chat/completions", "the URL stays the name (Host header intact)");
+    assert.ok(chat.init.dispatcher, "the connection is pinned with an undici dispatcher");
+    assert.strictEqual(new Headers(chat.init.headers).get("authorization"), "Bearer sk-secret-key");
+    assert.strictEqual(chat.init.redirect, "error", "gated http refuses redirects");
+  });
+
+  it("pins an IPv6 answer too, keeping the name in the URL", async () => {
+    await drain({
+      customEndpoint: { baseUrl: "http://gpu-box:11434/v1", apiKey: "sk-secret-key" },
+      hostResolver: async () => [{ address: "fd00::1", family: 6 }],
+    });
+    const chat = requests.find((r) => r.url.endsWith("/chat/completions"));
+    assert.ok(chat, "the chat request was sent");
+    assert.strictEqual(chat.url, "http://gpu-box:11434/v1/chat/completions");
+    assert.ok(chat.init.dispatcher, "the connection is pinned with an undici dispatcher");
+  });
+
+  it("fails a non-resolving host as a transient network error, never an unpinned fetch", async () => {
+    await assert.rejects(
+      () =>
+        drain({
+          networkRetries: 0,
+          hostResolver: async () => {
+            throw Object.assign(new Error("getaddrinfo ENOTFOUND proxy"), { code: "ENOTFOUND" });
+          },
+        }),
+      /could not resolve `proxy`/,
+    );
+    assert.strictEqual(requests.length, 0, "never falls through to an unpinned fetch");
+  });
+});
+
+describe("runKimi: OpenRouter key never travels to a public-resolving cleartext host", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let requests: Array<{ url: string; init: RequestInit }> = [];
+  const saved = {
+    openrouter: process.env.OPENROUTER_BASE_URL,
+    autopilotBase: process.env.AUTOPILOT_BASE_URL,
+    autopilotKey: process.env.AUTOPILOT_API_KEY,
+    kimiflareBase: process.env.KIMIFLARE_BASE_URL,
+    kimiflareKey: process.env.KIMIFLARE_API_KEY,
+  };
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    delete process.env.AUTOPILOT_BASE_URL;
+    delete process.env.AUTOPILOT_API_KEY;
+    delete process.env.KIMIFLARE_BASE_URL;
+    delete process.env.KIMIFLARE_API_KEY;
+    process.env.OPENROUTER_BASE_URL = "http://proxy:8080/api/v1";
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init: init ?? {} });
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+  });
+  after(() => {
+    globalThis.fetch = originalFetch;
+    for (const [k, v] of [
+      ["OPENROUTER_BASE_URL", saved.openrouter],
+      ["AUTOPILOT_BASE_URL", saved.autopilotBase],
+      ["AUTOPILOT_API_KEY", saved.autopilotKey],
+      ["KIMIFLARE_BASE_URL", saved.kimiflareBase],
+      ["KIMIFLARE_API_KEY", saved.kimiflareKey],
+    ] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+  beforeEach(() => {
+    requests = [];
+  });
+
+  const drain = async (opts: Partial<RunKimiOpts> = {}) => {
+    for await (const _ of runKimi({
+      openrouterApiKey: KEY,
+      model: "vendor/model",
+      messages: [{ role: "user", content: "hi" }],
+      fetchImpl: globalThis.fetch,
+      ...opts,
+    })) {
+      /* drain */
+    }
+  };
+
+  it("refuses a public-resolving name before the OpenRouter key is attached", async () => {
+    await assert.rejects(
+      () => drain({ hostResolver: async () => [{ address: "203.0.113.9", family: 4 }] }),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(requests.length, 0, "no request was sent, so the key never left");
+  });
+
+  it("refuses a public literal too", async () => {
+    process.env.OPENROUTER_BASE_URL = "http://203.0.113.9:8080/api/v1";
+    try {
+      await assert.rejects(() => drain(), /base URL must use https/);
+      assert.strictEqual(requests.length, 0);
+    } finally {
+      process.env.OPENROUTER_BASE_URL = "http://proxy:8080/api/v1";
+    }
+  });
+});

@@ -17,6 +17,7 @@ import { readFile } from "node:fs/promises";
 import { configPath, loadConfig, type AutopilotConfig } from "../config.js";
 import { getUserAgent } from "../util/version.js";
 import { dlOrigin } from "./dl-endpoint.js";
+import { gatedFetch, type HostResolver, type PrivateHttpWarningTracker } from "./resolve.js";
 import { DL_FREE_MODEL, DL_PROVIDER_ID, dlSettings, saveDlSettings } from "./directionally-local.js";
 import { switchProvider } from "./keys.js";
 
@@ -70,7 +71,7 @@ async function signedIn(): Promise<boolean> {
  * Exchanges DL_INSTALL_CODE, when set, before anything loads the config. Never throws: a
  * failure is a line and the normal sign-in.
  */
-export async function redeemDlInstallCode(o: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {}): Promise<DlInstallCodeOutcome> {
+export async function redeemDlInstallCode(o: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {}): Promise<DlInstallCodeOutcome> {
   const env = o.env ?? process.env;
   const code = env[DL_INSTALL_CODE_ENV]?.trim();
   if (!code || !CODE.test(code)) return { kind: "none" };
@@ -81,12 +82,16 @@ export async function redeemDlInstallCode(o: { env?: NodeJS.ProcessEnv; fetchImp
   };
   let res: Response;
   try {
-    res = await (o.fetchImpl ?? fetch)(`${dlOrigin(env)}/v1/install-code/exchange`, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": getUserAgent() },
-      body: JSON.stringify({ code }),
-      signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
-    });
+    res = await gatedFetch(
+      `${dlOrigin(env)}/v1/install-code/exchange`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": getUserAgent() },
+        body: JSON.stringify({ code }),
+        signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
+      },
+      { hasKey: true, ...(o.warnings ? { warnings: o.warnings } : {}), ...(o.resolver ? { resolver: o.resolver } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) },
+    );
   } catch {
     return fallback(INSTALL_CODE_FAILED_LINE);
   }

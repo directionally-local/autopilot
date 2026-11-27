@@ -113,3 +113,32 @@ describe("dl server memory", () => {
     assert.match(memory.snapshot(), /## People[\s\S]*### Sara Ahmadi[\s\S]*## Projects/);
   }));
 });
+
+describe("dl memory extraction gate", () => {
+  it("refuses a public-resolving cleartext base before the OpenRouter key is sent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dl-memory-gate-"));
+    const savedBase = process.env.OPENROUTER_BASE_URL;
+    process.env.OPENROUTER_BASE_URL = "http://proxy:8080/api/v1";
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const memory = new DlMemory(join(dir, "dl.db"), {
+      apiKey: "sk-or-secret",
+      fetchImpl,
+      model: "test/model",
+      resolver: async () => [{ address: "203.0.113.9", family: 4 }],
+    });
+    try {
+      const changes = await memory.remember({ conversationId: "c1", userText: "hi", assistantText: "hello" });
+      assert.deepEqual(changes, []);
+      assert.strictEqual(called, false, "no request was sent, so the key never left");
+    } finally {
+      if (savedBase === undefined) delete process.env.OPENROUTER_BASE_URL;
+      else process.env.OPENROUTER_BASE_URL = savedBase;
+      memory.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

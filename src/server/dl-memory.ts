@@ -2,7 +2,8 @@ import { SqliteDatabase } from "../util/sqlite.js";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { openRouterHeaders, openRouterUrl } from "../models/openrouter.js";
+import { gatedFetchWithNetworkRetry, openRouterHeaders, openRouterUrl } from "../models/openrouter.js";
+import type { HostResolver, PrivateHttpWarningTracker } from "../providers/resolve.js";
 import { defaultDlDbPath } from "./dl-store.js";
 import { containsLikelyProviderSecret } from "./dl-tools.js";
 import { serverEnv } from "./dl-compat.js";
@@ -78,6 +79,8 @@ export class DlMemory {
       apiKey?: string;
       fetchImpl?: typeof fetch;
       enabled?: boolean;
+      resolver?: HostResolver;
+      warnings?: PrivateHttpWarningTracker;
     } = {},
   ) {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
@@ -278,17 +281,22 @@ export class DlMemory {
 
     let response: Response;
     try {
-      response = await (this.options.fetchImpl ?? fetch)(openRouterUrl("chat/completions"), {
-        method: "POST",
-        headers: { ...openRouterHeaders(this.apiKey!), "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: this.model,
-          temperature: 0,
-          response_format: { type: "json_object" },
-          messages: [{ role: "system", content: EXTRACTION_PROMPT }, { role: "user", content: user }],
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
+      response = await gatedFetchWithNetworkRetry(
+        this.options.fetchImpl,
+        openRouterUrl("chat/completions"),
+        {
+          method: "POST",
+          headers: { ...openRouterHeaders(this.apiKey!), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: this.model,
+            temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [{ role: "system", content: EXTRACTION_PROMPT }, { role: "user", content: user }],
+          }),
+          signal: AbortSignal.timeout(30_000),
+        },
+        { hasKey: true, ...(this.options.resolver ? { resolver: this.options.resolver } : {}), ...(this.options.warnings ? { warnings: this.options.warnings } : {}) },
+      );
     } catch {
       return undefined;
     }

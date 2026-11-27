@@ -19,6 +19,7 @@
 import type { CustomEndpoint } from "../agent/custom-endpoint.js";
 import { getModel, noteServedContextWindow } from "./registry.js";
 import { keyHeaders, type ProviderId } from "../providers/presets.js";
+import { gatedFetch, HttpGateRefusalError, type HostResolver, type PrivateHttpWarningTracker } from "../providers/resolve.js";
 
 /** Providers whose context length is whatever the server was started with. */
 const LOCAL_PROVIDERS: ReadonlySet<ProviderId> = new Set<ProviderId>(["vllm", "lmstudio", "ollama", "custom"]);
@@ -73,25 +74,39 @@ async function fetchContextLength(
   providerId: ProviderId,
   endpoint: CustomEndpoint,
   model: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch | undefined,
   timeoutMs: number,
+  resolver?: HostResolver,
+  warnings?: PrivateHttpWarningTracker,
 ): Promise<number | null> {
   const base = endpoint.baseUrl.replace(/\/+$/, "").replace(/\/chat\/completions$/, "");
   const headers = { Accept: "application/json", ...keyHeaders(providerId, endpoint.apiKey) };
+  // This lookup carries the key too: the same gated helper as the chat path
+  // refuses a public http address and pins the checked addresses.
+  const gated = (url: string, init: RequestInit): Promise<Response> =>
+    gatedFetch(url, init, {
+      hasKey: !!endpoint.apiKey,
+      ...(warnings ? { warnings } : {}),
+      ...(resolver ? { resolver } : {}),
+      ...(fetchImpl ? { fetchImpl } : {}),
+    });
   try {
-    const body = (await readJson(await fetchImpl(`${base}/models`, { headers, signal: AbortSignal.timeout(timeoutMs) }))) as {
+    const body = (await readJson(await gated(`${base}/models`, { headers, signal: AbortSignal.timeout(timeoutMs) }))) as {
       data?: unknown[];
     } | null;
     const entry = body?.data?.find((m) => !!m && typeof m === "object" && (m as { id?: unknown }).id === model);
     const ctx = contextLengthOf(entry);
     if (ctx) return ctx;
-  } catch {
+  } catch (e) {
+    // A refusal or an unresolvable host is not this best-effort lookup's to
+    // report: the request path refuses/fails on its own.
+    if (e instanceof HttpGateRefusalError) return null;
     // Unreachable or not OpenAI-compatible: fall through.
   }
   if (!isOllama(providerId, base)) return null;
   try {
     const show = (await readJson(
-      await fetchImpl(`${base.replace(/\/v1$/, "")}/api/show`, {
+      await gated(`${base.replace(/\/v1$/, "")}/api/show`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ model }),
@@ -115,14 +130,14 @@ async function fetchContextLength(
 export function localContextLength(
   endpoint: CustomEndpoint | null | undefined,
   model: string,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<number | null> {
   const providerId = localProviderOf(endpoint);
   if (!endpoint || !providerId || !model) return Promise.resolve(null);
   const key = `${providerId}\u0000${endpoint.baseUrl}\u0000${model}`;
   let pending = lookups.get(key);
   if (!pending) {
-    pending = fetchContextLength(providerId, endpoint, model, opts.fetchImpl ?? fetch, opts.timeoutMs ?? LOCAL_CONTEXT_TIMEOUT_MS)
+    pending = fetchContextLength(providerId, endpoint, model, opts.fetchImpl, opts.timeoutMs ?? LOCAL_CONTEXT_TIMEOUT_MS, opts.resolver, opts.warnings)
       .catch(() => null)
       .then((ctx) => {
         if (ctx) {

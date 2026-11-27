@@ -107,3 +107,25 @@ describe("startLoopbackListener", () => {
     await assert.rejects(cancelled.code, /cancelled/);
   });
 });
+
+describe("exchangeCode gate", () => {
+  it("refuses a public-resolving cleartext base before the code is sent", async () => {
+    const savedBase = process.env.OPENROUTER_BASE_URL;
+    process.env.OPENROUTER_BASE_URL = "http://proxy:8080/api/v1";
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      await assert.rejects(
+        () => exchangeCode("code", "verifier", fetchImpl, async () => [{ address: "203.0.113.9", family: 4 }]),
+        /base URL must use https/,
+      );
+      assert.strictEqual(called, false);
+    } finally {
+      if (savedBase === undefined) delete process.env.OPENROUTER_BASE_URL;
+      else process.env.OPENROUTER_BASE_URL = savedBase;
+    }
+  });
+});

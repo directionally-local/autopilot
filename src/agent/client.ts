@@ -34,6 +34,7 @@ import { parseResponsesStream, toResponsesRequest } from "./protocols/responses.
 import { openRouterHeaders, openRouterUrl, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { requestyHeaders, requestyUrl, REQUESTY_KEYS_URL } from "../models/requesty.js";
 import { resolveCustomEndpoint, customChatCompletionsUrl, type CustomEndpoint } from "./custom-endpoint.js";
+import { gatedFetch, HttpGateRefusalError, type HostResolver, type PrivateHttpWarningTracker } from "../providers/resolve.js";
 import type { LlmAuth } from "./llm-auth.js";
 import { fitOutputTokens, localContextLength, localContextMessage, localProviderOf, servedPromptLimit } from "../models/local-context.js";
 import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
@@ -79,6 +80,12 @@ export interface RunKimiOpts extends LlmAuth {
   onRetry?: (message: string) => void;
   /** One-line notices from the provider (e.g. the free tier's 80%-of-allowance notice). */
   onNotice?: (message: string) => void;
+  /** DNS resolver for the http resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  hostResolver?: HostResolver;
+  /** The session's cleartext key-travel warning tracker (per session, never a module global). */
+  privateHttpWarnings?: PrivateHttpWarningTracker;
+  /** Test seam: the fetch implementation for the gated request. */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -154,7 +161,11 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
   // the reply to at most half of it (less when the prompt leaves less room),
   // and fail here, before sending, when the prompt can't fit with room for a
   // reply. No answer leaves the request as it was.
-  const servedContext = await localContextLength(customEndpoint, opts.model);
+  const servedContext = await localContextLength(customEndpoint, opts.model, {
+    ...(opts.hostResolver ? { resolver: opts.hostResolver } : {}),
+    ...(opts.privateHttpWarnings ? { warnings: opts.privateHttpWarnings } : {}),
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  });
   if (servedContext) {
     const promptTokens = estimatePromptTokens(opts.messages) + (hasTools ? approxTokens(JSON.stringify(opts.tools).length) : 0);
     const fit = fitOutputTokens(maxTokens, servedContext, promptTokens, opts.model);
@@ -345,6 +356,20 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
   };
   if (dlFree) await dlAuthorize(false);
 
+  // Whether this request carries a credential. The gate must see what the
+  // request path actually attaches — not just the persisted customEndpoint
+  // key: OpenRouter/Requesty attach their own, and Vertex/ChatGPT/DL/Bedrock
+  // attach provider-specific credentials even when customEndpoint.apiKey is
+  // absent or stale.
+  const hasKey =
+    !!bedrock ||
+    Object.keys(targetHeaders).some((name) => /^(authorization|api-key|x-api-key)$/i.test(name));
+
+  // The resolution gate runs inside gatedFetch, per attempt: a public http
+  // answer refuses before the key is attached to any request, a non-resolving
+  // host fails as a transient network error (never an unpinned fetch), and the
+  // connection is pinned to the checked addresses with an undici dispatcher.
+
   // Observers of the finalized request body: the debug payload dump
   // (AUTOPILOT_DUMP_LLM=1) and the session trace. Both read the body
   // immediately before fetch — they cannot alter what is sent — and share
@@ -462,13 +487,25 @@ export async function* runKimi(opts: RunKimiOpts): AsyncGenerator<ModelEvent, vo
       if (opts.sessionId) headers["X-Session-ID"] = opts.sessionId;
       headers["X-Request-ID"] = requestId;
       if (bedrock) Object.assign(headers, bedrockHeaders(bedrock, url, serialized, bedrockRegionOf(url)));
-      res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: customEndpoint?.providerId === "chatgpt" ? compressLargeBody(serialized, headers) : serialized,
-        signal: opts.signal,
-      });
+      res = await gatedFetch(
+        url,
+        {
+          method: "POST",
+          headers,
+          body: customEndpoint?.providerId === "chatgpt" ? compressLargeBody(serialized, headers) : serialized,
+          signal: opts.signal,
+        },
+        {
+          hasKey,
+          ...(opts.privateHttpWarnings ? { warnings: opts.privateHttpWarnings } : {}),
+          ...(opts.hostResolver ? { resolver: opts.hostResolver } : {}),
+          ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+        },
+      );
     } catch (fetchErr) {
+      // A refusal is our decision, not a network failure: surface it as-is and
+      // never retry it.
+      if (fetchErr instanceof HttpGateRefusalError) throw new ApiError(fetchErr.message);
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       traceResponse(attemptStartedAt, msg);
       if (isAbortError(fetchErr)) throw fetchErr;

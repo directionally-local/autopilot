@@ -838,7 +838,8 @@ for (const id of ["anthropic", "openai", "gemini", "minimax", "xai", "mistral", 
           const { patchPersistedConfig } = await import("./config.js");
           await patchPersistedConfig({ accountId });
         }
-        const res = await checkProviderKey(id, key, cmdOpts.baseUrl);
+        const { PrivateHttpWarningTracker } = await import("./providers/resolve.js");
+        const res = await checkProviderKey(id, key, cmdOpts.baseUrl, undefined, new PrivateHttpWarningTracker((m) => console.error(m)));
         if (!res.ok) {
           console.error(res.message);
           process.exit(1);

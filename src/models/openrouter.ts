@@ -8,6 +8,7 @@
  */
 
 import { getUserAgent } from "../util/version.js";
+import { gatedFetch, HttpGateRefusalError, type HostResolver, type PrivateHttpWarningTracker } from "../providers/resolve.js";
 
 export const OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 export const OPENROUTER_KEYS_URL = "https://openrouter.ai/keys";
@@ -76,6 +77,32 @@ export async function fetchWithNetworkRetry(
   throw lastErr;
 }
 
+/**
+ * `gatedFetch` with the same network-failure retry as `fetchWithNetworkRetry`.
+ * Every authenticated OpenRouter auxiliary call goes through here, so a
+ * public-resolving cleartext `OPENROUTER_BASE_URL` refuses before the key
+ * travels. A gate refusal is our decision, not a network failure: never retry it.
+ */
+export async function gatedFetchWithNetworkRetry(
+  fetchImpl: typeof fetch | undefined,
+  url: string,
+  init: RequestInit,
+  opts: { hasKey?: boolean; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
+  attempts = 3,
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await gatedFetch(url, init, { ...opts, ...(fetchImpl ? { fetchImpl } : {}) });
+    } catch (e) {
+      if (e instanceof HttpGateRefusalError) throw e;
+      lastErr = e;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 200 * 2 ** i));
+    }
+  }
+  throw lastErr;
+}
+
 /** Shape of `GET /key` — only the fields we display. */
 export interface OpenRouterKeyInfo {
   label?: string;
@@ -99,12 +126,20 @@ export type KeyCheck =
  */
 export async function checkOpenRouterKey(
   apiKey: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
+  resolver?: HostResolver,
+  warnings?: PrivateHttpWarningTracker,
 ): Promise<KeyCheck> {
   let res: Response;
   try {
-    res = await fetchWithNetworkRetry(fetchImpl, openRouterUrl("key"), { headers: openRouterHeaders(apiKey) });
+    res = await gatedFetchWithNetworkRetry(
+      fetchImpl,
+      openRouterUrl("key"),
+      { headers: openRouterHeaders(apiKey) },
+      { hasKey: true, ...(resolver ? { resolver } : {}), ...(warnings ? { warnings } : {}) },
+    );
   } catch (e) {
+    if (e instanceof HttpGateRefusalError) return { ok: false, reason: "http", message: e.message };
     return { ok: false, reason: "network", message: e instanceof Error ? e.message : String(e) };
   }
   if (res.status === 401 || res.status === 403) {

@@ -56,6 +56,7 @@ import type { AgentCallbacks } from "../agent/loop.js";
 import { assembleTurn, lastUserText, resolveTurnPolicy, runCoreTurn } from "../agent/session-core.js";
 import { sessionFileCompactionTarget, type CompactionTarget } from "../agent/context-budget.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
+import { PrivateHttpWarningTracker } from "../providers/resolve.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
 import type { ChatMessage, ContentPart } from "../agent/messages.js";
 import { submitUserPrompt } from "../hooks/prompt-submit.js";
@@ -198,6 +199,8 @@ interface AcpSession extends StoredSession {
   compactionState: Pick<SessionFile, "sessionState" | "artifactStore">;
   compaction: CompactionTarget;
   abort: AbortController | null;
+  /** Per-session cleartext key-travel warning accounting (never a module global). */
+  privateHttpWarnings: PrivateHttpWarningTracker;
 }
 
 export interface AcpAgentOptions {
@@ -364,6 +367,7 @@ export function createAcpAgent(opts: AcpAgentOptions = {}): AgentApp {
       compactionState,
       compaction: sessionFileCompactionTarget(compactionState),
       abort: null,
+      privateHttpWarnings: new PrivateHttpWarningTracker(),
       dispose() {
         this.abort?.abort();
         void endSession(this.id, "exit").catch(() => {});
@@ -469,6 +473,7 @@ export function createAcpAgent(opts: AcpAgentOptions = {}): AgentApp {
             promptDestructive: () => askClient(client, session, req, runningToolCall, true, signal),
           }),
       };
+      session.privateHttpWarnings.setHandler(callbacks.onWarning);
 
       const policy = await resolveTurnPolicy({ cfg: session.config, prompt: lastUserText(session.messages), tools: session.baseTools, signal });
       await runCoreTurn(
@@ -477,6 +482,7 @@ export function createAcpAgent(opts: AcpAgentOptions = {}): AgentApp {
           policy,
           host: {
             ...llmAuthFromConfig(session.config),
+            privateHttpWarnings: session.privateHttpWarnings,
             model: session.model,
             messages: session.messages,
             executor: session.executor,

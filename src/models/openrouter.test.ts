@@ -92,3 +92,18 @@ describe("checkOpenRouterKey", () => {
     assert.ok(!res.ok && res.reason === "network" && /ECONNREFUSED/.test(res.message));
   });
 });
+
+describe("checkOpenRouterKey gate", () => {
+  it("refuses a public-resolving cleartext base before the key is sent", async () => {
+    process.env.OPENROUTER_BASE_URL = "http://proxy:8080/api/v1";
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await checkOpenRouterKey("sk-or-secret", fetchImpl, async () => [{ address: "203.0.113.9", family: 4 }]);
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(called, false, "no request was sent, so the key never left");
+    assert.match(res.ok ? "" : res.message, /base URL must use https/);
+  });
+});

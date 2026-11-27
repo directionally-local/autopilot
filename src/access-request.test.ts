@@ -13,7 +13,9 @@ import {
   accessNotFreeTierLine,
   buildingProblem,
   cleanLink,
+  fetchAccessStatus,
   runAccessRequest,
+  sendAccessRequest,
   type AccessRequestDeps,
 } from "./access-request.js";
 import { describeDlError, parseDlError } from "./providers/directionally-local.js";
@@ -23,7 +25,7 @@ import { dispatchSlashCommand, type SlashContext } from "./ui/slash-commands.js"
 import { BUILTIN_COMMANDS } from "./commands/builtins.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 
-const ORIGIN = "http://free.test";
+const ORIGIN = "http://127.0.0.1:9";
 const ENV = { AUTOPILOT_DL_FREE_URL: ORIGIN } as NodeJS.ProcessEnv;
 const PATH = `${ORIGIN}/v1/access-request`;
 const BUILDING = "a local-first notes app for my team";
@@ -383,5 +385,24 @@ describe("/request command", () => {
   it("is in the slash picker and /help", () => {
     assert.ok(BUILTIN_COMMANDS.some((c) => c.name === "request"));
     assert.ok([...CATEGORIES.flatMap((c) => c.commands), ...SINGLE_COMMANDS].some((x) => x.command === "/request"));
+  });
+});
+
+describe("access-request gate", () => {
+  it("refuses a public-resolving cleartext DL origin before the token is sent", async () => {
+    const env = { AUTOPILOT_DL_FREE_URL: "http://proxy:8080" } as NodeJS.ProcessEnv;
+    const resolver = async () => [{ address: "203.0.113.9", family: 4 }];
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const o = { token: async () => "tok", env, fetchImpl, resolver };
+
+    const status = await fetchAccessStatus(o);
+    assert.strictEqual(status.kind, "error");
+    const sent = await sendAccessRequest({ building: BUILDING }, o);
+    assert.strictEqual(sent.kind, "error");
+    assert.strictEqual(called, false, "no request was sent, so the token never left");
   });
 });

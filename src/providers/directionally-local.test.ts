@@ -42,6 +42,10 @@ import {
   dlPickerHint,
   dlSignIn,
   fetchDlMe,
+  refreshDlTokens,
+  revokeDlTokens,
+  dlCheckout,
+  dlBillingPortal,
   formatCountdown,
   formatReset,
   formatUsd,
@@ -52,6 +56,8 @@ import {
   startDlDeviceFlow,
   type DlMe,
 } from "./directionally-local.js";
+import { fetchDlPlanUsage } from "./dl-plan.js";
+import { fetchDlServedModels } from "./dl-free-providers.js";
 
 /** A local stand-in for the free-tier service, scripted per test. */
 interface Stub {
@@ -899,5 +905,98 @@ describe("Directionally Local free tier", () => {
       assert.match(infos[0]!, /^Removed from .*: Directionally Local free-tier access token and refresh token\. The service had nothing to revoke\.$/);
       assert.deepStrictEqual((await readCfg()).providers["directionally-local"], {});
     });
+  });
+});
+
+describe("Directionally Local credential-bearing fetches are gated", () => {
+  const publicResolver = async () => [{ address: "203.0.113.9", family: 4 }];
+  const env = { AUTOPILOT_DL_FREE_URL: "http://proxy:8080", AUTOPILOT_DL_FREE_TOKEN: "tok" } as NodeJS.ProcessEnv;
+  const neverFetch = (called: { value: boolean }) =>
+    (async () => {
+      called.value = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+  it("fetchDlMe refuses before the access token is sent", async () => {
+    const called = { value: false };
+    await assert.rejects(
+      () => fetchDlMe({ env, fetchImpl: neverFetch(called), resolver: publicResolver }),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(called.value, false);
+  });
+
+  it("fetchDlServedModels returns undefined without sending the token", async () => {
+    const called = { value: false };
+    const served = await fetchDlServedModels("tok", { env, fetchImpl: neverFetch(called), resolver: publicResolver });
+    assert.strictEqual(served, undefined);
+    assert.strictEqual(called.value, false);
+  });
+
+  it("fetchDlPlanUsage returns undefined without sending the key", async () => {
+    const called = { value: false };
+    const usage = await fetchDlPlanUsage("dl_sk_test", { env, fetchImpl: neverFetch(called), resolver: publicResolver });
+    assert.strictEqual(usage, undefined);
+    assert.strictEqual(called.value, false);
+  });
+
+  it("refreshDlTokens refuses before the refresh token is sent", async () => {
+    const called = { value: false };
+    await assert.rejects(
+      () => refreshDlTokens("rt", { env, fetchImpl: neverFetch(called), resolver: publicResolver }),
+      /base URL must use https/,
+    );
+    assert.strictEqual(called.value, false);
+  });
+
+  it("revokeDlTokens reports unreachable without sending the token", async () => {
+    const called = { value: false };
+    const result = await revokeDlTokens({ accessToken: "at", refreshToken: "rt" }, { env, fetchImpl: neverFetch(called), resolver: publicResolver });
+    assert.strictEqual(result, "unreachable");
+    assert.strictEqual(called.value, false);
+  });
+
+  it("dlCheckout and dlBillingPortal refuse before the bearer token is sent", async () => {
+    const called = { value: false };
+    await assert.rejects(
+      () => dlCheckout("pro", { env, fetchImpl: neverFetch(called), resolver: publicResolver }),
+      /base URL must use https/,
+    );
+    await assert.rejects(
+      () => dlBillingPortal({ env, fetchImpl: neverFetch(called), resolver: publicResolver }),
+      /base URL must use https/,
+    );
+    assert.strictEqual(called.value, false);
+  });
+});
+
+describe("Directionally Local device flow is gated", () => {
+  const publicResolver = async () => [{ address: "203.0.113.9", family: 4 }];
+  const env = { AUTOPILOT_DL_FREE_URL: "http://proxy:8080" } as NodeJS.ProcessEnv;
+  const neverFetch = (called: { value: boolean }) =>
+    (async () => {
+      called.value = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+  it("startDlDeviceFlow refuses before the device code is requested", async () => {
+    const called = { value: false };
+    await assert.rejects(
+      () => startDlDeviceFlow({ env, fetchImpl: neverFetch(called), resolver: publicResolver }),
+      /base URL must use https/,
+    );
+    assert.strictEqual(called.value, false);
+  });
+
+  it("pollDlDeviceFlow refuses before the device code is sent", async () => {
+    const called = { value: false };
+    await assert.rejects(
+      () => pollDlDeviceFlow(
+        { deviceCode: "dev", userCode: "U", verificationUri: "https://x", verificationUriComplete: "https://x", intervalSec: 0, expiresInSec: 60 },
+        { env, fetchImpl: neverFetch(called), resolver: publicResolver, sleep: async () => {} },
+      ),
+      /base URL must use https/,
+    );
+    assert.strictEqual(called.value, false);
   });
 });

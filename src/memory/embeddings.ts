@@ -4,10 +4,17 @@ import { requestyHeaders, requestyUrl } from "../models/requesty.js";
 import { providerPresetOf, usesRequesty, type LlmAuth } from "../agent/llm-auth.js";
 import { keyHeaders } from "../providers/presets.js";
 import { resolveCustomEndpoint } from "../agent/custom-endpoint.js";
+import { gatedFetch, HttpGateRefusalError, type GatedFetchOpts, type HostResolver, type PrivateHttpWarningTracker } from "../providers/resolve.js";
 
 export interface EmbedOpts extends LlmAuth {
   model?: string;
   texts: string[];
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver;
+  /** The caller's per-session key-travel warning tracker. */
+  warnings?: PrivateHttpWarningTracker;
+  /** Test seam; defaults to undici's fetch (which accepts the pin dispatcher). */
+  fetchImpl?: typeof fetch;
 }
 
 /** OpenRouter's embedding model (the one Workers AI served, so vectors in
@@ -80,14 +87,19 @@ interface EmbeddingsHttpError extends Error {
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
+  opts: GatedFetchOpts,
   retries = 3
 ): Promise<Response> {
   let lastError: Error | undefined;
   for (let i = 0; i < retries; i++) {
     let res: Response;
     try {
-      res = await fetch(url, init);
+      // The embeddings fetch carries the key: the same gated helper as the chat
+      // path refuses a public http host before the request is issued.
+      res = await gatedFetch(url, init, opts);
     } catch (e) {
+      // A refusal is our decision, not a transient failure: never retry it.
+      if (e instanceof HttpGateRefusalError) throw e;
       // Network error — retry with backoff.
       lastError = e as Error;
       if (i < retries - 1) await sleep(1000 * 2 ** i);
@@ -171,6 +183,13 @@ export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> 
     headers = openRouterHeaders(opts.openrouterApiKey);
   }
   headers["Content-Type"] = "application/json";
+  const hasKey = custom ? !!custom.apiKey : requesty ? !!opts.requestyApiKey : !!opts.openrouterApiKey;
+  const gatedOpts: GatedFetchOpts = {
+    hasKey,
+    ...(opts.warnings ? { warnings: opts.warnings } : {}),
+    ...(opts.resolver ? { resolver: opts.resolver } : {}),
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  };
 
   // Truncate to the model's context. If the estimate was still too generous
   // for this tokenizer (a context-length 400), halve the budget and retry.
@@ -183,7 +202,7 @@ export async function fetchEmbeddings(opts: EmbedOpts): Promise<Float32Array[]> 
         method: "POST",
         headers,
         body: JSON.stringify({ model, input: texts }),
-      });
+      }, gatedOpts);
       const json = (await res.json()) as unknown;
       return parseOpenAiEmbeddingResponse(json);
     } catch (e) {

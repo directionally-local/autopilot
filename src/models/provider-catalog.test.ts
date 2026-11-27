@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  discoverAzureDeployments,
   discoverOllamaModels,
   discoverOpenAiModels,
   ensureProviderCatalog,
@@ -124,6 +125,32 @@ describe("local discovery", () => {
       json({ data: [{ id: "qwen", max_model_len: 24000 }, { id: "lm", loaded_context_length: 8192, max_context_length: 131072 }, { id: "plain" }] })) as unknown as typeof fetch;
     const models = await discoverOpenAiModels("http://127.0.0.1:8000/v1", undefined, fetchImpl);
     assert.deepStrictEqual(models.map((m) => [m.id, m.contextWindow]), [["qwen", 24000], ["lm", 8192], ["plain", 32768]]);
+  });
+
+  it("refuses a name that resolves public before the key is sent", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return json({ data: [] });
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      () => discoverOpenAiModels("http://proxy:8080/v1", "sk-secret", fetchImpl, async () => [{ address: "203.0.113.9", family: 4 }]),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(called, false, "the key never left");
+  });
+
+  it("refuses a public-resolving name before Azure deployment discovery sends the key", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return json({ data: [] });
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      () => discoverAzureDeployments("http://proxy:8080/openai/v1", "azure-secret", fetchImpl, async () => [{ address: "203.0.113.9", family: 4 }]),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(called, false, "the key never left");
   });
 });
 

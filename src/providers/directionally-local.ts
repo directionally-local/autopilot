@@ -21,7 +21,7 @@
 import { readFile } from "node:fs/promises";
 import { configPath, patchPersistedConfig, setSessionModelFallback, type AutopilotConfig } from "../config.js";
 import { getUserAgent } from "../util/version.js";
-import type { ProviderSettings } from "./resolve.js";
+import { gatedFetch, HttpGateRefusalError, type HostResolver, type PrivateHttpWarningTracker, type ProviderSettings } from "./resolve.js";
 import type { ModelEntry } from "../models/registry.js";
 import { DL_FREE_DEFAULT_MODEL, DL_TOKEN_FILE_ENV, dlKeyMode, dlOrigin, isDlApiKey, isDlAutopilotKey } from "./dl-endpoint.js";
 import { DL_FREE_PLAN_LINE, DL_PLANS_URL, dlPlanHeaderLine, dlPlanSignedInLine, fetchDlPlanUsage, renderDlPlanUsage, type DlPlanUsage } from "./dl-plan.js";
@@ -856,13 +856,28 @@ async function readJson(res: Response): Promise<unknown> {
   }
 }
 
-function jsonPost(url: string, body: unknown, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<Response> {
-  return fetchImpl(url, {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": getUserAgent() },
-    body: JSON.stringify(body),
-    ...(signal ? { signal } : {}),
-  });
+function jsonPost(
+  url: string,
+  body: unknown,
+  fetchImpl: typeof fetch | undefined,
+  signal?: AbortSignal,
+  opts: { hasKey?: boolean; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
+): Promise<Response> {
+  return gatedFetch(
+    url,
+    {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": getUserAgent() },
+      body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
+    },
+    {
+      ...(opts.hasKey ? { hasKey: true } : {}),
+      ...(opts.resolver ? { resolver: opts.resolver } : {}),
+      ...(opts.warnings ? { warnings: opts.warnings } : {}),
+      ...(fetchImpl ? { fetchImpl } : {}),
+    },
+  );
 }
 
 /** A DlError for a parsed service error, worded for `where`, keeping what the service sent. */
@@ -920,13 +935,12 @@ export async function clearPendingDlReferral(): Promise<void> {
 }
 
 export async function startDlDeviceFlow(
-  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; signal?: AbortSignal; where?: DlWhere; referralCode?: string } = {},
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; signal?: AbortSignal; where?: DlWhere; referralCode?: string; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<DlDeviceCode> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
   const url = `${dlOrigin(opts.env)}/v1/device/code`;
   const post = async (body: Record<string, string>): Promise<Response> => {
     try {
-      return await jsonPost(url, body, fetchImpl, opts.signal);
+      return await jsonPost(url, body, opts.fetchImpl, opts.signal, { hasKey: true, ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.warnings ? { warnings: opts.warnings } : {}) });
     } catch (e) {
       if ((e as Error).name === "AbortError") throw e;
       throw new DlError("network", `Couldn't reach Directionally Local at ${dlOrigin(opts.env)}: ${(e as Error).message}`);
@@ -982,10 +996,9 @@ const sleep = (ms: number, signal?: AbortSignal) =>
  */
 export async function pollDlDeviceFlow(
   code: DlDeviceCode,
-  opts: { fetchImpl?: typeof fetch; signal?: AbortSignal; now?: () => number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; env?: NodeJS.ProcessEnv; where?: DlWhere } = {},
+  opts: { fetchImpl?: typeof fetch; signal?: AbortSignal; now?: () => number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; env?: NodeJS.ProcessEnv; where?: DlWhere; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<DlTokens> {
   const where = opts.where ?? "signin";
-  const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
   const wait = opts.sleep ?? sleep;
   const deadline = now() + code.expiresInSec * 1000;
@@ -995,9 +1008,10 @@ export async function pollDlDeviceFlow(
     await wait(intervalMs, opts.signal);
     let res: Response;
     try {
-      res = await jsonPost(url, { device_code: code.deviceCode }, fetchImpl, opts.signal);
+      res = await jsonPost(url, { device_code: code.deviceCode }, opts.fetchImpl, opts.signal, { hasKey: true, ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.warnings ? { warnings: opts.warnings } : {}) });
     } catch (e) {
       if ((e as Error).name === "AbortError") throw e;
+      if (e instanceof HttpGateRefusalError) throw e;
       continue; // a dropped poll is retried at the next interval
     }
     const body = await readJson(res);
@@ -1070,10 +1084,15 @@ async function rotatedElsewhere(usedRefreshToken: string, sleep: (ms: number) =>
 /** Exchange the refresh token for a new pair (the old refresh token stops working) and save it. */
 export async function refreshDlTokens(
   refreshToken: string,
-  opts: { fetchImpl?: typeof fetch; now?: number; env?: NodeJS.ProcessEnv; sleep?: (ms: number) => Promise<void> } = {},
+  opts: { fetchImpl?: typeof fetch; now?: number; env?: NodeJS.ProcessEnv; sleep?: (ms: number) => Promise<void>; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<string> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const res = await jsonPost(`${dlOrigin(opts.env)}/v1/token/refresh`, { refresh_token: refreshToken }, fetchImpl);
+  const res = await jsonPost(
+    `${dlOrigin(opts.env)}/v1/token/refresh`,
+    { refresh_token: refreshToken },
+    opts.fetchImpl,
+    undefined,
+    { hasKey: true, ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.warnings ? { warnings: opts.warnings } : {}) },
+  );
   if (!res.ok) {
     const err = await errorFrom(res, "Refreshing the Directionally Local sign-in");
     if (err.code === "invalid_grant") {
@@ -1134,7 +1153,7 @@ async function dlEnvToken(env: NodeJS.ProcessEnv, fromEnv: string, force: boolea
  * to sign in again; a network failure before expiry returns the saved token.
  */
 export async function dlAccessToken(
-  opts: { fetchImpl?: typeof fetch; now?: number; force?: boolean; env?: NodeJS.ProcessEnv; sleep?: (ms: number) => Promise<void> } = {},
+  opts: { fetchImpl?: typeof fetch; now?: number; force?: boolean; env?: NodeJS.ProcessEnv; sleep?: (ms: number) => Promise<void>; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<string | undefined> {
   const env = opts.env ?? process.env;
   const fromEnv = env[DL_TOKEN_ENV]?.trim();
@@ -1151,7 +1170,7 @@ export async function dlAccessToken(
   }
   refreshing = (async () => {
     try {
-      return await refreshDlTokens(s.refreshToken!, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}), ...(opts.sleep ? { sleep: opts.sleep } : {}), now, env });
+      return await refreshDlTokens(s.refreshToken!, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}), ...(opts.sleep ? { sleep: opts.sleep } : {}), now, env, ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.warnings ? { warnings: opts.warnings } : {}) });
     } catch (e) {
       if (e instanceof DlError && e.status !== undefined && e.status < 500) throw e;
       // The service is unreachable: let the request go out with what we have.
@@ -1394,22 +1413,33 @@ export function setLastKnownDlMe(me: DlMe | null): void {
 let knownWeeklyTokens: number | undefined;
 
 /** GET /v1/me with the access token (refreshed once on a 401 `invalid_token`). */
-export async function fetchDlMe(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; token?: string } = {}): Promise<DlMe> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
+export async function fetchDlMe(
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; token?: string; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
+): Promise<DlMe> {
   const call = (token: string) =>
-    fetchImpl(`${dlOrigin(opts.env)}/v1/me`, {
-      headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
-      signal: AbortSignal.timeout(10_000),
-    });
-  let token = opts.token ?? (await dlAccessToken({ fetchImpl, ...(opts.env ? { env: opts.env } : {}) }));
+    gatedFetch(
+      `${dlOrigin(opts.env)}/v1/me`,
+      {
+        headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
+        signal: AbortSignal.timeout(10_000),
+      },
+      { hasKey: true, ...(opts.warnings ? { warnings: opts.warnings } : {}), ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) },
+    );
+  const authOpts = {
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.resolver ? { resolver: opts.resolver } : {}),
+    ...(opts.warnings ? { warnings: opts.warnings } : {}),
+  };
+  let token = opts.token ?? (await dlAccessToken(authOpts));
   if (!token) throw new DlError("signed_out", dlSignedOutLine(opts.env));
   // A dl key (dl_sk_): its plan's usage too, read alongside (never fails the account read).
-  const planUsage = isDlApiKey(token) ? fetchDlPlanUsage(token, { fetchImpl, ...(opts.env ? { env: opts.env } : {}) }) : undefined;
+  const planUsage = isDlApiKey(token) ? fetchDlPlanUsage(token, authOpts) : undefined;
   let res = await call(token);
   if (res.status === 401 && !opts.token) {
     const err = parseDlError(await readJson(res.clone()));
     if (err?.code === "invalid_token") {
-      token = await dlAccessToken({ fetchImpl, force: true, ...(opts.env ? { env: opts.env } : {}) });
+      token = await dlAccessToken({ ...authOpts, force: true });
       if (token) res = await call(token);
     }
   }
@@ -2069,17 +2099,30 @@ export async function dlSignIn(
 export type DlProduct = "pro" | "topup";
 
 /** An authorized call to the service, refreshing the access token once after a 401 `invalid_token`. */
-async function dlAuthedPost(path: string, body: unknown, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv }, what: string): Promise<unknown> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const env = opts.env ? { env: opts.env } : {};
+async function dlAuthedPost(
+  path: string,
+  body: unknown,
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker },
+  what: string,
+): Promise<unknown> {
+  const env = {
+    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+    ...(opts.resolver ? { resolver: opts.resolver } : {}),
+    ...(opts.warnings ? { warnings: opts.warnings } : {}),
+  };
   const call = (token: string) =>
-    fetchImpl(`${dlOrigin(opts.env)}${path}`, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
-    });
-  let token = await dlAccessToken({ fetchImpl, ...env });
+    gatedFetch(
+      `${dlOrigin(opts.env)}${path}`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
+      },
+      { hasKey: true, ...(opts.warnings ? { warnings: opts.warnings } : {}), ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) },
+    );
+  let token = await dlAccessToken(env);
   if (!token) throw new DlError("signed_out", dlSignedOutLine(opts.env));
   let res: Response;
   try {
@@ -2087,12 +2130,13 @@ async function dlAuthedPost(path: string, body: unknown, opts: { fetchImpl?: typ
     if (res.status === 401) {
       const err = parseDlError(await readJson(res.clone()));
       if (err?.code === "invalid_token") {
-        token = await dlAccessToken({ fetchImpl, force: true, ...env });
+        token = await dlAccessToken({ ...env, force: true });
         if (token) res = await call(token);
       }
     }
   } catch (e) {
     if (e instanceof DlError) throw e;
+    if (e instanceof HttpGateRefusalError) throw new DlError("network", e.message);
     throw new DlError("network", `Couldn't reach Directionally Local: ${(e as Error).message}`);
   }
   if (res.status === 404 || res.status === 405) throw new DlError("unsupported", "Paid plans aren't available from this Directionally Local server yet.", res.status);
@@ -2109,14 +2153,14 @@ function urlFrom(body: unknown, what: string): string {
 /** POST /v1/billing/checkout: the payment page for Pro or a top-up (`quantity`: a dollar top-up's $1 units). */
 export async function dlCheckout(
   product: DlProduct,
-  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; quantity?: number } = {},
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; quantity?: number; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<string> {
   const body = product === "topup" && opts.quantity !== undefined ? { product, quantity: opts.quantity } : { product };
   return urlFrom(await dlAuthedPost("/v1/billing/checkout", body, opts, "Starting the checkout"), "the checkout");
 }
 
 /** POST /v1/billing/portal: where a Pro plan is managed or cancelled. */
-export async function dlBillingPortal(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+export async function dlBillingPortal(opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {}): Promise<string> {
   return urlFrom(await dlAuthedPost("/v1/billing/portal", {}, opts, "Opening the billing page"), "the billing page");
 }
 
@@ -2132,22 +2176,25 @@ export type DlRevokeResult = "revoked" | "unsupported" | "unreachable" | "nothin
  */
 export async function revokeDlTokens(
   tokens: { accessToken?: string; refreshToken?: string },
-  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {},
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<DlRevokeResult> {
   if (!tokens.accessToken && !tokens.refreshToken) return "nothing";
-  const fetchImpl = opts.fetchImpl ?? fetch;
   try {
-    const res = await fetchImpl(`${dlOrigin(opts.env)}/v1/token/revoke`, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": getUserAgent(),
-        ...(tokens.accessToken ? { Authorization: `Bearer ${tokens.accessToken}` } : {}),
+    const res = await gatedFetch(
+      `${dlOrigin(opts.env)}/v1/token/revoke`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "User-Agent": getUserAgent(),
+          ...(tokens.accessToken ? { Authorization: `Bearer ${tokens.accessToken}` } : {}),
+        },
+        body: JSON.stringify(tokens.refreshToken ? { refresh_token: tokens.refreshToken } : {}),
+        signal: AbortSignal.timeout(5_000),
       },
-      body: JSON.stringify(tokens.refreshToken ? { refresh_token: tokens.refreshToken } : {}),
-      signal: AbortSignal.timeout(5_000),
-    });
+      { hasKey: true, ...(opts.warnings ? { warnings: opts.warnings } : {}), ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) },
+    );
     if (res.status === 404 || res.status === 405) return "unsupported";
     // An already-invalid token is as good as revoked.
     if (res.ok || res.status === 400 || res.status === 401) return "revoked";

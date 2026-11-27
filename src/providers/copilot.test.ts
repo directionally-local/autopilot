@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
-import { checkCopilotAccess, copilotProtocol, copilotRequestHeaders, mapCopilotModels, pollDeviceFlow, startDeviceFlow } from "./copilot.js";
+import { checkCopilotAccess, copilotProtocol, copilotRequestHeaders, loadCopilotModels, mapCopilotModels, pollDeviceFlow, startDeviceFlow } from "./copilot.js";
 import { runKimi } from "../agent/client.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { registerProviderModels } from "../models/registry.js";
@@ -123,5 +123,20 @@ describe("Copilot requests", () => {
 
   it("explains that Copilot is billed by plan", () => {
     assert.match(costNote(PROVIDER_PRESETS.copilot)!, /billed by your plan/);
+  });
+});
+
+describe("loadCopilotModels gate", () => {
+  it("refuses a public-resolving cleartext base before the Copilot token is sent", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return json(200, { data: MODELS });
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      () => loadCopilotModels("http://proxy:8080", "copilot-secret", fetchImpl, async () => [{ address: "203.0.113.9", family: 4 }]),
+      /base URL must use https \(got http:\/\/proxy:8080\)/,
+    );
+    assert.strictEqual(called, false, "no request was sent, so the token never left");
   });
 });

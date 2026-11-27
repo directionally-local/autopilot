@@ -1,4 +1,5 @@
-import { openRouterAlphaUrl, openRouterHeaders } from "../models/openrouter.js";
+import { gatedFetchWithNetworkRetry, openRouterAlphaUrl, openRouterHeaders } from "../models/openrouter.js";
+import type { HostResolver, PrivateHttpWarningTracker } from "../providers/resolve.js";
 import type { JevContextEntry } from "./jev-context.js";
 
 export const JEV_MODEL = "~typesafe/jev-latest";
@@ -79,6 +80,8 @@ export interface AskJevOptions {
   context?: JevContextEntry[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  resolver?: HostResolver;
+  warnings?: PrivateHttpWarningTracker;
 }
 
 /** Send a typed question and an explicitly selected context bundle to Jev. */
@@ -87,22 +90,26 @@ export async function askJev(
   question: JevQuestion,
   options: AskJevOptions = {},
 ): Promise<JevAnswer> {
-  const fetchImpl = options.fetchImpl ?? fetch;
   const signal = options.signal ?? AbortSignal.timeout(JEV_TIMEOUT_MS);
   const context = options.context ?? [];
-  const response = await fetchImpl(openRouterAlphaUrl(JEV_DECISIONS_URL), {
-    method: "POST",
-    headers: { ...openRouterHeaders(apiKey), "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: JEV_MODEL,
-      state: {
-        question: question.prompt,
-        ...(context.length > 0 ? { context: context.map(({ source, content }) => ({ source, content })) } : {}),
-      },
-      questions: { answer: toRequestQuestion(question) },
-    }),
-    signal,
-  });
+  const response = await gatedFetchWithNetworkRetry(
+    options.fetchImpl,
+    openRouterAlphaUrl(JEV_DECISIONS_URL),
+    {
+      method: "POST",
+      headers: { ...openRouterHeaders(apiKey), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: JEV_MODEL,
+        state: {
+          question: question.prompt,
+          ...(context.length > 0 ? { context: context.map(({ source, content }) => ({ source, content })) } : {}),
+        },
+        questions: { answer: toRequestQuestion(question) },
+      }),
+      signal,
+    },
+    { hasKey: true, ...(options.resolver ? { resolver: options.resolver } : {}), ...(options.warnings ? { warnings: options.warnings } : {}) },
+  );
 
   const raw = await response.text();
   let body: JevApiResponse;

@@ -25,6 +25,7 @@ import { runAgentTurn, type AgentTurnOpts } from "./loop.js";
 import { dlAuthPrompt, isDlAuthError } from "../providers/directionally-local.js";
 import { ContextBudgetError } from "./context-budget.js";
 import { llmAuthFromConfig, activeOpenRouterKey } from "./llm-auth.js";
+import { PrivateHttpWarningTracker } from "../providers/resolve.js";
 import { completionCheckFromConfig } from "./completion-check.js";
 import { classifyIntent, type IntentResult } from "../intent/classify.js";
 import { routedModelForTier } from "../intent/model-routing.js";import { allowsSubagentDispatch, resolveSubagentGuidance, type SubagentGuidance, type SubagentPolicy } from "../intent/subagent-policy.js";
@@ -163,6 +164,10 @@ export interface CoreTurn {
 
 /** Assemble the turn: config defaults, then the policy, then the host's own options (host wins). */
 export function assembleTurn({ cfg, policy, host }: CoreTurn): AgentTurnOpts {
+  // The key-travel warning goes to the host's user-visible warning channel
+  // (the same one the large-body warning uses), with per-session accounting:
+  // a host that owns a session passes its tracker; otherwise this turn gets one.
+  const privateHttpWarnings = host.privateHttpWarnings ?? new PrivateHttpWarningTracker(host.callbacks.onWarning);
   // Model routing is policy, but it never overrides a model the host chose
   // itself (e.g. a /model pick): only reroute while the session runs the
   // configured default.
@@ -173,6 +178,7 @@ export function assembleTurn({ cfg, policy, host }: CoreTurn): AgentTurnOpts {
     ...(policy.delegationDirective ? { delegationDirective: policy.delegationDirective } : {}),
     ...(policy.completionCheck ? { completionCheck: policy.completionCheck } : {}),
     ...host,
+    privateHttpWarnings,
     ...(routed !== undefined && routed !== host.model
       ? { model: routed, routedFromModel: host.model }
       : {}),

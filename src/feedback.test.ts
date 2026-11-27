@@ -5,14 +5,16 @@ import {
   FEEDBACK_MAX_CHARS,
   FEEDBACK_NOT_SENT_LINE,
   feedbackClient,
+  fetchReplyAddress,
   runFeedback,
+  sendFeedback,
   type FeedbackDeps,
 } from "./feedback.js";
 import { dispatchSlashCommand, type SlashContext } from "./ui/slash-commands.js";
 import { BUILTIN_COMMANDS } from "./commands/builtins.js";
 import { CATEGORIES, SINGLE_COMMANDS } from "./ui/help-catalog.js";
 
-const ORIGIN = "http://feedback.test";
+const ORIGIN = "http://127.0.0.1:9";
 const ENV = { AUTOPILOT_DL_FREE_URL: ORIGIN, DL_VERSION: "0.17.0" } as NodeJS.ProcessEnv;
 const CLIENT = { dl: "0.17.0", autopilot: "3.10.1", os: "linux", arch: "arm64" };
 
@@ -270,5 +272,22 @@ describe("/feedback command", () => {
   it("is in the slash picker and /help", () => {
     assert.ok(BUILTIN_COMMANDS.some((c) => c.name === "feedback"));
     assert.ok([...CATEGORIES.flatMap((c) => c.commands), ...SINGLE_COMMANDS].some((x) => x.command === "/feedback"));
+  });
+});
+
+describe("feedback gate", () => {
+  it("refuses a public-resolving cleartext DL origin before the token is sent", async () => {
+    const env = { AUTOPILOT_DL_FREE_URL: "http://proxy:8080" } as NodeJS.ProcessEnv;
+    const resolver = async () => [{ address: "203.0.113.9", family: 4 }];
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    assert.strictEqual(await fetchReplyAddress("tok", { env, fetchImpl, resolver }), null);
+    const sent = await sendFeedback({ message: "hi", client: CLIENT }, { token: "tok", env, fetchImpl, resolver });
+    assert.deepStrictEqual(sent, { kind: "failed" });
+    assert.strictEqual(called, false, "no request was sent, so the token never left");
   });
 });

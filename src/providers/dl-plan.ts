@@ -13,6 +13,7 @@
 
 import { getUserAgent } from "../util/version.js";
 import { dlOrigin } from "./dl-endpoint.js";
+import { gatedFetch, type HostResolver, type PrivateHttpWarningTracker } from "./resolve.js";
 
 /** Where plans are picked and changed. */
 export const DL_PLANS_URL = "https://dl.new/plans";
@@ -76,12 +77,21 @@ export function parseDlPlanUsage(raw: unknown): DlPlanUsage | undefined {
 }
 
 /** GET /v1/usage with a dl key. Undefined when it can't be read (never throws). */
-export async function fetchDlPlanUsage(key: string, o: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<DlPlanUsage | undefined> {
+export async function fetchDlPlanUsage(
+  key: string,
+  o: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
+): Promise<DlPlanUsage | undefined> {
   try {
-    const res = await (o.fetchImpl ?? fetch)(`${dlOrigin(o.env)}/v1/usage`, {
-      headers: { Accept: "application/json", Authorization: `Bearer ${key}`, "User-Agent": getUserAgent() },
-      signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
-    });
+    // The plan meter carries the dl key: the same gated helper as the chat path
+    // refuses a public http address before the request.
+    const res = await gatedFetch(
+      `${dlOrigin(o.env)}/v1/usage`,
+      {
+        headers: { Accept: "application/json", Authorization: `Bearer ${key}`, "User-Agent": getUserAgent() },
+        signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
+      },
+      { hasKey: true, ...(o.warnings ? { warnings: o.warnings } : {}), ...(o.resolver ? { resolver: o.resolver } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) },
+    );
     if (!res.ok) return undefined;
     return parseDlPlanUsage(await res.json());
   } catch {

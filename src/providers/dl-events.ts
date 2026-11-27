@@ -23,6 +23,7 @@ import { getAppVersion, getUserAgent } from "../util/version.js";
 import type { AgentCallbacks } from "../agent/loop.js";
 import { DL_PROVIDER_ID, dlAccessToken } from "./directionally-local.js";
 import { dlOrigin, isDlApiKey, isDlAutopilotKey } from "./dl-endpoint.js";
+import { gatedFetch, type HostResolver } from "./resolve.js";
 
 export type DlEventType = "session.start" | "session.end" | "turn.end" | "pr.opened" | "error";
 
@@ -145,7 +146,8 @@ export function repoHashFor(cwd: string): Promise<string | undefined> {
 let queue: DlEvent[] = [];
 let timer: ReturnType<typeof setTimeout> | null = null;
 let inflight: Promise<void> | null = null;
-let fetchImpl: typeof fetch = (...args) => fetch(...args);
+let fetchImpl: typeof fetch | undefined;
+let resolver: HostResolver | undefined;
 let sleepImpl = (ms: number) => new Promise<void>((r) => setTimeout(r, ms).unref?.());
 let shutdownRegistered = false;
 let endObserverOff: (() => void) | null = null;
@@ -194,17 +196,21 @@ export function recordDlEvent(type: DlEventType, sessionId: string, props: Recor
 
 async function post(batch: DlEvent[]): Promise<boolean> {
   try {
-    const token = await dlAccessToken({ fetchImpl });
+    const token = await dlAccessToken({ ...(fetchImpl ? { fetchImpl } : {}) });
     if (!token) return true; // signed out: drop, nothing to send as
     // A dl key (dl_sk_): /v1/events takes no dl keys: drop. The Autopilot key dl made from it
     // (dl_ak_) sends them, as a sign-in does.
     if (isDlApiKey(token) && !isDlAutopilotKey(token)) return true;
-    const res = await fetchImpl(`${dlOrigin()}/v1/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
-      body: JSON.stringify({ events: batch }),
-      signal: AbortSignal.timeout(5_000),
-    });
+    const res = await gatedFetch(
+      `${dlOrigin()}/v1/events`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
+        body: JSON.stringify({ events: batch }),
+        signal: AbortSignal.timeout(5_000),
+      },
+      { hasKey: true, ...(fetchImpl ? { fetchImpl } : {}), ...(resolver ? { resolver } : {}) },
+    );
     // 4xx won't get better on retry (bad token, malformed): drop.
     return res.ok || (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429);
   } catch {
@@ -345,9 +351,10 @@ export function noteDlError(sessionId: string, err: unknown, model: string): voi
 }
 
 /** Test hooks. */
-export function setDlEventsTransportForTesting(f: typeof fetch, sleep?: (ms: number) => Promise<void>): void {
+export function setDlEventsTransportForTesting(f: typeof fetch, sleep?: (ms: number) => Promise<void>, r?: HostResolver): void {
   fetchImpl = f;
   if (sleep) sleepImpl = sleep;
+  resolver = r;
 }
 export function resetDlEventsForTesting(): void {
   queue = [];

@@ -13,7 +13,7 @@ import { ensureCatalogForProvider } from "../models/catalog.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
 import { fuzzyFilter } from "../util/fuzzy.js";
 import { getPreset, type ProviderId } from "./presets.js";
-import { detectEnvProviders, resolveActiveProvider, resolveProviderKey } from "./resolve.js";
+import { detectEnvProviders, PrivateHttpWarningTracker, resolveActiveProvider, resolveProviderKey } from "./resolve.js";
 import { checkProviderKey, patchProviderSettings, saveProviderKey, switchProvider } from "./keys.js";
 import { DL_DISCLOSURE, DL_FREE_MODEL, DL_FREE_WEEKLY_TOKENS, dlNotFreeLine, dlPickerHint, formatTokens, type DlDeviceCode } from "./directionally-local.js";
 import { DL_STATUS_OPEN, dlPausedLine, dlWaitlistText, type DlFreeStatus } from "./dl-status.js";
@@ -205,6 +205,8 @@ export async function verifyProvider(
   key: string | undefined,
   source: KeySource,
   baseUrl?: string,
+  /** The caller's per-session key-travel warning tracker (the connect screens' say). */
+  warnings?: PrivateHttpWarningTracker,
 ): Promise<VerifyResult> {
   const preset = getPreset(id);
   const connection: Connection = { id, source, ...(key ? { key } : {}), ...(baseUrl ? { baseUrl } : {}) };
@@ -220,7 +222,7 @@ export async function verifyProvider(
     }
     connection.openRouter = res.info;
   } else {
-    const res = await checkProviderKey(id, key, baseUrl ?? preset.baseUrl);
+    const res = await checkProviderKey(id, key, baseUrl ?? preset.baseUrl, undefined, warnings);
     if (!res.ok) return { ok: false, message: res.message };
     if (res.detail) connection.detail = res.detail;
   }
