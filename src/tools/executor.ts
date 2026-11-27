@@ -38,6 +38,7 @@ import { resolvePath } from "../util/paths.js";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { RunStore, RunToolBudgetExceededError } from "../runs/store.js";
 import { runWithGithubAccess } from "../github-access.js";
+import { runtimeSecretsFromAuth, scrubToolResultSecrets } from "../agent/secret-scrubber.js";
 import { modelProfileFor } from "../models/profile.js";
 import type { WorkerProfile } from "../agent/messages.js";
 
@@ -769,7 +770,9 @@ export class ToolExecutor {
       const result = await runWithGithubAccess(call.name, args, runCtx, () => tool.run(args as never, runCtx));
       toolCompleted = true;
       const fileChange = before ? await fileChangeAfter(call.name, args, ctx.cwd, before) : undefined;
-      const normalized = normalizeToolOutput(result);
+      const rawOutput = normalizeToolOutput(result);
+      const scrubbed = scrubToolResultSecrets(rawOutput.content, runtimeSecretsFromAuth(runCtx.llmAuth));
+      const normalized = scrubbed === rawOutput.content ? rawOutput : { ...rawOutput, content: scrubbed };
       tr?.raw(normalized);
       if (runStore && ctx.runId) {
         runStore.recordToolResult(ctx.runId, call.id, call.name, { ok: true, content: normalized.content });
@@ -868,7 +871,10 @@ export class ToolExecutor {
     } catch (e) {
       if (e instanceof RunToolBudgetExceededError) ctx.onRunBudgetExceeded?.(e.reason);
       const err = wrapAsToolError(e);
-      const msg = `Error running ${call.name}: ${err.message}`;
+      const msg = scrubToolResultSecrets(
+        `Error running ${call.name}: ${err.message}`,
+        runtimeSecretsFromAuth(ctx.llmAuth),
+      );
       tr?.raw({ content: msg, rawBytes: Buffer.byteLength(msg, "utf8"), reducedBytes: Buffer.byteLength(msg, "utf8") });
       const failure: ToolResult = {
         tool_call_id: call.id,

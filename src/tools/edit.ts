@@ -6,7 +6,8 @@ import { withFileLock } from "../util/file-lock.js";
 import { writeFileVerified } from "../util/safe-write.js";
 import { lockKeyFor } from "../util/file-lock.js";
 import { assertReadVersion, sha256 } from "./file-version.js";
-import { toolInvalidArgsError, type ToolError } from "./tool-error.js";
+import { ToolError, toolInvalidArgsError } from "./tool-error.js";
+import { introducedRedactionPlaceholder } from "../secrets.js";
 
 export interface EditPair {
   old_string: string;
@@ -156,7 +157,16 @@ export const editTool: ToolSpec<Args> = {
       const key = await lockKeyFor(abs);
       const original = await readFile(abs);
       assertReadVersion(ctx.fileReadHashes, key, original, args.path, "editing");
-      const { text, replaced } = applyEdits(original.toString("utf8"), pairs, args.path);
+      const originalText = original.toString("utf8");
+      const { text, replaced } = applyEdits(originalText, pairs, args.path);
+      const introduced = introducedRedactionPlaceholder(text, originalText);
+      if (introduced) {
+        throw new ToolError({
+          code: "policy_rejection",
+          message: `Refusing to edit ${args.path}: the replacement introduces the redaction placeholder "${introduced}" from a scrubbed tool result. Writing it back would replace the real secret on disk with the placeholder. Edit around the secret instead of rewriting it.`,
+          suggestion: "use old_string/new_string that leave the secret untouched, or ask the user to make this change",
+        });
+      }
       await writeFileVerified(abs, text);
       ctx.fileReadHashes?.set(key, sha256(Buffer.from(text, "utf8")));
       return pairs.length > 1
