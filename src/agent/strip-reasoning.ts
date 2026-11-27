@@ -1,4 +1,26 @@
 import type { ChatMessage } from "./messages.js";
+import type { ProviderCompat } from "../providers/presets.js";
+import { readEnv, type EnvLike } from "../util/env.js";
+import { logger } from "../util/logger.js";
+
+/** One gate per process: presets that need the synthesized fallback ignore the opt-in and warn only once. */
+export function createReasoningStripGate() {
+  let warned = false;
+  return (
+    compat: ProviderCompat,
+    onWarning: (message: string) => void = (message) => logger.warn("agent:strip_reasoning_ignored", { message }),
+    env: EnvLike = process.env,
+  ): boolean => {
+    const requested = readEnv("STRIP_REASONING", env) === "1";
+    if (!requested) return false;
+    if (compat.reasoningEcho.synthesizeFallback !== true) return true;
+    if (!warned) {
+      warned = true;
+      onWarning("AUTOPILOT_STRIP_REASONING=1 is ignored: this provider requires reasoning_content on tool-call turns.");
+    }
+    return false;
+  };
+}
 
 export interface StripReasoningOpts {
   /** Number of most-recent assistant messages to preserve reasoning on. Default 1. */
