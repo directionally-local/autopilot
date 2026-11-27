@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.34.1](https://github.com/directionally-local/autopilot/compare/v3.34.0...v3.34.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **agent:** keep exactly one result per tool call after an interrupt ([#1316](https://github.com/directionally-local/autopilot/issues/1316)) ([fbeb670](https://github.com/directionally-local/autopilot/commit/fbeb67022f84c07829109e8f9e56b0375341203f))
+
 ## [3.34.0](https://github.com/directionally-local/autopilot/compare/v3.33.0...v3.34.0) (2026-11-26)
 
 
