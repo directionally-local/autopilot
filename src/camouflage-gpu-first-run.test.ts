@@ -322,7 +322,9 @@ describe("GPU-aware first run", () => {
       assert.equal(await view.firstRunSetup({ upgrading: false }), "model-up");
       const shown = splash();
       assert.match(shown, new RegExp(REASON));
-      assert.ok(shown.includes(`Full log: ${env.DL_GPU_LOG}`));
+      // Splash lines are wrapped to the terminal width, and the test root makes
+      // this path long enough to wrap between "Full log:" and the path.
+      assert.ok(shown.replace(/\s*\n\s*/g, " ").includes(`Full log: ${env.DL_GPU_LOG}`), `the log path is shown: ${shown}`);
       assert.match(shown, /\n  ERROR 11-12 03:09 CUDA error: an illegal memory access was encounter\w*\.\.\.\n/, "cut to fit");
       assert.match(shown, /FAIL chat: only thinking, out of tokens/);
       assert.doesNotMatch(shown, /engine step/, "no raw server log lines");
