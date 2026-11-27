@@ -97,7 +97,7 @@ export class ContextBudgetError extends Error {
       `autopilot: context window exceeded (~${estimatedTokens.toLocaleString()} tokens needed, ` +
         `${budgetTokens.toLocaleString()} available of ${contextWindow.toLocaleString()}). ` +
         `Older turns were already compacted; the current turn alone is too large. ` +
-        `Run /clear to start fresh, pick a model with a larger context window, or reduce the size of the request (e.g. fewer or smaller attachments).`,
+        `Pick a model with a larger context window, or make this turn smaller (e.g. fewer or smaller attachments, or read a smaller part of the file).`,
     );
     this.name = "ContextBudgetError";
   }
