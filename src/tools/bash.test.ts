@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert";
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bashTool, buildCoauthorTrailer, getShellCommand, guardGitCommit, guardGitPush, guardSweep, injectCoauthor, isFileReadCommand, parsePushTarget } from "./bash.js";
@@ -300,13 +300,40 @@ describe("co-author trailer injection", { skip: process.platform === "win32" }, 
     rmSync(repo, { recursive: true, force: true });
   });
 
-  async function commitWith(coauthor: { name: string; email: string }, command = "git commit -q -m 'add file'"): Promise<string> {
+  async function runRaw(
+    coauthor: { name: string; email: string } | undefined,
+    command: string,
+    args: Record<string, unknown> = {},
+  ): Promise<string> {
+    const ctx = { cwd: repo, coauthor, allowDirectPush: true, signal: new AbortController().signal } as unknown as ToolContext;
+    const out = await bashTool.run({ command, ...args }, ctx);
+    return typeof out === "string" ? out : out.content;
+  }
+
+  async function commitOutput(
+    coauthor: { name: string; email: string } | undefined,
+    command: string,
+    args: Record<string, unknown> = {},
+  ): Promise<string> {
     writeFileSync(join(repo, `f-${Math.random().toString(36).slice(2)}.txt`), "x");
     execSync("git add -A", { cwd: repo });
-    const ctx = { cwd: repo, coauthor, allowDirectPush: true, signal: new AbortController().signal } as unknown as ToolContext;
-    const out = await bashTool.run({ command }, ctx);
-    const content = typeof out === "string" ? out : out.content;
+    const content = await runRaw(coauthor, command, args);
     assert.match(content, /^exit=0/, content);
+    return content;
+  }
+
+  /** A commit-msg hook that rejects any amended message carrying a trailer.
+   *  The agent's original commit message has none, so only the amend fails. */
+  function rejectTrailerAmend(): void {
+    const hooks = join(repo, ".git", "hooks");
+    mkdirSync(hooks, { recursive: true });
+    const hook = join(hooks, "commit-msg");
+    writeFileSync(hook, "#!/bin/sh\ngrep -q 'Co-authored-by' \"$1\" && { echo 'trailer rejected by hook' >&2; exit 1; }\nexit 0\n");
+    chmodSync(hook, 0o755);
+  }
+
+  async function commitWith(coauthor: { name: string; email: string }, command = "git commit -q -m 'add file'"): Promise<string> {
+    await commitOutput(coauthor, command);
     return execSync("git log -1 --pretty=%B", { cwd: repo, encoding: "utf8" });
   }
 
@@ -355,14 +382,72 @@ describe("co-author trailer injection", { skip: process.platform === "win32" }, 
     assert.deepEqual(injectCoauthor("git commit -m x", undefined), { command: "git commit -m x", env: {} });
   });
 
-  it("covers commits made indirectly and cleans up its temp file", async () => {
+  it("leaves a commit message that already has any Co-authored-by trailer alone", async () => {
+    const coauthor = { name: "Pair", email: "pair@example.com" };
+    // Lower-case on purpose: the check is case-insensitive, whatever the value.
+    const output = await commitOutput(coauthor, "git commit -q -m 'add file' -m 'co-authored-by: Jane Doe <jane@example.com>'");
+    const message = execSync("git log -1 --pretty=%B", { cwd: repo, encoding: "utf8" });
+    assert.doesNotMatch(message, /Pair/);
+    assert.equal(message.match(/co-authored-by:/gi)?.length, 1, message);
+    assert.match(message, /co-authored-by: Jane Doe <jane@example\.com>/i);
+    assert.doesNotMatch(output, /Added commit trailer/);
+  });
+
+  it("honors coauthor: false for one commit", async () => {
+    const coauthor = { name: "Pair", email: "pair@example.com" };
+    await commitOutput(coauthor, "git commit -q -m 'add file'", { coauthor: false });
+    const message = execSync("git log -1 --pretty=%B", { cwd: repo, encoding: "utf8" });
+    assert.doesNotMatch(message, /Co-authored-by/i);
+  });
+
+  it("shows the trailer and the final commit message after amending", async () => {
+    const coauthor = { name: "Pair", email: "pair@example.com" };
+    const output = await commitOutput(coauthor, "git commit -q -m 'add file'");
+    assert.match(output, /\[autopilot\] Added commit trailer: Co-authored-by: Pair <pair@example\.com>/);
+    assert.match(output, /\[autopilot\] Final commit message:\nadd file\n\nCo-authored-by: Pair <pair@example\.com>/);
+    const message = execSync("git log -1 --pretty=%B", { cwd: repo, encoding: "utf8" });
+    assert.equal(message.split("Co-authored-by: Pair").length - 1, 1);
+  });
+
+  it("covers commits made indirectly, shows the final message, and cleans up its temp file", async () => {
     await commitWith({ name: "Pair", email: "pair@example.com" }); // initial commit: the safety net needs a prior HEAD
     const before = readdirSync(tmpdir()).filter((f) => f.startsWith("kf-coauthor-")).length;
     writeFileSync(join(repo, "script.sh"), "git commit -q -m scripted\n");
-    const message = await commitWith({ name: "Pair", email: "pair@example.com" }, "sh script.sh && echo git done");
+    writeFileSync(join(repo, "indirect.txt"), "x");
+    execSync("git add -A", { cwd: repo });
+    const output = await commitOutput({ name: "Pair", email: "pair@example.com" }, "sh script.sh && echo git done");
+    assert.match(output, /\[autopilot\] Added commit trailer: Co-authored-by: Pair <pair@example\.com>/);
+    assert.match(output, /\[autopilot\] Final commit message:\nscripted\n\nCo-authored-by: Pair <pair@example\.com>/);
+    const message = execSync("git log -1 --pretty=%B", { cwd: repo, encoding: "utf8" });
     assert.match(message, /Co-authored-by: Pair <pair@example.com>/);
     const after = readdirSync(tmpdir()).filter((f) => f.startsWith("kf-coauthor-")).length;
     assert.ok(after <= before, "temp message file removed");
+  });
+
+  it("keeps a failed amend's exit status on the direct path", async () => {
+    rejectTrailerAmend();
+    const coauthor = { name: "Pair", email: "pair@example.com" };
+    writeFileSync(join(repo, "f.txt"), "x");
+    execSync("git add -A", { cwd: repo });
+    const output = await runRaw(coauthor, "git commit -q -m 'add file'");
+    assert.match(output, /^exit=1/, output);
+    assert.match(output, /trailer rejected by hook/);
+    const message = execSync("git log -1 --pretty=%B", { cwd: repo, encoding: "utf8" });
+    assert.doesNotMatch(message, /Co-authored-by/i);
+  });
+
+  it("keeps a failed amend's exit status on the safety-net path", async () => {
+    await commitWith({ name: "Pair", email: "pair@example.com" }); // prior HEAD for the safety net
+    rejectTrailerAmend();
+    writeFileSync(join(repo, "script.sh"), "git commit -q -m scripted\n");
+    writeFileSync(join(repo, "indirect.txt"), "x");
+    execSync("git add -A", { cwd: repo });
+    const output = await runRaw({ name: "Pair", email: "pair@example.com" }, "sh script.sh && echo git done");
+    assert.match(output, /^exit=1/, output);
+    assert.match(output, /trailer rejected by hook/);
+    const message = execSync("git log -1 --pretty=%B", { cwd: repo, encoding: "utf8" });
+    assert.match(message, /scripted/);
+    assert.doesNotMatch(message, /Co-authored-by/i);
   });
 });
 

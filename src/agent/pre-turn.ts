@@ -177,6 +177,7 @@ export async function prepareTurn(opts: AgentTurnOpts): Promise<PreTurnResult> {
           mode: opts.mode,
           skillContext: skillResult.skillContext,
           preferPullRequests: opts.preferPullRequests,
+          coauthor: opts.coauthor ?? false,
           ...(opts.headless ? { headless: true } : {}),
         }),
       };

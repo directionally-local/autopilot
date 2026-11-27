@@ -91,6 +91,20 @@ export function defaultCoauthor(env: EnvLike = process.env): { name: string; ema
   return launchedByDl(env) ? { name: "dl", email: "dl@directionallylocal.com" } : { name: "Autopilot", email: "autopilot@directionallylocal.com" };
 }
 
+/** The commit co-author a resolved config asks for, or undefined when the
+ *  trailer is turned off (`"coauthor": false`). */
+export function resolveCoauthor(
+  cfg: { coauthor?: boolean; coauthorName?: string; coauthorEmail?: string },
+  env: EnvLike = process.env,
+): { name: string; email: string } | undefined {
+  if (cfg.coauthor === false) return undefined;
+  const fallback = defaultCoauthor(env);
+  return {
+    name: cfg.coauthorName?.trim() || fallback.name,
+    email: cfg.coauthorEmail?.trim() || fallback.email,
+  };
+}
+
 /** The product name the person knows: "dl" under dl, else "autopilot". */
 export function productName(env: EnvLike = process.env): string {
   return launchedByDl(env) ? "dl" : "autopilot";
