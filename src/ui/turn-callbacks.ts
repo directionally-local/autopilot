@@ -110,6 +110,8 @@ export interface TurnCallbackDeps {
   onResponseMeta(meta: ResponseMeta): void;
   onTasks(tasks: Task[]): void;
   onPlanOptions(options: PlanOption[]): void;
+  /** Tool-call argument deltas the model streams while writing a call. */
+  onToolCallArgs?(delta: string): void;
   askPermission: PermissionAsker;
   /** Project context looks stale (shown once per session). */
   onKimiMdStale(): void;
@@ -145,6 +147,7 @@ export function createTurnCallbacks(deps: TurnCallbackDeps): AgentCallbacks {
       const id = deps.activeAsstIdRef.current;
       if (id !== null) deps.updateAssistant(id, (e) => ({ text: e.text + d }));
     },
+    onToolCallArgs: (_index, delta) => deps.onToolCallArgs?.(delta),
     onInfo: info,
     onModelRetry: (r) => {
       // Drop the failed attempt's answer: an empty final text replaces what

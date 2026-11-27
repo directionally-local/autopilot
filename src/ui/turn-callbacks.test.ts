@@ -91,6 +91,19 @@ describe("createTurnCallbacks", () => {
     assert.strictEqual(saves, 2);
   });
 
+  it("forwards streamed tool-call argument deltas without touching the transcript", () => {
+    const h = harness();
+    const args: string[] = [];
+    const cb = createTurnCallbacks({ ...h.deps, onToolCallArgs: (d) => args.push(d) });
+    cb.onAssistantStart!();
+    cb.onToolCallArgs!(0, '{"path":');
+    cb.onToolCallArgs!(0, '"a.ts"}');
+    assert.deepStrictEqual(args, ['{"path":', '"a.ts"}']);
+    const asst = h.events()[0] as Extract<ChatEvent, { kind: "assistant" }>;
+    assert.strictEqual(asst.text, "", "arguments never become assistant text");
+    assert.strictEqual(h.events().length, 1, "no chat event is added");
+  });
+
   it("surfaces guardrail notices except loop recovery, and memory recall with correct plurals", () => {
     const h = harness();
     const cb = createTurnCallbacks(h.deps);
