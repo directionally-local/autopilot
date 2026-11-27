@@ -35,7 +35,7 @@ import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type
 import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { Mode } from "../mode.js";
 import { dataPath, migrateLegacyDirs } from "../util/app-dirs.js";
-import { defaultCoauthor } from "../util/dl-identity.js";
+import { resolveCoauthor } from "../util/dl-identity.js";
 
 export async function createAgentSession(
   opts: CreateSessionOptions,
@@ -133,6 +133,7 @@ export async function createAgentSession(
     model: config.model,
     preferPullRequests: config.preferPullRequests,
     memoryEnabled,
+    coauthor: resolveCoauthor(config) ?? false,
   });
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
@@ -550,13 +551,7 @@ class InternalSession implements AutopilotSession {
 
   private async runTurn(mode: Mode, maxToolIterations?: number, turnId: string = makeTurnId()): Promise<void> {
     const signal = this.abortController!.signal;
-    const coauthor =
-      this.config.coauthor !== false
-        ? {
-            name: this.config.coauthorName || defaultCoauthor().name,
-            email: this.config.coauthorEmail || defaultCoauthor().email,
-          }
-        : undefined;
+    const coauthor = resolveCoauthor(this.config);
 
     const callbacks: AgentCallbacks = {
       onCompacted: (info) => {
@@ -775,6 +770,7 @@ class InternalSession implements AutopilotSession {
           mode: this.currentMode,
           preferPullRequests: this.config.preferPullRequests,
           memoryEnabled: this.memoryManager != null,
+          coauthor: resolveCoauthor(this.config) ?? false,
         }),
       };
     }

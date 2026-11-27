@@ -14,6 +14,9 @@ import { trackHandedOffJob } from "../jobs/handoff.js";
 interface Args {
   command: string;
   timeout_ms?: number;
+  /** Add the configured Co-authored-by trailer to commits this command
+   *  creates (default true). Set false when the user asks for no trailer. */
+  coauthor?: boolean;
 }
 
 const DEFAULT_TIMEOUT = 120_000;
@@ -98,7 +101,7 @@ export function getShellCommand(override?: string): ShellCommand {
 export const bashTool: ToolSpec<Args> = {
   name: "bash",
   description:
-    "Run a shell command. On Unix the default shell is bash; on Windows it falls back to cmd.exe. Prompts the user for permission before executing. stdout and stderr are captured and combined. Large outputs are reduced to a compact summary by default; use expand_artifact to retrieve the full log. A command that keeps running past the foreground budget (default 30s) is moved to a durable background job automatically, and its completion is delivered to you — keep working or use job_logs to check progress instead of retrying it.",
+    "Run a shell command. On Unix the default shell is bash; on Windows it falls back to cmd.exe. Prompts the user for permission before executing. stdout and stderr are captured and combined. Large outputs are reduced to a compact summary by default; use expand_artifact to retrieve the full log. A command that keeps running past the foreground budget (default 30s) is moved to a durable background job automatically, and its completion is delivered to you — keep working or use job_logs to check progress instead of retrying it. Commits this command creates get the configured Co-authored-by trailer unless their message already has any Co-authored-by trailer; the output then shows the final commit message. Pass coauthor: false when the user asks you not to add a trailer.",
   parameters: {
     type: "object",
     properties: {
@@ -108,6 +111,10 @@ export const bashTool: ToolSpec<Args> = {
         description: "Milliseconds. Default 120000, max 600000.",
         minimum: 1000,
         maximum: MAX_TIMEOUT,
+      },
+      coauthor: {
+        type: "boolean",
+        description: "Add the configured Co-authored-by trailer to commits this command creates. Default true. Set false when the user asks you not to add a co-author trailer.",
       },
     },
     required: ["command"],
@@ -557,11 +564,16 @@ const COAUTHOR_TRAILER_ENV = "KF_COAUTHOR_TRAILER";
 const COAUTHOR_MSG_ENV = "KF_COAUTHOR_MSG";
 
 /** Static: references the trailer and temp file only via quoted expansions,
- *  and removes the temp file whether or not the amend succeeds. */
+ *  and removes the temp file whether or not the amend succeeds. A commit
+ *  whose message already carries any Co-authored-by trailer (whatever its
+ *  case or value) is left alone. After a successful amend the final message
+ *  is printed, so the model sees what its commit actually says. */
 const AMEND_BLOCK = [
-  `if ! git log -1 --pretty=%B 2>/dev/null | grep -qF -- "$${COAUTHOR_TRAILER_ENV}"; then`,
+  `if ! git log -1 --pretty=%B 2>/dev/null | grep -qiE '^[[:space:]]*co-authored-by:'; then`,
   `  git log -1 --pretty=%B | git interpret-trailers --trailer "$${COAUTHOR_TRAILER_ENV}" > "$${COAUTHOR_MSG_ENV}" && git commit --amend -F "$${COAUTHOR_MSG_ENV}" --no-edit; _KF_RC=$?;`,
-  `  rm -f "$${COAUTHOR_MSG_ENV}"; [ $_KF_RC -eq 0 ];`,
+  `  rm -f "$${COAUTHOR_MSG_ENV}";`,
+  `  if [ $_KF_RC -eq 0 ]; then printf '\\n[autopilot] Added commit trailer: %s\\n[autopilot] Final commit message:\\n%s\\n' "$${COAUTHOR_TRAILER_ENV}" "$(git log -1 --pretty=%B)"; fi;`,
+  `  [ $_KF_RC -eq 0 ];`,
   `fi`,
 ].join("\n");
 
@@ -624,7 +636,11 @@ export function injectCoauthor(
     `fi`,
   ].join("\n");
   return {
-    command: `_KF_BEFORE_HEAD=$(${beforeHead}); (${command}); _KF_EXIT=$?; [ $_KF_EXIT -eq 0 ] && { ${afterCheck}\n}; exit $_KF_EXIT`,
+    // The amend's failure must reach the tool result too: a commit whose
+    // trailer could not be added did not do what the command claimed.
+    command:
+      `_KF_BEFORE_HEAD=$(${beforeHead}); (${command}); _KF_EXIT=$?; ` +
+      `if [ $_KF_EXIT -eq 0 ]; then\n${afterCheck}\n_KF_EXIT=$?\nfi\nexit $_KF_EXIT`,
     env,
   };
 }
@@ -669,8 +685,9 @@ async function runBash(args: Args, ctx: ToolContext): Promise<ToolOutput> {
   const footer = isPosix && createsGhPr(args.command) && prFooterEnabled()
     ? wrapGhPrCreate(args.command, join(tmpdir(), `kf-pr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`))
     : { command: args.command, env: {} };
+  // `coauthor: false` is the model honoring "don't add a co-author trailer".
   const { command, env: coauthorEnv } = isPosix
-    ? injectCoauthor(footer.command, ctx.coauthor)
+    ? injectCoauthor(footer.command, args.coauthor === false ? undefined : ctx.coauthor)
     : { command: args.command, env: {} };
 
   // #1101: on POSIX, commands that outlive the foreground budget move to a

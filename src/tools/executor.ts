@@ -395,6 +395,10 @@ export interface ToolResult {
    *  a hook, the guardrails or the host's answer. Print mode exits non-zero
    *  after a run with any denied call. */
   denied?: boolean;
+  /** Execution facts the tool reported (bash: exit code, timeout, backgrounded
+   *  job), kept on the result so the agent loop can reason about it (e.g. the
+   *  completion gate checking whether the last test command failed). */
+  meta?: ToolOutputMeta;
 }
 
 /** Cap on `result.content` bytes carried in the PostToolUse hook
@@ -824,6 +828,7 @@ export class ToolExecutor {
           rawBytes: bytes,
           reducedBytes: bytes,
           artifactId,
+          ...(normalized.meta ? { meta: normalized.meta } : {}),
         };
         this.firePostToolUse(call, args, diffResult, ctx, normalized.meta);
         return diffResult;
@@ -861,6 +866,7 @@ export class ToolExecutor {
         reducedBytes: Buffer.byteLength(finalContent, "utf8"),
         artifactId: reduced.artifactId,
         ...(normalized.waitRequest ? { waitRequest: normalized.waitRequest } : {}),
+        ...(normalized.meta ? { meta: normalized.meta } : {}),
       };
       this.firePostToolUse(call, args, success, ctx, normalized.meta, fileChange);
       return success;

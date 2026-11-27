@@ -533,6 +533,12 @@ The harness never starts a subagent by itself: the agent calls the `subagent` to
 
 When a substantial turn ends without the agent asking you anything, a Jev yes/no check asks whether it actually finished — or clearly explained a blocker — rather than stopping after a plan or "next I'll…". If it clearly didn't, the agent is told to continue (once per turn), so you don't have to type "go on". Typically under a second; OpenRouter only. Turn it off with `"completionCheck": false` in config or `AUTOPILOT_COMPLETION_CHECK=0`.
 
+A deterministic completion gate runs before the final answer too: if a background job this session started is still running, or the last test command failed, the agent is told once to wait for it / fix and re-run the tests, or to say plainly in its answer that the result is still outstanding. The agent is also prompted to run the project's full test command when one exists — the `test` script in package.json, a `test` target in the Makefile, `cargo test`, and so on — rather than only the tests for the files it touched.
+
+### Commit trailers
+
+Commits the agent creates carry `Co-authored-by: Autopilot <autopilot@directionallylocal.com>` (or dl when dl launched Autopilot). The trailer is never added when the commit message already has any Co-authored-by trailer, whatever its case or value, and after the bash tool amends a commit its output shows the final commit message. Turn it off with `"coauthor": false` in `~/.config/autopilot/config.json`, `AUTOPILOT_COAUTHOR=0`, or by telling the agent not to add it (the bash tool takes `coauthor: false` for that commit). `coauthorName` / `coauthorEmail` (`AUTOPILOT_COAUTHOR_NAME` / `AUTOPILOT_COAUTHOR_EMAIL`) change the value.
+
 ## Running shell commands yourself
 
 Type `!` followed by a command (for example `! gh auth login`) to run it in your own terminal, inside the session. Logins, password prompts and interactive programs work because the command gets the real TTY. The output is added to the conversation so the agent can see it. The agent's own `bash` tool has no terminal, so autopilot suggests `! <command>` when something needs you: a login, a `sudo` password, an SSH passphrase, or a secret you'd rather not paste into chat. On macOS and Linux the output is captured with `script(1)`; elsewhere the command still runs but its output isn't captured.

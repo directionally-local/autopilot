@@ -398,7 +398,7 @@ export class JobManager {
   }
 }
 
-function defaultJobDbPath(): string {
+export function defaultJobDbPath(): string {
   return process.env.AUTOPILOT_JOBS_DB || join(stateDir(), "jobs.db");
 }
 

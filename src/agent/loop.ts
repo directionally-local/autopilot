@@ -41,6 +41,7 @@ import { withTurnDirective } from "./turn-directive.js";
 import { buildPlanReminder, withPlanReminder } from "./plan-reminder.js";
 import { classifyVerification } from "../trace/verification.js";
 import { CONTINUE_NUDGE, INCOMPLETE_THRESHOLD, prCiNudge, shouldCheckCompletion, toolsUsedSince, type CompletionCheck } from "./completion-check.js";
+import { completionGateNotice, recordBashResult, runningSessionJobs, type CompletionGateState } from "./completion-gate.js";
 import type { Mode } from "../mode.js";
 import { createNoopRecorder, makeTurnId } from "../trace/recorder.js";
 import { beginGitDelta } from "../trace/git-delta.js";
@@ -804,6 +805,10 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   let loopRecoveries = 0;
   let completionNudges = 0;
   let prCiNudges = 0;
+  // Completion gate: a still-running background job or a failed test run
+  // must be resolved (or stated plainly) before the final answer, once a turn.
+  let completionGateNudged = false;
+  const completionGateState: CompletionGateState = {};
   // Set when a guardrail decides the turn must end: the next request is a
   // final, tool-free summary and the turn finishes after it.
   let finalizeReason: "loop" | "limit_ceiling" | "loop_stall" | null = null;
@@ -1382,6 +1387,25 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       // Input that arrived while the model was writing its answer must be
       // answered in this turn, not silently carried into the next one.
       if (appendPendingInput() > 0) continue;
+      // Completion gate: a background job this session started is still
+      // running, or the last test command failed. Either way a plain "done"
+      // would hide an outstanding result; ask the model once to wait/resolve
+      // it or say so plainly before ending the turn.
+      if (!completionGateNudged) {
+        const gateNotice = completionGateNotice({
+          runningJobs: runningSessionJobs(opts.sessionId, opts.cwd, opts.jobsDbPath),
+          lastTest: completionGateState.lastTest,
+        });
+        if (gateNotice) {
+          completionGateNudged = true;
+          logger.info("turn:completion_gate_nudge", {
+            sessionId: opts.sessionId,
+            lastTestFailed: completionGateState.lastTest !== undefined && completionGateState.lastTest.exitCode !== 0,
+          });
+          opts.messages.push({ role: "system", content: gateNotice });
+          continue;
+        }
+      }
       // A PR opened this turn is not finished until its CI is verified. This
       // is deterministic (no model call) so a slow CI run cannot be skipped.
       if (prCiNudges < 1) {
@@ -1875,6 +1899,11 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         result = { ...result, content: `${result.content}\n\n${BOOKKEEPING_RESULT_NOTE}` };
       }
       toolResults.push(result);
+      // Completion gate input: remember whether the latest test run passed.
+      if (tc.function.name === "bash") {
+        const gateCommand = parseArgsObject(tc.function.arguments).command;
+        recordBashResult(completionGateState, typeof gateCommand === "string" ? gateCommand : undefined, result.meta);
+      }
       // One result per call: a late result after an interrupt replaces the
       // "(stopped)" placeholder instead of becoming a second result.
       const placed = recordToolResult(opts.messages, { role: "tool", tool_call_id: result.tool_call_id, content: sanitizeString(result.content), name: result.name });

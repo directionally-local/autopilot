@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { buildStaticPrefix, buildSessionPrefix, buildSystemMessages, buildSystemPrompt } from "./system-prompt.js";
+import { configPath } from "../util/app-dirs.js";
 import type { ToolSpec } from "../tools/registry.js";
 import { noteActiveProvider } from "../providers/resolve.js";
 
@@ -22,15 +25,45 @@ describe("buildStaticPrefix", () => {
       const p = buildStaticPrefix({ model: "m" });
       assert.ok(p.startsWith("You are Autopilot, an interactive coding assistant"));
       assert.ok(p.includes("`Co-authored-by: Autopilot <autopilot@directionallylocal.com>`"));
+      assert.match(p, /Do not write a Co-authored-by trailer yourself/);
       assert.doesNotMatch(p, /kimiflare/i);
       process.env.AUTOPILOT_LAUNCHED_BY = "dl";
       const dl = buildStaticPrefix({ model: "m" });
       assert.ok(dl.startsWith("You are dl, an interactive coding assistant"));
-      assert.ok(dl.includes("`Co-authored-by: dl <dl@directionallylocal.com>` in the commit message so dl is credited"));
+      assert.ok(dl.includes("`Co-authored-by: dl <dl@directionallylocal.com>` to commits it creates so dl is credited"));
       assert.doesNotMatch(dl, /kimiflare|autopilot/i);
     } finally {
       if (prev === undefined) delete process.env.AUTOPILOT_LAUNCHED_BY;
       else process.env.AUTOPILOT_LAUNCHED_BY = prev;
+    }
+  });
+
+  it("uses the configured co-author, and omits the trailer bullet when it is off", () => {
+    const custom = buildStaticPrefix({ model: "m", coauthor: { name: "Jane Doe", email: "jane@example.com" } });
+    assert.ok(custom.includes("`Co-authored-by: Jane Doe <jane@example.com>`"));
+    assert.doesNotMatch(custom, /Co-authored-by: Autopilot/);
+
+    const off = buildStaticPrefix({ model: "m", coauthor: false });
+    assert.doesNotMatch(off, /Co-authored-by/);
+    assert.doesNotMatch(off, /the bash tool adds/);
+  });
+
+  it("reads the co-author from config.json and its env override", () => {
+    const path = configPath("config.json");
+    mkdirSync(dirname(path), { recursive: true });
+    const prev = process.env.AUTOPILOT_COAUTHOR;
+    try {
+      delete process.env.AUTOPILOT_COAUTHOR;
+      writeFileSync(path, JSON.stringify({ coauthor: false }));
+      assert.doesNotMatch(buildStaticPrefix({ model: "m" }), /Co-authored-by/);
+      writeFileSync(path, JSON.stringify({ coauthorName: "Config Person", coauthorEmail: "config@example.com" }));
+      assert.ok(buildStaticPrefix({ model: "m" }).includes("`Co-authored-by: Config Person <config@example.com>`"));
+      process.env.AUTOPILOT_COAUTHOR = "0";
+      assert.doesNotMatch(buildStaticPrefix({ model: "m" }), /Co-authored-by/);
+    } finally {
+      rmSync(path, { force: true });
+      if (prev === undefined) delete process.env.AUTOPILOT_COAUTHOR;
+      else process.env.AUTOPILOT_COAUTHOR = prev;
     }
   });
 
