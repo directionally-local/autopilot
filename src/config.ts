@@ -605,6 +605,7 @@ export async function loadConfig(): Promise<AutopilotConfig | null> {
     await rewriteLegacyConfig(persisted, openrouterApiKey).catch(() => undefined);
   }
 
+  persistedModelBaseline = cfg.model;
   return stripUndefined(cfg);
 }
 
@@ -767,15 +768,40 @@ function stripUndefined<T extends object>(obj: T): T {
  * keeps the saved model on disk while the session runs on `used`.
  */
 let sessionModelFallback: { provider: ProviderId; saved: string; used: string } | null = null;
+/** True when the session model came from an explicit pick, not an automatic fallback. */
+let sessionModelFallbackIsExplicit = false;
+/** The model this process last loaded or explicitly persisted, for detecting real model changes. */
+let persistedModelBaseline: string | undefined;
 
 /** Run this session on `used` while `saved` stays the saved choice. */
 export function setSessionModelFallback(f: { provider: ProviderId; saved: string; used: string } | null): void {
   sessionModelFallback = f;
+  sessionModelFallbackIsExplicit = false;
+}
+
+/** The current session model is a person's pick, not an automatic fallback. */
+export function hasExplicitSessionModel(): boolean {
+  return sessionModelFallback !== null && sessionModelFallbackIsExplicit;
 }
 
 /** The config with a model the person picked (/model or the picker): an explicit pick ends a session fallback. */
 export function pickedModel<T extends { model?: string }>(cfg: T, model: string): T {
   sessionModelFallback = null;
+  sessionModelFallbackIsExplicit = false;
+  return { ...cfg, model };
+}
+
+/**
+ * Pick a model for the current session only. `cfg.model` is what this session
+ * (and its saved session file) uses; `savedModel` is the global default that
+ * stays on disk. A later saveConfig() for an unrelated setting keeps that
+ * default, exactly like the free tier's in-session fallback.
+ */
+export function sessionPickedModel<T extends { model?: string }>(cfg: T, model: string, savedModel?: string): T {
+  const saved = savedModel || cfg.model || model;
+  const active = resolveActiveProvider(cfg as unknown as AutopilotConfig).id;
+  sessionModelFallback = { provider: active, saved, used: model };
+  sessionModelFallbackIsExplicit = true;
   return { ...cfg, model };
 }
 
@@ -784,7 +810,7 @@ export function pickedModel<T extends { model?: string }>(cfg: T, model: string)
  * preset are not user choices: persisting them would pin one provider's ids
  * into the file and leak them into the next provider after a switch.
  */
-async function forSaving(cfg: AutopilotConfig, path: string): Promise<AutopilotConfig> {
+async function forSaving(cfg: AutopilotConfig, path: string, opts: { explicitModel?: boolean } = {}): Promise<AutopilotConfig> {
   const active = resolveActiveProvider(cfg);
   const out: AutopilotConfig = { ...cfg };
   const plumbing = active.preset.plumbingModel;
@@ -793,33 +819,68 @@ async function forSaving(cfg: AutopilotConfig, path: string): Promise<AutopilotC
       if (out[k] === plumbing) delete out[k];
     }
   }
+  let onDisk: Partial<AutopilotConfig> = {};
+  try {
+    onDisk = JSON.parse(await readFile(path, "utf8")) as Partial<AutopilotConfig>;
+  } catch {
+    /* no file yet */
+  }
   // The top-level `model` belongs to the provider the file is written for.
   // When another provider is active only for this run (AUTOPILOT_PROVIDER),
   // its model goes under providers.<id>.model and the file's own model stays.
   const owner = isProviderId(cfg.provider) ? cfg.provider : resolveProviderId({ ...cfg, provider: undefined }, {});
-  // A model used only for this session (the free tier's fallback) is not a choice: keep the saved one.
   const fallback = sessionModelFallback;
-  if (fallback && active.id === fallback.provider && cfg.model === fallback.used) out.model = fallback.saved;
-  // providers.<id>.model wins over the top-level model on load, so the
-  // active provider's entry must follow the model being saved — otherwise a
-  // model picked with /model is shadowed by the one the entry was given at
-  // sign-in or on a switch (the free tier always has one) and every new
-  // session starts on that one again. A KIMI_MODEL override is not a choice.
   const envModel = process.env.KIMI_MODEL || undefined;
-  if (owner === active.id && out.model && out.model !== envModel) {
-    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: out.model } };
-  }
-  if (owner !== active.id) {
-    let onDisk: Partial<AutopilotConfig> = {};
-    try {
-      onDisk = JSON.parse(await readFile(path, "utf8")) as Partial<AutopilotConfig>;
-    } catch {
-      /* no file yet */
+  const modelIsEnv = !!envModel && cfg.model === envModel;
+  // A model used only for this session (a /model pick or the free tier's
+  // fallback) is not a default: an unrelated save must not write it.
+  const modelIsSessionOnly = !!fallback && active.id === fallback.provider && cfg.model === fallback.used;
+  // Only an explicit model change (or a genuine difference from what this
+  // process loaded) may update the model on disk. This keeps a concurrent
+  // session's fresh default when we save an unrelated setting.
+  const modelChangedHere =
+    !!cfg.model &&
+    !modelIsEnv &&
+    !modelIsSessionOnly &&
+    (opts.explicitModel === true || persistedModelBaseline === undefined || cfg.model !== persistedModelBaseline);
+
+  const diskProviders: NonNullable<AutopilotConfig["providers"]> = onDisk.providers ?? {};
+  const providers: NonNullable<AutopilotConfig["providers"]> = { ...(out.providers ?? {}) };
+  if (modelChangedHere) {
+    // providers.<id>.model wins over the top-level model on load, so the
+    // active provider's entry must follow the model being saved.
+    providers[active.id] = { ...providers[active.id], model: cfg.model };
+    if (owner === active.id) {
+      out.model = cfg.model;
+    } else if (onDisk.model) {
+      out.model = onDisk.model;
+    } else {
+      delete (out as Partial<AutopilotConfig>).model;
     }
-    out.providers = { ...out.providers, [active.id]: { ...out.providers?.[active.id], model: out.model } };
+  } else {
+    // Unrelated save: keep the model and the provider's model as they are on
+    // disk now (another session may have changed the default meanwhile).
     if (onDisk.model) out.model = onDisk.model;
     else delete (out as Partial<AutopilotConfig>).model;
+    const diskModel = diskProviders[active.id]?.model;
+    if (diskModel !== undefined) {
+      providers[active.id] = { ...providers[active.id], model: diskModel };
+    } else if (providers[active.id]?.model) {
+      const { model: _model, ...rest } = providers[active.id]!;
+      if (Object.keys(rest).length > 0) providers[active.id] = rest;
+      else delete providers[active.id];
+    }
   }
+  // Other providers' last-used models are on-disk state too: never roll them
+  // back from a stale in-memory copy.
+  for (const id of Object.keys(providers) as ProviderId[]) {
+    if (id === active.id) continue;
+    const diskModel = diskProviders[id]?.model;
+    if (diskModel !== undefined) providers[id] = { ...providers[id], model: diskModel };
+  }
+  if (Object.keys(providers).length > 0) out.providers = providers;
+  else delete (out as Partial<AutopilotConfig>).providers;
+  if (modelChangedHere && cfg.model) persistedModelBaseline = cfg.model;
   return out;
 }
 
@@ -857,15 +918,18 @@ export function patchPersistedConfig(patch: Partial<AutopilotConfig>): Promise<s
     await mkdir(join(p, ".."), { recursive: true });
     await writeFile(p, JSON.stringify(merged, null, 2), "utf8");
     await chmod(p, 0o600);
+    if (Object.prototype.hasOwnProperty.call(patch, "model") && typeof merged.model === "string") {
+      persistedModelBaseline = merged.model;
+    }
     return p;
   });
 }
 
-export function saveConfig(cfg: AutopilotConfig): Promise<string> {
+export function saveConfig(cfg: AutopilotConfig, opts: { explicitModel?: boolean } = {}): Promise<string> {
   return withConfigLock(async () => {
     const p = configPath();
     await mkdir(join(p, ".."), { recursive: true });
-    await writeFile(p, JSON.stringify(await forSaving(cfg, p), null, 2), "utf8");
+    await writeFile(p, JSON.stringify(await forSaving(cfg, p, opts), null, 2), "utf8");
     await chmod(p, 0o600);
     return p;
   });

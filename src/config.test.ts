@@ -758,15 +758,37 @@ describe("loadConfig", () => {
       assert.strictEqual(await flag(), undefined);
     });
 
-    it("remembers a model picked with /model across sessions", async () => {
+    it("remembers an explicit default model across sessions", async () => {
       await writeConfigFile({ providers: { [DL]: { apiKey: "access-1" } } });
       await switchProvider(null, DL, DEEPSEEK);
       const first = (await loadConfig())!;
       assert.strictEqual(first.model, DEEPSEEK);
       await saveConfig({ ...first, model: "gpt-6.1-sol" });
-      assert.strictEqual((await loadConfig())?.model, "gpt-6.1-sol", "the next session starts on the picked model");
+      assert.strictEqual((await loadConfig())?.model, "gpt-6.1-sol", "the next session starts on the saved default");
       assert.strictEqual(await savedModel(), "gpt-6.1-sol");
       assert.strictEqual(await flag(), true);
+    });
+
+    it("does not roll back a default another session changed between saves", async () => {
+      await writeConfigFile({
+        openrouterApiKey: "sk-or-file",
+        model: "anthropic/claude-sonnet-4-6",
+        providers: { openrouter: { model: "anthropic/claude-sonnet-4-6" } },
+      });
+      const sessionA = (await loadConfig())!;
+      // Session B explicitly changes the default while A is still running.
+      await writeConfigFile({
+        openrouterApiKey: "sk-or-file",
+        model: "openai/gpt-6.1",
+        providers: { openrouter: { model: "openai/gpt-6.1" } },
+      });
+
+      await saveConfig({ ...sessionA, shell: "zsh" });
+
+      const onDisk = await readConfigFile();
+      assert.strictEqual(onDisk.model, "openai/gpt-6.1", "B's explicit default survives A's unrelated save");
+      const providers = onDisk.providers as Record<string, { model?: string }>;
+      assert.strictEqual(providers.openrouter?.model, "openai/gpt-6.1", "the active provider entry follows the disk");
     });
 
     it("keeps the picked free model when the free tier is chosen again", async () => {
@@ -788,7 +810,7 @@ describe("loadConfig", () => {
       await saveConfig({ ...fallback.cfg, shell: "zsh" });
       assert.strictEqual(await savedModel(), "gpt-6.1-sol");
       assert.strictEqual((await loadConfig())?.model, "gpt-6.1-sol");
-      // An explicit pick during the session is saved as usual.
+      // An explicit default pick is saved as usual.
       await saveConfig({ ...pickedModel(fallback.cfg, "gpt-6-astra") });
       assert.strictEqual(await savedModel(), "gpt-6-astra");
     });

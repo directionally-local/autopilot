@@ -11,6 +11,25 @@ import { secureSandboxUnavailableReason } from "../code-mode/sandbox.js";
 
 const sandboxUnavailableReason = await secureSandboxUnavailableReason();
 
+/** Wait for (and return) the turn-outcome row a fire-and-forget write appends. */
+async function waitForOutcome(sessionId: string): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    try {
+      const rows = readFileSync(dataPath("cost-debug.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((r) => r.sessionId === sessionId && r.kind === "turn-outcome");
+      if (rows.length > 0) return rows[rows.length - 1]!;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`no turn-outcome row for ${sessionId}`);
+}
+
 describe("runAgentTurn", () => {
   let originalFetch: typeof globalThis.fetch;
 
@@ -200,6 +219,106 @@ describe("runAgentTurn", () => {
     // No assistant message should have been appended because abort happened
     // before the stream produced any usable content.
     assert.strictEqual(messages.length, 2);
+  });
+
+  it("records an aborted turn's streamed output as estimated usage", async () => {
+    const controller = new AbortController();
+    const sessionId = `abort-estimate-${Date.now()}`;
+    const messages: ChatMessage[] = [
+      { role: "system", content: "test" },
+      { role: "user", content: "hi" },
+    ];
+
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"streamed but interrupted text"}}]}\n\n'));
+          controller.signal.addEventListener("abort", () => {
+            try {
+              c.error(new DOMException("aborted", "AbortError"));
+            } catch {
+              /* already closed */
+            }
+          }, { once: true });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = { list: () => [], run: async () => ({ ok: true, content: "unexpected" }) } as unknown as ToolExecutor;
+
+    setTimeout(() => controller.abort(), 100);
+    await assert.rejects(
+      runAgentTurn({
+        openrouterApiKey: "sk-or-test",
+        model: "test/model",
+        messages,
+        tools: [],
+        executor,
+        cwd: "/tmp",
+        sessionId,
+        signal: controller.signal,
+        callbacks: { askPermission: async () => "allow" },
+      }),
+      (err: unknown) => err instanceof DOMException && err.name === "AbortError",
+    );
+
+    const outcome = await waitForOutcome(sessionId);
+    assert.equal(outcome.outcome, "aborted");
+    assert.equal(outcome.usageEstimated, true);
+    const usage = outcome.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+    assert.ok(usage.completion_tokens > 0, "the streamed text was estimated");
+    assert.ok(usage.prompt_tokens > 0, "the prompt was estimated");
+    assert.equal(usage.total_tokens, usage.prompt_tokens + usage.completion_tokens);
+  });
+
+  it("records the provider's real usage on an aborted turn when it was sent", async () => {
+    const controller = new AbortController();
+    const sessionId = `abort-real-${Date.now()}`;
+    const messages: ChatMessage[] = [
+      { role: "system", content: "test" },
+      { role: "user", content: "hi" },
+    ];
+
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"half"}}]}\n\n'));
+          c.enqueue(encoder.encode('data: {"choices":[],"usage":{"prompt_tokens":77,"completion_tokens":3,"total_tokens":80}}\n\n'));
+          controller.signal.addEventListener("abort", () => {
+            try {
+              c.error(new DOMException("aborted", "AbortError"));
+            } catch {
+              /* already closed */
+            }
+          }, { once: true });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const executor = { list: () => [], run: async () => ({ ok: true, content: "unexpected" }) } as unknown as ToolExecutor;
+
+    setTimeout(() => controller.abort(), 100);
+    await assert.rejects(
+      runAgentTurn({
+        openrouterApiKey: "sk-or-test",
+        model: "test/model",
+        messages,
+        tools: [],
+        executor,
+        cwd: "/tmp",
+        sessionId,
+        signal: controller.signal,
+        callbacks: { askPermission: async () => "allow" },
+      }),
+      (err: unknown) => err instanceof DOMException && err.name === "AbortError",
+    );
+
+    const outcome = await waitForOutcome(sessionId);
+    assert.equal(outcome.outcome, "aborted");
+    assert.equal(outcome.usageEstimated, undefined);
+    assert.deepEqual(outcome.usage, { prompt_tokens: 77, completion_tokens: 3, total_tokens: 80 });
   });
 
   it("throws AbortError when signal aborts after streaming but before tool execution", async () => {

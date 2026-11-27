@@ -132,6 +132,28 @@ describe("turn outcome and provider resolution labels", () => {
       assert.equal(guardrail!.outcomeDetail, "loop_stall");
     }));
 
+  it("records real usage on an outcome row, and marks an estimate as estimated", () =>
+    withDataHome(async (root) => {
+      await logTurnOutcome({
+        sessionId: "s1",
+        turn: 5,
+        outcome: "aborted",
+        usage: { prompt_tokens: 120, completion_tokens: 9, total_tokens: 129 },
+      });
+      await logTurnOutcome({
+        sessionId: "s1",
+        turn: 6,
+        outcome: "aborted",
+        usage: { prompt_tokens: 80, completion_tokens: 4, total_tokens: 84 },
+        usageEstimated: true,
+      });
+      const [real, estimated] = readEntries(root);
+      assert.deepEqual(real!.usage, { prompt_tokens: 120, completion_tokens: 9, total_tokens: 129 });
+      assert.equal(real!.usageEstimated, undefined);
+      assert.deepEqual(estimated!.usage, { prompt_tokens: 80, completion_tokens: 4, total_tokens: 84 });
+      assert.equal(estimated!.usageEstimated, true);
+    }));
+
   it("logProviderResolution writes a generationId-joined provider row", () =>
     withDataHome(async (root) => {
       await logProviderResolution({ sessionId: "s1", generationId: "gen-123", provider: "PrimeIntellect", costUsd: 0.012, latencyMs: 4200 });

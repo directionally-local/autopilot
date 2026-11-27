@@ -48,7 +48,7 @@ import { setTerminalTitle } from "./ui/terminal-title.js";
 import { syncHerdrFromTui } from "./util/herdr.js";
 import { checkForUpdate, updateNotice } from "./util/update-check.js";
 import type { UpdateCheckResult } from "./util/update-check.js";
-import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, pickedModel, saveConfig, setSessionModelFallback, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
+import { DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, loadConfig, sessionPickedModel, saveConfig, setSessionModelFallback, tuiMemoryEnabled, type AutopilotConfig, type ReasoningEffort, plumbingModelOf } from "./config.js";
 import { nextMode, startMode, type Mode } from "./mode.js";
 import { classifyIntent } from "./intent/classify.js";
 import { resolveTurnCodeMode } from "./agent/turn-code-mode.js";
@@ -177,6 +177,8 @@ function App({
 }) {
   const { exit } = useApp();
   const [cfg, setCfg] = useState<Cfg | null>(initialCfg);
+  /** The saved global model. /model changes it only with --default. */
+  const defaultModelRef = useRef(initialCfg?.model ?? "");
   const modelContextLimit = useMemo(
     () => (cfg ? getModelOrInfer(cfg.model).contextWindow : CONTEXT_LIMIT),
     [cfg?.model],
@@ -477,6 +479,8 @@ function App({
     setHistory,
     setUsage,
     setSessionUsage,
+    setCfg,
+    defaultModelRef,
     mkKey,
   });
   const {
@@ -1010,20 +1014,16 @@ function App({
       setShowModelPicker(false);
       if (!picked) return;
       const previousModel = cfg?.model ?? "the current model";
-      setCfg((c) => {
-        if (!c) return c;
-        const updated = pickedModel(c, picked.id);
-        void saveConfig(updated).catch(() => {});
-        return updated;
-      });
+      const savedDefault = defaultModelRef.current || cfg?.model || picked.id;
+      setCfg((c) => (c ? sessionPickedModel(c, picked.id, savedDefault) : c));
       setEvents((e) => [
         ...e,
         {
           kind: "info",
           key: mkKey(),
           text: busy
-            ? `model selected: ${picked.id} · ${picked.contextWindow.toLocaleString()} ctx. The current turn continues with ${previousModel}; your next message will use ${picked.id}. Conversation history is kept.`
-            : `model switched: ${previousModel} → ${picked.id} · ${picked.contextWindow.toLocaleString()} ctx. Your next message will use this model; conversation history is kept.`,
+            ? `model selected: ${picked.id} · ${picked.contextWindow.toLocaleString()} ctx (this session only — default stays ${savedDefault}). The current turn continues with ${previousModel}; your next message will use ${picked.id}. Conversation history is kept.`
+            : `model switched: ${previousModel} → ${picked.id} · ${picked.contextWindow.toLocaleString()} ctx (this session only — default stays ${savedDefault}). Your next message will use this model; conversation history is kept.`,
         },
       ]);
     },
@@ -1038,6 +1038,10 @@ function App({
         setEvents((e) => [...e, { kind: "error", key: mkKey(), text: "couldn't load the config after switching provider" }]);
         return;
       }
+      // Switching provider is an explicit config change: its model becomes
+      // the saved default for new sessions.
+      defaultModelRef.current = loaded.model;
+      setSessionModelFallback(null);
       setCfg(loaded);
       setEvents((e) => [...e, { kind: "info", key: mkKey(), text: switchedMessage(loaded, to) }]);
     },
@@ -1051,6 +1055,7 @@ function App({
     setEvents,
     cfg,
     setCfg,
+    defaultModelRef,
     mode,
     setMode,
     setShowReasoning: turn.setShowReasoning,
@@ -2312,13 +2317,9 @@ function App({
         // GPT-6's week used up: switch to DeepSeek, then send the blocked request again on it.
         else if (next.kind === "switch-model") {
           const previous = cfg?.model ?? "the current model";
-          setCfg((c) => {
-            if (!c) return c;
-            const updated = pickedModel(c, next.model);
-            void saveConfig(updated).catch(() => {});
-            return updated;
-          });
-          setEvents((es) => [...es, { kind: "info", key: mkKey(), text: `model switched: ${previous} → ${next.model}. Conversation history is kept.` }]);
+          const savedDefault = defaultModelRef.current || cfg?.model || next.model;
+          setCfg((c) => (c ? sessionPickedModel(c, next.model, savedDefault) : c));
+          setEvents((es) => [...es, { kind: "info", key: mkKey(), text: `model switched: ${previous} → ${next.model} (this session only — default stays ${savedDefault}). Conversation history is kept.` }]);
           if (next.retry) setDlRetryOn({ model: next.model, ...next.retry });
         }
       },
