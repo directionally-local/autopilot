@@ -119,6 +119,19 @@ describe("free-tier usage events", () => {
     assert.strictEqual(new Set(posts.flatMap((p) => p.events.map((e) => e.id))).size, 150);
   });
 
+  it("sends events with the Autopilot key dl made (dl_ak_), never with a plain dl key (dl_sk_)", async () => {
+    process.env.AUTOPILOT_DL_FREE_TOKEN = `dl_sk_abc_aaaaaaaaaaaa_${"A".repeat(43)}`;
+    recordDlEvent("turn.end", "s1", { turns: 1 });
+    await flushDlEvents();
+    assert.strictEqual(posts.length, 0, "a dl key in Autopilot: dropped, as before");
+    const autopilotKey = `dl_ak_abc_aaaaaaaaaaaa_${"A".repeat(43)}`;
+    process.env.AUTOPILOT_DL_FREE_TOKEN = autopilotKey;
+    recordDlEvent("turn.end", "s1", { turns: 2 });
+    await flushDlEvents();
+    assert.strictEqual(posts.length, 1);
+    assert.strictEqual(posts[0]!.auth, `Bearer ${autopilotKey}`);
+  });
+
   it("retries a failed batch once, then drops it without throwing", async () => {
     replies = [0, 503];
     recordDlEvent("error", "s1", { errorCode: "http_500" });

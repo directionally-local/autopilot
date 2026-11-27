@@ -8,10 +8,10 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DL_API_URL, DL_FREE_DEFAULT_URL, dlKeyMode, dlOrigin, isDlApiKey } from "./dl-endpoint.js";
+import { DL_API_URL, DL_FREE_DEFAULT_URL, DL_TOKEN_FILE_ENV, dlKeyMode, dlOrigin, isDlApiKey, isDlAutopilotKey } from "./dl-endpoint.js";
 import { resolveActiveProvider } from "./resolve.js";
 import { configPath, loadConfig } from "../config.js";
-import { DL_KEY_REFUSED_LINE, describeDlError, dlSignedInLine, dlStartLine, fetchDlMe, renderDlUsage, isDlAuthError, DlError } from "./directionally-local.js";
+import { DL_AUTOPILOT_KEY_EXPIRED_LINE, DL_TOKEN_FILE_WAIT_MS, dlAccessToken, DL_KEY_REFUSED_LINE, describeDlError, dlSignedInLine, dlStartLine, fetchDlMe, renderDlUsage, isDlAuthError, DlError } from "./directionally-local.js";
 import { DL_FREE_PLAN_LINE, dlPlanHeaderLine, dlPlanSignedInLine, parseDlPlanUsage, renderDlPlanUsage } from "./dl-plan.js";
 import { dlPlanCatalog } from "./dl-free-providers.js";
 import { sendFeedback } from "../feedback.js";
@@ -193,5 +193,59 @@ describe("dl key mode: endpoints that take no dl key", () => {
     const line = await runAccessRequest({ providerId: "directionally-local", env: keyEnv() } as unknown as Parameters<typeof runAccessRequest>[0]);
     assert.equal(line.text, ACCESS_DL_KEY_LINE);
     assert.match(ACCESS_DL_KEY_LINE, /https:\/\/dl\.new\/plans/);
+  });
+});
+
+describe("dl key mode: the Autopilot key dl makes from the dl key (dl_ak_)", () => {
+  const AK = `dl_ak_abc_aaaaaaaaaaaa_${"B".repeat(43)}`;
+  const AK2 = `dl_ak_abc_bbbbbbbbbbbb_${"C".repeat(43)}`;
+  let dir: string;
+  before(async () => {
+    dir = await mkdtemp(join(tmpdir(), "dl-ak-"));
+  });
+  after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("is a dl key: dl's plan at api.dl.new", () => {
+    assert.equal(isDlApiKey(AK), true);
+    assert.equal(isDlAutopilotKey(AK), true);
+    assert.equal(isDlAutopilotKey(KEY), false);
+    assert.equal(dlKeyMode({ AUTOPILOT_DL_FREE_TOKEN: AK }), true);
+    assert.equal(dlOrigin({ AUTOPILOT_DL_FREE_TOKEN: AK }), DL_API_URL);
+  });
+
+  it("is read from dl's key file, which wins over the environment's first key", async () => {
+    const file = join(dir, "key");
+    await writeFile(file, `${AK2}\n`);
+    assert.equal(await dlAccessToken({ env: { AUTOPILOT_DL_FREE_TOKEN: AK, [DL_TOKEN_FILE_ENV]: file } }), AK2);
+    // No file (or unreadable): the environment's key.
+    assert.equal(await dlAccessToken({ env: { AUTOPILOT_DL_FREE_TOKEN: AK, [DL_TOKEN_FILE_ENV]: join(dir, "missing") } }), AK);
+    assert.equal(await dlAccessToken({ env: { AUTOPILOT_DL_FREE_TOKEN: AK } }), AK);
+  });
+
+  it("after a 401, waits for dl to write a new key (dl re-mints it after the computer slept)", async () => {
+    const file = join(dir, "key2");
+    await writeFile(file, AK);
+    let slept = 0;
+    const sleep = async (ms: number) => {
+      slept += ms;
+      if (slept >= 1_500) await writeFile(file, AK2);
+    };
+    assert.equal(await dlAccessToken({ force: true, sleep, env: { AUTOPILOT_DL_FREE_TOKEN: AK, [DL_TOKEN_FILE_ENV]: file } }), AK2);
+    assert.ok(slept < DL_TOKEN_FILE_WAIT_MS);
+    // Nothing new within the wait: the same key, and the refusal then says dl stopped renewing it.
+    let waited = 0;
+    assert.equal(await dlAccessToken({ force: true, sleep: async (ms) => void (waited += ms), env: { AUTOPILOT_DL_FREE_TOKEN: AK2, [DL_TOKEN_FILE_ENV]: file } }), AK2);
+    assert.equal(waited, DL_TOKEN_FILE_WAIT_MS);
+    // A plain dl key (no file) isn't waited for.
+    let none = 0;
+    assert.equal(await dlAccessToken({ force: true, sleep: async (ms) => void (none += ms), env: { AUTOPILOT_DL_FREE_TOKEN: KEY } }), KEY);
+    assert.equal(none, 0);
+  });
+
+  it("a refused Autopilot key says to run dl again; a refused dl key still says dl login", () => {
+    assert.equal(describeDlError("invalid_token", { env: { AUTOPILOT_DL_FREE_TOKEN: AK, AUTOPILOT_LAUNCHED_BY: "dl" } }), DL_AUTOPILOT_KEY_EXPIRED_LINE);
+    assert.equal(describeDlError("invalid_token", { env: keyEnv() }), DL_KEY_REFUSED_LINE);
   });
 });
