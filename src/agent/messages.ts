@@ -270,34 +270,102 @@ export function appendStoppedToolResults(messages: ChatMessage[], calls: Iterabl
 }
 
 /**
- * Make a message history valid for the API again: every assistant
- * `tool_calls` entry must be followed by a tool result before the next
- * non-tool message. Missing results (a turn interrupted mid-tool-call and
- * persisted that way) are inserted as `(stopped)` right after their
- * assistant message. Mutates in place; returns the number inserted.
+ * Put one tool result into history, keeping exactly one result per call.
+ *
+ * An interrupt answers in-flight calls with `(stopped)` straight away so the
+ * saved history stays valid. The tool itself may still finish a moment later
+ * (it ignored the abort, or was already done) and come back here. Policy: the
+ * real result **replaces** the placeholder in place, because it is what
+ * actually happened (a write that completed did change the file) and the
+ * model should not be told otherwise. A second real result for a call that
+ * already has one is ignored. Results are looked up only after the newest
+ * assistant message that made the call, so providers that reuse ids across
+ * turns ("call_0") don't collide.
  */
-export function repairDanglingToolCalls(messages: ChatMessage[]): number {
+export function recordToolResult(messages: ChatMessage[], result: ChatMessage): "appended" | "replaced" | "ignored" {
+  const id = result.tool_call_id;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === "tool" && m.tool_call_id === id) {
+      if (m.content !== STOPPED_TOOL_RESULT) return "ignored";
+      messages[i] = result;
+      return "replaced";
+    }
+    if (m.role === "assistant" && m.tool_calls?.some((tc) => tc.id === id)) break;
+  }
+  messages.push(result);
+  return "appended";
+}
+
+/**
+ * Make a message history valid for the API: each assistant `tool_calls`
+ * entry gets exactly one tool result, placed right after that assistant
+ * message (in call order) and before anything else.
+ *
+ * - a missing result (a turn interrupted mid tool call) becomes `(stopped)`;
+ * - duplicate results for one call collapse to one: a real result wins over
+ *   the `(stopped)` placeholder (see recordToolResult), otherwise the first;
+ * - results that ended up later in history (after a user message) move back;
+ * - results with no matching earlier call (orphans) are dropped.
+ *
+ * A result belongs to the newest assistant message before it that made the
+ * call, so ids reused across turns stay separate. Runs before every model
+ * request and on session load. Mutates in place; returns the number of
+ * changes (0 means the history was already valid and is untouched).
+ */
+export function normalizeToolResults(messages: ChatMessage[]): number {
+  const isPlaceholder = (m: ChatMessage) => m.content === STOPPED_TOOL_RESULT;
+  const ownerOf = new Map<string, number>(); // call id -> newest assistant index so far
+  const chosen = new Map<string, ChatMessage>(); // `${owner}:${id}` -> result
+  let dropped = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.role === "assistant") {
+      for (const tc of m.tool_calls ?? []) ownerOf.set(tc.id, i);
+    } else if (m.role === "tool") {
+      const owner = m.tool_call_id === undefined ? undefined : ownerOf.get(m.tool_call_id);
+      if (owner === undefined) {
+        dropped++;
+        continue;
+      }
+      const key = `${owner}:${m.tool_call_id}`;
+      const prev = chosen.get(key);
+      if (!prev) chosen.set(key, m);
+      else {
+        dropped++;
+        if (isPlaceholder(prev) && !isPlaceholder(m)) chosen.set(key, m);
+      }
+    }
+  }
+  const out: ChatMessage[] = [];
   let inserted = 0;
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]!;
+    if (m.role === "tool") continue;
+    out.push(m);
     if (m.role !== "assistant" || !m.tool_calls?.length) continue;
-    // Results directly following this assistant message.
-    let j = i + 1;
-    const answered = new Set<string>();
-    while (j < messages.length && messages[j]!.role === "tool") {
-      const id = messages[j]!.tool_call_id;
-      if (id) answered.add(id);
-      j++;
+    const seen = new Set<string>();
+    for (const tc of m.tool_calls) {
+      if (seen.has(tc.id)) continue;
+      seen.add(tc.id);
+      const r = chosen.get(`${i}:${tc.id}`);
+      if (r) out.push(r);
+      else {
+        out.push({ role: "tool", tool_call_id: tc.id, content: STOPPED_TOOL_RESULT, name: tc.function.name });
+        inserted++;
+      }
     }
-    const missing = m.tool_calls.filter((tc) => !answered.has(tc.id));
-    if (missing.length === 0) continue;
-    messages.splice(
-      j,
-      0,
-      ...missing.map((tc) => ({ role: "tool" as const, tool_call_id: tc.id, content: STOPPED_TOOL_RESULT, name: tc.function.name })),
-    );
-    inserted += missing.length;
-    i = j + missing.length - 1;
   }
-  return inserted;
+  const same = out.length === messages.length && out.every((m, k) => m === messages[k]);
+  if (same) return 0;
+  messages.splice(0, messages.length, ...out);
+  return Math.max(1, inserted + dropped);
+}
+
+/**
+ * Repair a loaded or about-to-be-sent history. Kept as the historical name;
+ * see normalizeToolResults.
+ */
+export function repairDanglingToolCalls(messages: ChatMessage[]): number {
+  return normalizeToolResults(messages);
 }
