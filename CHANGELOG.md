@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.35.0](https://github.com/directionally-local/autopilot/compare/v3.34.1...v3.35.0) (2026-11-27)
+
+
+### Features
+
+* **dl:** use the Autopilot key dl mints from the dl key, so GPT-6 works when dl launches Autopilot ([#1319](https://github.com/directionally-local/autopilot/issues/1319)) ([c2a93e5](https://github.com/directionally-local/autopilot/commit/c2a93e5230281271507c2be4394310410f345c3a))
+
+
+### Bug Fixes
+
+* publish a production-only npm-shrinkwrap.json ([#1318](https://github.com/directionally-local/autopilot/issues/1318)) ([5c6afd9](https://github.com/directionally-local/autopilot/commit/5c6afd9688d1fbef46f9716f51cf9f61c82c9caa))
+
 ## [3.34.1](https://github.com/directionally-local/autopilot/compare/v3.34.0...v3.34.1) (2026-11-27)
 
 
