@@ -55,6 +55,15 @@ jobs:
         if: env.RUN_CHECK == 'true'
         run: npm ci --no-audit --no-fund
 
+      # The published tarball must carry a production-only npm-shrinkwrap.json
+      # built from package-lock.json (scripts/npm-shrinkwrap.mjs). It is
+      # generated in prepack rather than committed: npm prefers
+      # npm-shrinkwrap.json over package-lock.json, so a production-only copy at
+      # the repo root would make `npm ci` fail on every devDependency.
+      - name: Check npm-shrinkwrap.json
+        if: env.RUN_CHECK == 'true'
+        run: npm run check:shrinkwrap
+
       - name: Typecheck
         if: env.RUN_CHECK == 'true'
         run: npm run typecheck
