@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.36.1](https://github.com/directionally-local/autopilot/compare/v3.36.0...v3.36.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **code-mode:** fail api.write and other mutating calls when they fail ([#1329](https://github.com/directionally-local/autopilot/issues/1329)) ([45d268d](https://github.com/directionally-local/autopilot/commit/45d268d5b65873796b3582f7849d8671a91fa2ec))
+
 ## [3.36.0](https://github.com/directionally-local/autopilot/compare/v3.35.0...v3.36.0) (2026-11-27)
 
 
