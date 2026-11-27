@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.36.3](https://github.com/directionally-local/autopilot/compare/v3.36.2...v3.36.3) (2026-11-27)
+
+
+### Bug Fixes
+
+* **models:** take the served context window from /v1/models context_window ([#1336](https://github.com/directionally-local/autopilot/issues/1336)) ([ddc352d](https://github.com/directionally-local/autopilot/commit/ddc352d38088e0c6d36220702642bf0fc205cab4))
+
 ## [3.36.2](https://github.com/directionally-local/autopilot/compare/v3.36.1...v3.36.2) (2026-11-27)
 
 
