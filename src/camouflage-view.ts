@@ -731,6 +731,23 @@ export class View implements AppBridge {
     this.actions = actions;
   }
 
+  /**
+   * Feed streamed tool-call arguments to the renderer's spinner counter.
+   *
+   * Only an already-open turn is eligible: a late delta after `endTurn()`
+   * must not open a new turn that nothing would settle. camouflage-tui
+   * 2.13.2 (the pinned release) has no `Turn.toolCallArgs` (it lands in
+   * 2.13.3), so on the pinned version this is a no-op and the arguments
+   * go nowhere, as before. Once the pin moves, they reach the renderer as
+   * `AssistantToolCallArgsDelta`, which counts them without printing them.
+   */
+  toolCallArgs(delta: string): void {
+    const turn = this.turn;
+    if (!turn) return;
+    const send = (turn as Turn & { toolCallArgs?: (token: string) => boolean }).toolCallArgs;
+    if (typeof send === "function") send.call(turn, delta);
+  }
+
   /** A turn is in flight (from the latest snapshot). */
   busy = false;
   /** The session the App is saving. */

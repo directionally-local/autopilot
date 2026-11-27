@@ -188,4 +188,10 @@ export interface AppActions {
 export interface AppBridge {
   sync(snapshot: AppSnapshot): void;
   connect(actions: AppActions): void;
+  /**
+   * Streaming model output that isn't transcript text: the arguments of a
+   * tool call the model is still writing. Views that draw a progress
+   * counter may use it; most ignore it.
+   */
+  toolCallArgs?(delta: string): void;
 }

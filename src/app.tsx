@@ -1506,6 +1506,9 @@ function App({
         onPlanOptions: (options) => {
           planOptionsRef.current = options;
         },
+        // The renderer counts these toward the spinner; they are not text
+        // and must never be appended to the transcript.
+        onToolCallArgs: (delta) => bridge.toolCallArgs?.(delta),
         askPermission: askForPermission,
         onKimiMdStale: () => {
           if (kimiMdStaleNudgedRef.current) return;

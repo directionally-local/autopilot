@@ -715,6 +715,58 @@ describe("Camouflage lifecycle auto-settle", () => {
     assert.deepStrictEqual(calls, [["decidePermission", "allow"]], "the answer still lands");
     view.dispose();
   });
+
+  const liveAssistant: ChatEvent = { kind: "assistant", key: "a1", id: 1, text: "", reasoning: "", streaming: true };
+
+  it("forwards streamed tool-call args to the spinner counter, never as a stream", async () => {
+    const { view, sent } = await fakeView({});
+    // The view opens its turn when it syncs the streaming assistant.
+    view.sync(baseSnapshot({ turnRunning: true, busy: true, events: [liveAssistant] }));
+    const streamsBefore = sent.filter((s) => s.type === "AssistantStreamStarted").length;
+    view.toolCallArgs('{"path":"src/a.ts"');
+    view.toolCallArgs("}");
+    const args = sent.filter((s) => s.type === "AssistantToolCallArgsDelta");
+    assert.deepStrictEqual(args.map((s) => s.payload.token), ['{"path":"src/a.ts"', "}"]);
+    assert.strictEqual(sent.filter((s) => s.type === "AssistantStreamStarted").length, streamsBefore, "the arguments must not open a transcript stream");
+    assert.ok(!sent.some((s) => s.type === "AssistantTokenDelta"), "the arguments must not be assistant text");
+    view.dispose();
+  });
+
+  it("does not open a turn for a late delta after the turn ended", async () => {
+    const sent: Sent[] = [];
+    let turns = 0;
+    const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 });
+    const open = cam.turn.bind(cam);
+    cam.turn = (opts?: { id?: string }) => {
+      turns += 1;
+      return open(opts);
+    };
+    const view = new View(cam as never, {} as never);
+    view.sync(baseSnapshot({ turnRunning: true, busy: true, events: [liveAssistant] }));
+    assert.strictEqual(turns, 1);
+    view.sync(baseSnapshot({ turnRunning: false, busy: false, events: [liveAssistant] }));
+    const sentBefore = sent.length;
+    view.toolCallArgs('{"path":"late"');
+    assert.strictEqual(turns, 1, "a late delta must not open a turn");
+    assert.strictEqual(sent.length, sentBefore, "and must not send anything");
+    view.dispose();
+  });
+
+  it("no-ops when the open turn's SDK predates toolCallArgs (pinned 2.13.2)", () => {
+    const sent: Sent[] = [];
+    const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 });
+    const open = cam.turn.bind(cam);
+    cam.turn = (opts?: { id?: string }) => {
+      const turn = open(opts);
+      delete (turn as { toolCallArgs?: unknown }).toolCallArgs;
+      return turn;
+    };
+    const view = new View(cam as never, {} as never);
+    view.sync(baseSnapshot({ turnRunning: true, busy: true, events: [liveAssistant] }));
+    assert.doesNotThrow(() => view.toolCallArgs('{"path":"src/a.ts"'));
+    assert.ok(!sent.some((s) => s.type === "AssistantToolCallArgsDelta"));
+    view.dispose();
+  });
 });
 
 describe("Camouflage free-tier limit screen", () => {

@@ -36,6 +36,7 @@ export interface FakeTurn {
   readonly settled: boolean;
   stream(opts?: { id?: string }): FakeStream;
   tool(spec: { id?: string; name?: string; args?: string; started_at_ms?: number }): FakeTool;
+  toolCallArgs(token: unknown): boolean;
   permission(spec: Record<string, unknown>): Promise<{ choice: string; feedback?: string }>;
   end(opts?: { toolStatus?: string; phase?: string | null }): boolean;
 }
@@ -135,6 +136,7 @@ export function attachLifecycle<T extends FakeCam>(
         openTools.add(handle);
         return handle;
       },
+      toolCallArgs: (token) => !ended && cam.send("AssistantToolCallArgsDelta", { token: String(token ?? "") }),
       permission: (spec) => hooks.permission?.(spec) ?? Promise.resolve({ choice: "deny" }),
       end: (o = {}) => {
         if (ended) return false;
