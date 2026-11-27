@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.36.0](https://github.com/directionally-local/autopilot/compare/v3.35.0...v3.36.0) (2026-11-27)
+
+
+### Features
+
+* **agent:** wait on background jobs and recover from output-cap thinking ([#1323](https://github.com/directionally-local/autopilot/issues/1323)) ([b0aaacc](https://github.com/directionally-local/autopilot/commit/b0aaacc2c23256e1a323db869ecbaa3d72b124ac))
+
+
+### Bug Fixes
+
+* **camouflage:** feed streamed tool-call arguments to the spinner counter ([#1326](https://github.com/directionally-local/autopilot/issues/1326)) ([eaeb0b6](https://github.com/directionally-local/autopilot/commit/eaeb0b6f336f1df2bc2868351a0a2b14609cceba))
+* scope /model to sessions and preserve concurrent defaults ([#1325](https://github.com/directionally-local/autopilot/issues/1325)) ([c37d0b8](https://github.com/directionally-local/autopilot/commit/c37d0b8ee9ab89d46e3f878538299bec9e45fec2))
+* stop unrequested commit trailers and gate "done" on verification ([#1324](https://github.com/directionally-local/autopilot/issues/1324)) ([65236fe](https://github.com/directionally-local/autopilot/commit/65236fefaeacb1d0c04657d7153c9b2d73aedd0d))
+* **tools:** scrub secrets from tool results before they reach the model ([#1328](https://github.com/directionally-local/autopilot/issues/1328)) ([98dc5a5](https://github.com/directionally-local/autopilot/commit/98dc5a5a2a1403f67a0a116c9f4645f57a29312c))
+* **tui:** make confirmations answerable and alert unattended runs ([#1322](https://github.com/directionally-local/autopilot/issues/1322)) ([e0529e5](https://github.com/directionally-local/autopilot/commit/e0529e5003a496598f1d2f9b0c895a6d9cd1e1ff))
+
 ## [3.35.0](https://github.com/directionally-local/autopilot/compare/v3.34.1...v3.35.0) (2026-11-27)
 
 
