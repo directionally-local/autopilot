@@ -259,6 +259,9 @@ function makeToolBridge(opts: SandboxOptions, toolCalls: SandboxToolCall[]) {
         result = await run;
       }
       toolCalls.push({ name: tool.name, args, result: result.content, ok: result.ok });
+      if (!result.ok && tool.isReadOnly !== true) {
+        throw new Error(result.content || `${tool.name} failed`);
+      }
       return result.content;
     };
 }

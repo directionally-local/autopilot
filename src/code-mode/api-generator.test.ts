@@ -92,6 +92,18 @@ describe("generateTypeScriptApi", () => {
     assert.ok(!out.includes("interface exit_Input"));
   });
 
+  it("notes that mutating tools reject on failure and leaves read-only tools unchanged", () => {
+    const params = { path: { type: "string" } };
+    const write = { ...makeTool("write", "Write a file.", params, ["path"]), isReadOnly: false };
+    const read = { ...makeTool("read", "Read a file.", params, ["path"]), isReadOnly: true };
+    const out = generateTypeScriptApi([write, read]);
+    const note = "Rejects with the tool's error if the call fails (e.g. permission denied).";
+    const writeDocs = out.slice(out.indexOf("   * Write a file."), out.indexOf("write(input:"));
+    const readDocs = out.slice(out.indexOf("   * Read a file."), out.indexOf("read(input:"));
+    assert.ok(writeDocs.includes(note));
+    assert.ok(!readDocs.includes(note));
+  });
+
   it("handles nested object properties in sorted order", () => {
     const tools: ToolSpec[] = [
       makeTool("complex", "Complex tool.", {

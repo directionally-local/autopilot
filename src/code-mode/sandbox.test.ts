@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { ToolExecutor } from "../tools/executor.js";
 import { editTool } from "../tools/edit.js";
 import { readTool } from "../tools/read.js";
+import { writeTool } from "../tools/write.js";
 
 const mockTools: ToolSpec[] = [];
 
@@ -43,6 +44,8 @@ const mockCtx: ToolContext = {
 // fallback any more). It is an optional dependency, so those tests skip
 // without it. Resolved before any describe() so every suite registers.
 const NO_SANDBOX = !(await isolatedVmAvailable()) && "isolated-vm is not installed";
+const AS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
+const PERMISSIONS_SKIP = AS_ROOT ? "root ignores file permissions" : false;
 
 describe("stripTypescript", () => {
   it("strips basic type annotations", () => {
@@ -292,18 +295,62 @@ describe("concurrent tool calls from a script", { skip: NO_SANDBOX }, () => {
     assert.ok(result.toolCalls.every((c) => c.ok));
   });
 
-  it("marks a failed inner call as not ok instead of reporting success", async () => {
+  it("rejects a failed inner mutating call instead of reporting success", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sandbox-edit-"));
-    const executor = new ToolExecutor([readTool, editTool]);
-    const result = await runInSandbox({
-      code: `console.log(await api.edit({ path: "missing.txt", old_string: "a", new_string: "b" }));`,
-      tools: [readTool, editTool],
-      executor,
-      askPermission: mockAskPermission,
-      ctx: { cwd: dir, sessionId: "failed-call" },
-    });
-    assert.strictEqual(result.toolCalls.length, 1);
-    assert.strictEqual(result.toolCalls[0]!.ok, false);
+    try {
+      const executor = new ToolExecutor([readTool, editTool]);
+      const result = await runInSandbox({
+        code: `let outcome = "resolved";
+          try { outcome = await api.edit({ path: "missing.txt", old_string: "a", new_string: "b" }); }
+          catch (e) { outcome = "rejected: " + e.message; }
+          console.log(outcome);`,
+        tools: [readTool, editTool],
+        executor,
+        askPermission: mockAskPermission,
+        ctx: { cwd: dir, sessionId: "failed-call" },
+      });
+      assert.strictEqual(result.error, undefined, result.error);
+      assert.match(result.output, /^rejected: .*missing\.txt/);
+      assert.strictEqual(result.toolCalls.length, 1);
+      assert.strictEqual(result.toolCalls[0]!.ok, false);
+    } finally {
+      await fsPromises.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("unwritable files from a script", { skip: NO_SANDBOX || PERMISSIONS_SKIP }, () => {
+  it("rejects api.write with the path and cause instead of returning the error text", async () => {
+    const dir = await fsPromises.mkdtemp(join(tmpdir(), "sandbox-write-"));
+    const lockedDir = join(dir, "locked");
+    const file = join(lockedDir, "msg.txt");
+    await fsPromises.mkdir(lockedDir);
+    try {
+      await fsPromises.writeFile(file, "stale\n", "utf8");
+      await fsPromises.chmod(file, 0o444);
+      await fsPromises.chmod(lockedDir, 0o555);
+      const executor = new ToolExecutor([readTool, writeTool]);
+      const result = await runInSandbox({
+        code: `await api.read({ path: ${JSON.stringify(file)} });
+          let outcome = "resolved";
+          try { outcome = await api.write({ path: ${JSON.stringify(file)}, content: "fresh\\n" }); }
+          catch (e) { outcome = "rejected: " + e.message; }
+          console.log(outcome);`,
+        tools: [readTool, writeTool],
+        executor,
+        askPermission: mockAskPermission,
+        ctx: { cwd: dir, sessionId: "unwritable-write" },
+        timeoutMs: 10000,
+      });
+      assert.strictEqual(result.error, undefined, result.error);
+      assert.match(result.output, /^rejected: .*EACCES: permission denied/);
+      assert.ok(result.output.includes(file), `output should name ${file}: ${result.output}`);
+      assert.deepEqual(result.toolCalls.map((c) => c.ok), [true, false]);
+      assert.strictEqual(await fsPromises.readFile(file, "utf8"), "stale\n");
+    } finally {
+      await fsPromises.chmod(lockedDir, 0o755).catch(() => undefined);
+      await fsPromises.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

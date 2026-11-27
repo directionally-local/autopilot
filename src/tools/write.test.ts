@@ -1,11 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeTool } from "./write.js";
 import { editTool } from "./edit.js";
 import type { ToolContext } from "./registry.js";
+
+const AS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
+const PERMISSIONS_SKIP = AS_ROOT ? "root ignores file permissions" : false;
 
 describe("write tool", () => {
   it("creates nested files and reports create vs overwrite", async () => {
@@ -34,6 +37,33 @@ describe("write tool", () => {
         assert.match(String(e.reason), /not found/, `iteration ${i}: edit before write must fail cleanly`);
         assert.strictEqual(onDisk, "FRESH\n", `iteration ${i}: write after failed edit`);
       }
+    }
+  });
+});
+
+describe("write tool failures", { skip: PERMISSIONS_SKIP }, () => {
+  it("rejects an unwritable file and names the path and cause", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "write-tool-"));
+    const lockedDir = join(dir, "locked");
+    const file = join(lockedDir, "msg.txt");
+    await mkdir(lockedDir);
+    try {
+      await writeFile(file, "stale\n", "utf8");
+      await chmod(file, 0o444);
+      await chmod(lockedDir, 0o555);
+      const ctx: ToolContext = { cwd: dir };
+      await assert.rejects(
+        writeTool.run({ path: file, content: "fresh\n" }, ctx),
+        (error: Error) => {
+          assert.match(error.message, /EACCES: permission denied/);
+          assert.ok(error.message.includes(file), `error should name ${file}: ${error.message}`);
+          return true;
+        },
+      );
+      assert.strictEqual(await readFile(file, "utf8"), "stale\n");
+    } finally {
+      await chmod(lockedDir, 0o755).catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

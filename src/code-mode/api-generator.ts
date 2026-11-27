@@ -98,16 +98,20 @@ export function generateTypeScriptApi(tools: ToolSpec[]): string {
     };
 
     const sortedPropKeys = params.properties ? Object.keys(params.properties).sort((a, b) => a.localeCompare(b)) : [];
+    const failureNote =
+      tool.isReadOnly === true ? null : "Rejects with the tool's error if the call fails (e.g. permission denied).";
     if (sortedPropKeys.length > 0 && params.properties) {
       inputInterfaces.push(generateInterface(inputName, params.properties, [...(params.required ?? [])].sort((a, b) => a.localeCompare(b))));
       inputInterfaces.push("");
       methodEntries.push(`  /**`);
       methodEntries.push(`   * ${tool.description.replace(/\n/g, "\n   * ")}`);
+      if (failureNote) methodEntries.push(`   * ${failureNote}`);
       methodEntries.push(`   */`);
       methodEntries.push(`  ${tool.name}(input: ${inputName}): Promise<string>;`);
     } else {
       methodEntries.push(`  /**`);
       methodEntries.push(`   * ${tool.description.replace(/\n/g, "\n   * ")}`);
+      if (failureNote) methodEntries.push(`   * ${failureNote}`);
       methodEntries.push(`   */`);
       methodEntries.push(`  ${tool.name}(): Promise<string>;`);
     }
