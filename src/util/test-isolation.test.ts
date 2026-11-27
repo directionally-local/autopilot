@@ -19,14 +19,17 @@ describe("test isolation", () => {
 
   it("runs under the temporary root from scripts/test-setup.mjs", () => {
     assert.ok(root, "AUTOPILOT_TEST_ROOT is unset: run tests with `npm test` or `npm run test:file -- <file>`");
-    assert.ok(inside(realpathSync(tmpdir()), root) || inside(tmpdir(), root));
+    assert.ok(
+      inside(root, tmpdir()) || inside(root, realpathSync(tmpdir())),
+      `os.tmpdir() = ${tmpdir()} is not inside ${root}`,
+    );
     assert.ok(!inside(userInfo().homedir, root), "the temporary root must not be inside the real home");
   });
 
-  it("points the home, XDG and Autopilot directories inside it", () => {
+  it("points the home, XDG, Autopilot and temp directories inside it", () => {
     assert.ok(root);
     assert.ok(inside(root, homedir()), `os.homedir() = ${homedir()}`);
-    for (const name of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR", "AUTOPILOT_SERVER_CONFIG"]) {
+    for (const name of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR", "AUTOPILOT_SERVER_CONFIG", "TMPDIR", "TMP", "TEMP"]) {
       const value = process.env[name];
       assert.ok(value && inside(root, value), `${name} = ${value}`);
     }

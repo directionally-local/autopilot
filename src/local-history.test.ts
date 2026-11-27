@@ -51,7 +51,11 @@ describe("localHistoryUsage", () => {
     const hint = historyHint(usage, 350);
     assert.ok(hint?.includes("autopilot history prune --older-than"));
     const dlHint = historyHint(usage, 350, { AUTOPILOT_LAUNCHED_BY: "dl" });
-    assert.ok(dlHint && !dlHint.includes("autopilot"), "dl has no `history` command: no autopilot commands");
+    assert.ok(dlHint, "the dl hint is shown");
+    // The directories themselves can contain "autopilot" (tests run under an
+    // autopilot-test-* root); it is the command names that must not appear.
+    const dlText = dlHint.replaceAll(usage.sessionsDir, "<sessions>").replaceAll(usage.tracesDir, "<traces>");
+    assert.ok(!dlText.includes("autopilot"), "dl has no `history` command: no autopilot commands");
     assert.ok(dlHint.includes(usage.sessionsDir) && dlHint.startsWith("Your local session history is 350 B"));
     assert.match(formatHistoryUsage(usage), /total\s+350 B/);
   });

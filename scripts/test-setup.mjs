@@ -2,11 +2,13 @@
  * Test isolation: loaded with `--import` before any test module, in the test
  * runner and in every test process it spawns (`npm test`, `npm run test:file`).
  *
- * Each process gets a fresh temporary root, and every home, XDG and Autopilot
- * directory variable points inside it, so no test can read or write the real
- * user's home, config, state, data or cache (for example ~/.claude/settings.json
- * or ~/.local/state/autopilot). Child processes the tests start inherit the same
- * variables. The root is removed when the process exits; set
+ * Each process gets a fresh temporary root, and every home, XDG, Autopilot and
+ * temp directory variable points inside it, so no test can read or write the
+ * real user's home, config, state, data or cache (for example
+ * ~/.claude/settings.json or ~/.local/state/autopilot) or leave anything in the
+ * real /tmp. Child processes the tests start inherit the same variables and
+ * make their own root nested inside this one. The root is removed when the
+ * process exits; set
  * AUTOPILOT_TEST_KEEP_ROOT=1 to keep it for debugging.
  *
  * src/util/app-dirs.ts refuses to resolve a directory in the real home while
@@ -24,9 +26,15 @@ const dir = (...segments) => {
 };
 
 const home = dir("home");
+// Tests and the processes they spawn create temp dirs with mkdtemp/os.tmpdir();
+// without this they land in the real /tmp and are left behind when a test fails.
+const tmp = dir("tmp");
 const env = {
   HOME: home,
   USERPROFILE: home,
+  TMPDIR: tmp,
+  TMP: tmp,
+  TEMP: tmp,
   XDG_CONFIG_HOME: dir("xdg", "config"),
   XDG_DATA_HOME: dir("xdg", "data"),
   XDG_STATE_HOME: dir("xdg", "state"),
