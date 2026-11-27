@@ -77,7 +77,7 @@
     "@agentclientprotocol/sdk": "^2.12.0",
     "@hotcell/sdk": "^0.1.40",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "camouflage-tui": "2.13.2",
+    "camouflage-tui": "2.13.3",
     "commander": "^12.1.0",
     "imapflow": "2.2.5",
     "ink": "^7.1.1",
