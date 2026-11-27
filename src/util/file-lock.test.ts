@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lockKeyFor, pendingLockCount, withFileLock } from "./file-lock.js";
@@ -70,19 +70,23 @@ describe("withFileLock", () => {
 
   it("shares one key between a symlink and its target", async () => {
     const dir = await mkdtemp(join(tmpdir(), "file-lock-"));
-    const target = join(dir, "real.txt");
-    const link = join(dir, "link.txt");
-    await writeFile(target, "x", "utf8");
-    await symlink(target, link);
-    assert.strictEqual(await lockKeyFor(link), await lockKeyFor(target));
-    assert.strictEqual(await lockKeyFor(join(dir, "missing.txt")), join(await realpath(dir), "missing.txt"));
+    try {
+      const target = join(dir, "real.txt");
+      const link = join(dir, "link.txt");
+      await writeFile(target, "x", "utf8");
+      await symlink(target, link);
+      assert.strictEqual(await lockKeyFor(link), await lockKeyFor(target));
+      assert.strictEqual(await lockKeyFor(join(dir, "missing.txt")), join(await realpath(dir), "missing.txt"));
 
-    const dirLink = join(dir, "dir-link");
-    await symlink(dir, dirLink);
-    const missingThroughLink = join(dirLink, "new.txt");
-    const missingDirect = join(dir, "new.txt");
-    assert.strictEqual(await lockKeyFor(missingThroughLink), await lockKeyFor(missingDirect));
-    await writeFile(missingDirect, "created", "utf8");
-    assert.strictEqual(await lockKeyFor(missingThroughLink), await lockKeyFor(missingDirect));
+      const dirLink = join(dir, "dir-link");
+      await symlink(dir, dirLink);
+      const missingThroughLink = join(dirLink, "new.txt");
+      const missingDirect = join(dir, "new.txt");
+      assert.strictEqual(await lockKeyFor(missingThroughLink), await lockKeyFor(missingDirect));
+      await writeFile(missingDirect, "created", "utf8");
+      assert.strictEqual(await lockKeyFor(missingThroughLink), await lockKeyFor(missingDirect));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

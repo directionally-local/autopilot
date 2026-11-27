@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolExecutor } from "./executor.js";
@@ -8,6 +8,18 @@ import { readTool } from "./read.js";
 import { editTool } from "./edit.js";
 import { writeTool } from "./write.js";
 import type { ToolContext } from "./registry.js";
+
+// Every temporary directory is removed when the file's tests finish.
+const tmpDirs: string[] = [];
+after(async () => {
+  await Promise.all(tmpDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+async function tmpDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "file-version-"));
+  tmpDirs.push(dir);
+  return dir;
+}
 
 let nextCall = 0;
 const allow = async () => "allow" as const;
@@ -27,7 +39,7 @@ async function callTool(
 
 describe("read-before-write file snapshots", () => {
   it("requires a read and rejects a file changed since that read", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "file-version-"));
+    const cwd = await tmpDir();
     const path = join(cwd, "source.ts");
     await writeFile(path, "const value = 1;\n");
     const ctx: ToolContext = { cwd, sessionId: "snapshot-session" };
@@ -76,7 +88,7 @@ describe("read-before-write file snapshots", () => {
   });
 
   it("allows new files and tracks tool writes while rejecting external changes", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "file-version-"));
+    const cwd = await tmpDir();
     const path = join(cwd, "nested/new.ts");
     const ctx: ToolContext = { cwd, sessionId: "new-file-session" };
     const executor = new ToolExecutor([readTool, editTool, writeTool]);
@@ -99,7 +111,7 @@ describe("read-before-write file snapshots", () => {
   });
 
   it("keeps read snapshots isolated between sessions", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "file-version-"));
+    const cwd = await tmpDir();
     await writeFile(join(cwd, "source.txt"), "original\n");
     const executor = new ToolExecutor([readTool, editTool, writeTool]);
 

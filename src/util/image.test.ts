@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import jpeg from "jpeg-js";
@@ -96,6 +96,7 @@ describe("attach paths", () => {
   const dir = mkdtempSync(join(tmpdir(), "img-norm-"));
   const shot = join(dir, "shot.png");
   writeFileSync(shot, photoPng(3024, 1900));
+  after(() => rmSync(dir, { recursive: true, force: true }));
 
   it("encodeImageFile normalizes and reports the change; the original stays on disk", async () => {
     const img = await encodeImageFile(shot);

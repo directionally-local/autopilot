@@ -1,13 +1,21 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert";
-import { mkdtemp, readFile, symlink, writeFile, lstat, chmod, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile, lstat, chmod, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { editTool, replaceLiteral } from "./edit.js";
 import type { ToolContext } from "./registry.js";
 
+// Every temporary directory is removed when the file's tests finish.
+const tmpDirs: string[] = [];
+after(async () => {
+  await Promise.all(tmpDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
 async function tmp(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "edit-tool-"));
+  const dir = await mkdtemp(join(tmpdir(), "edit-tool-"));
+  tmpDirs.push(dir);
+  return dir;
 }
 
 const FILLER = Array.from({ length: 1200 }, (_, i) => `fn filler_${i}() -> u32 { ${i} }`).join("\n");

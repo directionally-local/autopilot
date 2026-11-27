@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,8 +20,16 @@ import {
 const DL = { AUTOPILOT_LAUNCHED_BY: "dl" };
 const none = () => null;
 
+// Every temporary directory is removed when the file's tests finish.
+const trees: string[] = [];
+after(() => {
+  for (const root of trees) rmSync(root, { recursive: true, force: true });
+});
+
 function tree(): string {
-  return mkdtempSync(join(tmpdir(), "dl-identity-"));
+  const root = mkdtempSync(join(tmpdir(), "dl-identity-"));
+  trees.push(root);
+  return root;
 }
 
 function write(path: string, json: unknown): void {
