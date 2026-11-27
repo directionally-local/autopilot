@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -97,39 +97,43 @@ describe("Opened with dl: the PR footer", () => {
   it("amends the body of the PR `gh pr create` opened, keeps its output and exit status", async (t) => {
     if (process.platform === "win32") return t.skip("POSIX shell only");
     const dir = await mkdtemp(join(tmpdir(), "pr-footer-gh-"));
-    const log = join(dir, "gh.log");
-    const edited = join(dir, "edited.txt");
-    // A fake `gh`: create prints a URL, view prints the body, edit saves what it's given.
-    await writeFile(
-      join(dir, "gh"),
-      [
-        "#!/bin/sh",
-        `echo "$*" >> "${log}"`,
-        'case "$1 $2" in',
-        '  "pr create") echo "https://github.com/o/r/pull/9"; exit "${FAKE_GH_EXIT:-0}" ;;',
-        '  "pr view") printf "%s" "${FAKE_GH_BODY}" ;;',
-        `  "pr edit") cat > "${edited}" ;;`,
-        "esac",
-      ].join("\n"),
-    );
-    await chmod(join(dir, "gh"), 0o755);
-    const run = (env: Record<string, string>) => {
-      const { command, env: extra } = wrapGhPrCreate("gh pr create --title T --body B", join(dir, "out.txt"));
-      return spawnSync("/bin/sh", ["-c", command], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...extra, ...env }, encoding: "utf8" });
-    };
-    const ok = run({ FAKE_GH_BODY: "B" });
-    assert.strictEqual(ok.status, 0);
-    assert.strictEqual(ok.stdout, "https://github.com/o/r/pull/9\n");
-    assert.strictEqual(await readFile(edited, "utf8"), `B\n\n${FOOTER}\n`);
-    assert.match(await readFile(log, "utf8"), /pr view https:\/\/github\.com\/o\/r\/pull\/9 --json body -q \.body\npr edit https:\/\/github\.com\/o\/r\/pull\/9 --body-file -/);
+    try {
+      const log = join(dir, "gh.log");
+      const edited = join(dir, "edited.txt");
+      // A fake `gh`: create prints a URL, view prints the body, edit saves what it's given.
+      await writeFile(
+        join(dir, "gh"),
+        [
+          "#!/bin/sh",
+          `echo "$*" >> "${log}"`,
+          'case "$1 $2" in',
+          '  "pr create") echo "https://github.com/o/r/pull/9"; exit "${FAKE_GH_EXIT:-0}" ;;',
+          '  "pr view") printf "%s" "${FAKE_GH_BODY}" ;;',
+          `  "pr edit") cat > "${edited}" ;;`,
+          "esac",
+        ].join("\n"),
+      );
+      await chmod(join(dir, "gh"), 0o755);
+      const run = (env: Record<string, string>) => {
+        const { command, env: extra } = wrapGhPrCreate("gh pr create --title T --body B", join(dir, "out.txt"));
+        return spawnSync("/bin/sh", ["-c", command], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...extra, ...env }, encoding: "utf8" });
+      };
+      const ok = run({ FAKE_GH_BODY: "B" });
+      assert.strictEqual(ok.status, 0);
+      assert.strictEqual(ok.stdout, "https://github.com/o/r/pull/9\n");
+      assert.strictEqual(await readFile(edited, "utf8"), `B\n\n${FOOTER}\n`);
+      assert.match(await readFile(log, "utf8"), /pr view https:\/\/github\.com\/o\/r\/pull\/9 --json body -q \.body\npr edit https:\/\/github\.com\/o\/r\/pull\/9 --body-file -/);
 
-    await writeFile(edited, "untouched");
-    run({ FAKE_GH_BODY: `B\n\n${FOOTER}` });
-    assert.strictEqual(await readFile(edited, "utf8"), "untouched", "not twice");
+      await writeFile(edited, "untouched");
+      run({ FAKE_GH_BODY: `B\n\n${FOOTER}` });
+      assert.strictEqual(await readFile(edited, "utf8"), "untouched", "not twice");
 
-    const failed = run({ FAKE_GH_EXIT: "3", FAKE_GH_BODY: "B" });
-    assert.strictEqual(failed.status, 3, "the command's exit status is kept");
-    assert.strictEqual(await readFile(edited, "utf8"), "untouched", "nothing amended after a failure");
+      const failed = run({ FAKE_GH_EXIT: "3", FAKE_GH_BODY: "B" });
+      assert.strictEqual(failed.status, 3, "the command's exit status is kept");
+      assert.strictEqual(await readFile(edited, "utf8"), "untouched", "nothing amended after a failure");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("the bash tool applies it to `gh pr create`", async (t) => {
@@ -141,21 +145,25 @@ describe("Opened with dl: the PR footer", () => {
     }
     delete process.env.AUTOPILOT_PR_FOOTER;
     const dir = await mkdtemp(join(tmpdir(), "pr-footer-bash-"));
-    const edited = join(dir, "edited.txt");
-    await writeFile(
-      join(dir, "gh"),
-      ["#!/bin/sh", 'case "$1 $2" in', '  "pr create") echo "https://github.com/o/r/pull/9" ;;', '  "pr view") printf "Body" ;;', `  "pr edit") cat > "${edited}" ;;`, "esac"].join("\n"),
-    );
-    await chmod(join(dir, "gh"), 0o755);
-    // The fake `gh` first on PATH for the whole command, the amend included.
-    const path = process.env.PATH;
-    process.env.PATH = `${dir}:${path}`;
     try {
-      const out = (await bashTool.run({ command: "gh pr create --fill" }, { cwd: dir, shell: "bash" })) as ToolOutput;
-      assert.match(out.content, /^exit=0\n--- stdout ---\nhttps:\/\/github\.com\/o\/r\/pull\/9/);
-      assert.strictEqual(await readFile(edited, "utf8"), `Body\n\n${FOOTER}\n`);
+      const edited = join(dir, "edited.txt");
+      await writeFile(
+        join(dir, "gh"),
+        ["#!/bin/sh", 'case "$1 $2" in', '  "pr create") echo "https://github.com/o/r/pull/9" ;;', '  "pr view") printf "Body" ;;', `  "pr edit") cat > "${edited}" ;;`, "esac"].join("\n"),
+      );
+      await chmod(join(dir, "gh"), 0o755);
+      // The fake `gh` first on PATH for the whole command, the amend included.
+      const path = process.env.PATH;
+      process.env.PATH = `${dir}:${path}`;
+      try {
+        const out = (await bashTool.run({ command: "gh pr create --fill" }, { cwd: dir, shell: "bash" })) as ToolOutput;
+        assert.match(out.content, /^exit=0\n--- stdout ---\nhttps:\/\/github\.com\/o\/r\/pull\/9/);
+        assert.strictEqual(await readFile(edited, "utf8"), `Body\n\n${FOOTER}\n`);
+      } finally {
+        process.env.PATH = path;
+      }
     } finally {
-      process.env.PATH = path;
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

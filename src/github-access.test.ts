@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
@@ -244,9 +244,10 @@ describe("gh's device code", () => {
 describe("GitHub access through the executor", () => {
   // A fake `gh` first on PATH: signed out. The real gh is never run.
   let savedPath: string | undefined;
+  let bin: string | undefined;
   const savedTokens = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
   before(() => {
-    const bin = mkdtempSync(join(tmpdir(), "fake-gh-"));
+    bin = mkdtempSync(join(tmpdir(), "fake-gh-"));
     const gh = join(bin, "gh");
     writeFileSync(gh, "#!/bin/sh\necho 'no oauth token found for github.com' >&2\nexit 1\n");
     chmodSync(gh, 0o755);
@@ -258,6 +259,7 @@ describe("GitHub access through the executor", () => {
   after(() => {
     process.env.PATH = savedPath;
     for (const [k, v] of Object.entries(savedTokens)) if (v !== undefined) process.env[k] = v;
+    if (bin) rmSync(bin, { recursive: true, force: true });
   });
 
   it("asks through ctx.askGithubAccess and hands the model the note", { skip: process.platform === "win32" }, async () => {

@@ -1,11 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliRuntimeAdvisory, warnRuntimeAdvisoryOncePerDay } from "./runtime-advisory.js";
 
 const node = (version: string) => ({ ...process.versions, node: version }) as NodeJS.ProcessVersions;
+
+async function tmpDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "autopilot-advisory-"));
+}
 
 describe("brotliRuntimeAdvisory (CVE-2026-111497)", () => {
   it("flags Node lines before their fix and lines that get none", () => {
@@ -32,24 +36,32 @@ describe("brotliRuntimeAdvisory (CVE-2026-111497)", () => {
 
 describe("warnRuntimeAdvisoryOncePerDay", () => {
   it("warns once per day and again after the cache expires", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "autopilot-advisory-"));
-    const cachePath = join(dir, "advisory.json");
-    const lines: string[] = [];
-    const write = (text: string) => lines.push(text);
-    const advisory = "Node 22.0.0 is vulnerable";
+    const dir = await tmpDir();
+    try {
+      const cachePath = join(dir, "advisory.json");
+      const lines: string[] = [];
+      const write = (text: string) => lines.push(text);
+      const advisory = "Node 22.0.0 is vulnerable";
 
-    await warnRuntimeAdvisoryOncePerDay(advisory, { cachePath, now: 1_000, write });
-    await warnRuntimeAdvisoryOncePerDay(advisory, { cachePath, now: 2_000, write });
-    assert.equal(lines.length, 1);
+      await warnRuntimeAdvisoryOncePerDay(advisory, { cachePath, now: 1_000, write });
+      await warnRuntimeAdvisoryOncePerDay(advisory, { cachePath, now: 2_000, write });
+      assert.equal(lines.length, 1);
 
-    await warnRuntimeAdvisoryOncePerDay(advisory, { cachePath, now: 1_000 + 24 * 60 * 60 * 1000 + 1, write });
-    assert.equal(lines.length, 2);
+      await warnRuntimeAdvisoryOncePerDay(advisory, { cachePath, now: 1_000 + 24 * 60 * 60 * 1000 + 1, write });
+      assert.equal(lines.length, 2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("does nothing when the runtime is safe", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "autopilot-advisory-"));
-    const lines: string[] = [];
-    await warnRuntimeAdvisoryOncePerDay(null, { cachePath: join(dir, "advisory.json"), write: (text) => lines.push(text) });
-    assert.equal(lines.length, 0);
+    const dir = await tmpDir();
+    try {
+      const lines: string[] = [];
+      await warnRuntimeAdvisoryOncePerDay(null, { cachePath: join(dir, "advisory.json"), write: (text) => lines.push(text) });
+      assert.equal(lines.length, 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

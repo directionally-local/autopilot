@@ -1,12 +1,18 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolExecutor, ALL_TOOLS } from "../tools/executor.js";
 import { hookWirePayload } from "./runner.js";
 import { ORIGINAL_FILE_CAP_BYTES } from "./claude-compat.js";
 import type { HookEvent, HookPayload } from "./types.js";
+
+// Every temporary directory is removed when the file's tests finish.
+const workdirs: string[] = [];
+after(() => {
+  for (const dir of workdirs) rmSync(dir, { recursive: true, force: true });
+});
 
 /** Runs write / edit through the executor and returns each PostToolUse payload as hooks receive it. */
 function harness() {
@@ -21,6 +27,7 @@ function harness() {
   const tools = ALL_TOOLS.filter((t) => t.name === "read" || t.name === "write" || t.name === "edit");
   const exec = new ToolExecutor(tools, { hooks: fake as never });
   const cwd = mkdtempSync(join(tmpdir(), "autopilot-file-change-"));
+  workdirs.push(cwd);
   mkdirSync(join(cwd, "adir"));
   let n = 0;
   const run = async (name: string, args: Record<string, unknown>) => {
