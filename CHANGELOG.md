@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.36.2](https://github.com/directionally-local/autopilot/compare/v3.36.1...v3.36.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **tests:** keep temp files inside the per-process test root ([#1335](https://github.com/directionally-local/autopilot/issues/1335)) ([4f4fdf4](https://github.com/directionally-local/autopilot/commit/4f4fdf4229c98f6f40f3c9cf1b72c0a83dbd2de7))
+* **tests:** remove temporary directories after the test run ([#1332](https://github.com/directionally-local/autopilot/issues/1332)) ([127ee9a](https://github.com/directionally-local/autopilot/commit/127ee9a1d139f262a463a243fd91b0cde22f0ba7))
+
 ## [3.36.1](https://github.com/directionally-local/autopilot/compare/v3.36.0...v3.36.1) (2026-11-27)
 
 
