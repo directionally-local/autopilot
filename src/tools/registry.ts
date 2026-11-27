@@ -70,6 +70,9 @@ export interface ToolContext {
   approvedSensitiveReason?: string;
   /** Per-session sha256 snapshots recorded by read and checked by edit/write. */
   fileReadHashes?: Map<string, string>;
+  /** Progress line for the UI while a long-running tool works (e.g. job_wait).
+   *  The agent loop wires this to the host's info channel. */
+  onProgress?: (message: string) => void;
 }
 
 export interface ToolRender {
