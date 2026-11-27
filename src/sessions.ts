@@ -38,6 +38,8 @@ export interface SessionFile {
   id: string;
   cwd: string;
   model: string;
+  /** Provider active when the session was saved; resume restores the model only when it still matches. */
+  provider?: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];

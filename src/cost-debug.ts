@@ -71,6 +71,8 @@ export interface CostDebugEntry {
   costUsd?: number;
   latencyMs?: number;
   usage: Usage;
+  /** The usage was estimated from streamed output, not reported by the provider. */
+  usageEstimated?: boolean;
   promptSections: PromptSection[];
   promptTotalChars: number;
   promptTotalApproxTokens: number;
@@ -324,6 +326,9 @@ export async function logTurnOutcome(args: {
   outcome: TurnOutcome;
   detail?: string;
   durationMs?: number;
+  /** Real provider usage when it arrived before the turn ended; otherwise an estimate. */
+  usage?: Usage;
+  usageEstimated?: boolean;
 }): Promise<void> {
   try {
     await logCostDebug({
@@ -335,7 +340,8 @@ export async function logTurnOutcome(args: {
       outcome: args.outcome,
       ...(args.detail ? { outcomeDetail: args.detail } : {}),
       ...(args.durationMs !== undefined ? { durationMs: args.durationMs } : {}),
-      usage: EMPTY_USAGE,
+      usage: args.usage ?? EMPTY_USAGE,
+      ...(args.usageEstimated ? { usageEstimated: true } : {}),
       promptSections: [],
       promptTotalChars: 0,
       promptTotalApproxTokens: 0,

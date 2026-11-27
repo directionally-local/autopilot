@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { unlink, writeFile } from "node:fs/promises";
 
 import type { Cfg } from "../app.js";
-import { configPath, loadConfig, saveConfig, patchPersistedConfig, pickedModel, readPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf, type AutopilotConfig } from "../config.js";
+import { configPath, loadConfig, saveConfig, patchPersistedConfig, pickedModel, sessionPickedModel, readPersistedConfig, tuiMemoryEnabled, DEFAULT_MODEL, plumbingModelOf, type AutopilotConfig } from "../config.js";
 import type { ChatEvent } from "./view-types.js";
 import type { ChatMessage, Usage } from "../agent/messages.js";
 import type { ResponseMeta } from "../agent/client.js";
@@ -121,6 +121,8 @@ export interface SlashContext {
   // Config
   cfg: Cfg | null;
   setCfg: React.Dispatch<React.SetStateAction<Cfg | null>>;
+  /** The saved global model, which /model changes only with --default. */
+  defaultModelRef?: React.MutableRefObject<string>;
 
   // Mode / reasoning
   mode: Mode;
@@ -691,7 +693,11 @@ const handleJev: Handler = async (ctx, rest) => {
 
 const handleModel: Handler = (ctx, rest, arg) => {
   const { cfg, setCfg, setEvents, mkKey } = ctx;
-  const sub = rest[0]?.toLowerCase() ?? "";
+  // `/model --default [id]` changes the saved default; everything else is
+  // this session only. The flag may appear before or after the id.
+  const wantsDefault = rest.some((t) => t.toLowerCase() === "--default");
+  const modelArgs = rest.filter((t) => t.toLowerCase() !== "--default");
+  const sub = modelArgs[0]?.toLowerCase() ?? "";
 
   // `/model` with no args → open the picker
   if (!arg) {
@@ -701,7 +707,7 @@ const handleModel: Handler = (ctx, rest, arg) => {
 
   // `/model list [filter]` → textual list grouped by vendor (tool-capable models only)
   if (sub === "list") {
-    const filter = rest.slice(1).join(" ").toLowerCase();
+    const filter = modelArgs.slice(1).join(" ").toLowerCase();
     const all = listModels().filter(
       (m) => m.supports.tools && (!filter || m.id.toLowerCase().includes(filter)),
     );
@@ -735,8 +741,10 @@ const handleModel: Handler = (ctx, rest, arg) => {
   // translated); anything without whitespace elsewhere (Ollama's
   // "llama3.1:8b", DeepSeek's "deepseek-chat", Requesty policies).
   const provider = providerPresetOf(llmAuthFromConfig(cfg));
-  const raw = rest.join(" ").trim();
-  const id = provider.id === "openrouter" ? migrateLegacyModelId(raw) : raw;
+  const raw = modelArgs.join(" ").trim();
+  // A bare `--default` promotes the current session model to the default.
+  const requested = wantsDefault && !raw ? cfg?.model ?? "" : raw;
+  const id = provider.id === "openrouter" ? migrateLegacyModelId(requested) : requested;
   try {
     if (provider.id === "openrouter") validateModelId(id);
     else if (!id || /\s/.test(id)) throw new Error("bad model id");
@@ -765,26 +773,27 @@ const handleModel: Handler = (ctx, rest, arg) => {
   const known = listModels().some((m) => m.id === id);
   const profile = modelProfileId(id);
   const profileNote = profile ? ` · profile ${profile}` : "";
+  const savedDefault = ctx.defaultModelRef?.current || cfg?.model || id;
+  if (wantsDefault && ctx.defaultModelRef) ctx.defaultModelRef.current = id;
   setCfg((prev) => {
     if (!prev) return prev;
-    const updated = pickedModel(prev, id);
-    void saveConfig(updated).catch(() => {});
-    return updated;
+    if (wantsDefault) {
+      // Explicitly making it the default is the one /model path that writes
+      // config; the saved default follows for every later session.
+      const updated = pickedModel(prev, id);
+      void saveConfig(updated, { explicitModel: true }).catch(() => {});
+      return updated;
+    }
+    // A normal pick belongs to this session (and its session file), never to
+    // the global default or another running session.
+    return sessionPickedModel(prev, id, savedDefault);
   });
-  setEvents((e) => [
-    ...e,
-    {
-      kind: "info",
-      key: mkKey(),
-      text: known
-        ? ctx.busy
-          ? `model selected: ${id}${profileNote}. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
-          : `model switched: ${cfg?.model ? `${cfg.model} → ` : ""}${id}${profileNote}. Your next message will use this model; conversation history is kept.${entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model"}`
-        : ctx.busy
-          ? `model selected: ${id}${profileNote} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id}. Conversation history is kept.`
-          : `model selected: ${id}${profileNote} · not in ${provider.name}'s catalog — check the id with /model list if requests fail. Your next message will use this model; conversation history is kept.`,
-    },
-  ]);
+  const scope = wantsDefault ? "now the default for new sessions" : `this session only — default stays ${savedDefault}`;
+  const toolsNote = entry.supports.tools ? "" : " ⚠ no tool calling — the agent can't edit files or run commands with this model";
+  const prefix = ctx.busy
+    ? `model selected: ${id}${profileNote}${known ? "" : ` · not in ${provider.name}'s catalog — check the id with /model list if requests fail`}. The current turn continues with ${cfg?.model ?? "the current model"}; your next message will use ${id} (${scope}). Conversation history is kept.`
+    : `model switched: ${cfg?.model ? `${cfg.model} → ` : ""}${id}${profileNote}${known ? "" : ` · not in ${provider.name}'s catalog — check the id with /model list if requests fail`} (${scope}). Your next message will use this model; conversation history is kept.`;
+  setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `${prefix}${toolsNote}` }]);
   return true;
 };
 

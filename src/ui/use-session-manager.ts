@@ -31,9 +31,10 @@ import type { SessionEndReason, TraceSessionMode } from "../trace/types.js";
 import type { Mode } from "../mode.js";
 import { DEFAULT_AUTO_FRESH_SUGGESTION_TURNS } from "./app-helpers.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
+import { resolveActiveProvider } from "../providers/resolve.js";
 import { buildResumeReplay } from "./resume-replay.js";
 import { buildWhereYouLeftOff, formatWhereYouLeftOff, type WhereYouLeftOff } from "./resume-summary.js";
-import { plumbingModelOf, tuiMemoryEnabled } from "../config.js";
+import { hasExplicitSessionModel, plumbingModelOf, sessionPickedModel, setSessionModelFallback, tuiMemoryEnabled, type AutopilotConfig } from "../config.js";
 
 /**
  * Pull the first chunk of user text out of a message list — used to
@@ -85,6 +86,30 @@ export function resumeReplayEvents(
   return events;
 }
 
+/**
+ * The config to run a reopened session with. A session's model is restored
+ * only on the provider it ran on; elsewhere it keeps the current model and
+ * explains why. The global default on disk is never changed.
+ */
+export function resumeSessionModel(
+  cfg: AutopilotConfig,
+  file: { model?: string; provider?: string },
+  defaultModel: string,
+): { cfg: AutopilotConfig; notice?: string } {
+  if (!file.model || file.model === cfg.model) return { cfg };
+  // Sessions saved before provider tracking have no provider to compare.
+  // Keep the current model silently instead of guessing from the model id.
+  if (!file.provider) return { cfg };
+  const active = resolveActiveProvider(cfg).id;
+  if (file.provider !== active) {
+    return {
+      cfg,
+      notice: `This conversation ran on ${file.provider}, but this session is using ${active}; keeping ${cfg.model} for now. Switch providers with /provider to use ${file.model}.`,
+    };
+  }
+  return { cfg: sessionPickedModel(cfg, file.model, defaultModel) };
+}
+
 export function buildLocalResumeSummary(state: SessionState): string | null {
   const parts: string[] = [];
   if (state.task) parts.push(`Task: ${state.task}`);
@@ -98,20 +123,8 @@ export function buildLocalResumeSummary(state: SessionState): string | null {
 }
 
 export interface SessionManagerDeps {
-  /** Model name + other config needed at save/resume time. Null while booting. */
-  cfg: {
-    model: string;
-    autoFreshSuggestionTurns?: number;
-    openrouterApiKey?: string;
-    requestyApiKey?: string;
-    baseUrl?: string;
-    apiKey?: string;
-    openrouterProvider?: import("../agent/client.js").OpenRouterProviderPrefs;
-    plumbingModel?: string;
-    memoryEnabled?: boolean;
-    /** Local session tracing (src/trace); off unless `enabled`. */
-    trace?: { enabled: boolean; root?: string };
-  } | null;
+  /** Config needed at save/resume time. Null while booting. */
+  cfg: AutopilotConfig | null;
   /** Current agent mode. */
   mode: Mode;
   // Refs the hook needs to read/write at save and resume time. These
@@ -128,6 +141,9 @@ export interface SessionManagerDeps {
   setHistory: (h: string[]) => void;
   setUsage: (u: Usage | null) => void;
   setSessionUsage: (s: DailyUsage | null) => void;
+  setCfg: React.Dispatch<React.SetStateAction<AutopilotConfig | null>>;
+  /** The saved global model; switching sessions must not overwrite it. */
+  defaultModelRef: React.MutableRefObject<string>;
   /** Stable key generator for event-list items. */
   mkKey: () => string;
 }
@@ -301,6 +317,7 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         id: sessionIdRef.current!,
         cwd: process.cwd(),
         model: d.cfg.model,
+        provider: resolveActiveProvider(d.cfg).id,
         createdAt: sessionCreatedAtRef.current,
         updatedAt: now,
         title: sessionTitleRef.current ?? undefined,
@@ -362,6 +379,15 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         if (file.title) setTerminalTitle(file.title);
         setLogSessionId(file.id);
         sessionCreatedAtRef.current = file.createdAt;
+        // The model is part of the session: restore the one it was saved
+        // with, in memory only. The global default on disk stays untouched.
+        let modelNotice: string | undefined;
+        if (file.model && d.cfg) {
+          const savedDefault = d.defaultModelRef.current || d.cfg.model || file.model;
+          const restored = resumeSessionModel(d.cfg, file, savedDefault);
+          d.setCfg(restored.cfg);
+          modelNotice = restored.notice;
+        }
         if (file.sessionState && d.compiledContextRef.current) {
           d.sessionStateRef.current = file.sessionState;
         }
@@ -391,6 +417,9 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
         // Show the conversation as it was — the last few requests and the
         // start of each answer — then where it continues. No model call.
         d.setEvents(resumeReplayEvents(file, d.mkKey, checkpointId ? "checkpoint" : undefined));
+        if (modelNotice) {
+          d.setEvents((es) => [...es, { kind: "info", key: d.mkKey(), text: modelNotice! }]);
+        }
         // Stopped mid-task (crash, Ctrl-C, closed terminal, dropped
         // connection): say where, and offer to continue. No model call.
         const leftOff = checkpointId ? null : buildWhereYouLeftOff(file.messages);
@@ -521,6 +550,15 @@ export function useSessionManager(deps: SessionManagerDeps): SessionManager {
     sessionTitleRef.current = null;
     setTerminalTitle("autopilot");
     const d = depsRef.current;
+    // A new session starts on the saved global model, not one explicitly
+    // selected for the session that just ended. An automatic free-tier
+    // fallback stays in place: it protects the saved choice on disk.
+    if (hasExplicitSessionModel()) {
+      if (d.defaultModelRef.current) {
+        d.setCfg((current) => (current ? { ...current, model: d.defaultModelRef.current } : current));
+      }
+      setSessionModelFallback(null);
+    }
     d.sessionStateRef.current = emptySessionState();
     d.artifactStoreRef.current = new ArtifactStore();
   }, [endTrace, traceReverted]);

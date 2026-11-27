@@ -761,6 +761,10 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
 
   let turn = 0;
   let lastUsage: Usage | null = null;
+  /** Output characters streamed by the current attempt (text, reasoning, tool args). */
+  let liveOutputChars = 0;
+  /** Prompt tokens for the current attempt, estimated if the provider never reports usage. */
+  let livePromptTokens = 0;
 
   // Anti-loop guardrail: track recent tool call signatures to detect thrashing
   const recentToolCalls: string[] = [];
@@ -924,12 +928,22 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   const recordOutcome = (outcome: TurnOutcome, detail?: string): void => {
     if (outcomeRecorded || !opts.sessionId) return;
     outcomeRecorded = true;
+    // Real usage if the provider sent any this turn; otherwise estimate what
+    // had streamed when the user interrupted, and mark it as an estimate.
+    const streamedCompletionTokens = approxTokens(liveOutputChars);
+    const usage = lastUsage ?? {
+      prompt_tokens: livePromptTokens,
+      completion_tokens: streamedCompletionTokens,
+      total_tokens: livePromptTokens + streamedCompletionTokens,
+    };
     void logTurnOutcome({
       sessionId: opts.sessionId,
       turn,
       outcome,
       ...(detail ? { detail } : {}),
       durationMs: Math.round(performance.now() - turnStart),
+      usage,
+      ...(lastUsage ? {} : { usageEstimated: true }),
     });
   };
   // User stops arrive as an abort wherever the loop happens to be.
@@ -1180,6 +1194,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       throw new ContextBudgetError(promptTokens, maxPromptTokens, getModelOrInfer(opts.model).contextWindow);
     }
 
+    livePromptTokens = estimatePromptTokens(apiMessages);
     logger.debug("turn:api_request", { sessionId: opts.sessionId, messageCount: apiMessages.length });
     // Transient host failures (5xx, 429, resets, a stream that dies mid-answer)
     // retry this one model call: tools from earlier steps of the turn already
@@ -1194,6 +1209,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       // log's TTFT/stream events (keyed by this requestId), retries included.
       const requestId = crypto.randomUUID();
       turnRequestIds.push(requestId);
+      liveOutputChars = 0;
       try {
         const events = runKimi({
           onLargeBody: (warning) => opts.callbacks.onWarning?.(warning),
@@ -1232,17 +1248,20 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
               break;
             case "reasoning":
               reasoning += ev.delta;
+              liveOutputChars += ev.delta.length;
               opts.callbacks.onReasoningDelta?.(ev.delta);
               break;
             case "text":
               content += ev.delta;
               tr.partialText = content;
+              liveOutputChars += ev.delta.length;
               opts.callbacks.onTextDelta?.(ev.delta);
               break;
             case "tool_call_start":
               opts.callbacks.onToolCallStart?.(ev.index, ev.id, ev.name);
               break;
             case "tool_call_args":
+              liveOutputChars += ev.argsDelta.length;
               opts.callbacks.onToolCallArgs?.(ev.index, ev.argsDelta);
               break;
             case "tool_call_complete": {
@@ -1288,6 +1307,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         responseMeta = undefined;
         responseUsage = null;
         lastUsage = usageBeforeCall;
+        liveOutputChars = 0;
         const delayMs = modelRetryDelay(retries, retryAfterOf(err), opts.retryRandom);
         const line = modelRetryLine(retries + 1, maxModelRetries, err);
         logger.warn("turn:model_retry", {
