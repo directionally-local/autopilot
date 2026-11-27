@@ -90,6 +90,7 @@ import { headerTitle, productName } from "./util/dl-identity.js";
 import { FEEDBACK_WORKER_URL, openBrowser } from "./ui/app-helpers.js";
 import { BUG_REPORT_LINE } from "./ui/bug-report.js";
 import { registerTerminalHandoff } from "./ui/bang-command.js";
+import { alertPendingConfirmation, PENDING_CONFIRMATION_TITLE } from "./ui/terminal-title.js";
 import { readKeyWithoutInput, screenWithoutInput, waitWithoutInput, type WaitIo } from "./ui/terminal-wait.js";
 import { markProductTourSeen, runProductTour, tourHintUntilSeen, tourSteps } from "./ui/product-tour.js";
 import { runStarAsk } from "./star-ask.js";
@@ -703,8 +704,15 @@ export class View implements AppBridge {
     private sdk: CamouflageSdk,
     /** `commands`: a fixed slash-command list (a remote session) instead of the built-ins plus custom ones. */
     /** `openJobs`: how to open the jobs database (tests inject a failing one). */
-    private readonly opts: { commands?: RegisteredSlashCommand[]; openJobs?: () => JobManager } = {},
+    /** `attention`: how to say a prompt is pending (tests capture it; the default rings and titles the terminal). */
+    private readonly opts: { commands?: RegisteredSlashCommand[]; openJobs?: () => JobManager; attention?: (title: string) => void | (() => void) } = {},
   ) {}
+
+  /** Ring and title the terminal while a confirmation is waiting; the result restores the session title. */
+  private notifyPendingConfirmation(): () => void {
+    const restore = this.opts.attention ? this.opts.attention(PENDING_CONFIRMATION_TITLE) : alertPendingConfirmation();
+    return typeof restore === "function" ? restore : () => {};
+  }
 
   /**
    * The jobs database, opened on first use. When it can't open (a broken
@@ -1125,6 +1133,7 @@ export class View implements AppBridge {
     if (this.permission === s.permission.args) return;
     this.permission = s.permission.args;
     if (s.permission.destructive) return void this.askDestructive(s.permission.destructive);
+    const restoreTitle = this.notifyPendingConfirmation();
     const { tool, args, sensitiveReason } = s.permission;
     const detail = permissionDetail(tool.name, args, sensitiveReason, process.stdout.columns);
     let render: { title: string; diff?: { path: string; before: string; after: string } } | undefined;
@@ -1150,7 +1159,8 @@ export class View implements AppBridge {
         const feedback = await this.denyFeedback(answer.feedback, () => this.cancels !== cancelsBefore);
         if (feedback) this.actions?.denyWithFeedback(feedback);
         else this.actions?.decidePermission("deny");
-      });
+      })
+      .finally(restoreTitle);
   }
 
   /**
@@ -1159,18 +1169,23 @@ export class View implements AppBridge {
    * name typed; anything else typed, or Esc, is Don't.
    */
   private async askDestructive(d: DestructivePrompt): Promise<void> {
-    if (d.confirmName) {
-      this.cam.send("RuntimeError", { message: d.subtitle, severity: "warn" });
-      const r = await this.sdk.form(this.cam, {
-        id: `destructive-${Date.now()}`,
-        title: d.title,
-        fields: [{ name: "confirm", label: `Type ${d.confirmName} to run it`, placeholder: "Anything else doesn't run it" }],
-      });
-      const ok = !r.cancelled && r.values?.confirm?.trim() === d.confirmName;
-      return void this.actions?.decidePermission(ok ? CONFIRMED_IRREVERSIBLE : "deny");
+    const restoreTitle = this.notifyPendingConfirmation();
+    try {
+      if (d.confirmName) {
+        this.cam.send("RuntimeError", { message: d.subtitle, severity: "warn" });
+        const r = await this.sdk.form(this.cam, {
+          id: `destructive-${Date.now()}`,
+          title: d.title,
+          fields: [{ name: "confirm", label: `Type ${d.confirmName} to run it`, placeholder: "Anything else doesn't run it" }],
+        });
+        const ok = !r.cancelled && r.values?.confirm?.trim() === d.confirmName;
+        return void this.actions?.decidePermission(ok ? CONFIRMED_IRREVERSIBLE : "deny");
+      }
+      const r = await this.select(d.title, [{ value: "run", label: "Run it" }, { value: "deny", label: "Don't run it" }], "deny", d.subtitle);
+      this.actions?.decidePermission(r === "run" ? CONFIRMED_IRREVERSIBLE : "deny");
+    } finally {
+      restoreTitle();
     }
-    const r = await this.select(d.title, [{ value: "run", label: "Run it" }, { value: "deny", label: "Don't run it" }], "deny", d.subtitle);
-    this.actions?.decidePermission(r === "run" ? CONFIRMED_IRREVERSIBLE : "deny");
   }
 
   /**
@@ -1369,7 +1384,7 @@ export class View implements AppBridge {
             { value: "clear", label: "Clear all memories for this repo" },
           ]);
           if (r === "clear") {
-            const ok = await this.sdk.confirm(this.cam, { id: `confirm-${Date.now()}`, prompt: "Clear every memory for this repo?", yes_label: "Yes, clear everything", no_label: "No, keep my memories", default: "no" });
+            const ok = await this.confirm({ id: `confirm-${Date.now()}`, prompt: "Clear every memory for this repo?", yes_label: "Yes, clear everything", no_label: "No, keep my memories", default: "no" });
             if (ok.value) a.runCommand("/memory clear");
           } else if (r) {
             await this.runWithArgs(r);
@@ -1406,7 +1421,7 @@ export class View implements AppBridge {
           const r = await this.select(editing ? "Edit a custom command" : "Delete a custom command", s.customCommands.map((c) => ({ value: c.name, label: `/${c.name}`, description: c.description })));
           if (!r) return a.closeModal("commandPicker");
           if (editing) return a.openCommandWizard("edit", r);
-          const ok = await this.sdk.confirm(this.cam, { id: `confirm-${Date.now()}`, prompt: `Delete /${r}?`, default: "no" });
+          const ok = await this.confirm({ id: `confirm-${Date.now()}`, prompt: `Delete /${r}?`, default: "no" });
           if (ok.value) a.deleteCommand(r);
           else a.closeModal("commandPicker");
         });
@@ -1524,7 +1539,7 @@ export class View implements AppBridge {
       .map(([k, v]) => `${k}: ${v}`);
     const preview = (front.length > 0 ? ["---", ...front, "---"] : []).concat(draft.template.split("\n"));
     this.cam.send("Splash", { text: [`\x1b[1m/${draft.name}\x1b[0m`, ...preview.map((l) => `\x1b[2m│\x1b[0m ${l}`)].join("\n") });
-    const ok = await this.sdk.confirm(this.cam, { id: `save-${Date.now()}`, prompt: `Save /${draft.name}?`, yes_label: "Save", no_label: "Cancel" });
+    const ok = await this.confirm({ id: `save-${Date.now()}`, prompt: `Save /${draft.name}?`, yes_label: "Save", no_label: "Cancel" });
     if (!ok.value) return a.closeModal("commandWizard");
     a.saveCommand({
       name: draft.name,
@@ -2816,7 +2831,7 @@ export class View implements AppBridge {
       if (action === "toggle") {
         return a.saveLsp({ ...servers, [key]: { ...servers[key]!, enabled: servers[key]!.enabled === false } }, true, scope);
       }
-      const ok = await this.sdk.confirm(this.cam, { id: `lspdel-${Date.now()}`, prompt: `Delete ${key}?`, default: "no" });
+      const ok = await this.confirm({ id: `lspdel-${Date.now()}`, prompt: `Delete ${key}?`, default: "no" });
       if (!ok.value) return;
       const next = { ...servers };
       delete next[key];
@@ -2855,7 +2870,7 @@ export class View implements AppBridge {
         const res = await runShell(preset.installCommand);
         say(res.output.trim().split("\n").slice(-12).join("\n") || (res.ok ? "Installed." : "Install failed."), res.ok ? "info" : "error");
         if (!res.ok) {
-          const go = await this.sdk.confirm(this.cam, { id: `lspanyway-${Date.now()}`, prompt: "Install failed. Save the server anyway?", default: "no" });
+          const go = await this.confirm({ id: `lspanyway-${Date.now()}`, prompt: "Install failed. Save the server anyway?", default: "no" });
           if (!go.value) return;
         }
       }
@@ -2919,11 +2934,25 @@ export class View implements AppBridge {
     this.actions?.runCommand(template.replace(/<([^>]+)>/g, (_m, name: string) => values[name] ?? ""));
   }
 
+  /** A yes/no confirmation from the renderer; alerts first like a permission prompt. */
+  private async confirm(spec: Record<string, unknown>): Promise<{ id: string; value?: boolean; cancelled: boolean }> {
+    const restoreTitle = this.notifyPendingConfirmation();
+    try {
+      return await this.sdk.confirm(this.cam, spec);
+    } finally {
+      restoreTitle();
+    }
+  }
+
   private async select(prompt: string, options: PickOption[], current?: string, subtitle?: string): Promise<string | null> {
     const r = await this.sdk.selectList(this.cam, {
       id: `pick-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       prompt,
       options,
+      // Short prompts are choices: 1–9 select. Only long, searchable lists
+      // take typed text as a filter, so a digit never lands in a search box
+      // on a confirmation.
+      allow_filter: selectAllowsFilter(options.length),
       ...(current ? { default: current } : {}),
       ...(subtitle ? { subtitle } : {}),
     });
@@ -2957,6 +2986,14 @@ export interface ConnectOutcome {
 }
 
 type PickOption = { value: string; label: string; description?: string; section?: string; columns?: string[]; state?: "on" | "off"; keywords?: string };
+
+/** Short lists use 1–9 to pick an option; longer ones are meant to be searched. */
+export const MAX_NUMBERED_OPTIONS = 9;
+
+/** Whether typing filters this list instead of selecting a numbered option. */
+export function selectAllowsFilter(optionCount: number): boolean {
+  return optionCount > MAX_NUMBERED_OPTIONS;
+}
 
 export type RegisteredSlashCommand = { name: string; description?: string; args_hint?: string };
 

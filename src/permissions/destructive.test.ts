@@ -1,7 +1,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { analyzeSql, classifyCommand, classifyToolCall, isLocalHost, type ClassifyContext } from "./destructive.js";
@@ -45,6 +45,26 @@ before(() => {
   writeFileSync(join(R, "scratch.txt"), "untracked");
   writeFileSync(join(R, "app.log"), "log");
   writeFileSync(join(R, ".env"), "SECRET=1\n");
+  // Scratch folders a run may make: untracked files under workspace tmp/ and
+  // scratch/ names, plus a folder in the system temp root. A tracked file (with
+  // uncommitted changes) and a repository's .git must still count as real data.
+  mkdirSync(join(R, "tmp", "agent-run"), { recursive: true });
+  writeFileSync(join(R, "tmp", "agent-run", "notes.txt"), "temporary notes\n");
+  mkdirSync(join(R, "scratch-run"));
+  writeFileSync(join(R, "scratch-run", "draft.txt"), "temporary draft\n");
+  mkdirSync(join(R, "src", "temp_converter"));
+  writeFileSync(join(R, "src", "temp_converter", "new-work.ts"), "export const converter = 1;\n");
+  mkdirSync(join(R, "docs", "scratch-notes"), { recursive: true });
+  writeFileSync(join(R, "docs", "scratch-notes", "new-work.md"), "unpublished notes\n");
+  mkdirSync(join(R, "tmp", "repo-cache"), { recursive: true });
+  git(join(R, "tmp", "repo-cache"), "init", "-q");
+  mkdirSync(join(R, "tmp", "tracked"), { recursive: true });
+  writeFileSync(join(R, "tmp", "tracked", "keep.txt"), "v1\n");
+  git(R, "add", "tmp/tracked/keep.txt");
+  git(R, "commit", "-qm", "tracked file in tmp");
+  writeFileSync(join(R, "tmp", "tracked", "keep.txt"), "v2, not committed\n");
+  mkdirSync(join(T, "agent-scratch"), { recursive: true });
+  writeFileSync(join(T, "agent-scratch", "big.bin"), "x".repeat(32));
   // A sibling of the temp root: outside the project and outside the scratch
   // dirs, so deleting it is irreversible on every platform.
   OUTSIDE = join(dirname(T), `ap-outside-${basename(T)}`);
@@ -197,6 +217,50 @@ describe("files", () => {
   it("is irreversible above the copy limit", () => {
     assert.strictEqual(verdict("rm -rf build-cache", { maxCopyBytes: 4 }), "irreversible");
     assert.match(first("rm -rf build-cache", { maxCopyBytes: 4 })!.recovery, /No copy/);
+  });
+
+  it("deleting paths inside the system temp dir is safe, even above the copy limit", () => {
+    assert.strictEqual(verdict(`rm -rf ${join(T, "agent-scratch")}`), "safe");
+    assert.strictEqual(verdict(`rm -rf ${join(T, "agent-scratch")}`, { maxCopyBytes: 1 }), "safe");
+  });
+
+  it("does not treat a whole temp root as scratch", () => {
+    const scratchDirs = [T, realpathSync(T), "/tmp", "/var/tmp", "/private/var/folders"];
+    for (const root of [T, realpathSync(T)]) {
+      assert.strictEqual(verdict(`rm -rf ${root}`, { scratchDirs }), "irreversible", root);
+    }
+    assert.strictEqual(verdict(`rm -rf "$TMPDIR"`, { scratchDirs, env: { TMPDIR: T } }), "irreversible");
+    for (const root of ["/tmp", "/var/tmp", "/private/var/folders"]) {
+      // The root itself must never be classified as scratch. It only has a
+      // finding when it exists on this platform (hidden test dirs may not).
+      if (existsSync(root)) assert.strictEqual(verdict(`rm -rf ${root}`, { scratchDirs, maxCopyBytes: 1, env: {} }), "irreversible", root);
+    }
+  });
+
+  it("workspace tmp/scratch folders are recoverable with a copy, not safe and not irreversible", () => {
+    const f = first("rm -rf tmp/agent-run")!;
+    assert.strictEqual(f.verdict, "recoverable");
+    assert.strictEqual(f.plan?.kind, "files");
+    assert.match(f.recovery, /keeps a copy of 1 file/);
+    assert.strictEqual(verdict("rm -rf scratch-run"), "recoverable");
+    assert.strictEqual(verdict("rm -rf ./scratch-run/"), "recoverable");
+    // Too large for a copy: still no scary prompt, and it says no copy was made.
+    assert.strictEqual(verdict("rm -rf tmp/agent-run", { maxCopyBytes: 1 }), "recoverable");
+    assert.match(first("rm -rf tmp/agent-run", { maxCopyBytes: 1 })!.recovery, /No copy/);
+  });
+
+  it("only a top-level tmp/scratch folder counts, so nested new work keeps its copy", () => {
+    for (const c of ["rm -rf src/temp_converter", "rm -rf docs/scratch-notes"]) {
+      const f = first(c)!;
+      assert.strictEqual(f.verdict, "recoverable", c);
+      assert.strictEqual(f.plan?.kind, "files", c);
+      assert.match(f.recovery, /keeps a copy of 1 file/, c);
+    }
+  });
+
+  it("keeps the irreversible question for tracked work or a repo's history inside tmp", () => {
+    assert.strictEqual(verdict("rm -rf tmp/tracked", { maxCopyBytes: 1 }), "irreversible");
+    assert.strictEqual(verdict("rm -rf tmp/repo-cache"), "irreversible");
   });
 
   it("deleting outside the project, the project itself, home, root or a .git is irreversible", () => {

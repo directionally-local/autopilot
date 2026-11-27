@@ -3,7 +3,8 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { catchDlAuth, helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, permissionDetail, toolSummary, validateCommandName, View, walkFiles } from "./camouflage-view.js";
+import { catchDlAuth, helpFooter, helpOptions, listMentionDir, modelOptions, noticeSeverity, queuePlanOptions, rendererExitIsUserQuit, selectAllowsFilter, shouldSendSubagentPolicyNotice, splitBangResult, statusSegments, syncSlashCommands, toolOutputWithCommand, toolRow, permissionDetail, toolSummary, validateCommandName, View, walkFiles } from "./camouflage-view.js";
+import { PENDING_CONFIRMATION_TITLE } from "./ui/terminal-title.js";
 import { attachLifecycle } from "./camouflage-lifecycle.test-support.js";
 import type { AppActions, AppSnapshot } from "./ui/app-bridge.js";
 import type { ChatEvent } from "./ui/view-types.js";
@@ -344,7 +345,7 @@ function baseSnapshot(over: Partial<AppSnapshot> = {}): AppSnapshot {
 }
 
 /** A View on a fake renderer: records what it sends and answers prompts from queues. */
-async function fakeView(answers: { permission?: { choice: "allow_once" | "allow_session" | "deny"; feedback?: string }[]; form?: { values?: Record<string, string>; cancelled: boolean }[]; select?: (string | null)[] }) {
+async function fakeView(answers: { permission?: { choice: "allow_once" | "allow_session" | "deny"; feedback?: string }[]; form?: { values?: Record<string, string>; cancelled: boolean }[]; select?: (string | null)[] }, opts: { attention?: (title: string) => void } = {}) {
   process.env.AUTOPILOT_JOBS_DB = join(await mkdtemp(join(tmpdir(), "cam-view-")), "jobs.db");
   const { View } = await import("./camouflage-view.js");
   const sent: Sent[] = [];
@@ -363,7 +364,7 @@ async function fakeView(answers: { permission?: { choice: "allow_once" | "allow_
     confirm: async () => ({ id: "", cancelled: true }),
     form: async (_c: unknown, spec: Record<string, unknown>) => (prompts.push({ type: "form", payload: spec }), { id: "", ...answers.form!.shift()! }),
   };
-  const view = new View(cam as never, sdk as never);
+  const view = new View(cam as never, sdk as never, opts);
   const calls: [string, unknown][] = [];
   const record = (name: string) => (arg?: unknown) => void calls.push([name, arg]);
   view.connect(new Proxy({}, { get: (_t, name) => record(String(name)) }) as AppActions);
@@ -521,6 +522,49 @@ describe("Camouflage permission: deny with feedback", () => {
     await settle();
     assert.strictEqual(prompts[0]?.payload.detail, "⚠ This call writes credentials location /h/.ssh.");
     view.dispose();
+  });
+});
+
+describe("confirmation prompts: number keys pick, typing filters only long lists", () => {
+  it("a short confirmation disables filtering so 1 and 2 select Run it or Don't", async () => {
+    const destructive = { title: "This can't be undone: deletes `tmp/run`.", subtitle: "No recovery", recovery: "No recovery", actions: ["rm -rf tmp/run"] };
+    const { view, prompts, calls } = await fakeView({ select: ["deny"] });
+    view.sync(baseSnapshot({ permission: { ...permission, args: { command: "rm -rf tmp/run" }, destructive } }));
+    await settle();
+    const spec = prompts.find((p) => p.type === "select")!.payload;
+    assert.strictEqual(spec.allow_filter, false);
+    assert.deepStrictEqual((spec.options as { value: string }[]).map((o) => o.value), ["run", "deny"]);
+    assert.deepStrictEqual(calls, [["decidePermission", "deny"]]);
+    view.dispose();
+  });
+
+  it("only lists longer than nine options stay searchable", () => {
+    assert.strictEqual(selectAllowsFilter(2), false);
+    assert.strictEqual(selectAllowsFilter(9), false);
+    assert.strictEqual(selectAllowsFilter(10), true);
+    assert.strictEqual(selectAllowsFilter(100), true);
+  });
+
+  it("rings and titles the terminal while a confirmation is pending, then restores the session title", async () => {
+    const attention: string[] = [];
+    const restored: string[] = [];
+    const notify = (title: string) => (attention.push(title), () => restored.push(title));
+    const destructive = { title: "This can't be undone: deletes `tmp/run`.", subtitle: "No recovery", recovery: "No recovery", actions: ["rm -rf tmp/run"] };
+    const a = await fakeView({ select: ["deny"] }, { attention: notify });
+    a.view.sync(baseSnapshot({ permission: { ...permission, args: { command: "rm -rf tmp/run" }, destructive } }));
+    await settle();
+    a.view.dispose();
+    const b = await fakeView({ permission: [{ choice: "allow_once" }] }, { attention: notify });
+    b.view.sync(baseSnapshot({ permission }));
+    await settle();
+    b.view.dispose();
+    const c = await fakeView({ form: [{ cancelled: true }] }, { attention: notify });
+    // A form-based confirmation (a production target) restores on cancel too.
+    c.view.sync(baseSnapshot({ permission: { ...permission, args: { command: "terraform destroy" }, destructive: { ...destructive, confirmName: "production" } } }));
+    await settle();
+    c.view.dispose();
+    assert.deepStrictEqual(attention, [PENDING_CONFIRMATION_TITLE, PENDING_CONFIRMATION_TITLE, PENDING_CONFIRMATION_TITLE]);
+    assert.deepStrictEqual(restored, [PENDING_CONFIRMATION_TITLE, PENDING_CONFIRMATION_TITLE, PENDING_CONFIRMATION_TITLE]);
   });
 });
 
