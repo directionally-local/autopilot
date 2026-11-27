@@ -85,6 +85,7 @@ import { isExitCommand } from "./ui/exit-command.js";
 import { generateContinuationSummary } from "./agent/continuation-summary.js";
 import { runInit as runInitImpl } from "./init/run-init.js";
 import { switchedMessage } from "./providers/connect.js";
+import { PrivateHttpWarningTracker, providerDestinationLabel, resolveActiveProvider } from "./providers/resolve.js";
 import { endSessions } from "./hooks/session-lifecycle.js";
 import { submitUserPrompt } from "./hooks/prompt-submit.js";
 import type { ProviderId } from "./providers/presets.js";
@@ -131,7 +132,6 @@ import { projectDirsToRead } from "./util/app-dirs.js";
 import { dlScreenFollowUp, dlScreenFor, inviteTipAfterWin, withWinTracking, won, type DlScreen, type DlScreenOutcome, type WinTracker } from "./providers/dl-growth.js";
 import { DL_PROVIDER_ID, dlGptLimitAutoSwitch, lastKnownDlMe, type DlErrorDetail } from "./providers/directionally-local.js";
 import { dlProviderLimitAutoSwitch } from "./providers/dl-free-providers.js";
-import { resolveActiveProvider } from "./providers/resolve.js";
 import { noteDayOfUse, starAskAfterWin, winTipAfterWin, type WinTipState } from "./star-ask.js";
 import type { FeedbackLine, FeedbackRequest } from "./feedback.js";
 import type { AccessRequestLine, AccessRequestOpen } from "./access-request.js";
@@ -386,6 +386,8 @@ function App({
   const executorRef = useRef<ToolExecutor>(new ToolExecutor(ALL_TOOLS));
   const activeAsstIdRef = useRef<number | null>(null);
   const sessionScopeRef = useRef<AbortScope>(new AbortScope());
+  /** Per-session cleartext key-travel warning accounting (never a module global). */
+  const privateHttpWarningsRef = useRef<PrivateHttpWarningTracker>(new PrivateHttpWarningTracker());
   const activeScopeRef = useRef<AbortScope | null>(null);
   /** Holds the latest Ctrl+C interrupt logic so the SIGINT handler can delegate to it. */
   const sigintHandlerRef = useRef<(() => void) | null>(null);
@@ -504,6 +506,19 @@ function App({
     turnHistoryRef,
     noteTurnEnded,
   } = sessionMgr;
+  // A /clear or a resume starts a new conversation: the cleartext key-travel
+  // warning is once per session, so the tracker is replaced with the session.
+  const resetSessionWithWarnings = useCallback(() => {
+    privateHttpWarningsRef.current = new PrivateHttpWarningTracker();
+    resetSession();
+  }, [resetSession]);
+  const handleResumePickWithWarnings = useCallback(
+    (...args: Parameters<typeof handleResumePick>) => {
+      privateHttpWarningsRef.current = new PrivateHttpWarningTracker();
+      return handleResumePick(...args);
+    },
+    [handleResumePick],
+  );
   // Pick up a request that stopped mid-task: the summary rides along as context.
   const continueTask = useCallback(
     (s: WhereYouLeftOff) => {
@@ -526,6 +541,7 @@ function App({
     void (async () => {
       const { sessionsDir } = await import("./sessions.js");
       try {
+        privateHttpWarningsRef.current = new PrivateHttpWarningTracker();
         await doResumeSession(join(sessionsDir(), `${initialResumeSessionId}.json`));
         if (initialResumeReason === "crash") {
           setEvents((e) => [
@@ -1079,7 +1095,7 @@ function App({
     setTasks: turn.setTasks,
     lspScope,
     lspProjectPath,
-    resetSession,
+    resetSession: resetSessionWithWarnings,
     clearTaskTracking,
     openResumePicker,
     runCompact,
@@ -1133,7 +1149,7 @@ function App({
     setShowLspWizard, setShowCommandList,
     setCommandWizard, setCommandPicker,
     turn.setShowReasoning, turn.setTasks,
-    resetSession, clearTaskTracking, openResumePicker, runCompact, runInit,
+    resetSessionWithWarnings, clearTaskTracking, openResumePicker, runCompact, runInit,
     initMcp, initLsp, ensureSessionId, startTour, continueTask,
   ]);
 
@@ -1525,6 +1541,7 @@ function App({
           ]);
         },
       });
+      privateHttpWarningsRef.current.setHandler(sharedCallbacks.onWarning);
 
       const cleanupTurn = () => {
         logger.info("cleanupTurn");
@@ -1646,6 +1663,7 @@ function App({
       supervisorRef.current.startTurn(
         assembleTurn({ cfg, policy, host: {
           ...llmAuthFromConfig(cfg),
+          privateHttpWarnings: privateHttpWarningsRef.current,
           model: overrideModel ?? cfg.model,
           messages: messagesRef.current,
           executor: executorRef.current,
@@ -2279,7 +2297,7 @@ function App({
           setEvents((e) => [...e, { kind: "info", key: mkKey(), text: `mode: ${m}` }]);
         }
       },
-      pickResume: handleResumePick,
+      pickResume: handleResumePickWithWarnings,
       pickCheckpoint: handleCheckpointPick,
       pickPlanOption: handlePlanOptionPick,
       pickPlanComplete: handlePlanCompletePick,
@@ -2388,6 +2406,7 @@ function App({
       workers: runningSubagents,
       mode,
       model: cfg?.model ?? "",
+      providerHost: cfg ? providerDestinationLabel(resolveActiveProvider(cfg)) : "",
       usage,
       sessionUsage,
       contextLimit: modelContextLimit,

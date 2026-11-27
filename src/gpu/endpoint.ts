@@ -4,6 +4,8 @@
  * checked with GET <base>/models before anything is saved.
  */
 
+import { gatedFetch, HttpGateRefusalError, type HostResolver, type PrivateHttpWarningTracker } from "../providers/resolve.js";
+
 export type EndpointError = "unreachable" | "unauthorized" | "http" | "not_openai" | "no_models";
 
 export type EndpointCheck = { ok: true; baseUrl: string; models: string[] } | { ok: false; error: EndpointError; message: string };
@@ -43,14 +45,29 @@ export function serverBaseUrl(address: string, port: string): string | undefined
 }
 
 /** GET <base>/models: reachable, accepted, OpenAI-shaped, with at least one model. */
-export async function checkModelsEndpoint(baseUrl: string, key?: string, fetchImpl: typeof fetch = fetch): Promise<EndpointCheck> {
+export async function checkModelsEndpoint(
+  baseUrl: string,
+  key?: string,
+  fetchImpl?: typeof fetch,
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver,
+  /** The caller's per-session key-travel warning tracker. */
+  warnings?: PrivateHttpWarningTracker,
+): Promise<EndpointCheck> {
+  // The gpu "own server" flow carries the key too: the same gated helper as
+  // the chat path refuses a public http address at setup, before the key is sent.
   let res: Response;
   try {
-    res = await fetchImpl(`${baseUrl}/models`, {
-      headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-      signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
-    });
+    res = await gatedFetch(
+      `${baseUrl}/models`,
+      {
+        headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+        signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
+      },
+      { hasKey: !!key, ...(warnings ? { warnings } : {}), ...(resolver ? { resolver } : {}), ...(fetchImpl ? { fetchImpl } : {}) },
+    );
   } catch (e) {
+    if (e instanceof HttpGateRefusalError) return { ok: false, error: "http", message: e.message };
     const why = e instanceof Error ? (e.name === "TimeoutError" ? "no answer in 5 s" : e.message) : String(e);
     return { ok: false, error: "unreachable", message: `Couldn't reach ${baseUrl} (${why}).` };
   }

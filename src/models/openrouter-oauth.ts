@@ -17,7 +17,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { hostname } from "node:os";
-import { openRouterUrl, fetchWithNetworkRetry } from "./openrouter.js";
+import { gatedFetchWithNetworkRetry, openRouterUrl } from "./openrouter.js";
+import type { HostResolver, PrivateHttpWarningTracker } from "../providers/resolve.js";
 
 export interface Pkce {
   verifier: string;
@@ -66,13 +67,20 @@ export class OpenRouterSignInError extends Error {}
 export async function exchangeCode(
   code: string,
   verifier: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
+  resolver?: HostResolver,
+  warnings?: PrivateHttpWarningTracker,
 ): Promise<string> {
-  const res = await fetchWithNetworkRetry(fetchImpl, openRouterUrl("auth/keys"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code: code.trim(), code_verifier: verifier, code_challenge_method: "S256" }),
-  });
+  const res = await gatedFetchWithNetworkRetry(
+    fetchImpl,
+    openRouterUrl("auth/keys"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code.trim(), code_verifier: verifier, code_challenge_method: "S256" }),
+    },
+    { hasKey: true, ...(resolver ? { resolver } : {}), ...(warnings ? { warnings } : {}) },
+  );
   let body: { key?: unknown; error?: { message?: string } } = {};
   try {
     body = (await res.json()) as typeof body;

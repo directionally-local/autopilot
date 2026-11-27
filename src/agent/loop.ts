@@ -28,6 +28,7 @@ import { codeModeCrashDisabledReason, generateTypeScriptApi, runInSandbox, secur
 import type { SandboxReadCursor } from "../code-mode/index.js";
 import { approxTokens, estimatePromptTokens } from "./artifact-compaction.js";
 import { resolveCustomEndpoint } from "./custom-endpoint.js";
+import type { PrivateHttpWarningTracker } from "../providers/resolve.js";
 import { localContextLength, localContextMessage, localProviderOf, servedPromptLimit } from "../models/local-context.js";
 import { logger } from "../util/logger.js";
 import { prepareTurn } from "./pre-turn.js";
@@ -128,6 +129,8 @@ export interface AgentTurnOpts extends LlmAuth {
   reasoningEffort?: "low" | "medium" | "high";
   coauthor?: { name: string; email: string };
   sessionId?: string;
+  /** Per-session cleartext key-travel warning accounting (never a module global). */
+  privateHttpWarnings?: PrivateHttpWarningTracker;
   /** Durable unattended-run identity; enables tool boundary journaling. */
   runId?: string;
   /** Optional override for the durable run/event/timer database. */
@@ -1215,6 +1218,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
         const events = runKimi({
           onLargeBody: (warning) => opts.callbacks.onWarning?.(warning),
           onNotice: (message) => opts.callbacks.onInfo?.(message),
+          ...(opts.privateHttpWarnings ? { privateHttpWarnings: opts.privateHttpWarnings } : {}),
           ...llmAuthOf(opts),
           model: opts.model,
           requestId,

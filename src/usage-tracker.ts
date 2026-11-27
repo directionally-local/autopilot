@@ -6,7 +6,8 @@ import type { Usage } from "./agent/messages.js";
 import type { ResponseMeta } from "./agent/client.js";
 import type { ProviderPreset } from "./providers/presets.js";
 import { calculateCost } from "./pricing.js";
-import { fetchWithNetworkRetry, openRouterHeaders, openRouterUrl } from "./models/openrouter.js";
+import { gatedFetchWithNetworkRetry, openRouterHeaders, openRouterUrl } from "./models/openrouter.js";
+import type { HostResolver, PrivateHttpWarningTracker } from "./providers/resolve.js";
 import { RETENTION } from "./storage-limits.js";
 import { logProviderResolution } from "./cost-debug.js";
 import { recoverJsonPrefix, withFileLock, writeFileAtomic } from "./util/atomic-file.js";
@@ -246,13 +247,24 @@ function getOrCreateSession(log: UsageLog, sessionId: string, date: string): Ses
  */
 export async function fetchGenerationSnapshot(
   lookup: CostLookup,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
+  resolver?: HostResolver,
+  warnings?: PrivateHttpWarningTracker,
 ): Promise<GenerationSnapshot | undefined> {
   const id = lookup.meta.generationId;
   if (!id) return undefined;
-  const res = await fetchWithNetworkRetry(fetchImpl, openRouterUrl(`generation?id=${encodeURIComponent(id)}`), {
-    headers: openRouterHeaders(lookup.apiKey),
-  }, 2);
+  let res: Response;
+  try {
+    res = await gatedFetchWithNetworkRetry(
+      fetchImpl,
+      openRouterUrl(`generation?id=${encodeURIComponent(id)}`),
+      { headers: openRouterHeaders(lookup.apiKey) },
+      { hasKey: true, ...(resolver ? { resolver } : {}), ...(warnings ? { warnings } : {}) },
+      2,
+    );
+  } catch {
+    return undefined;
+  }
   if (!res.ok) return undefined;
   const parsed = (await res.json()) as { data?: Record<string, unknown> };
   const d = parsed.data;

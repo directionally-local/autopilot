@@ -42,8 +42,24 @@ describe("checkModelsEndpoint", () => {
     assert.equal(server.requests.at(-1)?.auth, "Bearer sk-right");
   });
 
-  it("says what's wrong, as a short error type", async () => {
-    const error = async (base: string, key?: string) => {
+  it("refuses a name that resolves public before the key is sent", async () => {
+    let called = false;
+    const r = await checkModelsEndpoint(
+      "http://gpu-box:8000/v1",
+      "sk-key",
+      (async () => {
+        called = true;
+        return new Response("{}");
+      }) as typeof fetch,
+      async () => [{ address: "203.0.113.9", family: 4 }],
+    );
+    assert.equal(r.ok, false);
+    assert.equal(r.ok ? "" : r.error, "http");
+    assert.match(r.ok ? "" : r.message, /base URL must use https \(got http:\/\/gpu-box:8000\)/);
+    assert.equal(called, false, "the key never left");
+  });
+
+  it("says what's wrong, as a short error type", async () => {    const error = async (base: string, key?: string) => {
       const r = await checkModelsEndpoint(base, key);
       return r.ok ? "ok" : r.error;
     };

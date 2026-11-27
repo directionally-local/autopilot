@@ -95,3 +95,22 @@ describe("dl.new's install code", () => {
     assert.equal((await saved()).providers?.["directionally-local"]?.refreshToken, "old-rt");
   });
 });
+
+describe("dl install-code gate", () => {
+  beforeEach(async () => {
+    resetDlInstallCodeForTesting();
+    await rm(configPath(), { force: true });
+  });
+  afterEach(() => resetDlInstallCodeForTesting());
+
+  it("refuses a public-resolving cleartext DL origin before the install code is sent", async () => {
+    const calls: Call[] = [];
+    const out = await redeemDlInstallCode({
+      env: env({ AUTOPILOT_DL_FREE_URL: "http://proxy:8080" }),
+      fetchImpl: fakeFetch(200, tokens(), calls),
+      resolver: async () => [{ address: "203.0.113.9", family: 4 }],
+    });
+    assert.equal(out.kind, "fallback");
+    assert.equal(calls.length, 0, "no request was sent, so the code never left");
+  });
+});

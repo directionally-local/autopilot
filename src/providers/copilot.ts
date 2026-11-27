@@ -23,6 +23,7 @@ import type { ModelEntry } from "../models/registry.js";
 import { getUserAgent } from "../util/version.js";
 import type { WireProtocol } from "./presets.js";
 import { readEnv } from "../util/env.js";
+import { gatedFetch, type HostResolver, type PrivateHttpWarningTracker } from "./resolve.js";
 
 /** Autopilot's GitHub OAuth app (the same one `autopilot auth github` uses); overridable for forks/enterprise apps. */
 export const COPILOT_CLIENT_ID = process.env.AUTOPILOT_COPILOT_CLIENT_ID ?? readEnv("GITHUB_CLIENT_ID") ?? "Ov23liM7lJX1xE2V1sVK";
@@ -105,10 +106,20 @@ export async function pollDeviceFlow(
  * Confirm the token's account has Copilot chat and find its API base URL.
  * Throws a readable error for accounts without Copilot.
  */
-export async function checkCopilotAccess(token: string, enterprise?: string, fetchImpl: typeof fetch = fetch): Promise<{ apiBase: string; plan?: string }> {
-  const res = await fetchImpl(copilotUrls(enterprise).user, {
-    headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent(), "X-GitHub-Api-Version": USER_API_VERSION },
-  });
+export async function checkCopilotAccess(
+  token: string,
+  enterprise?: string,
+  fetchImpl?: typeof fetch,
+  resolver?: HostResolver,
+  warnings?: PrivateHttpWarningTracker,
+): Promise<{ apiBase: string; plan?: string }> {
+  const res = await gatedFetch(
+    copilotUrls(enterprise).user,
+    {
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent(), "X-GitHub-Api-Version": USER_API_VERSION },
+    },
+    { hasKey: true, ...(warnings ? { warnings } : {}), ...(resolver ? { resolver } : {}), ...(fetchImpl ? { fetchImpl } : {}) },
+  );
   if (res.status === 401) throw new Error("GitHub rejected the token — sign in again with `autopilot auth copilot`.");
   if (!res.ok) throw new Error(`Couldn't check Copilot access (HTTP ${res.status}).`);
   const u = (await res.json()) as { chat_enabled?: boolean; copilot_plan?: string; endpoints?: { api?: string } };
@@ -167,11 +178,24 @@ export function mapCopilotModels(data: unknown[]): ModelEntry[] {
   return out;
 }
 
-export async function loadCopilotModels(base: string, token: string, fetchImpl: typeof fetch = fetch): Promise<ModelEntry[]> {
-  const res = await fetchImpl(`${base.replace(/\/+$/, "")}/models`, {
-    headers: { Authorization: `Bearer ${token}`, "User-Agent": getUserAgent(), "X-GitHub-Api-Version": COPILOT_API_VERSION, Accept: "application/json" },
-    signal: AbortSignal.timeout(5_000),
-  });
+export async function loadCopilotModels(
+  base: string,
+  token: string,
+  fetchImpl?: typeof fetch,
+  resolver?: HostResolver,
+  warnings?: PrivateHttpWarningTracker,
+): Promise<ModelEntry[]> {
+  // The catalog carries the Copilot token: the same gated helper as the chat
+  // path refuses a public http address before the request and pins the checked
+  // addresses.
+  const res = await gatedFetch(
+    `${base.replace(/\/+$/, "")}/models`,
+    {
+      headers: { Authorization: `Bearer ${token}`, "User-Agent": getUserAgent(), "X-GitHub-Api-Version": COPILOT_API_VERSION, Accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
+    },
+    { hasKey: true, ...(warnings ? { warnings } : {}), ...(resolver ? { resolver } : {}), ...(fetchImpl ? { fetchImpl } : {}) },
+  );
   if (!res.ok) throw new Error(`Copilot /models returned HTTP ${res.status}`);
   const body = (await res.json()) as { data?: unknown[] };
   return mapCopilotModels(body.data ?? []);

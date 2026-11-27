@@ -69,6 +69,26 @@ describe("fetchEmbeddings", () => {
     assert.strictEqual((await lastRequest!.clone().json()).model, "bge-small");
   });
 
+  it("refuses a public-resolving name before the embeddings fetch is issued", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      () =>
+        fetchEmbeddings({
+          customEndpoint: { baseUrl: "http://proxy:8080/v1", apiKey: "sk-secret" },
+          model: "bge-small",
+          texts: ["x"],
+          fetchImpl,
+          resolver: async () => [{ address: "203.0.113.9", family: 4 }],
+        }),
+      /base URL must use https/,
+    );
+    assert.strictEqual(called, false, "the key never left");
+  });
+
   it("never sends OpenRouter's bge model to a custom endpoint: without a model, embeddings are unavailable", async () => {
     await assert.rejects(
       fetchEmbeddings({ customEndpoint: { baseUrl: "https://broker.example/v1" }, texts: ["x"] }),

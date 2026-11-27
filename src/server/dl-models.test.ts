@@ -77,10 +77,10 @@ describe("dl server model catalog per provider", () => {
 
   it("lists a keyless provider without an Authorization header, and has nothing to fall back to when it has no default model", async () => {
     const calls: Call[] = [];
-    const ollama = config({ provider: providerConfig("ollama", "http://gpu-box:11434/v1") });
+    const ollama = config({ provider: providerConfig("ollama", "http://192.168.1.50:11434/v1") });
     const models = await selectableModels(ollama, { fetch: fakeFetch(calls, ["qwen3:32b", "nomic-embed-text"]), env: {} });
     assert.deepEqual(models.map((m) => m.id), ["qwen3:32b"]);
-    assert.deepEqual(calls, [{ url: "http://gpu-box:11434/v1/models", authorization: undefined }]);
+    assert.deepEqual(calls, [{ url: "http://192.168.1.50:11434/v1/models", authorization: undefined }]);
     assert.deepEqual(await modelsResponse(ollama, { fetch: fakeFetch(calls, ["qwen3:32b"]), env: {} }), {
       models: ["qwen3:32b"], catalog: [{ id: "qwen3:32b", created: 1_700_000_000 }], provider: { id: "ollama", name: "Ollama" }, defaultModel: "qwen3:32b",
     });

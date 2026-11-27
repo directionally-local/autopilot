@@ -48,7 +48,7 @@ import {
   type AccessRequestOpen,
 } from "./access-request.js";
 import { copyWithOsc52 } from "./util/osc52.js";
-import { resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
+import { PrivateHttpWarningTracker, resolveActiveProvider, resolveProviderKey } from "./providers/resolve.js";
 import {
   chatgptSignIn,
   commitProvider,
@@ -2199,7 +2199,7 @@ export class View implements AppBridge {
   ): Promise<{ kind: "connected"; connection: Connection } | { kind: "denied" | "cancelled" | "failed" }> {
     const id: ProviderId = "directionally-local";
     const verified = async (key: string, source: KeySource): Promise<{ kind: "connected"; connection: Connection } | { kind: "failed" }> => {
-      const res = await this.providerCalls.verify(id, key, source);
+      const res = await this.providerCalls.verify(id, key, source, undefined, new PrivateHttpWarningTracker(say));
       if (!res.ok) {
         say(res.message, "error");
         return { kind: "failed" };
@@ -2513,7 +2513,7 @@ export class View implements AppBridge {
     const source: KeySource = key ? (preset.apiKeyEnv.some((n) => process.env[n]?.trim()) ? "env" : "config") : "none";
     const baseUrl = id === "custom" ? active.baseUrl : cfg?.providers?.[id]?.baseUrl;
     say(key ? `Checking the key with ${preset.name}…` : `Connecting to ${preset.name}…`);
-    const res = await verifyProvider(id, key, source, baseUrl);
+    const res = await verifyProvider(id, key, source, baseUrl, new PrivateHttpWarningTracker(say));
     if (!res.ok) {
       say(res.message, "error");
       return null;
@@ -2651,7 +2651,7 @@ export class View implements AppBridge {
 
     const verify = async (key: string | undefined, source: KeySource, url?: string): Promise<Connection | null> => {
       say(preset.keyRequired || id === "openrouter" ? `Checking the key with ${preset.name}…` : `Connecting to ${preset.name}…`);
-      const res = await this.providerCalls.verify(id, key, source, url);
+      const res = await this.providerCalls.verify(id, key, source, url, new PrivateHttpWarningTracker(say));
       if (res.ok) return res.connection;
       say(res.message, "error");
       return null;
@@ -3323,7 +3323,7 @@ export function queuePlanSplash(prompts: string[]): string {
 
 export type StatusInput = Pick<
   AppSnapshot,
-  "modesEnabled" | "mode" | "busy" | "model" | "usage" | "sessionUsage" | "contextLimit" | "turnPhase" | "currentTool" | "kimiMdStale" | "codeMode" | "intentTier" | "memoryEnabled" | "memoryCount" | "memoryLastWrite"
+  "modesEnabled" | "mode" | "busy" | "model" | "providerHost" | "usage" | "sessionUsage" | "contextLimit" | "turnPhase" | "currentTool" | "kimiMdStale" | "codeMode" | "intentTier" | "memoryEnabled" | "memoryCount" | "memoryLastWrite"
 >;
 
 /**
@@ -3346,6 +3346,7 @@ export function statusSegments(s: StatusInput): Record<string, string> {
     // Empty lets the renderer name the running tool row itself.
     activity: executing ? `${capitalize(humanizePhase("executing", tier))} ${s.currentTool}` : s.busy && tier === "heavy" ? "Reasoning" : "",
     model: shortModel(s.model),
+    provider: s.providerHost ?? "",
     tokens: s.usage ? `${formatK(s.usage.prompt_tokens)} tokens` : "",
     context: pct !== null ? `ctx ${pct}%` : "",
     cost: s.sessionUsage ? `${s.sessionUsage.reconcilePending ? "≈" : ""}$${s.sessionUsage.cost.toFixed(2)}` : "",

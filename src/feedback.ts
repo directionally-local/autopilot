@@ -14,6 +14,7 @@
  */
 
 import { dlOrigin, isDlApiKey } from "./providers/dl-endpoint.js";
+import { gatedFetch, type HostResolver, type PrivateHttpWarningTracker } from "./providers/resolve.js";
 import { BUG_REPORT_EMAIL, BUG_REPORT_URL } from "./ui/bug-report.js";
 import { hasPasteChip, PASTE_CHIP_PROBLEM, withoutPasteChips } from "./ui/paste-chips.js";
 
@@ -81,12 +82,19 @@ export function looksLikeEmail(s: string): boolean {
 }
 
 /** The person's public GitHub email from the service; null when there is none or the lookup failed. */
-export async function fetchReplyAddress(token: string, o: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<string | null> {
+export async function fetchReplyAddress(
+  token: string,
+  o: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
+): Promise<string | null> {
   try {
-    const res = await (o.fetchImpl ?? fetch)(`${dlOrigin(o.env)}/v1/feedback/reply-address`, {
-      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    const res = await gatedFetch(
+      `${dlOrigin(o.env)}/v1/feedback/reply-address`,
+      {
+        headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      },
+      { hasKey: true, ...(o.warnings ? { warnings: o.warnings } : {}), ...(o.resolver ? { resolver: o.resolver } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) },
+    );
     if (!res.ok) return null;
     const body = (await res.json().catch(() => null)) as { email?: unknown } | null;
     return typeof body?.email === "string" && body.email.trim() ? body.email.trim() : null;
@@ -98,16 +106,19 @@ export async function fetchReplyAddress(token: string, o: { fetchImpl?: typeof f
 /** POST /v1/feedback. A rejected token (401) is retried once without it, so the message still goes out; a dl key is never sent. */
 export async function sendFeedback(
   body: FeedbackBody,
-  o: { token?: string; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {},
+  o: { token?: string; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
 ): Promise<FeedbackSendResult> {
-  const fetchImpl = o.fetchImpl ?? fetch;
   const post = (token: string | undefined) =>
-    fetchImpl(`${dlOrigin(o.env)}/v1/feedback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    gatedFetch(
+      `${dlOrigin(o.env)}/v1/feedback`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      },
+      { hasKey: Boolean(token), ...(o.warnings ? { warnings: o.warnings } : {}), ...(o.resolver ? { resolver: o.resolver } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) },
+    );
   let res: Response;
   try {
     // A dl key (dl_sk_) isn't taken here (it's for the model APIs): sent without it, like signed out.

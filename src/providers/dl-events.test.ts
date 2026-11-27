@@ -62,6 +62,7 @@ describe("free-tier usage events", () => {
         return new Response(JSON.stringify({ accepted: 1 }), { status });
       }) as typeof fetch,
       async () => {},
+      async () => [{ address: "127.0.0.1", family: 4 }],
     );
   });
   after(async () => {
@@ -193,7 +194,7 @@ describe("free-tier usage events", () => {
   }
 
   it("records session.start and turn.end for a free-tier turn, with no content", async () => {
-    await turn({ providerId: "directionally-local", customEndpoint: { baseUrl: "http://dl.test/v1", apiKey: "at", providerId: "directionally-local" } }, "2026-11-02T09-10-50-017Z_refactor-payroll");
+    await turn({ providerId: "directionally-local", customEndpoint: { baseUrl: "http://127.0.0.1:4752/v1", apiKey: "at", providerId: "directionally-local" } }, "2026-11-02T09-10-50-017Z_refactor-payroll");
     const events = queuedDlEvents();
     assert.deepStrictEqual(events.map((e) => e.type), ["session.start", "turn.end"]);
     const end = events[1]!;

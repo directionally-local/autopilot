@@ -11,7 +11,7 @@ import { checkOpenRouterKey, looksLikeOpenRouterKey } from "../models/openrouter
 import { checkRequestyKey } from "../models/requesty.js";
 import { getPreset, keyHeaders, PROVIDER_IDS, type ProviderId } from "./presets.js";
 import { anthropicHeaders } from "../agent/protocols/anthropic.js";
-import { resolveActiveProvider, resolveProviderKey, type ProviderSettings } from "./resolve.js";
+import { gatedFetch, HttpGateRefusalError, resolveActiveProvider, resolveProviderKey, type HostResolver, type PrivateHttpWarningTracker, type ProviderSettings } from "./resolve.js";
 import { DL_FREE_MODELS } from "./directionally-local.js";
 
 export type ProviderKeyCheck =
@@ -33,7 +33,11 @@ export async function checkProviderKey(
   id: ProviderId,
   key: string | undefined,
   baseUrl?: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
+  /** The caller's per-session key-travel warning tracker (the connect screens' channel). */
+  warnings?: PrivateHttpWarningTracker,
+  /** DNS resolver for the resolution gate; defaults to `dns.lookup`. Tests inject it. */
+  resolver?: HostResolver,
 ): Promise<ProviderKeyCheck> {
   const preset = getPreset(id);
   if (key && !looksLikeProviderKey(id, key)) {
@@ -41,21 +45,21 @@ export async function checkProviderKey(
   }
   if (id === "openrouter") {
     if (!key) return { ok: false, reason: "invalid", message: "An OpenRouter key is required." };
-    const res = await checkOpenRouterKey(key, fetchImpl);
+    const res = await checkOpenRouterKey(key, fetchImpl ?? fetch);
     if (!res.ok) return { ok: false, reason: res.reason, message: res.message };
     const credit = typeof res.info.limitRemaining === "number" ? ` · $${res.info.limitRemaining.toFixed(2)} credit left` : "";
     return { ok: true, detail: `${res.info.label ? `(${res.info.label})` : ""}${credit}`.trim() || undefined };
   }
   if (id === "requesty") {
     if (!key) return { ok: false, reason: "invalid", message: "A Requesty key is required." };
-    const res = await checkRequestyKey(key, fetchImpl);
+    const res = await checkRequestyKey(key, fetchImpl ?? fetch);
     return res.ok ? { ok: true } : { ok: false, reason: res.reason === "config" ? "http" : res.reason, message: res.message };
   }
   if (id === "cloudflare") {
     // Workers AI has no /models on its OpenAI-compatible API; verify the token itself.
     if (!key) return { ok: false, reason: "invalid", message: "A Cloudflare API token is required (Workers AI permission)." };
     try {
-      const res = await fetchImpl("https://api.cloudflare.com/client/v4/user/tokens/verify", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
+      const res = await (fetchImpl ?? fetch)("https://api.cloudflare.com/client/v4/user/tokens/verify", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
       if (res.status === 401 || res.status === 403) return { ok: false, reason: "invalid", message: "Cloudflare rejected this token." };
       if (!res.ok) return { ok: false, reason: "http", message: `Cloudflare returned HTTP ${res.status}.` };
       return { ok: true };
@@ -73,7 +77,7 @@ export async function checkProviderKey(
     // Proves Google credentials work (no request to Vertex itself is needed).
     try {
       const { vertexAccessToken } = await import("./vertex.js");
-      await vertexAccessToken(fetchImpl);
+      await vertexAccessToken(fetchImpl ?? fetch);
       return { ok: true };
     } catch (e) {
       return { ok: false, reason: "invalid", message: e instanceof Error ? e.message : String(e) };
@@ -87,7 +91,7 @@ export async function checkProviderKey(
     if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth directionally-local` (GitHub device login)." };
     try {
       const { fetchDlMe, formatTokens } = await import("./directionally-local.js");
-      const me = await fetchDlMe({ token: key, fetchImpl });
+      const me = await fetchDlMe({ token: key, fetchImpl: fetchImpl ?? fetch });
       return { ok: true, detail: `(@${me.login} · ${formatTokens(Math.max(0, me.allowance.remaining))} tokens left this week)` };
     } catch (e) {
       const status = (e as { status?: number }).status;
@@ -98,7 +102,7 @@ export async function checkProviderKey(
     if (!key) return { ok: false, reason: "invalid", message: "Sign in with `autopilot auth copilot` (GitHub device login)." };
     try {
       const { checkCopilotAccess } = await import("./copilot.js");
-      const access = await checkCopilotAccess(key, undefined, fetchImpl);
+      const access = await checkCopilotAccess(key, undefined, fetchImpl ?? fetch);
       return { ok: true, ...(access.plan ? { detail: `(${access.plan} plan)` } : {}) };
     } catch (e) {
       return { ok: false, reason: "invalid", message: e instanceof Error ? e.message : String(e) };
@@ -107,15 +111,21 @@ export async function checkProviderKey(
   const base = (baseUrl ?? preset.baseUrl)?.replace(/\/+$/, "");
   if (!base) return { ok: false, reason: "http", message: "No base URL configured." };
   if (!key && preset.keyRequired) return { ok: false, reason: "invalid", message: `A ${preset.name} API key is required.` };
+  // The setup path verifies a key with a live GET /models through the same
+  // gated helper as the chat path: a public http host is refused before the
+  // request carries the key, a non-resolving host is a network error, and the
+  // connection is pinned to the checked addresses.
   let res: Response;
   try {
     const auth: Record<string, string> =
       preset.protocol === "anthropic-messages" ? anthropicHeaders(key) : keyHeaders(id, key);
-    res = await fetchImpl(`${base}/models`, {
-      headers: { Accept: "application/json", ...auth },
-      signal: AbortSignal.timeout(10_000),
-    });
+    res = await gatedFetch(
+      `${base}/models`,
+      { headers: { Accept: "application/json", ...auth }, signal: AbortSignal.timeout(10_000) },
+      { hasKey: !!key, ...(warnings ? { warnings } : {}), ...(resolver ? { resolver } : {}), ...(fetchImpl ? { fetchImpl } : {}) },
+    );
   } catch (e) {
+    if (e instanceof HttpGateRefusalError) return { ok: false, reason: "http", message: e.message };
     const msg = e instanceof Error ? e.message : String(e);
     return {
       ok: false,

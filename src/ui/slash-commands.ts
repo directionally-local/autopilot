@@ -26,7 +26,7 @@ import { askJev, presentJevAnswer, type JevQuestion } from "../agent/jev.js";
 import { buildJevContext, formatJevContextReceipt } from "../agent/jev-context.js";
 import { checkOpenRouterKey, OPENROUTER_KEYS_URL } from "../models/openrouter.js";
 import { getPreset, isProviderId, type ProviderId } from "../providers/presets.js";
-import { resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
+import { PrivateHttpWarningTracker, resolveActiveProvider, resolveProviderKey } from "../providers/resolve.js";
 import { checkProviderKey, looksLikeProviderKey, providerStatus, saveProviderKey, switchProvider } from "../providers/keys.js";
 import { switchedMessage } from "../providers/connect.js";
 import { DL_FREE_MODEL, DL_FREE_MODELS, DL_PROVIDER_ID, dlBillingPortal, dlNotFreeLine, fetchDlMe, renderDlUsage, revokeDlTokens, withoutDlCredentials, type DlMe, type DlRevokeResult } from "../providers/directionally-local.js";
@@ -904,7 +904,7 @@ const handleKey: Handler = async (ctx, rest) => {
       return true;
     }
     info(`checking key with ${preset.name}…`);
-    const res = await checkProviderKey(id, candidate, active.baseUrl);
+    const res = await checkProviderKey(id, candidate, active.baseUrl, undefined, new PrivateHttpWarningTracker((m) => info(m)));
     if (!res.ok) {
       info(res.reason === "invalid" ? `${preset.name} rejected that key — nothing was saved` : `couldn't verify the key: ${res.message}`, "error");
       return true;
@@ -952,7 +952,7 @@ const handleKey: Handler = async (ctx, rest) => {
     info(parts.join(" · "));
     return true;
   }
-  const res = await checkProviderKey(id, key, active.baseUrl);
+  const res = await checkProviderKey(id, key, active.baseUrl, undefined, new PrivateHttpWarningTracker((m) => info(m)));
   info(res.ok ? `${preset.name} key ${masked} (${source}) · valid` : `${preset.name} key ${masked} (${source}): ${res.message}`, res.ok ? "info" : "error");
   return true;
 };

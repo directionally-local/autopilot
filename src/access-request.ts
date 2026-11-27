@@ -9,6 +9,7 @@
  */
 
 import { dlKeyMode, dlOrigin } from "./providers/dl-endpoint.js";
+import { gatedFetch, type HostResolver, type PrivateHttpWarningTracker } from "./providers/resolve.js";
 import { DL_PLANS_URL } from "./providers/dl-plan.js";
 import { DL_PROVIDER_ID, DL_REQUEST_HINT, describeDlError, dlSignedOutLine, parseDlError } from "./providers/directionally-local.js";
 import { getUserAgent } from "./util/version.js";
@@ -77,6 +78,8 @@ interface CallOpts {
   token: (force?: boolean) => Promise<string | undefined>;
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+  resolver?: HostResolver;
+  warnings?: PrivateHttpWarningTracker;
 }
 
 /** Why the building answer can't be sent, or undefined when it can. */
@@ -121,19 +124,22 @@ async function readJson(res: Response): Promise<Rec | null> {
 
 /** One call, with the token refreshed and the call made again once after a 401. */
 async function call(method: "GET" | "POST", o: CallOpts, body?: AccessRequestBody): Promise<Response | "signed_out" | "network"> {
-  const fetchImpl = o.fetchImpl ?? fetch;
   const send = (token: string) =>
-    fetchImpl(`${dlOrigin(o.env)}${ACCESS_REQUEST_PATH}`, {
-      method,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": getUserAgent(),
-        ...(body ? { "Content-Type": "application/json" } : {}),
+    gatedFetch(
+      `${dlOrigin(o.env)}${ACCESS_REQUEST_PATH}`,
+      {
+        method,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          "User-Agent": getUserAgent(),
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
       },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+      { hasKey: true, ...(o.warnings ? { warnings: o.warnings } : {}), ...(o.resolver ? { resolver: o.resolver } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) },
+    );
   try {
     let token = await o.token();
     if (!token) return "signed_out";
@@ -229,6 +235,8 @@ export interface AccessRequestDeps {
   status?: (text: string) => void;
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+  resolver?: HostResolver;
+  warnings?: PrivateHttpWarningTracker;
 }
 
 /** The whole flow: status, the two questions, the send. Returns the line to show. */
@@ -236,7 +244,7 @@ export async function runAccessRequest(deps: AccessRequestDeps): Promise<AccessR
   if (deps.providerId !== DL_PROVIDER_ID) return { text: accessNotFreeTierLine(deps.providerName), severity: "info" };
   // On a dl key, more tokens come with a plan, not a request.
   if (dlKeyMode(deps.env ?? process.env)) return { text: ACCESS_DL_KEY_LINE, severity: "info" };
-  const calls: CallOpts = { token: deps.token, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.env ? { env: deps.env } : {}) };
+  const calls: CallOpts = { token: deps.token, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.env ? { env: deps.env } : {}), ...(deps.resolver ? { resolver: deps.resolver } : {}), ...(deps.warnings ? { warnings: deps.warnings } : {}) };
 
   deps.status?.("Checking your request…");
   const st = await fetchAccessStatus(calls);

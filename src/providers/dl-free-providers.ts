@@ -12,6 +12,7 @@
 
 import { getUserAgent } from "../util/version.js";
 import { DL_FREE_DEFAULT_MODEL, dlOrigin, isDlApiKey } from "./dl-endpoint.js";
+import { gatedFetch, type HostResolver, type PrivateHttpWarningTracker } from "./resolve.js";
 import { DL_DEEPSEEK_MODEL, DL_FREE_MODELS, DL_PROVIDER_ID, dlFreeModelEntries, dlFreeModelEntry, type DlMe } from "./directionally-local.js";
 import { getModel, type ModelEntry } from "../models/registry.js";
 
@@ -182,12 +183,21 @@ const posInt = (v: unknown): number | undefined => (typeof v === "number" && Num
  * person, with name and limits when it says. Undefined when it can't be read in
  * time (the caller then goes by /v1/providers and /v1/me alone).
  */
-export async function fetchDlServedModels(token: string, opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<DlServedModel[] | undefined> {
+export async function fetchDlServedModels(
+  token: string,
+  opts: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; timeoutMs?: number; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
+): Promise<DlServedModel[] | undefined> {
   try {
-    const res = await (opts.fetchImpl ?? fetch)(`${dlOrigin(opts.env)}/v1/models`, {
-      headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
-      signal: AbortSignal.timeout(opts.timeoutMs ?? DL_PROVIDERS_TIMEOUT_MS),
-    });
+    // The served-model list carries the person's token: the same gated helper
+    // as the chat path refuses a public http address before the request.
+    const res = await gatedFetch(
+      `${dlOrigin(opts.env)}/v1/models`,
+      {
+        headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "User-Agent": getUserAgent() },
+        signal: AbortSignal.timeout(opts.timeoutMs ?? DL_PROVIDERS_TIMEOUT_MS),
+      },
+      { hasKey: true, ...(opts.warnings ? { warnings: opts.warnings } : {}), ...(opts.resolver ? { resolver: opts.resolver } : {}), ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) },
+    );
     if (!res.ok) return undefined;
     const body = (await res.json().catch(() => null)) as unknown;
     if (!isRec(body) || !Array.isArray(body.data)) return undefined;
@@ -240,10 +250,18 @@ export function dlServedModelEntry(m: DlServedModel, list: DlProviders | null = 
  * added on the server show up without a release. Never throws; without a token or an
  * answer it is the built-in list.
  */
-export async function loadDlCatalog(token: string | undefined, o: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<ModelEntry[]> {
+export async function loadDlCatalog(
+  token: string | undefined,
+  o: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; resolver?: HostResolver; warnings?: PrivateHttpWarningTracker } = {},
+): Promise<ModelEntry[]> {
   const builtIn = dlFreeModelEntries();
   if (!token) return builtIn;
-  const call = { ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}), ...(o.env ? { env: o.env } : {}) };
+  const call = {
+    ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
+    ...(o.env ? { env: o.env } : {}),
+    ...(o.resolver ? { resolver: o.resolver } : {}),
+    ...(o.warnings ? { warnings: o.warnings } : {}),
+  };
   const [served, list] = await Promise.all([fetchDlServedModels(token, call), fetchDlProviders(call)]);
   if (isDlApiKey(token)) return dlPlanCatalog(served, list);
   const known = new Set(builtIn.map((m) => m.id));

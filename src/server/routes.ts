@@ -20,6 +20,7 @@ import type { AutopilotConfig } from "../config.js";
 import { DEFAULT_MODEL } from "../config.js";
 import { assembleTurn, lastUserText, resolveTurnPolicy } from "../agent/session-core.js";
 import { llmAuthFromConfig } from "../agent/llm-auth.js";
+import { PrivateHttpWarningTracker } from "../providers/resolve.js";
 import { classifyNextMessage, createRecorder, emitSessionStart, makeTurnId, type TraceRecorder } from "../trace/index.js";
 import { toOpenAIToolDefs } from "../tools/registry.js";
 import type { ToolSpec } from "../tools/registry.js";
@@ -93,6 +94,8 @@ interface ActiveSession {
   nextTurnId?: string;
   /** Turn id of the last turn that ran, for next-message outcome signals. */
   lastTurnId?: string;
+  /** Per-session cleartext key-travel warning accounting (never a module global). */
+  privateHttpWarnings: PrivateHttpWarningTracker;
 }
 
 /** Create the session trace and record `session_start`; a no-op recorder when tracing is off. */
@@ -275,6 +278,7 @@ export function setupRoutes(config: AutopilotConfig, options: { dlRuntime?: DlAp
       runId: run.id,
       allowedTools,
       trace: await startSessionTrace(config, sessionFile, tools, sessionFile.messages),
+      privateHttpWarnings: new PrivateHttpWarningTracker(),
     };
     activeSessions.set(run.sessionId, active);
     activeRuns.set(run.id, active);
@@ -619,6 +623,7 @@ export function setupRoutes(config: AutopilotConfig, options: { dlRuntime?: DlAp
           sseClients: new Set(),
           runId: run.id,
           allowedTools: toolNames,
+          privateHttpWarnings: new PrivateHttpWarningTracker(),
         };
         activeSessions.set(sessionId, active);
         activeRuns.set(run.id, active);
@@ -835,6 +840,7 @@ export function setupRoutes(config: AutopilotConfig, options: { dlRuntime?: DlAp
           sseClients: new Set(),
           trace,
           nextTurnId: firstTurnId,
+          privateHttpWarnings: new PrivateHttpWarningTracker(),
         };
         activeSessions.set(sessionId, active);
         // #889: a failing hook is reported once per hook per session.
@@ -1135,6 +1141,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
       return "deny";
     },
   };
+  active.privateHttpWarnings.setHandler(callbacks.onWarning);
 
   // Archived turns land on the session file, so every save below persists them.
   const compaction = sessionFileCompactionTarget(sessionFile);
@@ -1152,6 +1159,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
       });
       await runAgentTurn(assembleTurn({ cfg: config, policy, host: {
         ...llmAuthFromConfig(config),
+        privateHttpWarnings: active.privateHttpWarnings,
         model: sessionFile.model,
         reasoningEffort: config.reasoningEffort,
         sessionId: sessionFile.id,
@@ -1184,6 +1192,7 @@ async function runAgentTurnForSession(active: ActiveSession, config: AutopilotCo
       const policy = await resolveTurnPolicy({ cfg: config, prompt: lastUserText(messages), tools: ALL_TOOLS, signal: controller.signal });
       await runAgentTurn(assembleTurn({ cfg: config, policy, host: {
         ...llmAuthFromConfig(config),
+        privateHttpWarnings: active.privateHttpWarnings,
         model: sessionFile.model,
         reasoningEffort: config.reasoningEffort,
         sessionId: sessionFile.id,
