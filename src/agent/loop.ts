@@ -303,6 +303,31 @@ export const MAX_BOOKKEEPING_NUDGES = 2;
 /** Per-turn cap on lookup-batching reminders (see loneLookupStreak below). */
 export const MAX_LOOKUP_NUDGES = 2;
 
+/** Consecutive sleep/poll steps (a bare `sleep N`, a process or log-file
+ *  check, or a job_status call) before the harness nudges the model to job_wait. */
+export const SLEEP_POLL_THRESHOLD = 3;
+
+/** Automatic continuations when a reply hits the output cap while thinking. */
+export const MAX_LENGTH_CONTINUES = 2;
+
+/** Sent after a reply that spent its whole output budget thinking. */
+export const LENGTH_CONTINUE_NUDGE =
+  "You ran out of output tokens while thinking. Stop deliberating and act now: make the next tool call or give your answer.";
+
+/** The UI notice shown each time a length-truncated reply is continued. */
+export function lengthContinueNotice(attempt: number): string {
+  return `Model hit the output limit while thinking; continuing (${attempt}/${MAX_LENGTH_CONTINUES})`;
+}
+
+/** Appended to a tool result when the model is stuck in a sleep/poll loop. */
+export function sleepPollNudge(streak: number): string {
+  return (
+    `[harness] This is ${streak} consecutive sleep/poll step${streak === 1 ? "" : "s"}. ` +
+    "Do not sleep or poll in a loop: call job_wait with the job_id to block until the job finishes (or times out) " +
+    "and return its exit code and output tail."
+  );
+}
+
 /** Once the transient reminders for a turn are exhausted, this note is appended
  *  to the bookkeeping tool's result instead. It reaches the model as tool
  *  output — which carries more weight than a system reminder — and it persists
@@ -804,6 +829,10 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
   let loopRecoveries = 0;
   let completionNudges = 0;
   let prCiNudges = 0;
+  /** Consecutive sleep/poll steps this turn (see SLEEP_POLL_THRESHOLD). */
+  let sleepPollStreak = 0;
+  /** Automatic continuations after a length-truncated, tool-free reply. */
+  let lengthContinues = 0;
   // Set when a guardrail decides the turn must end: the next request is a
   // final, tool-free summary and the turn finishes after it.
   let finalizeReason: "loop" | "limit_ceiling" | "loop_stall" | null = null;
@@ -1342,7 +1371,22 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       return;
     }
 
-    if (toolCalls.length === 0 && !content.trim() && reasoning.trim()) {
+    if (toolCalls.length === 0 && !content.trim() && finishReason === "length" && !budgetExhausted) {
+      // The model spent its whole output budget thinking and produced neither
+      // text nor a tool call. Nudge it to act instead of ending the turn empty.
+      // Bounded per user turn so a model that cannot stop deliberating still
+      // ends with the existing warning.
+      if (lengthContinues < MAX_LENGTH_CONTINUES) {
+        lengthContinues++;
+        logger.info("turn:length_continue", { sessionId: opts.sessionId, attempt: lengthContinues });
+        opts.callbacks.onInfo?.(lengthContinueNotice(lengthContinues));
+        appendPendingInput();
+        opts.messages.push({ role: "system", content: LENGTH_CONTINUE_NUDGE });
+        continue;
+      }
+      logger.info("turn:reasoning_only", { sessionId: opts.sessionId, finishReason });
+      opts.callbacks.onWarning?.(reasoningOnlyLine(finishReason));
+    } else if (toolCalls.length === 0 && !content.trim() && reasoning.trim()) {
       // A thinking model (e.g. served by vLLM) that only reasoned: not an empty answer to
       // retry, but one to explain. The reasoning stays visible like any other.
       logger.info("turn:reasoning_only", { sessionId: opts.sessionId, finishReason });
@@ -1611,6 +1655,7 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
           cwd: opts.cwd,
           signal: opts.signal,
           onTasks: wrappedOnTasks,
+          onProgress: opts.callbacks.onInfo,
           onPlanOptions: opts.callbacks.onPlanOptions,
           coauthor: opts.coauthor,
           memoryManager: opts.memoryManager,
@@ -1855,6 +1900,15 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       }
     };
 
+    /** A step that only waits on a background job: a bare sleep (or sleep plus
+     *  a ps/proc check) in bash, or a job_status snapshot. */
+    const pollStepKind = (tc: ToolCall): "sleep" | "status" | null => {
+      if (tc.function.name === "job_status") return "status";
+      if (tc.function.name !== "bash") return null;
+      const command = parseArgsObject(tc.function.arguments).command;
+      return typeof command === "string" && isSleepPollCommand(command) ? "sleep" : null;
+    };
+
     /** Put a call's outcome in history and on the UI; returns true when a durable run asked to yield. */
     const record = (tc: ToolCall, index: number, loopSignature: string, outcome: Guarded, result: ToolResult): boolean => {
       const guardrailBlocked = outcome.kind === "blocked" && !outcome.redirected;
@@ -1873,6 +1927,19 @@ async function runAgentTurnInner(opts: AgentTurnOpts, tr: TurnTrace): Promise<vo
       }
       if (annotateBookkeeping && BOOKKEEPING_TOOLS.has(tc.function.name)) {
         result = { ...result, content: `${result.content}\n\n${BOOKKEEPING_RESULT_NOTE}` };
+      }
+      // Sleep/poll loop: each `sleep N` (or sleep + ps/proc check) and each
+      // job_status snapshot is a full model turn. From the third in a row,
+      // point the model at job_wait, which blocks in one call.
+      if (outcome.kind === "run") {
+        if (pollStepKind(tc)) {
+          sleepPollStreak++;
+          if (sleepPollStreak >= SLEEP_POLL_THRESHOLD) {
+            result = { ...result, content: `${result.content}\n\n${sleepPollNudge(sleepPollStreak)}` };
+          }
+        } else {
+          sleepPollStreak = 0;
+        }
       }
       toolResults.push(result);
       // One result per call: a late result after an interrupt replaces the
@@ -2256,6 +2323,64 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
   });
+}
+
+/**
+ * True when a bash command only checks on a background job: a bare `sleep N`,
+ * a process check (`ps`/`pgrep`/`pidof`/`jobs`, `cat /proc/...`), or a log
+ * check (`wc -c|-l <file>`, `ls -l <file>`, `tail -n N <file>`), chained with
+ * `;`/`&&` or piped into a text filter. Conservative: multi-line scripts,
+ * backgrounding, redirection, substitution, globs and any other command make
+ * it false, so a sleep or check that is part of real work is never flagged.
+ */
+export function isSleepPollCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed || trimmed.includes("\n")) return false;
+  const unquoted = trimmed.replace(/'[^']*'|"[^"]*"/g, "''");
+  // Redirection, substitution, or a single `&` (backgrounding) means a script.
+  if (/[<>`]|\$\(/.test(unquoted)) return false;
+  if (/(^|[^&])&([^&]|$)/.test(unquoted)) return false;
+  const parts = trimmed.split(/\s*(?:&&|\|\||;)\s*/).filter(Boolean);
+  if (parts.length === 0 || parts.length > 3) return false;
+  let sawPoll = false;
+  for (const part of parts) {
+    if (/^sleep\s+\d+(?:\.\d+)?[smhd]?$/.test(part)) {
+      sawPoll = true;
+      continue;
+    }
+    if (isPollCheckCommand(part)) {
+      sawPoll = true;
+      continue;
+    }
+    return false;
+  }
+  return sawPoll;
+}
+
+/** A single path token that looks like a file: no glob, and a `/` or `.`. */
+function isFileLikePath(token: string): boolean {
+  return !/[*?\[\]]/.test(token) && (token.includes("/") || token.includes("."));
+}
+
+/** `ps`/`pgrep`/`pidof`/`jobs`, `cat /proc/...`, or a log-file check, optionally piped into a text filter. */
+function isPollCheckCommand(part: string): boolean {
+  const segments = part.split("|").map((segment) => segment.trim()).filter(Boolean);
+  const first = segments[0];
+  if (!first) return false;
+  const filters = segments.slice(1);
+  // `tail -f` follows a file forever; it is never a poll.
+  const isFilter = (segment: string): boolean =>
+    /^(?:grep|head|tail|wc|sort|uniq|awk|cut)(?:\s|$)/.test(segment) && !/^tail\s+-\w*f/i.test(segment);
+  if (!filters.every(isFilter)) return false;
+  if (/^cat\s+\/proc\/\S+(?:\s+\/proc\/\S+)*$/.test(first)) return true;
+  if (/^(?:ps|pgrep|pidof|jobs)(?:\s|$)/.test(first)) return true;
+  const wc = /^wc\s+(?:-c|-l)\s+(\S+)$/.exec(first);
+  if (wc) return isFileLikePath(wc[1]!);
+  const ls = /^ls\s+-l\s+(\S+)$/.exec(first);
+  if (ls) return isFileLikePath(ls[1]!);
+  const tail = /^tail\s+(?:-n\s+\d+|-n\d+|-\d+)\s+(\S+)$/.exec(first);
+  if (tail) return isFileLikePath(tail[1]!);
+  return false;
 }
 
 /** Said when a reply was all reasoning: no text and no tool calls. */

@@ -98,7 +98,7 @@ export function getShellCommand(override?: string): ShellCommand {
 export const bashTool: ToolSpec<Args> = {
   name: "bash",
   description:
-    "Run a shell command. On Unix the default shell is bash; on Windows it falls back to cmd.exe. Prompts the user for permission before executing. stdout and stderr are captured and combined. Large outputs are reduced to a compact summary by default; use expand_artifact to retrieve the full log. A command that keeps running past the foreground budget (default 30s) is moved to a durable background job automatically, and its completion is delivered to you — keep working or use job_logs to check progress instead of retrying it.",
+    "Run a shell command. On Unix the default shell is bash; on Windows it falls back to cmd.exe. Prompts the user for permission before executing. stdout and stderr are captured and combined. Large outputs are reduced to a compact summary by default; use expand_artifact to retrieve the full log. A command that keeps running past the foreground budget (default 30s) is moved to a durable background job automatically; call job_wait with its job_id to block until it finishes instead of polling with sleep, ps, or job_status.",
   parameters: {
     type: "object",
     properties: {
@@ -895,7 +895,7 @@ async function runBashWithHandoff(opts: HandoffOptions): Promise<ToolOutput> {
         `(moved to background after ${budget}ms — still running as job ${record.id})`,
         `The command keeps running as a durable background job with a ${capMs}ms kill cap. ` +
           `Its completion (or failure) will be delivered to you automatically at a later tool boundary — keep working, and do not poll job_status in a tight loop. ` +
-          `Use job_logs with job_id=${record.id} to check progress, or job_cancel to stop it.`,
+          `Call job_wait with job_id=${record.id} to block until it finishes (or times out) and get its exit code and output tail; use job_logs to peek at progress, or job_cancel to stop it.`,
       ];
       if (stdoutLog.content) parts.push(`--- stdout so far ---\n${stdoutLog.content.trimEnd()}`);
       if (stderrLog.content) parts.push(`--- stderr so far ---\n${stderrLog.content.trimEnd()}`);

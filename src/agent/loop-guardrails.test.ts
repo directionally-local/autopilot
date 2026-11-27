@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
-import { runAgentTurn, AgentLoopError, _resetSessionWebFetchHistoryForTests, type AgentTurnOpts, type GuardrailEvent } from "./loop.js";
+import { runAgentTurn, AgentLoopError, _resetSessionWebFetchHistoryForTests, isSleepPollCommand, type AgentTurnOpts, type GuardrailEvent } from "./loop.js";
 import type { ToolExecutor, ToolResult } from "../tools/executor.js";
 import type { ChatMessage } from "./messages.js";
 import type { HooksManager } from "../hooks/manager.js";
@@ -162,6 +162,14 @@ const BASH_TOOL: ToolSpec = {
   name: "bash",
   description: "Run a command.",
   parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+  needsPermission: false,
+  run: async () => "ok",
+};
+
+const JOB_STATUS_TOOL: ToolSpec = {
+  name: "job_status",
+  description: "Check a background job.",
+  parameters: { type: "object", properties: { job_id: { type: "string" } }, required: [] },
   needsPermission: false,
   run: async () => "ok",
 };
@@ -769,5 +777,129 @@ describe("stall guardrail (loop-depth with no file progress)", () => {
 
     await runAgentTurn(opts);
     assert.deepStrictEqual(events, []);
+  });
+});
+
+describe("sleep-poll nudge", () => {
+  it("recognizes sleep and process/log checks", () => {
+    for (const command of [
+      "sleep 30",
+      "sleep 0.5",
+      "sleep 30 && ps aux | grep node",
+      "sleep 5; cat /proc/123/status",
+      "sleep 10 && ps -p 123",
+      "sleep 30 && ps aux | grep node | head -5",
+      "ps -o pid,etime,pcpu,comm -p 483640; wc -c /tmp/eng7b-tc3.log",
+      "ps aux | grep node",
+      "cat /proc/123/status",
+      "wc -l /tmp/eng7b-tc3.log",
+      "ls -l /tmp/eng7b-tc3.log",
+      "tail -n 20 /tmp/eng7b-tc3.log",
+      "tail -20 /tmp/eng7b-tc3.log",
+      "ps aux | tail -5",
+    ]) {
+      assert.equal(isSleepPollCommand(command), true, command);
+    }
+  });
+
+  it("does not flag a sleep or check that is part of real work", () => {
+    for (const command of [
+      "npm test",
+      "sleep 30 && npm test",
+      "sleep 30 & wait",
+      "sleep 30\nnpm test",
+      "sleep 30 && echo done",
+      "sleep 30 && tail -f log.txt",
+      "ls -la src",
+      "ls -l src",
+      "wc -l src",
+      "wc -l src/*.ts && npm test",
+      "tail -f /tmp/eng7b-tc3.log",
+      "ps aux | tail -f",
+      "ps aux > /tmp/out",
+      "ps aux; npm test",
+    ]) {
+      assert.equal(isSleepPollCommand(command), false, command);
+    }
+  });
+
+  it("nudges the model to job_wait after three sleep/poll steps", async () => {
+    const model = scriptModel([
+      { tool: "bash", args: { command: "sleep 30" } },
+      { tool: "bash", args: { command: "sleep 31" } },
+      { tool: "bash", args: { command: "sleep 32" } },
+      { text: "done" },
+    ]);
+    const { executor } = fakeExecutor();
+    const toolResults: ToolResult[] = [];
+    const opts = baseOpts(executor, [], { tools: [BASH_TOOL] });
+    opts.callbacks.onToolResult = (result) => toolResults.push(result);
+
+    await runAgentTurn(opts);
+
+    const nudged = toolResults.filter((result) => String(result.content).includes("job_wait"));
+    assert.equal(nudged.length, 1, "only the third poll step is nudged");
+    assert.match(String(nudged[0]!.content), /3 consecutive sleep\/poll steps/);
+    assert.strictEqual(model.requests, 4);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("does not nudge when a real command breaks the streak", async () => {
+    scriptModel([
+      { tool: "bash", args: { command: "sleep 30" } },
+      { tool: "bash", args: { command: "npm test" } },
+      { tool: "bash", args: { command: "sleep 31" } },
+      { tool: "bash", args: { command: "sleep 32" } },
+      { text: "done" },
+    ]);
+    const { executor } = fakeExecutor();
+    const toolResults: ToolResult[] = [];
+    const opts = baseOpts(executor, [], { tools: [BASH_TOOL] });
+    opts.callbacks.onToolResult = (result) => toolResults.push(result);
+
+    await runAgentTurn(opts);
+
+    assert.equal(toolResults.filter((result) => String(result.content).includes("job_wait")).length, 0);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("counts job_status polling in the streak", async () => {
+    scriptModel([
+      { tool: "bash", args: { command: "sleep 30" } },
+      { tool: "job_status", args: { job_id: "abc" } },
+      { tool: "bash", args: { command: "sleep 31" } },
+      { text: "done" },
+    ]);
+    const { executor } = fakeExecutor();
+    const toolResults: ToolResult[] = [];
+    const opts = baseOpts(executor, [], { tools: [BASH_TOOL, JOB_STATUS_TOOL] });
+    opts.callbacks.onToolResult = (result) => toolResults.push(result);
+
+    await runAgentTurn(opts);
+
+    const nudged = toolResults.filter((result) => String(result.content).includes("job_wait"));
+    assert.equal(nudged.length, 1);
+    assert.match(String(nudged[0]!.content), /3 consecutive sleep\/poll steps/);
+    assertNoDanglingToolCalls(opts.messages);
+  });
+
+  it("counts job_status alternating with a ps/wc check in the streak", async () => {
+    scriptModel([
+      { tool: "job_status", args: { job_id: "abc" } },
+      { tool: "bash", args: { command: "ps -o pid,etime,pcpu,comm -p 483640; wc -c /tmp/eng7b-tc3.log" } },
+      { tool: "job_status", args: { job_id: "def" } },
+      { text: "done" },
+    ]);
+    const { executor } = fakeExecutor();
+    const toolResults: ToolResult[] = [];
+    const opts = baseOpts(executor, [], { tools: [BASH_TOOL, JOB_STATUS_TOOL] });
+    opts.callbacks.onToolResult = (result) => toolResults.push(result);
+
+    await runAgentTurn(opts);
+
+    const nudged = toolResults.filter((result) => String(result.content).includes("job_wait"));
+    assert.equal(nudged.length, 1);
+    assert.match(String(nudged[0]!.content), /3 consecutive sleep\/poll steps/);
+    assertNoDanglingToolCalls(opts.messages);
   });
 });
