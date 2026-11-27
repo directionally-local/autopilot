@@ -21,6 +21,7 @@ export const waitForTool: ToolSpec<WaitArgs> = {
     "Wait without polling the model: for a background subagent (worker_id; returns its findings), or — inside an unattended run — for a managed job to finish, a duration to elapse, or an absolute ISO-8601 time.",
     "The current turn ends immediately; a durable timer is saved for the supervisor to wake the run later. Requires an active runId.",
     "For job waits, the supervisor should re-check the job at each wake and reschedule while it remains active.",
+    "In an interactive session (no runId), use job_wait to block until a managed job finishes instead.",
   ].join(" "),
   parameters: {
     type: "object",
@@ -42,7 +43,7 @@ export const waitForTool: ToolSpec<WaitArgs> = {
       return finishedReport(await workerRegistry.waitFor(args.worker_id, ctx.signal));
     }
     if (!ctx.runId) {
-      return "wait_for is available only inside a durable unattended run; no wait was scheduled.";
+      return "wait_for is available only inside a durable unattended run; no wait was scheduled. In an interactive session, call job_wait with the job_id to block until a managed job finishes.";
     }
     const hasJob = typeof args.job_id === "string" && args.job_id.length > 0;
     const hasDuration = args.duration_ms !== undefined;

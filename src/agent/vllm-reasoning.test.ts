@@ -68,6 +68,7 @@ describe("vLLM thinking models", () => {
     const reasoning: string[] = [];
     const text: string[] = [];
     const warnings: string[] = [];
+    const infos: string[] = [];
     const retries: unknown[] = [];
     const runs: string[] = [];
     const executor = {
@@ -91,11 +92,12 @@ describe("vLLM thinking models", () => {
         onReasoningDelta: (d) => reasoning.push(d),
         onTextDelta: (d) => text.push(d),
         onWarning: (w) => warnings.push(w),
+        onInfo: (i) => infos.push(i),
         onModelRetry: (r) => retries.push(r),
       },
     });
     const assistants = messages.filter((m) => m.role === "assistant");
-    return { reasoning: reasoning.join(""), text: text.join(""), warnings, retries, runs, assistants };
+    return { reasoning: reasoning.join(""), text: text.join(""), warnings, infos, retries, runs, assistants, messages };
   }
 
   it("reasoning_content is reasoning; the tool call after it runs; no empty-answer warning or retry", async () => {
@@ -135,21 +137,48 @@ describe("vLLM thinking models", () => {
     assert.deepStrictEqual(t.warnings, []);
   });
 
-  it("a reply that is only reasoning (out of tokens) says so plainly, and doesn't crash or retry", async () => {
-    vllm.replies.push([
-      delta({ role: "assistant", content: "<think>Let me think about this carefully" }),
-      delta({ content: " and then some more" }, "length"),
-    ]);
+  it("a reply that is only reasoning (out of tokens) is continued twice, then explained", async () => {
+    const before = vllm.chats();
+    for (let i = 0; i < 3; i++) {
+      vllm.replies.push([
+        delta({ role: "assistant", content: "<" + "think>Let me think about this carefully" }),
+        delta({ content: " and then some more" }, "length"),
+      ]);
+    }
     const t = await turn();
     assert.strictEqual(t.text, "");
     assert.match(t.reasoning, /Let me think about this carefully and then some more/);
+    assert.deepStrictEqual(t.infos, [
+      "Model hit the output limit while thinking; continuing (1/2)",
+      "Model hit the output limit while thinking; continuing (2/2)",
+    ]);
     assert.deepStrictEqual(t.warnings, [reasoningOnlyLine("length")]);
     assert.strictEqual(t.warnings[0], "The model only thought and gave no answer: it ran out of tokens while thinking. Ask again, or ask for less at once.");
     assert.deepStrictEqual(t.retries, []);
-    assert.strictEqual(t.assistants[0]!.content, null);
+    assert.strictEqual(vllm.chats() - before, 3, "two continuations, then the warning");
+    assert.strictEqual(t.assistants.length, 3);
+    assert.ok(
+      t.messages.some((m) => m.role === "system" && String(m.content).includes("Stop deliberating and act now")),
+      "the continue nudge reaches the model",
+    );
+  });
 
+  it("a reasoning-only reply that stopped normally is explained without continuing", async () => {
+    const before = vllm.chats();
     vllm.replies.push([delta({ role: "assistant", reasoning_content: "Hmm." }, "stop")]);
-    const stopped = await turn();
-    assert.deepStrictEqual(stopped.warnings, ["The model only thought and gave no answer. Ask again."]);
+    const t = await turn();
+    assert.deepStrictEqual(t.warnings, ["The model only thought and gave no answer. Ask again."]);
+    assert.deepStrictEqual(t.infos, []);
+    assert.strictEqual(vllm.chats() - before, 1);
+  });
+
+  it("a length-truncated reply with text is not continued", async () => {
+    const before = vllm.chats();
+    vllm.replies.push([delta({ role: "assistant", content: "Partial answer" }, "length")]);
+    const t = await turn();
+    assert.strictEqual(t.text, "Partial answer");
+    assert.deepStrictEqual(t.infos, []);
+    assert.deepStrictEqual(t.warnings, []);
+    assert.strictEqual(vllm.chats() - before, 1);
   });
 });

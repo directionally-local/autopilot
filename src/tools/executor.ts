@@ -29,7 +29,7 @@ import { presentPlanOptionsTool } from "./plan-options.js";
 import { ToolArtifactStore } from "./artifact-store.js";
 import { reduceToolOutput, DEFAULT_REDUCER_CONFIG, reducerConfigForContextWindow } from "./reducer.js";
 import { makeExpandArtifactTool } from "./expand-artifact.js";
-import { jobStartTool, jobStatusTool, jobLogsTool, jobCancelTool } from "./jobs.js";
+import { jobStartTool, jobStatusTool, jobLogsTool, jobCancelTool, jobWaitTool } from "./jobs.js";
 import { waitForTool } from "./wait-for.js";
 import { workerResultTool, workerStatusTool } from "./workers.js";
 import { readFile, realpath, stat } from "node:fs/promises";
@@ -71,6 +71,7 @@ export const ALL_TOOLS: ToolSpec[] = [
   jobStatusTool,
   jobLogsTool,
   jobCancelTool,
+  jobWaitTool,
   waitForTool,
   workerStatusTool,
   workerResultTool,
