@@ -53,7 +53,8 @@
     "bin",
     "dist",
     "README.md",
-    "PLAN.md"
+    "PLAN.md",
+    "npm-shrinkwrap.json"
   ],
   "engines": {
     "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
@@ -67,6 +68,9 @@
     "test:file": "tsx --test --import ./scripts/test-setup.mjs --test-timeout=120000 --test-force-exit",
     "record-demos": "vhs demos/*.tape",
     "start": "node bin/autopilot.mjs",
+    "prepack": "node scripts/npm-shrinkwrap.mjs --write",
+    "postpack": "node scripts/npm-shrinkwrap.mjs --clean",
+    "check:shrinkwrap": "node scripts/check-npm-shrinkwrap.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
