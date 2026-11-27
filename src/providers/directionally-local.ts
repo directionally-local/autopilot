@@ -23,7 +23,7 @@ import { configPath, patchPersistedConfig, setSessionModelFallback, type Autopil
 import { getUserAgent } from "../util/version.js";
 import type { ProviderSettings } from "./resolve.js";
 import type { ModelEntry } from "../models/registry.js";
-import { DL_FREE_DEFAULT_MODEL, dlKeyMode, dlOrigin, isDlApiKey } from "./dl-endpoint.js";
+import { DL_FREE_DEFAULT_MODEL, DL_TOKEN_FILE_ENV, dlKeyMode, dlOrigin, isDlApiKey, isDlAutopilotKey } from "./dl-endpoint.js";
 import { DL_FREE_PLAN_LINE, DL_PLANS_URL, dlPlanHeaderLine, dlPlanSignedInLine, fetchDlPlanUsage, renderDlPlanUsage, type DlPlanUsage } from "./dl-plan.js";
 import { launchedByDl, type EnvLike } from "../util/env.js";
 
@@ -68,11 +68,13 @@ export const DL_SIGN_IN_COMMAND = "autopilot auth directionally-local";
 export const DL_FREE_SIGN_IN_AGAIN = "Run /provider and choose Free to sign in again.";
 /** The sentence for a dead sign-in: dl names /provider, standalone the `autopilot auth` command. */
 export function dlSignInExpiredLine(env: EnvLike = process.env): string {
-  if (dlKeyMode(env as NodeJS.ProcessEnv)) return DL_KEY_REFUSED_LINE;
+  if (dlKeyMode(env as NodeJS.ProcessEnv)) return dlKeyRefusedLine(env);
   return launchedByDl(env) ? `Your free-tier sign-in expired. ${DL_FREE_SIGN_IN_AGAIN}` : `Your Directionally Local sign-in has expired; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
 }
 /** A dl key (dl_sk_) the service refused: it comes from dl's sign-in, so dl renews it. */
 export const DL_KEY_REFUSED_LINE = "dl didn't accept your dl key. Run dl login to sign in again, or make a new key at dl.new/keys.";
+/** The Autopilot key dl made (dl_ak_) refused even after reading dl's current one: dl stopped renewing it. */
+export const DL_AUTOPILOT_KEY_EXPIRED_LINE = "dl's key for this session expired (dl stopped renewing it). Quit Autopilot and run dl again.";
 /** Not signed in at all. */
 export function dlSignedOutLine(env: EnvLike = process.env): string {
   return launchedByDl(env) ? "You're not signed in to the free tier. Run /provider and choose Free to sign in." : `You're not signed in to Directionally Local; sign in with \`${DL_SIGN_IN_COMMAND}\`.`;
@@ -760,7 +762,7 @@ export function describeDlError(code: string, extra: DlErrorExtra = {}): string 
     case "invalid_key":
       return DL_KEY_REFUSED_LINE;
     case "invalid_token":
-      if (dlKeyMode((extra.env ?? process.env) as NodeJS.ProcessEnv)) return DL_KEY_REFUSED_LINE;
+      if (dlKeyMode((extra.env ?? process.env) as NodeJS.ProcessEnv)) return dlKeyRefusedLine(extra.env ?? process.env);
       return launchedByDl(extra.env ?? process.env)
         ? `The free tier didn't accept your sign-in. ${DL_FREE_SIGN_IN_AGAIN}`
         : `Directionally Local didn't accept your sign-in; sign in again with \`${DL_SIGN_IN_COMMAND}\`.`;
@@ -1086,9 +1088,47 @@ export async function refreshDlTokens(
   return t.access_token;
 }
 
+/** The refusal for key mode: the dl key's, or for the Autopilot key dl made, that dl stopped renewing it. */
+function dlKeyRefusedLine(env: EnvLike): string {
+  return isDlAutopilotKey(env[DL_TOKEN_ENV]) ? DL_AUTOPILOT_KEY_EXPIRED_LINE : DL_KEY_REFUSED_LINE;
+}
+
+/** How long Autopilot waits, after its key was refused, for dl to write a new one to the key file. */
+export const DL_TOKEN_FILE_WAIT_MS = 10_000;
+const DL_TOKEN_FILE_POLL_MS = 500;
+
+/** The key in dl's key file (AUTOPILOT_DL_FREE_TOKEN_FILE), or undefined when there is none or it can't be read. */
+async function readDlTokenFile(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const file = env[DL_TOKEN_FILE_ENV]?.trim();
+  if (!file) return undefined;
+  try {
+    return (await readFile(file, "utf8")).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The key dl gave this Autopilot. With a key file (the Autopilot key dl refreshes, autopilot-key.ts
+ * in dl), the file's current key, else the environment's. With `force` (the key was just refused),
+ * dl may be re-minting it (after the computer slept): wait up to DL_TOKEN_FILE_WAIT_MS for the
+ * file to change, then go with what is there.
+ */
+async function dlEnvToken(env: NodeJS.ProcessEnv, fromEnv: string, force: boolean | undefined, sleep: (ms: number) => Promise<void>): Promise<string> {
+  const first = (await readDlTokenFile(env)) ?? fromEnv;
+  if (!force || !env[DL_TOKEN_FILE_ENV]?.trim() || !isDlAutopilotKey(first)) return first;
+  for (let waited = 0; waited < DL_TOKEN_FILE_WAIT_MS; waited += DL_TOKEN_FILE_POLL_MS) {
+    await sleep(DL_TOKEN_FILE_POLL_MS);
+    const now = await readDlTokenFile(env);
+    if (now && now !== first) return now;
+  }
+  return first;
+}
+
 /**
  * The current access token: AUTOPILOT_DL_FREE_TOKEN when set (never
- * refreshed), else the saved one, refreshed when it expires within a minute
+ * refreshed; with AUTOPILOT_DL_FREE_TOKEN_FILE, the key dl keeps in that
+ * file, read again after a 401), else the saved one, refreshed when it expires within a minute
  * or when `force` is set (after a 401 `invalid_token`). Undefined when nobody
  * has signed in. A rejected refresh (`invalid_grant`) throws a DlError asking
  * to sign in again; a network failure before expiry returns the saved token.
@@ -1098,7 +1138,7 @@ export async function dlAccessToken(
 ): Promise<string | undefined> {
   const env = opts.env ?? process.env;
   const fromEnv = env[DL_TOKEN_ENV]?.trim();
-  if (fromEnv) return fromEnv;
+  if (fromEnv) return dlEnvToken(env, fromEnv, opts.force, opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))));
   if (refreshing) return refreshing;
   const now = opts.now ?? Date.now();
   const s = (await readPersisted())?.providers?.[DL_PROVIDER_ID];
