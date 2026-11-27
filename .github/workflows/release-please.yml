@@ -71,15 +71,19 @@ jobs:
           check-latest: true
           registry-url: "https://registry.npmjs.org"
 
-      # Trusted publishing needs npm >= 11.5.1 (Node 22 ships npm 10).
+      # Trusted publishing needs npm >= 11.5.1 (Node 22 ships npm 10). Pinned to npm 11:
+      # npm 12 leaves npm-shrinkwrap.json out of the published tarball.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.21.3
 
       - name: Install
         run: npm ci
 
       - name: Build
         run: npm run build
+
+      - name: Check the shrinkwrap is in the tarball
+        run: npm pack --dry-run 2>&1 | grep -q "npm-shrinkwrap.json" || { echo "npm-shrinkwrap.json missing from the tarball"; exit 1; }
 
       - name: Publish to npm and verify availability
         run: |
