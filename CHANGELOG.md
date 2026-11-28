@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.37.0](https://github.com/directionally-local/autopilot/compare/v3.36.3...v3.37.0) (2026-11-28)
+
+
+### Features
+
+* **dl:** offer subscriptions ahead of top-ups ([#1338](https://github.com/directionally-local/autopilot/issues/1338)) ([62ac529](https://github.com/directionally-local/autopilot/commit/62ac52910bc7411ef3074528b36f9a0503559a2b))
+
 ## [3.36.3](https://github.com/directionally-local/autopilot/compare/v3.36.2...v3.36.3) (2026-11-27)
 
 
