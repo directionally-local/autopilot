@@ -35,12 +35,14 @@ import {
   isTestCommand,
   noteToolForWin,
   runDlScreen,
+  subscriptionChoice,
   withWinTracking,
   won,
   type DlScreen,
   type DlScreenDeps,
   type WinTracker,
 } from "./dl-growth.js";
+import { parseDlSubscriptions } from "./directionally-local.js";
 import { runInviteCommand, runUpgradeCommand, type DlCommandDeps } from "../dl-commands.js";
 import { dispatchSlashCommand, type SlashContext } from "../ui/slash-commands.js";
 import { BUILTIN_COMMAND_NAMES } from "../commands/builtins.js";
@@ -52,6 +54,11 @@ const NOW = Date.parse("2026-11-03T03:00:00Z");
 /** Monday 9 Nov, 09:00 in Tokyo. */
 const RESETS = "2026-11-09T00:00:00Z";
 const LINK = "https://dl.new/r/octo42";
+const SUBSCRIPTIONS = [
+  { id: "starter" as const, name: "dl.new Starter", priceUsd: 7, promoPriceUsd: 3.5, description: "DeepSeek V4.1 Flash ~62M/week (95.5% caching applied)", checkoutUrl: "https://dl.new/?plan=starter" },
+  { id: "plus" as const, name: "dl.new Plus", priceUsd: 20, promoPriceUsd: 10, description: "DeepSeek V4.1 Flash ~150M/week + Kimi K3.1 ~1.5M/week (95.5% caching applied)", checkoutUrl: "https://dl.new/?plan=plus" },
+  { id: "max" as const, name: "dl.new Max", priceUsd: 60, promoPriceUsd: 30, description: "DeepSeek V4.1 Flash ~450M/week + Kimi K3.1 ~4M/week (95.5% caching applied)", checkoutUrl: "https://dl.new/?plan=max" },
+];
 const OFFERS = { pro: { priceUsdMonthly: 10, tokensPerWeek: 100_000_000 }, topup: { priceUsd: 3, tokens: 50_000_000, validDays: 30 } };
 /** What a current server sends: Pro's exact price text and value line, and a dollar top-up. */
 const PRO_OFFERS = {
@@ -130,7 +137,7 @@ describe("free tier growth", () => {
       assert.deepStrictEqual(parseDlError({ error: { code: "quota_exceeded", offers: PRO_OFFERS } })?.offers, PRO_OFFERS);
     });
 
-    it("puts dl Pro first and default, then a top-up, more free usage, your own key and your own GPUs", async () => {
+    it("keeps legacy Pro before the top-up on older servers without monthly plans", async () => {
       const w = world({ select: [null] });
       assert.strictEqual(await runDlScreen(quota, w.deps), "dismissed");
       assert.deepStrictEqual(w.selects[0], {
@@ -158,6 +165,39 @@ describe("free tier growth", () => {
       assert.deepStrictEqual(dlScreenChoices("quota", { offers: PRO_OFFERS, plan: "pro" }).map((c) => c.value), ["topup", "own-key", "gpus"]);
       assert.deepStrictEqual(dlScreenChoices("quota", { offers: OFFERS }).map((c) => c.value), ["pro", "request", "own-key", "gpus"], "an old token top-up stays in /upgrade");
       assert.ok(!dlScreenChoices("quota", { offers: PRO_OFFERS, referralLink: LINK }).some((c) => /invite|\+10M/i.test(c.label)), "no invite promise here");
+    });
+
+
+    it("puts the live monthly plans before the one-off top-up", async () => {
+      const choices = dlScreenChoices("quota", { offers: PRO_OFFERS, subscriptions: SUBSCRIPTIONS });
+      assert.deepStrictEqual(choices.slice(0, 5).map((c) => c.value), ["starter", "plus", "max", "plans", "topup"]);
+      assert.strictEqual(choices[0]!.label, "Subscribe to dl.new Starter — $3.50 first month, then $7/month");
+      assert.strictEqual(choices[1]!.label, "Subscribe to dl.new Plus — $10 first month, then $20/month");
+      assert.strictEqual(choices[4]!.label, "Top up from $2 · one-time credit for this account");
+      assert.ok(!choices.some((c) => c.label.includes("dl Pro")));
+    });
+
+    it("opens the selected plan's real web checkout and says to connect its dl key", async () => {
+      const w = world({ select: ["starter"] });
+      assert.strictEqual(await runDlScreen({ ...quota, subscriptions: SUBSCRIPTIONS }, w.deps), "handled");
+      assert.deepStrictEqual(w.opened, ["https://dl.new/?plan=starter"]);
+      assert.match(w.said[0]!, /After you subscribe, run `dl` to link your dl\.new key/);
+      assert.deepStrictEqual(w.checkouts, []);
+    });
+
+    it("uses ordinary plan prices when the launch promo has ended", () => {
+      assert.strictEqual(subscriptionChoice({ ...SUBSCRIPTIONS[0]!, promoPriceUsd: undefined }).label, "Subscribe to dl.new Starter — $7/month");
+    });
+
+    it("accepts only honest subscription offers from the service", () => {
+      const raw = normalizeDlMe({ ...me(), subscriptions: SUBSCRIPTIONS })!;
+      assert.strictEqual(raw.subscriptions?.[0]!.checkoutUrl, "https://dl.new/?plan=starter");
+      assert.strictEqual(parseDlSubscriptions([{ ...SUBSCRIPTIONS[0]!, checkoutUrl: "https://evil.example/pay" }]), undefined);
+      const detail = parseDlError({ error: { code: "starter_limit", subscriptions: SUBSCRIPTIONS } });
+      assert.strictEqual(detail?.subscriptions?.[0]!.promoPriceUsd, 3.5);
+      const screen = dlScreenFor("starter_limit", detail!);
+      assert.ok(screen && "subscriptions" in screen);
+      assert.deepStrictEqual(screen.subscriptions, SUBSCRIPTIONS);
     });
 
     it("asks for more free usage through /request, and points to `dl model up`", async () => {
@@ -438,10 +478,23 @@ describe("free tier growth", () => {
       assert.strictEqual(w.selects[0]!.title, "Upgrade Directionally Local");
       assert.deepStrictEqual(await dlUpgradeStep({ ...base, providerId: "directionally-local", fetchMe: async () => me({ offers: undefined }) }), {
         kind: "text",
-        text: "Top-ups aren't available from this Directionally Local server yet.",
+        text: "Monthly plans and top-ups aren't available from this Directionally Local server yet.",
       });
       const off = await dlUpgradeStep({ ...base, providerId: "openrouter", providerName: "OpenRouter", fetchMe: async () => me() });
       assert.strictEqual(off.kind === "text" && off.text, "/upgrade is for Directionally Local; you're on OpenRouter, billed by that provider. /provider switches to it.");
+    });
+
+    it("opens a subscription through `autopilot upgrade starter`, leaving legacy Pro and top-up alone", async () => {
+      const out: string[] = [];
+      const opened: string[] = [];
+      const status = await runUpgradeCommand("starter", {
+        ...cliDeps(out),
+        fetchMe: async () => me({ offers: PRO_OFFERS, subscriptions: SUBSCRIPTIONS }),
+        openBrowser: (url) => (opened.push(url), true),
+      });
+      assert.strictEqual(status, 0);
+      assert.deepStrictEqual(opened, ["https://dl.new/?plan=starter"]);
+      assert.match(out[0]!, /After you subscribe, run `dl`/);
     });
 
     it("buying from /upgrade doesn't retry anything", async () => {
@@ -549,11 +602,21 @@ describe("free tier growth", () => {
       assert.match(renderDlUsage(older, NOW, TZ), /\n {2}invite bonus {4}\+10M a week/, "an older server: shown as before");
     });
 
+    it("offers a monthly subscription, not legacy Pro, after an exhausted trial and in headless output", () => {
+      assert.match(renderDlUsage(me({ subscriptions: SUBSCRIPTIONS, trial: { tokens: 100, used: 100, remaining: 0, ended: true } }), NOW, TZ), /Keep going with a monthly plan: \/upgrade/);
+      const err = new ApiError("x", undefined, 402);
+      err.providerCode = "quota_exceeded";
+      err.providerDetail = { code: "quota_exceeded", resetsAt: RESETS, subscriptions: SUBSCRIPTIONS, offers: PRO_OFFERS };
+      assert.match(dlHeadlessMessage(err, { now: NOW, timeZone: TZ })!, /Subscribe to dl\.new Starter for \$3\.50 for the first month: https:\/\/dl\.new\/\?plan=starter/);
+      assert.doesNotMatch(dlHeadlessMessage(err, { now: NOW, timeZone: TZ })!, /dl Pro/);
+    });
+
     it("reads an older /v1/me (no plan, offers, referral or queue) as before", () => {
       const old = normalizeDlMe({ login: "octo", allowance: { tokensPerWeek: 50e6, usedThisWeek: 0, remaining: 50e6, resetsAt: RESETS } })!;
       assert.strictEqual(old.plan, undefined);
       assert.strictEqual(old.offers, undefined);
       assert.strictEqual(old.referral, undefined);
+      assert.strictEqual(old.subscriptions, undefined);
       assert.strictEqual(old.queue, undefined);
       assert.strictEqual(normalizeDlMe({ login: "x" }), null);
       assert.strictEqual(normalizeDlMe({ login: "x", queue: null, allowance: { remaining: 1, tokensPerWeek: 1, usedThisWeek: 0, resetsAt: "" }, plan: "gold" })!.plan, undefined);

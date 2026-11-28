@@ -246,6 +246,8 @@ export interface DlErrorDetail {
   minAccountAgeDays?: number;
   /** The service paused free tokens for everyone (its global budget), not just for this account. */
   pausedForEveryone?: boolean;
+  /** Monthly subscriptions, at live web-checkout prices. */
+  subscriptions?: DlSubscriptionOffer[];
   /** What can be bought instead of waiting (quota_exceeded, free_tier_queued); older servers send none. */
   offers?: DlOffers;
   /** The person's invite link, when the service sent it with the error. */
@@ -353,6 +355,39 @@ export function dlProPrice(pro: DlProOffer): string {
 export interface DlOffers {
   pro?: DlProOffer;
   topup?: DlTopupOffer;
+}
+
+/** A live monthly dl.new plan, supplied by the service alongside its top-up. */
+export interface DlSubscriptionOffer {
+  id: "starter" | "plus" | "max";
+  name: string;
+  priceUsd: number;
+  promoPriceUsd?: number;
+  description: string;
+  checkoutUrl: string;
+}
+
+/** Plans are available to free and legacy-Pro accounts alike; legacy Pro stays at the billing portal. */
+export function parseDlSubscriptions(raw: unknown): DlSubscriptionOffer[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const plans: DlSubscriptionOffer[] = [];
+  for (const item of raw) {
+    if (!isRec(item) || !["starter", "plus", "max"].includes(String(item.id))) continue;
+    const price = numOf(item, "priceUsd");
+    const first = numOf(item, "promoPriceUsd");
+    const url = strOf(item, "checkoutUrl");
+    const description = strOf(item, "description");
+    if (!url || !/^https:\/\/dl\.new\/\?plan=(starter|plus|max)$/.test(url) || price === undefined || price <= 0 || !description || description.length > 400) continue;
+    plans.push({
+      id: item.id as DlSubscriptionOffer["id"],
+      name: strOf(item, "name") ?? `dl.new ${String(item.id)[0]!.toUpperCase()}${String(item.id).slice(1)}`,
+      priceUsd: price,
+      ...(first !== undefined && first > 0 && first < price ? { promoPriceUsd: first } : {}),
+      description: description.replace(/[\u0000-\u001f\u007f]/g, " "),
+      checkoutUrl: url,
+    });
+  }
+  return plans.length ? plans : undefined;
 }
 
 /** The person's invite link and what it has earned. */
@@ -519,6 +554,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
   const minAccountAgeDays = num("minAccountAgeDays", "min_account_age_days", "minGithubAccountAgeDays") ?? (fromMessage ? Number(fromMessage) : undefined);
   const pausedForEveryone = e.pausedForEveryone === true || e.paused_for_everyone === true;
   const offers = parseDlOffers(e.offers);
+  const subscriptions = parseDlSubscriptions(e.subscriptions);
   const referralLink = str("referralLink", "referral_link");
   const position = num("position");
   const etaAt = str("etaAt", "eta_at");
@@ -542,6 +578,7 @@ export function parseDlError(body: unknown): ({ code: string } & DlErrorDetail) 
     ...(minAccountAgeDays !== undefined && minAccountAgeDays > 0 ? { minAccountAgeDays } : {}),
     ...(pausedForEveryone ? { pausedForEveryone } : {}),
     ...(offers ? { offers } : {}),
+    ...(subscriptions ? { subscriptions } : {}),
     ...(referralLink ? { referralLink } : {}),
     ...(position !== undefined && position >= 1 ? { position: Math.round(position) } : {}),
     ...(etaAt ? { etaAt } : {}),
@@ -669,10 +706,10 @@ export function dlProLine(offers: DlOffers | undefined, o: { where?: DlWhere; pl
  * your own key. Get dl Pro for $3.99/month: /upgrade" (the last sentence only when the service
  * offers Pro and the account isn't on it). On Pro, "this week's Pro usage".
  */
-export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere; offers?: DlOffers; plan?: DlPlan; limit?: string } = {}): string {
+export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere; offers?: DlOffers; subscriptions?: DlSubscriptionOffer[]; plan?: DlPlan; limit?: string } = {}): string {
   const back = formatLocalTime(resetsAt ?? nextWeekStart(o.now), o);
   const next = o.where === "cli" ? "To keep going now, use your own key: `autopilot connect`." : `To keep going now: ${DL_SWITCH_HINT} to use your own key.`;
-  const pro = dlProLine(o.offers, { ...(o.where ? { where: o.where } : {}), ...(o.plan ? { plan: o.plan } : {}) });
+  const pro = !!o.subscriptions?.length && o.plan !== "pro" ? `Subscribe at ${o.subscriptions[0]!.checkoutUrl}, then run \`dl\` to link your dl.new key.` : dlProLine(o.offers, { ...(o.where ? { where: o.where } : {}), ...(o.plan ? { plan: o.plan } : {}) });
   const plan = o.plan === "pro" ? "Pro" : "free";
   // `limit` (dlLimitName): which of the week's limits ran out, when the refusal said.
   const lead = o.limit ? `You've hit this week's ${plan} ${o.limit}.` : `You've used this week's ${plan} usage.`;
@@ -689,10 +726,10 @@ export function dlTrialEndedTitle(tokens: number | undefined): string {
  * dl Pro for $3.99/month or a top-up: /upgrade. Or use your own key: /provider." Pro is named only
  * when the service offers it; otherwise "Keep going with a top-up".
  */
-export function dlTrialEndedLine(tokens: number | undefined, o: { where?: DlWhere; offers?: DlOffers } = {}): string {
+export function dlTrialEndedLine(tokens: number | undefined, o: { where?: DlWhere; offers?: DlOffers; subscriptions?: DlSubscriptionOffer[] } = {}): string {
   const cli = o.where === "cli";
   const upgrade = cli ? "`autopilot upgrade`" : "/upgrade";
-  const way = o.offers?.pro ? `dl Pro for ${dlProPrice(o.offers.pro)} or a top-up` : "a top-up";
+  const way = o.subscriptions?.length ? "a monthly plan" : o.offers?.pro ? `dl Pro for ${dlProPrice(o.offers.pro)} or a top-up` : "a top-up";
   const ownKey = cli ? "Or use your own key: `autopilot connect`." : `Or use your own key: ${DL_SWITCH_HINT}.`;
   return `${dlTrialEndedTitle(tokens)} Keep going with ${way}: ${upgrade}. ${ownKey}`;
 }
@@ -1252,6 +1289,8 @@ export interface DlMe {
   queue?: DlQueue;
   referral?: DlReferral;
   offers?: DlOffers;
+  /** Monthly plans, preferred to a one-off top-up when the service offers them. */
+  subscriptions?: DlSubscriptionOffer[];
   /**
    * A new account's one-time free trial (instead of a weekly free allowance), when the service
    * says; undefined for accounts on the weekly free allowance and on older servers.
@@ -1345,6 +1384,7 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
   const topupUsdExpiresAt = strOf(raw, "topupUsdExpiresAt", "topup_usd_expires_at");
   const referral = parseDlReferral(raw.referral);
   const offers = parseDlOffers(raw.offers);
+  const subscriptions = parseDlSubscriptions(raw.subscriptions);
   const pools = parseDlPools(raw.pools);
   const level = raw.level === "full" || raw.level === "starter" ? raw.level : undefined;
   const levelReason = typeof raw.levelReason === "string" ? raw.levelReason : undefined;
@@ -1370,6 +1410,7 @@ export function normalizeDlMe(raw: unknown): DlMe | null {
     queue,
     referral,
     offers,
+    ...(subscriptions ? { subscriptions } : {}),
     ...(trial ? { trial } : {}),
   };
 }
@@ -1730,10 +1771,10 @@ export function renderDlUsage(me: DlMe, now = Date.now(), timeZone?: string): st
   lines.push(`  resets          ${formatReset(a.resetsAt || undefined, now, timeZone)}`);
   const topupLeft = (me.topupTokensLeft ?? 0) > 0 || (me.topupUsdLeft ?? 0) > 0;
   if (trial?.ended) {
-    if (!topupLeft) lines.push(`  ${dlTrialEndedLine(trial.tokens, me.offers ? { offers: me.offers } : {})}`);
+    if (!topupLeft) lines.push(`  ${dlTrialEndedLine(trial.tokens, { ...(me.offers ? { offers: me.offers } : {}), ...(me.subscriptions ? { subscriptions: me.subscriptions } : {}) })}`);
     return lines.join("\n");
   }
-  if (usedUp && !topupLeft) lines.push(`  ${dlQuotaLine(a.resetsAt || undefined, { ...t, ...(me.offers ? { offers: me.offers } : {}), ...planOf(me) })}`);
+  if (usedUp && !topupLeft) lines.push(`  ${dlQuotaLine(a.resetsAt || undefined, { ...t, ...(me.offers ? { offers: me.offers } : {}), ...(me.subscriptions ? { subscriptions: me.subscriptions } : {}), ...planOf(me) })}`);
   else if (pct >= 80 && !usedUp && !topupLeft) lines.push(`  You've used ${pct}% of this week's ${pro ? "Pro" : "free"} usage.`);
   else if (!usedUp && !pro) {
     const proLine = dlProLine(me.offers, planOf(me));

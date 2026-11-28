@@ -13,7 +13,9 @@ import {
   parseTopupAmount,
   purchase,
   type PurchaseDeps,
+  DL_UPGRADE_CONNECT_LINE,
 } from "./providers/dl-growth.js";
+import { DL_PLANS_URL } from "./providers/dl-plan.js";
 import { formatUsd, isUsdTopup, type DlMe, type DlProduct } from "./providers/directionally-local.js";
 
 export interface DlCommandDeps {
@@ -66,10 +68,10 @@ export async function runUpgradeCommand(product: string | undefined, deps: DlCom
     return step.text.startsWith("Manage or cancel your plan") ? 0 : 1;
   }
   const choices = dlScreenChoices("upgrade", step.screen);
-  let chosen: DlProduct | undefined;
+  let chosen: DlProduct | "starter" | "plus" | "max" | "plans" | undefined;
   const wanted = product?.trim().toLowerCase().replace(/[^a-z]/g, "");
   if (wanted) {
-    chosen = wanted === "pro" ? "pro" : wanted === "topup" ? "topup" : undefined;
+    chosen = wanted === "pro" ? "pro" : wanted === "topup" ? "topup" : ["starter", "plus", "max", "plan", "plans", "subscribe"].includes(wanted) ? (["starter", "plus", "max"].includes(wanted) ? (wanted as "starter" | "plus" | "max") : "plans") : undefined;
     if (!chosen || !choices.some((c) => c.value === chosen)) {
       deps.print(`Choose one of: ${choices.map((c) => (c.value === "pro" ? "pro" : "topup")).join(", ")}.`);
       return 1;
@@ -87,7 +89,14 @@ export async function runUpgradeCommand(product: string | undefined, deps: DlCom
       deps.print("Nothing bought.");
       return 1;
     }
-    chosen = picked.value as DlProduct;
+    chosen = picked.value as DlProduct | "starter" | "plus" | "max" | "plans";
+  }
+  if (chosen === "starter" || chosen === "plus" || chosen === "max" || chosen === "plans") {
+    const plan = step.screen.subscriptions?.find((p) => p.id === chosen);
+    const url = chosen === "plans" ? DL_PLANS_URL : plan?.checkoutUrl ?? DL_PLANS_URL;
+    const opened = deps.openBrowser(url);
+    deps.print(`${opened ? "Opened" : "Open"} ${url} to subscribe. ${DL_UPGRADE_CONNECT_LINE}`);
+    return 0;
   }
   // A dollar top-up: how much ($2, $5, $10, $20 or another amount in range); the smallest without a terminal.
   let quantity: number | undefined;
