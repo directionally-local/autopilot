@@ -1,5 +1,6 @@
 /**
- * The free tier's ways on when it runs out: dl Pro first, a top-up, asking
+ * The free tier's ways on when it runs out: the live dl.new monthly plans first,
+ * then a one-off top-up (or legacy Pro on an older server), asking
  * for more free usage, your own key, or your own GPUs. What each screen and command says, the checkout (open the
  * payment page, then watch /v1/me until the plan or top-up shows), and the
  * one-time invite tip after a first win. Renderer-free so it can be tested:
@@ -130,6 +131,7 @@ export interface DlChoiceOption {
  * for more free usage, your own key, your own GPUs. Queued: invite (with a
  * link), Pro, your own key. `upgrade` is /upgrade: Pro and the top-up.
  */
+/** A current plan choice, ordered by the live catalog (Starter first). */
 export function subscriptionChoice(p: DlSubscriptionOffer): DlChoiceOption {
   const first = p.promoPriceUsd;
   return {

@@ -706,10 +706,10 @@ export function dlProLine(offers: DlOffers | undefined, o: { where?: DlWhere; pl
  * your own key. Get dl Pro for $3.99/month: /upgrade" (the last sentence only when the service
  * offers Pro and the account isn't on it). On Pro, "this week's Pro usage".
  */
-export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere; offers?: DlOffers; plan?: DlPlan; limit?: string } = {}): string {
+export function dlQuotaLine(resetsAt: string | undefined, o: DlTimeOpts & { where?: DlWhere; offers?: DlOffers; subscriptions?: DlSubscriptionOffer[]; plan?: DlPlan; limit?: string } = {}): string {
   const back = formatLocalTime(resetsAt ?? nextWeekStart(o.now), o);
   const next = o.where === "cli" ? "To keep going now, use your own key: `autopilot connect`." : `To keep going now: ${DL_SWITCH_HINT} to use your own key.`;
-  const pro = dlProLine(o.offers, { ...(o.where ? { where: o.where } : {}), ...(o.plan ? { plan: o.plan } : {}) });
+  const pro = !!o.subscriptions?.length && o.plan !== "pro" ? `Subscribe at ${o.subscriptions[0]!.checkoutUrl}, then run \`dl\` to link your dl.new key.` : dlProLine(o.offers, { ...(o.where ? { where: o.where } : {}), ...(o.plan ? { plan: o.plan } : {}) });
   const plan = o.plan === "pro" ? "Pro" : "free";
   // `limit` (dlLimitName): which of the week's limits ran out, when the refusal said.
   const lead = o.limit ? `You've hit this week's ${plan} ${o.limit}.` : `You've used this week's ${plan} usage.`;

@@ -484,6 +484,19 @@ describe("free tier growth", () => {
       assert.strictEqual(off.kind === "text" && off.text, "/upgrade is for Directionally Local; you're on OpenRouter, billed by that provider. /provider switches to it.");
     });
 
+    it("opens a subscription through `autopilot upgrade starter`, leaving legacy Pro and top-up alone", async () => {
+      const out: string[] = [];
+      const opened: string[] = [];
+      const status = await runUpgradeCommand("starter", {
+        ...cliDeps(out),
+        fetchMe: async () => me({ offers: PRO_OFFERS, subscriptions: SUBSCRIPTIONS }),
+        openBrowser: (url) => (opened.push(url), true),
+      });
+      assert.strictEqual(status, 0);
+      assert.deepStrictEqual(opened, ["https://dl.new/?plan=starter"]);
+      assert.match(out[0]!, /After you subscribe, run `dl`/);
+    });
+
     it("buying from /upgrade doesn't retry anything", async () => {
       const w = world({ select: ["pro"], meSeq: [me(), me({ plan: "pro" })] });
       assert.strictEqual(await runDlScreen({ kind: "upgrade", offers: OFFERS }, w.deps), "handled");
@@ -589,11 +602,21 @@ describe("free tier growth", () => {
       assert.match(renderDlUsage(older, NOW, TZ), /\n {2}invite bonus {4}\+10M a week/, "an older server: shown as before");
     });
 
+    it("offers a monthly subscription, not legacy Pro, after an exhausted trial and in headless output", () => {
+      assert.match(renderDlUsage(me({ subscriptions: SUBSCRIPTIONS, trial: { tokens: 100, used: 100, remaining: 0, ended: true } }), NOW, TZ), /Keep going with a monthly plan: \/upgrade/);
+      const err = new ApiError("x", undefined, 402);
+      err.providerCode = "quota_exceeded";
+      err.providerDetail = { code: "quota_exceeded", resetsAt: RESETS, subscriptions: SUBSCRIPTIONS, offers: PRO_OFFERS };
+      assert.match(dlHeadlessMessage(err, { now: NOW, timeZone: TZ })!, /Subscribe to dl\.new Starter for \$3\.50 for the first month: https:\/\/dl\.new\/\?plan=starter/);
+      assert.doesNotMatch(dlHeadlessMessage(err, { now: NOW, timeZone: TZ })!, /dl Pro/);
+    });
+
     it("reads an older /v1/me (no plan, offers, referral or queue) as before", () => {
       const old = normalizeDlMe({ login: "octo", allowance: { tokensPerWeek: 50e6, usedThisWeek: 0, remaining: 50e6, resetsAt: RESETS } })!;
       assert.strictEqual(old.plan, undefined);
       assert.strictEqual(old.offers, undefined);
       assert.strictEqual(old.referral, undefined);
+      assert.strictEqual(old.subscriptions, undefined);
       assert.strictEqual(old.queue, undefined);
       assert.strictEqual(normalizeDlMe({ login: "x" }), null);
       assert.strictEqual(normalizeDlMe({ login: "x", queue: null, allowance: { remaining: 1, tokensPerWeek: 1, usedThisWeek: 0, resetsAt: "" }, plan: "gold" })!.plan, undefined);
