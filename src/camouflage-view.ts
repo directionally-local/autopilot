@@ -744,10 +744,9 @@ export class View implements AppBridge {
    *
    * Only an already-open turn is eligible: a late delta after `endTurn()`
    * must not open a new turn that nothing would settle. camouflage-tui
-   * 2.13.2 (the pinned release) has no `Turn.toolCallArgs` (it lands in
-   * 2.13.3), so on the pinned version this is a no-op and the arguments
-   * go nowhere, as before. Once the pin moves, they reach the renderer as
-   * `AssistantToolCallArgsDelta`, which counts them without printing them.
+   * 2.13.3+ has `Turn.toolCallArgs` (the pin is 2.14.0), so the arguments
+   * reach the renderer as `AssistantToolCallArgsDelta`, which counts them
+   * without printing them. The runtime check stays for older SDKs.
    */
   toolCallArgs(delta: string): void {
     const turn = this.turn;
