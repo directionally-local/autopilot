@@ -41,6 +41,7 @@ import {
   type DlPlan,
   type DlProduct,
   type DlProOffer,
+  type DlSubscriptionOffer,
   type DlTimeOpts,
   type DlTopupOffer,
   type DlUsdTopupOffer,
@@ -48,6 +49,8 @@ import {
 } from "./directionally-local.js";
 import { dlKeyMode } from "./dl-endpoint.js";
 import { DL_PLANS_URL } from "./dl-plan.js";
+
+export const DL_UPGRADE_CONNECT_LINE = "After you subscribe, run `dl` to link your dl.new key to this computer.";
 
 /** What each friend who starts using dl adds a week, for both of you. */
 export const DL_REFERRAL_BONUS_TOKENS = DL_INVITE_BONUS_TOKENS;
@@ -114,7 +117,7 @@ export function topupDescription(t: DlTopupOffer): string | undefined {
 /** Said after choosing "Run it on your own GPUs". */
 export const DL_GPU_LINE = "Run it on your own GPUs: `dl model up` serves an open model on this machine's Nvidia GPU and points Autopilot at it.";
 
-export type DlChoice = "pro" | "topup" | "request" | "own-key" | "gpus" | "invite" | "deepseek";
+export type DlChoice = "pro" | "topup" | "plans" | "starter" | "plus" | "max" | "request" | "own-key" | "gpus" | "invite" | "deepseek";
 export interface DlChoiceOption {
   value: DlChoice;
   label: string;
@@ -127,32 +130,42 @@ export interface DlChoiceOption {
  * for more free usage, your own key, your own GPUs. Queued: invite (with a
  * link), Pro, your own key. `upgrade` is /upgrade: Pro and the top-up.
  */
-export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; referralLink?: string; plan?: DlPlan; proPrompt?: string }): DlChoiceOption[] {
+export function subscriptionChoice(p: DlSubscriptionOffer): DlChoiceOption {
+  const first = p.promoPriceUsd;
+  return {
+    value: p.id,
+    label: `Subscribe to ${p.name.replace(/^dl\.new /, "dl.new ")} — ${first !== undefined ? `${formatUsd(first)} first month, then ${formatUsd(p.priceUsd)}/month` : `${formatUsd(p.priceUsd)}/month`}`,
+    description: p.description,
+  };
+}
+
+export function topupSecondaryLabel(t: DlTopupOffer): string {
+  return `${topupLabel(t)} · one-time credit for this account`;
+}
+
+export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; subscriptions?: DlSubscriptionOffer[]; referralLink?: string; plan?: DlPlan; proPrompt?: string }): DlChoiceOption[] {
   const out: DlChoiceOption[] = [];
-  const pro = o.offers?.pro && o.plan !== "pro" ? o.offers.pro : undefined;
+  const subscriptions = o.plan === "pro" ? [] : o.subscriptions ?? [];
+  const pro = o.offers?.pro && o.plan !== "pro" && !subscriptions.length ? o.offers.pro : undefined;
   const proOption = (lead: string): DlChoiceOption | undefined =>
     pro ? { value: "pro", label: proLabel(pro, lead), ...(pro.valueLine ? { description: pro.valueLine } : {}) } : undefined;
   const topup = o.offers?.topup;
   const topupOption = (t: DlTopupOffer): DlChoiceOption => {
     const description = topupDescription(t);
-    return { value: "topup", label: topupLabel(t), ...(description ? { description } : {}) };
+    return { value: "topup", label: subscriptions.length ? topupSecondaryLabel(t) : topupLabel(t), ...(description ? { description } : {}) };
   };
-  if (kind === "quota") {
-    // With dl Pro's prompt as the title, the first choice is its [Upgrade].
-    const p = o.proPrompt && pro ? { value: "pro" as const, label: DL_UPGRADE_LABEL, description: `dl Pro, ${dlProPrice(pro)}` } : proOption("Get dl Pro");
-    if (p) out.push(p);
-    if (isUsdTopup(topup)) out.push(topupOption(topup));
-    if (o.plan !== "pro") out.push({ value: "request", label: "Ask for more free usage", description: "/request" });
-    out.push({ value: "own-key", label: "Use your own key", description: "/provider" });
-    out.push({ value: "gpus", label: "Run it on your own GPUs", description: "dl model up" });
-    return out;
-  }
-  if (kind === "trial") {
-    // The one-time trial is used up: the paid ways first, then your own key or GPUs. No "ask for
-    // more free usage" and no wait: the trial doesn't come back.
-    const p = proOption("Get dl Pro");
-    if (p) out.push(p);
-    if (isUsdTopup(topup)) out.push(topupOption(topup));
+  if (kind === "quota" || kind === "trial") {
+    if (subscriptions.length) {
+      out.push(...subscriptions.map(subscriptionChoice));
+      out.push({ value: "plans", label: "All dl.new plans", description: DL_PLANS_URL });
+      if (isUsdTopup(topup)) out.push(topupOption(topup));
+    } else {
+      // Older server without monthly plan offers: preserve the legacy paid options.
+      const p = o.proPrompt && pro ? { value: "pro" as const, label: DL_UPGRADE_LABEL, description: `dl Pro, ${dlProPrice(pro)}` } : proOption("Get dl Pro");
+      if (p) out.push(p);
+      if (isUsdTopup(topup)) out.push(topupOption(topup));
+    }
+    if (kind === "quota" && o.plan !== "pro") out.push({ value: "request", label: "Ask for more free usage", description: "/request" });
     out.push({ value: "own-key", label: "Use your own key", description: "/provider" });
     out.push({ value: "gpus", label: "Run it on your own GPUs", description: "dl model up" });
     return out;
@@ -160,6 +173,7 @@ export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; 
   if (kind === "gpt") {
     // GPT-6 used up, DeepSeek not: DeepSeek first (Enter), then the paid ways and your own key.
     out.push({ value: "deepseek", label: DL_SWITCH_DEEPSEEK_LABEL, description: "/model" });
+    if (subscriptions.length) out.push(...subscriptions.map(subscriptionChoice));
     const p = proOption("Get dl Pro");
     if (p) out.push(p);
     if (isUsdTopup(topup)) out.push(topupOption(topup));
@@ -173,8 +187,12 @@ export function dlScreenChoices(kind: DlScreen["kind"], o: { offers?: DlOffers; 
     out.push({ value: "own-key", label: "Use my own API key now" });
     return out;
   }
-  const p = proOption("dl Pro");
-  if (p) out.push(p);
+  if (subscriptions.length) {
+    out.push(...subscriptions.map(subscriptionChoice));
+  } else {
+    const p = proOption("dl Pro");
+    if (p) out.push(p);
+  }
   if (topup) out.push(topupOption(topup));
   return out;
 }
@@ -248,10 +266,11 @@ export function dlHeadlessLine(code: string, d: DlErrorDetail, o: DlTimeOpts & {
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     const limit = dlLimitName(d.reason, d.family);
     if (d.proPrompt && o.plan !== "pro") return `${dlProPromptLine(dlNamedProPrompt(d.proPrompt, limit), "cli")}. Or use your own key: \`autopilot connect\`.`;
-    const pro = d.offers?.pro && o.plan !== "pro" ? ` Get dl Pro for ${dlProPrice(d.offers.pro)}: \`${DL_UPGRADE_COMMAND}\`` : "";
-    return `${dlLimitTitle(d.resetsAt, { ...o, ...(limit ? { limit } : {}) })} To keep going now, use your own key: \`autopilot connect\`.${pro}`;
+    const plans = d.subscriptions?.length && o.plan !== "pro" ? ` Subscribe to ${d.subscriptions[0]!.name} for ${formatUsd(d.subscriptions[0]!.promoPriceUsd ?? d.subscriptions[0]!.priceUsd)}${d.subscriptions[0]!.promoPriceUsd ? " for the first month" : ""}: ${d.subscriptions[0]!.checkoutUrl}` : "";
+    const pro = !plans && d.offers?.pro && o.plan !== "pro" ? ` Get dl Pro for ${dlProPrice(d.offers.pro)}: \`${DL_UPGRADE_COMMAND}\`` : "";
+    return `${dlLimitTitle(d.resetsAt, { ...o, ...(limit ? { limit } : {}) })} To keep going now, use your own key: \`autopilot connect\`.${plans}${pro}`;
   }
-  if (code === "trial_ended") return dlTrialEndedLine(d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens, { where: "cli", ...(d.offers ? { offers: d.offers } : {}) });
+  if (code === "trial_ended") return dlTrialEndedLine(d.trial?.tokens ?? lastKnownDlMe()?.trial?.tokens, { where: "cli", ...(d.offers ? { offers: d.offers } : {}), ...(d.subscriptions ? { subscriptions: d.subscriptions } : {}) });
   if (code === "gpt_limit") {
     // A limit with a reason (e.g. "security"): the service's own sentence; else the allowance line.
     const title = d.reason && typeof d.message === "string" && d.message.trim() ? d.message.trim() : dlGptLimitTitle(d.resetsAt, o);
@@ -401,13 +420,13 @@ export async function purchase(product: DlProduct, deps: PurchaseDeps, o: { cont
 /** A screen the session shows: out of tokens, queued, or /upgrade. */
 export type DlScreen =
   /** `proPrompt`: dl Pro's prompt from the service (the free week's open models are used up), shown as the title. */
-  | { kind: "quota"; resetsAt?: string; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan; proPrompt?: string; limit?: string }
+  | { kind: "quota"; resetsAt?: string; subscriptions?: DlSubscriptionOffer[]; offers?: DlOffers; referralLink?: string; request?: string; plan?: DlPlan; proPrompt?: string; limit?: string }
   /** `message`: the service's own sentence when the limit has a reason (e.g. "security"), shown instead of the allowance title. */
-  | { kind: "gpt"; resetsAt?: string; alternative: string; reason?: string; message?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
+  | { kind: "gpt"; resetsAt?: string; subscriptions?: DlSubscriptionOffer[]; alternative: string; reason?: string; message?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   /** A new account's one-time trial is used up (402 trial_ended): Pro or a top-up, no reset. */
-  | { kind: "trial"; tokens?: number; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
+  | { kind: "trial"; tokens?: number; subscriptions?: DlSubscriptionOffer[]; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
   | { kind: "queued"; position?: number; etaAt?: string; offers?: DlOffers; referralLink?: string; plan?: DlPlan }
-  | { kind: "upgrade"; offers: DlOffers; plan?: DlPlan };
+  | { kind: "upgrade"; offers: DlOffers; subscriptions?: DlSubscriptionOffer[]; plan?: DlPlan };
 
 /**
  * How a screen ended: `retry` the blocked request (bought), open the
@@ -429,7 +448,7 @@ export interface DlScreenDeps extends PurchaseDeps {
 /** The screen for a free-tier error, when it has one (quota_exceeded or basic_limit, gpt_limit, trial_ended, free_tier_queued). */
 export function dlScreenFor(code: string | undefined, d: DlErrorDetail, fallbackLink?: string, plan?: DlPlan): DlScreen | undefined {
   const referralLink = d.referralLink ?? fallbackLink;
-  const common = { ...(d.offers ? { offers: d.offers } : {}), ...(referralLink ? { referralLink } : {}), ...(plan ? { plan } : {}) };
+  const common = { ...(d.offers ? { offers: d.offers } : {}), ...(d.subscriptions ? { subscriptions: d.subscriptions } : {}), ...(referralLink ? { referralLink } : {}), ...(plan ? { plan } : {}) };
   if (code === "quota_exceeded" || code === "basic_limit" || code === "starter_limit") {
     // Which limit ran out (the token allowance or the dollar one), named in the title.
     const limit = dlLimitName(d.reason, d.family);
@@ -461,7 +480,7 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
       : screen.kind === "gpt"
         ? screen.message ?? dlGptLimitTitle(screen.resetsAt, { ...t, ...(screen.plan ? { plan: screen.plan } : {}) })
         : screen.kind === "trial"
-        ? `${dlTrialEndedTitle(screen.tokens)} Keep going with ${screen.offers?.pro && screen.plan !== "pro" ? "dl Pro or a top-up" : "a top-up"}.`
+        ? `${dlTrialEndedTitle(screen.tokens)} Keep going with ${screen.subscriptions?.length ? "a monthly dl.new plan" : screen.offers?.pro && screen.plan !== "pro" ? "dl Pro or a top-up" : "a top-up"}.`
         : screen.kind === "queued"
         ? dlQueueTitle(screen.position, screen.etaAt, t)
         : "Upgrade Directionally Local";
@@ -476,6 +495,19 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
     deps.say(DL_GPU_LINE);
     return "handled";
   }
+  if (choice === "starter" || choice === "plus" || choice === "max") {
+    const plan = "subscriptions" in screen ? screen.subscriptions?.find((p) => p.id === choice) : undefined;
+    if (plan) {
+      const opened = deps.openBrowser(plan.checkoutUrl);
+      deps.say(`${opened ? "Opened" : "Open"} ${plan.checkoutUrl} to subscribe. ${DL_UPGRADE_CONNECT_LINE}`);
+      return "handled";
+    }
+  }
+  if (choice === "plans") {
+    const opened = deps.openBrowser(DL_PLANS_URL);
+    deps.say(`${opened ? "Opened" : "Open"} ${DL_PLANS_URL} to compare subscriptions. ${DL_UPGRADE_CONNECT_LINE}`);
+    return "handled";
+  }
   if (choice === "invite") {
     if (link) deps.say(dlInviteShareLine(link, deps.copy(link)));
     return "handled";
@@ -487,6 +519,7 @@ export async function runDlScreen(screen: DlScreen, deps: DlScreenDeps): Promise
     if (picked === null) return "dismissed";
     quantity = picked;
   }
+  if (choice !== "pro" && choice !== "topup") return "handled";
   const bought = await purchase(choice, deps, { continuing: screen.kind !== "upgrade", ...(quantity !== undefined ? { quantity } : {}) });
   return bought && screen.kind !== "upgrade" ? "retry" : "handled";
 }
@@ -714,6 +747,6 @@ export async function dlUpgradeStep(o: {
     }
   }
   // The service leaves Pro out of `offers` when it isn't offered; then /upgrade is the top-up alone.
-  if (!me.offers || (!me.offers.pro && !me.offers.topup)) return { kind: "text", text: "Top-ups aren't available from this Directionally Local server yet." };
-  return { kind: "screen", screen: { kind: "upgrade", offers: me.offers, ...(me.plan ? { plan: me.plan } : {}) }, me };
+  if ((!me.offers || (!me.offers.pro && !me.offers.topup)) && !me.subscriptions?.length) return { kind: "text", text: "Monthly plans and top-ups aren't available from this Directionally Local server yet." };
+  return { kind: "screen", screen: { kind: "upgrade", offers: me.offers ?? {}, ...(me.subscriptions ? { subscriptions: me.subscriptions } : {}), ...(me.plan ? { plan: me.plan } : {}) }, me };
 }
