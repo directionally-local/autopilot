@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.37.1](https://github.com/directionally-local/autopilot/compare/v3.37.0...v3.37.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **deps:** use camouflage-tui 2.14.0 so the token spinner keeps counting ([#1340](https://github.com/directionally-local/autopilot/issues/1340)) ([4c6e051](https://github.com/directionally-local/autopilot/commit/4c6e05183740ff459c97fc8f18959c5e46f6ee41))
+
 ## [3.37.0](https://github.com/directionally-local/autopilot/compare/v3.36.3...v3.37.0) (2026-11-28)
 
 
