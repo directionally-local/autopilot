@@ -2,10 +2,18 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   compactToFit,
+  contextFillFraction,
   effectiveInputBudget,
+  HANDOFF_PING_SHARE,
+  HANDOFF_WARNING_SHARE,
+  HARD_COMPACTION_SHARE,
+  handoffPingThreshold,
+  handoffTrigger,
+  handoffWarningThreshold,
   hardCompactionThreshold,
   proactiveCompactionThreshold,
   sessionFileCompactionTarget,
+  SOFT_COMPACTION_SHARE,
   softCompactionThreshold,
 } from "./context-budget.js";
 import { estimatePromptTokens } from "./artifact-compaction.js";
@@ -91,6 +99,45 @@ describe("context budget", () => {
     const second = compactToFit(grown, 25_000, target)!;
     const stateMessages = second.messages.filter((m) => m.role === "system" && String(m.content).startsWith("[compiled session state]"));
     assert.equal(stateMessages.length, 1);
+  });
+});
+
+describe("context-fill handoff trigger", () => {
+  it("decides on the fill fraction: nothing below 50%, ping to 80%, warning above", () => {
+    assert.equal(handoffTrigger(0), "none");
+    assert.equal(handoffTrigger(0.49), "none");
+    assert.equal(handoffTrigger(0.5), "ping");
+    assert.equal(handoffTrigger(0.55), "ping");
+    assert.equal(handoffTrigger(0.79), "ping");
+    assert.equal(handoffTrigger(0.8), "warning");
+    assert.equal(handoffTrigger(0.82), "warning");
+    assert.equal(handoffTrigger(1), "warning");
+  });
+
+  it("keeps both thresholds below the compaction shares so the handoff fires first", () => {
+    assert.ok(HANDOFF_PING_SHARE < SOFT_COMPACTION_SHARE);
+    assert.ok(HANDOFF_WARNING_SHARE < HARD_COMPACTION_SHARE);
+  });
+
+  it("derives the thresholds from the effective input budget (mocked budget)", () => {
+    const budget = effectiveInputBudget("unknown/model");
+    assert.equal(handoffPingThreshold("unknown/model"), Math.floor(budget * 0.5));
+    assert.equal(handoffWarningThreshold("unknown/model"), Math.floor(budget * 0.8));
+    assert.ok(handoffPingThreshold("unknown/model") < softCompactionThreshold("unknown/model"));
+    assert.ok(handoffWarningThreshold("unknown/model") < hardCompactionThreshold("unknown/model"));
+  });
+
+  it("computes the fill fraction and tolerates a missing budget", () => {
+    assert.equal(contextFillFraction(500, 1_000), 0.5);
+    assert.equal(contextFillFraction(0, 1_000), 0);
+    assert.equal(contextFillFraction(500, 0), 0);
+    assert.equal(contextFillFraction(500, Number.NaN), 0);
+  });
+
+  it("honors tunable shares", () => {
+    assert.equal(handoffTrigger(0.6, { ping: 0.7 }), "none");
+    assert.equal(handoffTrigger(0.7, { ping: 0.7 }), "ping");
+    assert.equal(handoffTrigger(0.9, { warning: 0.95 }), "ping");
   });
 });
 

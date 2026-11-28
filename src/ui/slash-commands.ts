@@ -100,6 +100,7 @@ import {
 } from "./app-helpers.js";
 import { resolvePlanForFresh } from "../agent/plan-resolver.js";
 import { generateContinuationSummary } from "../agent/continuation-summary.js";
+import { withSessionCitation } from "../agent/handoff.js";
 import { writeToClipboard } from "../util/clipboard.js";
 import type { Task } from "../tools/registry.js";
 import type { TraceRecorder } from "../trace/recorder.js";
@@ -167,6 +168,8 @@ export interface SlashContext {
   initMcp: () => Promise<void> | void;
   initLsp: () => Promise<void> | void;
   ensureSessionId: () => unknown;
+  /** Persist the session now (used to write the handoff link immediately). */
+  saveSessionSafe?: () => Promise<void>;
   /** Show the project summary and starter tasks now (`/ideas`), even if shown before or turned off. */
   startTour?: (force: boolean) => void;
   /** Open the product tour (`/tour`): the view runs it (ui/product-tour.ts). */
@@ -193,6 +196,8 @@ export interface SlashContext {
   lspToolsRef: React.MutableRefObject<ToolSpec[]>;
   lspInitRef: React.MutableRefObject<boolean>;
   sessionIdRef: React.MutableRefObject<string | null>;
+  /** The session this one continues from after a context handoff. */
+  continuedFromRef: React.MutableRefObject<string | null>;
   compactSuggestedRef: React.MutableRefObject<boolean>;
   updateNudgedRef: React.MutableRefObject<boolean>;
   freshSuggestedRef: React.MutableRefObject<boolean>;
@@ -271,10 +276,14 @@ export function executeFreshStart(
   ctx: SlashContext,
   planText: string,
   overrideMode?: Mode,
-  opts: { seedMessages?: boolean } = {},
+  opts: { seedMessages?: boolean; continuedFrom?: string } = {},
 ): { success: boolean } {
-  // Capture old session ID before reset so we can carry its cost forward
-  const oldSessionId = ctx.sessionIdRef.current;
+  // Capture old session ID before reset so we can carry its cost forward and
+  // record the session link (`continuedFrom`) on the new session.
+  const oldSessionId = opts.continuedFrom ?? ctx.sessionIdRef.current;
+  // The handoff cites the session it continues, so the new session can find
+  // the old checkpoint and transcript by id.
+  const summary = oldSessionId ? withSessionCitation(planText, oldSessionId) : planText;
 
   // Reset session (reuse /clear logic)
   if (ctx.cacheStableRef.current && ctx.messagesRef.current.length >= 2) {
@@ -321,18 +330,23 @@ export function executeFreshStart(
   // Seed with plan unless the caller will submit it separately (e.g. the
   // Ink plan-complete picker already calls submitRef.current(plan)).
   if (opts.seedMessages !== false) {
-    ctx.messagesRef.current.push({ role: "user", content: planText });
+    ctx.messagesRef.current.push({ role: "user", content: summary });
   }
 
   // Force creation of the new session ID and carry over the old cost baseline
   const newSessionId = ctx.ensureSessionId() as string;
   if (oldSessionId) {
+    // The link is a required invariant, not best effort: record it on the new
+    // session and persist immediately so it exists even if the user exits
+    // before the next save.
+    ctx.continuedFromRef.current = oldSessionId;
+    void ctx.saveSessionSafe?.();
     void carryOverSessionBaseline(oldSessionId, newSessionId).then(() => {
       void getCostReport(newSessionId).then((report) => ctx.setSessionUsage(report.session));
     });
   }
 
-  return writeToClipboard(planText);
+  return writeToClipboard(summary);
 }
 
 const handleFresh: Handler = async (ctx) => {

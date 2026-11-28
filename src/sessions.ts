@@ -51,6 +51,9 @@ export interface SessionFile {
   artifactStore?: SerializedArtifact[];
   /** User-created checkpoints within this session (optional). */
   checkpoints?: Checkpoint[];
+  /** The session this one continues from, after a context handoff (optional).
+   *  The old session's checkpoint and transcript stay retrievable by this id. */
+  continuedFrom?: string;
 }
 
 export function sessionsDir(): string {
