@@ -1117,24 +1117,48 @@ export function effortFor(level: "low" | "medium" | "high", allowed: string[] | 
   return sorted.find((l) => rank(l) >= rank(level) && l !== "none") ?? sorted[sorted.length - 1] ?? level;
 }
 
+/** Join the text of structured reasoning blocks into a plain reasoning string. */
+function reasoningTextFromDetails(details: ReasoningDetail[] | undefined): string {
+  if (!details?.length) return "";
+  return details
+    .map((d) => (typeof d.text === "string" ? d.text : typeof d.summary === "string" ? d.summary : ""))
+    .join("");
+}
+
 /**
  * Drop reasoning fields the provider doesn't accept back on assistant
  * history. OpenRouter's `reasoning_details` only goes to OpenRouter; the
  * `reasoning_content` echo goes to providers that need it during tool loops
  * (DeepSeek, Kimi, Z.ai) or whose model declares it (models.dev `interleaved`).
+ *
+ * DeepSeek/Kimi thinking mode rejects a replayed tool-call turn that lacks
+ * `reasoning_content`, so the presets flagged `synthesizeFallback` get it
+ * derived from `reasoning_details` (or `""` when the details carry no text).
+ * The synthesis is confined to tool-call turns: a text-only turn gains no
+ * field, and an unflagged echoing preset replays exactly what it was given.
  */
 export function stripReasoningEcho(messages: ChatMessage[], compat: ProviderCompat, modelEchoField?: string): ChatMessage[] {
   const keepContent = compat.reasoningEcho.content || modelEchoField === "reasoning_content";
   const keepDetails = compat.reasoningEcho.details;
+  const synthesize = compat.reasoningEcho.synthesizeFallback === true;
   const keepExtras = compat.toolCallExtras === true;
   return messages.map((m) => {
     if (m.role !== "assistant") return m;
     const hasExtras = !keepExtras && (m.tool_calls ?? []).some((tc) => tc.extra_content !== undefined);
-    if (!hasExtras && (keepContent || m.reasoning_content === undefined) && (keepDetails || m.reasoning_details === undefined)) return m;
+    const needsContent = keepContent && synthesize && (m.tool_calls?.length ?? 0) > 0 && m.reasoning_content == null;
+    if (
+      !hasExtras &&
+      !needsContent &&
+      (keepContent || m.reasoning_content === undefined) &&
+      (keepDetails || m.reasoning_details === undefined)
+    ) {
+      return m;
+    }
     const { reasoning_content, reasoning_details, ...rest } = m;
+    const content = needsContent ? reasoningTextFromDetails(reasoning_details) : reasoning_content;
     return {
       ...rest,
-      ...(keepContent && reasoning_content !== undefined ? { reasoning_content } : {}),
+      ...(keepContent && content !== undefined ? { reasoning_content: content } : {}),
       ...(keepDetails && reasoning_details !== undefined ? { reasoning_details } : {}),
       ...(hasExtras ? { tool_calls: m.tool_calls!.map(({ extra_content: _drop, ...tc }) => tc) } : {}),
     };

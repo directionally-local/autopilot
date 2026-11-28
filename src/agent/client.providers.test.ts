@@ -56,11 +56,11 @@ describe("request body per provider", () => {
     }
   });
 
-  async function send(provider: ProviderId, model: string, effort?: "low" | "medium" | "high") {
+  async function send(provider: ProviderId, model: string, effort?: "low" | "medium" | "high", messages: ChatMessage[] = history) {
     const preset = PROVIDER_PRESETS[provider];
     registerProviderModels(provider, preset.modelsDevId ? mapModelsDevProvider(MODELS_DEV_SNAPSHOT[preset.modelsDevId]!) : []);
     const auth = llmAuthFromConfig({ provider, providers: { [provider]: { apiKey: "k" } } });
-    for await (const _ of runKimi({ ...auth, model, messages: history, tools, ...(effort ? { reasoningEffort: effort } : {}) })) {
+    for await (const _ of runKimi({ ...auth, model, messages, tools, ...(effort ? { reasoningEffort: effort } : {}) })) {
       /* drain */
     }
     return last!;
@@ -95,6 +95,33 @@ describe("request body per provider", () => {
       assert.strictEqual("reasoning_content" in assistant, c.echoContent);
     });
   }
+
+  it("every tool-call assistant message in the DL request body carries reasoning_content", async () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "fix the bug" },
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.text", text: "why" }],
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "file" },
+      {
+        role: "assistant", content: null,
+        reasoning_details: [{ type: "reasoning.encrypted", data: "opaque" }],
+        tool_calls: [{ id: "call_2", type: "function", function: { name: "read", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call_2", content: "file" },
+    ];
+    const { body } = await send("directionally-local", "deepseek/deepseek-v4.1-flash-1017", undefined, messages);
+    const sent = body.messages as ChatMessage[];
+    const toolCallAssistants = sent.filter((m) => m.role === "assistant" && (m.tool_calls?.length ?? 0) > 0);
+    assert.strictEqual(toolCallAssistants.length, 2);
+    assert.deepStrictEqual(toolCallAssistants.map((m) => m.reasoning_content), ["why", ""]);
+    for (const m of toolCallAssistants) {
+      assert.ok("reasoning_content" in m, "tool-call assistant message carries reasoning_content");
+    }
+  });
 
   it("OpenAI uses the Responses API: stateless, encrypted reasoning, no OpenRouter fields", async () => {
     const { url, body } = await send("openai", "gpt-6.1-sol", "medium");
@@ -148,6 +175,139 @@ describe("stripReasoningEcho", () => {
     const out = stripReasoningEcho(history, PROVIDER_PRESETS.ollama.compat, "reasoning_content");
     assert.strictEqual(out[1]!.reasoning_content, "thinking…");
     assert.ok(!("reasoning_details" in out[1]!));
+  });
+
+  it("synthesizes reasoning_content on tool-call turns from reasoning_details", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [
+          { type: "reasoning.text", text: "why" },
+          { type: "reasoning.encrypted", data: "opaque" },
+          { type: "reasoning.summary", summary: " then how" },
+        ],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+    ];
+    const out = stripReasoningEcho(messages, PROVIDER_PRESETS["directionally-local"].compat);
+    assert.strictEqual(out[0]!.reasoning_content, "why then how");
+    assert.strictEqual("reasoning_content" in messages[0]!, false, "history is not mutated");
+  });
+
+  it("synthesizes an empty reasoning_content when details carry no text (DL compat)", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.encrypted", data: "x" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+    ];
+    const out = stripReasoningEcho(messages, PROVIDER_PRESETS["directionally-local"].compat);
+    assert.strictEqual(out[0]!.reasoning_content, "");
+  });
+
+  it("preserves an existing reasoning_content instead of replacing it with details", () => {
+    for (const content of ["original", ""]) {
+      const messages: ChatMessage[] = [{
+        role: "assistant", content: null, reasoning_content: content,
+        reasoning_details: [{ type: "reasoning.text", text: "different" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      }];
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS["directionally-local"].compat);
+      assert.strictEqual(out[0]!.reasoning_content, content);
+    }
+  });
+
+  it("does not add reasoning_content to tool-call-free assistant turns (DL and deepseek compat)", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: "just text",
+        reasoning_details: [{ type: "reasoning.text", text: "why" }],
+      },
+    ];
+    // deepseek has `details: false`, so the details-based synthesis path is live
+    // there; a text-only turn must still gain no field.
+    for (const id of ["directionally-local", "deepseek"] as const) {
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS[id].compat);
+      assert.strictEqual("reasoning_content" in out[0]!, false, `${id}: no synthesized field on a text-only turn`);
+    }
+  });
+
+  it("keeps a reasoning_content the message already carried on a text-only turn", () => {
+    const messages: ChatMessage[] = [{ role: "assistant", content: "just text", reasoning_content: "kept" }];
+    for (const id of ["directionally-local", "deepseek"] as const) {
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS[id].compat);
+      assert.strictEqual(out[0]!.reasoning_content, "kept", `${id}: existing content is preserved`);
+    }
+  });
+
+  it("does not synthesize reasoning_content for non-echoing providers (openai compat)", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.text", text: "why" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+    ];
+    const out = stripReasoningEcho(messages, PROVIDER_PRESETS.openai.compat);
+    assert.strictEqual("reasoning_content" in out[0]!, false);
+  });
+
+  const FLAGGED = ["directionally-local", "deepseek", "moonshot", "kimi-code", "zai"] as const;
+  const UNFLAGGED_ECHOING = ["openrouter", "custom", "together", "fireworks", "deepinfra", "vercel", "cloudflare"] as const;
+
+  it("flags exactly the presets whose thinking mode needs the synthesized fallback", () => {
+    const flagged = (Object.keys(PROVIDER_PRESETS) as ProviderId[])
+      .filter((id) => PROVIDER_PRESETS[id].compat.reasoningEcho.synthesizeFallback === true)
+      .sort();
+    assert.deepStrictEqual(flagged, [...FLAGGED].sort());
+  });
+
+  it("synthesizes the empty fallback on tool-call turns for every flagged preset", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.encrypted", data: "x" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+    ];
+    for (const id of FLAGGED) {
+      const out = stripReasoningEcho(messages, PROVIDER_PRESETS[id].compat);
+      assert.strictEqual(out[0]!.reasoning_content, "", `${id}: empty fallback synthesized`);
+    }
+  });
+
+  it("leaves unflagged echoing presets exactly as before: no reasoning_content injected", () => {
+    const shapes: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.text", text: "why" }],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+      {
+        role: "assistant",
+        content: null,
+        reasoning_details: [{ type: "reasoning.encrypted", data: "x" }],
+        tool_calls: [{ id: "c2", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c3", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+    ];
+    for (const id of UNFLAGGED_ECHOING) {
+      const out = stripReasoningEcho(shapes, PROVIDER_PRESETS[id].compat);
+      for (const m of out) {
+        assert.strictEqual("reasoning_content" in m, false, `${id}: no reasoning_content injected`);
+      }
+    }
   });
 });
 

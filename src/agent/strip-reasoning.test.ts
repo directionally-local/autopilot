@@ -1,7 +1,89 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { stripHistoricalReasoning } from "./strip-reasoning.js";
+import { createReasoningStripGate, stripHistoricalReasoning } from "./strip-reasoning.js";
+import { PROVIDER_PRESETS } from "../providers/presets.js";
+import { clearRecentLogs, getRecentLogs } from "../util/logger.js";
 import type { ChatMessage } from "./messages.js";
+
+describe("STRIP_REASONING env gate", () => {
+  it("warns once and ignores the opt-in on presets that need the synthesized fallback", () => {
+    const gate = createReasoningStripGate();
+    const warnings: string[] = [];
+    const messages: ChatMessage[] = [{
+      role: "assistant", content: "narration", reasoning_content: "required echo",
+      tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }],
+    }];
+    for (const preset of [PROVIDER_PRESETS["directionally-local"], PROVIDER_PRESETS.deepseek]) {
+      for (let request = 0; request < 2; request++) {
+        const strip = gate(preset.compat, (w) => warnings.push(w), { AUTOPILOT_STRIP_REASONING: "1" });
+        assert.strictEqual(strip, false, "ignore the opt-in, do not refuse or strip");
+        const sent = strip ? stripHistoricalReasoning(messages, { keepLast: 0 }) : messages;
+        assert.strictEqual(sent, messages, "ignoring the env var leaves history untouched");
+        assert.strictEqual(sent[0]!.reasoning_content, "required echo");
+        assert.strictEqual(sent[0]!.content, "narration");
+      }
+    }
+    assert.strictEqual(warnings.length, 1);
+    assert.match(warnings[0]!, /STRIP_REASONING=1.*ignored.*requires reasoning_content/);
+  });
+
+  it("still strips on an unflagged echoing preset (openrouter): the gate is the fallback flag", () => {
+    const gate = createReasoningStripGate();
+    const warnings: string[] = [];
+    const messages: ChatMessage[] = [{
+      role: "assistant", content: "narration", reasoning_content: "echo",
+      tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }],
+    }];
+    for (const env of [{ AUTOPILOT_STRIP_REASONING: "1" }, { KIMIFLARE_STRIP_REASONING: "1" }]) {
+      assert.strictEqual(gate(PROVIDER_PRESETS.openrouter.compat, (w) => warnings.push(w), env), true);
+      const sent = stripHistoricalReasoning(messages, { keepLast: 0 });
+      assert.strictEqual(sent[0]!.reasoning_content, undefined, "stripping proceeds");
+    }
+    assert.strictEqual(warnings.length, 0, "no warning on an unflagged preset");
+  });
+
+  it("ignores the bare STRIP_REASONING alias", () => {
+    const gate = createReasoningStripGate();
+    const warnings: string[] = [];
+    const warn = (w: string) => warnings.push(w);
+    assert.strictEqual(gate(PROVIDER_PRESETS.openai.compat, warn, { STRIP_REASONING: "1" }), false);
+    assert.strictEqual(gate(PROVIDER_PRESETS.deepseek.compat, warn, { STRIP_REASONING: "1" }), false);
+    assert.strictEqual(warnings.length, 0, "the bare alias is not read at all");
+  });
+
+  it("honors the opt-in on non-flagged presets and supports both prefixed spellings", () => {
+    const gate = createReasoningStripGate();
+    const warnings: string[] = [];
+    const warn = (w: string) => warnings.push(w);
+    for (const env of [{ AUTOPILOT_STRIP_REASONING: "1" }, { KIMIFLARE_STRIP_REASONING: "1" }]) {
+      assert.strictEqual(gate(PROVIDER_PRESETS.openai.compat, warn, env), true);
+      assert.strictEqual(gate(PROVIDER_PRESETS.deepseek.compat, warn, env), false);
+    }
+    assert.strictEqual(warnings.length, 1);
+    assert.strictEqual(gate(PROVIDER_PRESETS.openai.compat, warn, {}), false);
+    assert.strictEqual(gate(PROVIDER_PRESETS.deepseek.compat, warn, { AUTOPILOT_STRIP_REASONING: "0" }), false);
+    assert.strictEqual(gate(PROVIDER_PRESETS.openai.compat, warn, {
+      AUTOPILOT_STRIP_REASONING: "0", KIMIFLARE_STRIP_REASONING: "1",
+    }), false, "current prefix retains precedence");
+  });
+
+  it("defaults the warning to the structured logger, never console.warn", () => {
+    const gate = createReasoningStripGate();
+    const originalWarn = console.warn;
+    let consoleWarned = false;
+    console.warn = () => { consoleWarned = true; };
+    try {
+      clearRecentLogs();
+      assert.strictEqual(gate(PROVIDER_PRESETS.deepseek.compat, undefined, { AUTOPILOT_STRIP_REASONING: "1" }), false);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.strictEqual(consoleWarned, false, "the default must not print over the TUI");
+    const entry = getRecentLogs().find((e) => e.event === "agent:strip_reasoning_ignored");
+    assert.ok(entry, "the warning is recorded by the structured logger");
+    assert.match(String(entry!.data?.message), /STRIP_REASONING=1.*ignored.*requires reasoning_content/);
+  });
+});
 
 describe("stripHistoricalReasoning", () => {
   it("leaves system and user messages untouched", () => {
