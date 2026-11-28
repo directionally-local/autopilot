@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import type { AutopilotConfig } from "../config.js";
 import { DlGitHub, DlGitHubError, type DlCommit } from "./dl-github.js";
 import { DlApi, type DlTurnOutcome, type DlTurnStart } from "./dl-api.js";
-import { DlStore } from "./dl-store.js";
+import { DL_CLIENT_SCOPES, DlStore } from "./dl-store.js";
+import { resetRenewRateLimit } from "./dl-pairing.js";
 import type { DlPushMessage } from "./dl-push.js";
 import { startServer } from "./index.js";
 import { RunStore } from "../runs/store.js";
@@ -1011,6 +1012,153 @@ describe("dl server device pairing and remote runs", () => {
 
       const ownerAsBearer = await fetch(`${harness.baseUrl}/api/v1/conversations`, { headers: { Authorization: `Bearer ${ownerToken}` } });
       assert.equal(ownerAsBearer.status, 403, "the owner cookie only approves pairings");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("renews a credential over HTTP, reports its expiry in health, and keeps the old token for a grace period", async () => {
+    const harness = await createHarness("complete");
+    resetRenewRateLimit();
+    try {
+      const health = async (token: string) => {
+        const response = await fetch(`${harness.baseUrl}/api/v1/health`, { headers: { Authorization: `Bearer ${token}` } });
+        return { status: response.status, body: await response.json() as { capabilities?: string[]; credential?: { id: string; expiresAt: string }; error?: { code: string } } };
+      };
+      const renew = (token?: string) => fetch(`${harness.baseUrl}/api/v1/auth/renew`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: "{}",
+      });
+
+      const before = await health(harness.token);
+      assert.equal(before.status, 200);
+      assert.ok(before.body.capabilities?.includes("credential-renewal"));
+      const credentialId = before.body.credential!.id;
+      const originalExpiry = Date.parse(before.body.credential!.expiresAt);
+      assert.ok(originalExpiry > Date.now());
+      assert.match(before.body.credential!.expiresAt, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/, "the ISO 8601 shape Aster parses");
+
+      const renewedAt = Date.now();
+      const response = await renew(harness.token);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      const renewed = await response.json() as { token: string; credentialId: string; name: string; workspaceIds: string[]; scopes: string[]; expiresAt: string };
+      assert.deepEqual(Object.keys(renewed).sort(), ["credentialId", "expiresAt", "name", "scopes", "token", "workspaceIds"]);
+      assert.equal(renewed.credentialId, credentialId);
+      assert.equal(renewed.name, "test-client");
+      assert.deepEqual(renewed.workspaceIds, ["default"]);
+      assert.match(renewed.token, /^dl_[A-Za-z0-9_-]{40,}$/);
+      assert.notEqual(renewed.token, harness.token);
+      assert.ok(Date.parse(renewed.expiresAt) >= renewedAt + (originalExpiry - renewedAt), "a later expiry");
+
+      const after = await health(renewed.token);
+      assert.equal(after.status, 200);
+      assert.deepEqual(after.body.credential, { id: credentialId, expiresAt: renewed.expiresAt });
+
+      // The old token still works during its grace period and reports when that ends.
+      const old = await health(harness.token);
+      assert.equal(old.status, 200);
+      assert.equal(old.body.credential!.id, credentialId);
+      assert.ok(Date.parse(old.body.credential!.expiresAt) <= Date.now() + 10 * 60 * 1000);
+      const conversations = await fetch(`${harness.baseUrl}/api/v1/conversations`, { headers: { Authorization: `Bearer ${harness.token}` } });
+      assert.equal(conversations.status, 200);
+
+      const superseded = await renew(harness.token);
+      assert.equal(superseded.status, 409);
+      assert.equal((await superseded.json() as { error: { code: string } }).error.code, "credential_already_renewed");
+      const tooSoon = await renew(renewed.token);
+      assert.equal(tooSoon.status, 429);
+      assert.equal((await tooSoon.json() as { error: { code: string } }).error.code, "slow_down");
+      assert.ok(Number(tooSoon.headers.get("retry-after")) > 0);
+
+      const anonymous = await renew();
+      assert.equal(anonymous.status, 401);
+      assert.equal((await anonymous.json() as { error: { code: string } }).error.code, "invalid_credential");
+
+      // Expired and revoked tokens are refused with their own codes, everywhere.
+      const store = new DlStore();
+      const expiring = store.createCredential({ name: "Old phone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: Date.now() + 150 });
+      const revoked = store.createCredential({ name: "Lost phone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: Date.now() + 60_000 });
+      store.revokeCredential(revoked.id);
+      store.close();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      for (const [token, code] of [[expiring.token, "credential_expired"], [revoked.token, "credential_revoked"], [`dl_${"z".repeat(43)}`, "invalid_credential"]] as const) {
+        const refusedRenewal = await renew(token);
+        assert.equal(refusedRenewal.status, 401);
+        assert.equal((await refusedRenewal.json() as { error: { code: string } }).error.code, code);
+        const refusedHealth = await health(token);
+        assert.equal(refusedHealth.status, 401);
+        assert.equal(refusedHealth.body.error?.code, code);
+      }
+
+      // Renewal attempts are rate-limited per client address before any lookup.
+      resetRenewRateLimit();
+      for (let attempt = 0; attempt < 10; attempt += 1) assert.equal((await renew(`dl_${"q".repeat(43)}`)).status, 401);
+      const limited = await renew(renewed.token);
+      assert.equal(limited.status, 429);
+      assert.equal((await limited.json() as { error: { code: string } }).error.code, "rate_limited");
+    } finally {
+      resetRenewRateLimit();
+      await harness.close();
+    }
+  });
+
+  it("renews an expired phone credential through an approved pairing with replacesToken, keeping its conversations", async () => {
+    const harness = await createHarness("complete");
+    try {
+      const post = (path: string, body: unknown) => fetch(`${harness.baseUrl}${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const store = new DlStore();
+      const phone = store.createCredential({ name: "iPhone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: Date.now() + 150 });
+      const revoked = store.createCredential({ name: "Lost phone", workspaceIds: ["default"], scopes: DL_CLIENT_SCOPES, expiresAt: Date.now() + 150 });
+      store.revokeCredential(revoked.id);
+      store.reserveCellConversation({ conversationId: "11111111-1111-4111-8111-111111111111", credentialId: phone.id, workspaceId: "default", model: "test/model", sessionId: "s-1", cellName: "cell-1", idempotencyKey: "k-1" });
+      store.close();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const pair = async (body: Record<string, unknown>) => {
+        const started = await post("/api/v1/auth/device", body);
+        assert.equal(started.status, 200);
+        const device = await started.json() as Record<string, unknown> & { deviceCode: string; userCode: string };
+        assert.deepEqual(Object.keys(device).sort(), ["deviceCode", "expiresIn", "interval", "userCode", "verificationUri", "verificationUriComplete"], "the same answer whether or not replacesToken matched");
+        const pending = await post("/api/v1/auth/device/token", { deviceCode: device.deviceCode });
+        assert.equal((await pending.json() as { error: { code: string } }).error.code, "authorization_pending", "replacesToken alone grants nothing");
+        const approver = new DlStore();
+        try {
+          assert.equal(approver.resolveDeviceAuthorization(device.userCode, "approve", { workspaceIds: ["default"], credentialTtlMs: 90 * 24 * 60 * 60 * 1000 }), "approved");
+        } finally {
+          approver.close();
+        }
+        const issued = await post("/api/v1/auth/device/token", { deviceCode: device.deviceCode });
+        assert.equal(issued.status, 200);
+        return await issued.json() as { token: string; credentialId: string; expiresAt: string };
+      };
+
+      const renewed = await pair({ clientName: "iPhone", replacesToken: phone.token });
+      assert.equal(renewed.credentialId, phone.id);
+      assert.ok(Date.parse(renewed.expiresAt) > Date.now() + 89 * 24 * 60 * 60 * 1000);
+      const health = await fetch(`${harness.baseUrl}/api/v1/health`, { headers: { Authorization: `Bearer ${renewed.token}` } });
+      assert.deepEqual((await health.json() as { credential: unknown }).credential, { id: phone.id, expiresAt: renewed.expiresAt });
+      const check = new DlStore();
+      try {
+        assert.equal(check.getCredentialCellMapping("11111111-1111-4111-8111-111111111111", renewed.credentialId)?.credentialId, phone.id);
+      } finally {
+        check.close();
+      }
+      const oldToken = await fetch(`${harness.baseUrl}/api/v1/health`, { headers: { Authorization: `Bearer ${phone.token}` } });
+      assert.equal(oldToken.status, 401);
+
+      const notRevived = await pair({ clientName: "iPhone", replacesToken: revoked.token });
+      assert.notEqual(notRevived.credentialId, revoked.id);
+      const stillRevoked = await fetch(`${harness.baseUrl}/api/v1/health`, { headers: { Authorization: `Bearer ${revoked.token}` } });
+      assert.equal((await stillRevoked.json() as { error: { code: string } }).error.code, "credential_revoked");
+
+      const mismatched = await pair({ clientName: "iPhone", replacesToken: `dl_${"m".repeat(43)}` });
+      assert.notEqual(mismatched.credentialId, phone.id);
+      const malformed = await pair({ clientName: "iPhone", replacesToken: { token: phone.token } });
+      assert.notEqual(malformed.credentialId, phone.id);
     } finally {
       await harness.close();
     }

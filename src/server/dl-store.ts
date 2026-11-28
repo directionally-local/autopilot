@@ -1,5 +1,5 @@
 import { SqliteDatabase } from "../util/sqlite.js";
-import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stateDir } from "../util/app-dirs.js";
@@ -19,7 +19,10 @@ export interface DlPrincipal {
   name: string;
   workspaceIds: string[];
   scopes: DlScope[];
+  /** When the presented token stops working: the credential's expiry, or the end of a renewed token's grace period. */
   expiresAt: number;
+  /** True when the presented token was replaced by a renewal and works only until its grace period ends. */
+  superseded: boolean;
 }
 
 export interface DlConversation {
@@ -128,6 +131,10 @@ interface CredentialRow extends Record<string, unknown> {
   created_at: number;
   expires_at: number;
   revoked_at: number | null;
+  token_issued_at: number | null;
+  previous_token_hash: string | null;
+  previous_token_expires_at: number | null;
+  renewed_at: number | null;
 }
 
 interface ConversationRow extends Record<string, unknown> {
@@ -173,6 +180,32 @@ export interface DlDeviceAuthorization {
   status: DlDeviceStatus;
   createdAt: number;
   expiresAt: number;
+  /** Name of the expired credential this pairing renews on approval, if it offered one that qualifies. */
+  renewsCredentialName: string | null;
+}
+
+/** Why a bearer credential was refused, for the 401 error code. Only the token's holder can learn this. */
+export type DlCredentialCheck =
+  | { kind: "active"; principal: DlPrincipal }
+  | { kind: "expired" }
+  | { kind: "revoked" }
+  | { kind: "invalid" };
+
+export type DlCredentialRenewal =
+  | { kind: "renewed"; credential: CreatedDlCredential; previousTokenValidUntil: number }
+  | { kind: "invalid" }
+  | { kind: "expired" }
+  | { kind: "revoked" }
+  /** The token was already replaced by a renewal and is only inside its grace period. */
+  | { kind: "superseded" }
+  | { kind: "not_renewable" }
+  | { kind: "too_soon"; retryAfterMs: number };
+
+export interface DlCredentialAuditEntry {
+  credentialId: string;
+  event: "renewed" | "renewed_by_pairing";
+  createdAt: number;
+  expiresAt: number;
 }
 
 export type DlDeviceRedemption =
@@ -180,7 +213,7 @@ export type DlDeviceRedemption =
   | { kind: "slow_down" }
   | { kind: "denied" }
   | { kind: "expired" }
-  | { kind: "issued"; credential: CreatedDlCredential };
+  | { kind: "issued"; credential: CreatedDlCredential; renewed: boolean };
 
 export type DlDeviceResolution = "approved" | "denied" | "not_found" | "expired" | "already_resolved";
 
@@ -194,6 +227,8 @@ interface DeviceRow extends Record<string, unknown> {
   created_at: number;
   expires_at: number;
   last_polled_at: number | null;
+  replaces_credential_id: string | null;
+  replaces_token_hash: string | null;
 }
 
 export interface DlCredentialInfo {
@@ -225,6 +260,10 @@ export const DL_CLIENT_SCOPES: DlScope[] = ["workspaces:read", "models:read", "c
 // No vowels or look-alikes, so a code can't spell a word and is easy to read aloud.
 const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
 const DEVICE_POLL_INTERVAL_MS = 5_000;
+/** How long a token replaced by a renewal keeps working, so requests already in flight don't fail. */
+export const CREDENTIAL_RENEWAL_GRACE_MS = 10 * 60 * 1000;
+/** A credential can be renewed at most once per this interval. */
+export const CREDENTIAL_RENEWAL_MIN_INTERVAL_MS = 60 * 1000;
 const MAX_EVENTS_PER_CONVERSATION = 50_000;
 
 export class DlStore {
@@ -351,6 +390,14 @@ export class DlStore {
         claimed_at INTEGER,
         credential_id TEXT
       );
+      CREATE TABLE IF NOT EXISTS aster_credential_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        credential_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_aster_credential_audit ON aster_credential_audit(credential_id, created_at);
       CREATE TABLE IF NOT EXISTS aster_conversation_projects (
         conversation_id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
@@ -379,6 +426,19 @@ export class DlStore {
       this.db.prepare("UPDATE aster_github_grants SET token_hash = ?, branch = ? WHERE conversation_id = ? AND token_hash IS NULL")
         .run(hashToken(grant.token), grant.branch || project?.branch || "", grant.conversation_id);
     }
+    const credentialColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(aster_credentials)").all() as Array<{ name: string }>).map(({ name }) => name),
+    );
+    if (!credentialColumns.has("token_issued_at")) this.db.exec("ALTER TABLE aster_credentials ADD COLUMN token_issued_at INTEGER");
+    if (!credentialColumns.has("previous_token_hash")) this.db.exec("ALTER TABLE aster_credentials ADD COLUMN previous_token_hash TEXT");
+    if (!credentialColumns.has("previous_token_expires_at")) this.db.exec("ALTER TABLE aster_credentials ADD COLUMN previous_token_expires_at INTEGER");
+    if (!credentialColumns.has("renewed_at")) this.db.exec("ALTER TABLE aster_credentials ADD COLUMN renewed_at INTEGER");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_aster_credentials_previous_token ON aster_credentials(previous_token_hash) WHERE previous_token_hash IS NOT NULL");
+    const deviceColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(aster_device_authorizations)").all() as Array<{ name: string }>).map(({ name }) => name),
+    );
+    if (!deviceColumns.has("replaces_credential_id")) this.db.exec("ALTER TABLE aster_device_authorizations ADD COLUMN replaces_credential_id TEXT");
+    if (!deviceColumns.has("replaces_token_hash")) this.db.exec("ALTER TABLE aster_device_authorizations ADD COLUMN replaces_token_hash TEXT");
     try { chmodSync(dbPath, 0o600); } catch { /* existing/read-only database permissions are managed by the caller */ }
   }
 
@@ -518,19 +578,133 @@ export class DlStore {
   }
 
   authenticate(authorization: string | undefined, now = Date.now()): DlPrincipal | undefined {
+    const check = this.checkCredential(authorization, now);
+    return check.kind === "active" ? check.principal : undefined;
+  }
+
+  /**
+   * Authenticates a bearer token and says why it was refused. A token replaced by a renewal
+   * keeps working until its grace period ends. Revocation wins over expiry.
+   */
+  checkCredential(authorization: string | undefined, now = Date.now()): DlCredentialCheck {
     const match = authorization?.match(TOKEN_PATTERN);
-    if (!match) return undefined;
-    const row = this.db.prepare("SELECT * FROM aster_credentials WHERE token_hash = ?")
-      .get(hashToken(match[1]!)) as CredentialRow | undefined;
-    if (!row || row.revoked_at !== null || row.expires_at <= now) return undefined;
+    if (!match) return { kind: "invalid" };
+    const found = this.findCredentialByToken(match[1]!);
+    if (!found) return { kind: "invalid" };
+    const { row, current } = found;
+    if (row.revoked_at !== null) return { kind: "revoked" };
+    const tokenExpiresAt = current ? row.expires_at : Math.min(row.previous_token_expires_at ?? 0, row.expires_at);
+    if (tokenExpiresAt <= now) return { kind: "expired" };
     this.db.prepare("UPDATE aster_credentials SET last_used_at = ? WHERE id = ?").run(now, row.id);
     return {
-      credentialId: row.id,
-      name: row.name,
-      workspaceIds: JSON.parse(row.workspace_ids_json) as string[],
-      scopes: JSON.parse(row.scopes_json) as DlScope[],
-      expiresAt: row.expires_at,
+      kind: "active",
+      principal: {
+        credentialId: row.id,
+        name: row.name,
+        workspaceIds: JSON.parse(row.workspace_ids_json) as string[],
+        scopes: JSON.parse(row.scopes_json) as DlScope[],
+        expiresAt: tokenExpiresAt,
+        superseded: !current,
+      },
     };
+  }
+
+  /**
+   * Gives the credential behind a valid, current token a new token and a new expiry, keeping its
+   * id (and so its conversations), name, workspaces and scopes. The new expiry is the lifetime the
+   * credential was granted (90 days for a paired client), counted from now. The old token keeps
+   * working for CREDENTIAL_RENEWAL_GRACE_MS. The owner's browser credential is not renewable here.
+   */
+  renewCredential(authorization: string | undefined, now = Date.now()): DlCredentialRenewal {
+    const match = authorization?.match(TOKEN_PATTERN);
+    if (!match) return { kind: "invalid" };
+    const renew = this.db.transaction((): DlCredentialRenewal => {
+      const found = this.findCredentialByToken(match[1]!);
+      if (!found) return { kind: "invalid" };
+      const { row, current } = found;
+      if (row.revoked_at !== null) return { kind: "revoked" };
+      if (!current) {
+        return Math.min(row.previous_token_expires_at ?? 0, row.expires_at) <= now ? { kind: "expired" } : { kind: "superseded" };
+      }
+      if (row.expires_at <= now) return { kind: "expired" };
+      const scopes = JSON.parse(row.scopes_json) as DlScope[];
+      if (scopes.includes("pairing:approve")) return { kind: "not_renewable" };
+      if (row.renewed_at !== null && now - row.renewed_at < CREDENTIAL_RENEWAL_MIN_INTERVAL_MS) {
+        return { kind: "too_soon", retryAfterMs: CREDENTIAL_RENEWAL_MIN_INTERVAL_MS - (now - row.renewed_at) };
+      }
+      const lifetimeMs = row.expires_at - (row.token_issued_at ?? row.created_at);
+      if (lifetimeMs <= 0) return { kind: "not_renewable" };
+      const previousTokenValidUntil = Math.min(now + CREDENTIAL_RENEWAL_GRACE_MS, row.expires_at);
+      const credential = this.rotateCredentialToken(row, { expiresAt: now + lifetimeMs, previousTokenValidUntil, now });
+      this.recordCredentialAudit(row.id, "renewed", now, credential.expiresAt);
+      return { kind: "renewed", credential, previousTokenValidUntil };
+    });
+    return renew.immediate();
+  }
+
+  /** Renewals and pairing replacements for a credential, oldest first. Never contains tokens. */
+  listCredentialAudit(credentialId: string): DlCredentialAuditEntry[] {
+    const rows = this.db.prepare("SELECT * FROM aster_credential_audit WHERE credential_id = ? ORDER BY id")
+      .all(credentialId) as Array<{ credential_id: string; event: DlCredentialAuditEntry["event"]; created_at: number; expires_at: number }>;
+    return rows.map((row) => ({ credentialId: row.credential_id, event: row.event, createdAt: row.created_at, expiresAt: row.expires_at }));
+  }
+
+  /** Looks a token up by its SHA-256 hash: as the current token, or as one replaced by a renewal. */
+  private findCredentialByToken(token: string): { row: CredentialRow; current: boolean } | undefined {
+    const tokenHash = hashToken(token);
+    const row = this.db.prepare("SELECT * FROM aster_credentials WHERE token_hash = ?").get(tokenHash) as CredentialRow | undefined;
+    if (row && hashesEqual(row.token_hash, tokenHash)) return { row, current: true };
+    const previous = this.db.prepare("SELECT * FROM aster_credentials WHERE previous_token_hash = ?").get(tokenHash) as CredentialRow | undefined;
+    if (previous?.previous_token_hash && hashesEqual(previous.previous_token_hash, tokenHash)) return { row: previous, current: false };
+    return undefined;
+  }
+
+  /** Issues a new token for an existing credential; only its hash is stored. */
+  private rotateCredentialToken(
+    row: CredentialRow,
+    input: { expiresAt: number; previousTokenValidUntil: number | null; now: number; workspaceIds?: string[] },
+  ): CreatedDlCredential {
+    const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+    const workspaceIds = input.workspaceIds ?? JSON.parse(row.workspace_ids_json) as string[];
+    const keepPrevious = input.previousTokenValidUntil !== null && input.previousTokenValidUntil > input.now;
+    this.db.prepare(`UPDATE aster_credentials SET token_hash = ?, expires_at = ?, token_issued_at = ?, renewed_at = ?,
+      previous_token_hash = ?, previous_token_expires_at = ?, workspace_ids_json = ? WHERE id = ?`)
+      .run(
+        hashToken(token), input.expiresAt, input.now, input.now,
+        keepPrevious ? row.token_hash : null, keepPrevious ? input.previousTokenValidUntil : null,
+        JSON.stringify(workspaceIds), row.id,
+      );
+    return {
+      id: row.id,
+      name: row.name,
+      workspaceIds,
+      scopes: JSON.parse(row.scopes_json) as DlScope[],
+      createdAt: row.created_at,
+      expiresAt: input.expiresAt,
+      token,
+    };
+  }
+
+  private recordCredentialAudit(credentialId: string, event: DlCredentialAuditEntry["event"], now: number, expiresAt: number): void {
+    this.db.prepare("INSERT INTO aster_credential_audit (credential_id, event, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(credentialId, event, now, expiresAt);
+  }
+
+  /**
+   * The expired, never-revoked client credential whose current token is `token`, which a new
+   * pairing may renew once the owner approves it. Anything else (unknown, malformed, revoked,
+   * still active, superseded, or the owner's credential) yields undefined and is ignored.
+   */
+  private findReplaceableCredential(token: unknown, now: number): CredentialRow | undefined {
+    if (typeof token !== "string" || token.length > 200) return undefined;
+    const match = `Bearer ${token}`.match(TOKEN_PATTERN);
+    if (!match) return undefined;
+    const found = this.findCredentialByToken(match[1]!);
+    if (!found || !found.current) return undefined;
+    const { row } = found;
+    if (row.revoked_at !== null || row.expires_at > now) return undefined;
+    if ((JSON.parse(row.scopes_json) as DlScope[]).includes("pairing:approve")) return undefined;
+    return row;
   }
 
   /**
@@ -538,7 +712,7 @@ export class DlStore {
    * polls; the owner approves the short user code. Returns undefined when too many
    * pairings are pending, so an unauthenticated caller can't fill the table.
    */
-  createDeviceAuthorization(input: { clientName: string; ttlMs: number; maxPending: number }, now = Date.now()):
+  createDeviceAuthorization(input: { clientName: string; ttlMs: number; maxPending: number; replacesToken?: unknown }, now = Date.now()):
     { deviceCode: string; userCode: string; expiresAt: number; intervalMs: number } | undefined {
     const create = this.db.transaction(() => {
       this.db.prepare("DELETE FROM aster_device_authorizations WHERE expires_at <= ? AND status != 'redeemed'").run(now);
@@ -548,10 +722,12 @@ export class DlStore {
       let userCode = newUserCode();
       while (this.db.prepare("SELECT 1 FROM aster_device_authorizations WHERE user_code = ?").get(userCode)) userCode = newUserCode();
       const expiresAt = now + input.ttlMs;
+      // Only a reference to the replaced credential is kept: its id and the token hash it had.
+      const replaces = this.findReplaceableCredential(input.replacesToken, now);
       this.db.prepare(`INSERT INTO aster_device_authorizations
-        (device_code_hash, user_code, client_name, status, created_at, expires_at)
-        VALUES (?, ?, ?, 'pending', ?, ?)`)
-        .run(hashToken(deviceCode), userCode, input.clientName, now, expiresAt);
+        (device_code_hash, user_code, client_name, status, created_at, expires_at, replaces_credential_id, replaces_token_hash)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`)
+        .run(hashToken(deviceCode), userCode, input.clientName, now, expiresAt, replaces?.id ?? null, replaces?.token_hash ?? null);
       return { deviceCode, userCode, expiresAt, intervalMs: DEVICE_POLL_INTERVAL_MS };
     });
     return create.immediate();
@@ -561,13 +737,13 @@ export class DlStore {
     const row = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE user_code = ?")
       .get(normalizeUserCode(userCode)) as DeviceRow | undefined;
     if (!row || (row.status === "pending" && row.expires_at <= now)) return undefined;
-    return deviceFromRow(row);
+    return this.deviceFromRow(row, now);
   }
 
   listPendingDeviceAuthorizations(now = Date.now()): DlDeviceAuthorization[] {
     const rows = this.db.prepare("SELECT * FROM aster_device_authorizations WHERE status = 'pending' AND expires_at > ? ORDER BY created_at")
       .all(now) as DeviceRow[];
-    return rows.map(deviceFromRow);
+    return rows.map((row) => this.deviceFromRow(row, now));
   }
 
   /** The owner's decision on a user code. An approval fixes the credential the client will receive. */
@@ -595,6 +771,31 @@ export class DlStore {
     return resolve.immediate();
   }
 
+  private deviceFromRow(row: DeviceRow, now: number): DlDeviceAuthorization {
+    const replaced = this.replaceableCredentialFor(row, now);
+    return {
+      userCode: row.user_code,
+      clientName: row.client_name,
+      status: row.status,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      renewsCredentialName: replaced?.name ?? null,
+    };
+  }
+
+  /**
+   * The credential a pairing renews, checked again now: still expired, never revoked, and still
+   * holding the token the client offered (so a credential renewed meanwhile isn't taken over).
+   */
+  private replaceableCredentialFor(row: DeviceRow, now: number): CredentialRow | undefined {
+    if (!row.replaces_credential_id || !row.replaces_token_hash) return undefined;
+    const credential = this.db.prepare("SELECT * FROM aster_credentials WHERE id = ?").get(row.replaces_credential_id) as CredentialRow | undefined;
+    if (!credential || !hashesEqual(credential.token_hash, row.replaces_token_hash)) return undefined;
+    if (credential.revoked_at !== null || credential.expires_at > now) return undefined;
+    if ((JSON.parse(credential.scopes_json) as DlScope[]).includes("pairing:approve")) return undefined;
+    return credential;
+  }
+
   /** The client's poll. An approved code is exchanged for its credential exactly once. */
   redeemDeviceAuthorization(deviceCode: string, now = Date.now()): DlDeviceRedemption {
     const redeem = this.db.transaction((): DlDeviceRedemption => {
@@ -608,15 +809,19 @@ export class DlStore {
         this.db.prepare("UPDATE aster_device_authorizations SET last_polled_at = ? WHERE device_code_hash = ?").run(now, row.device_code_hash);
         return tooSoon ? { kind: "slow_down" } : { kind: "pending" };
       }
-      const credential = this.createCredential({
-        name: row.client_name,
-        workspaceIds: JSON.parse(row.workspace_ids_json ?? "[]") as string[],
-        scopes: DL_CLIENT_SCOPES,
-        expiresAt: now + (row.credential_ttl_ms ?? 0),
-      });
+      const workspaceIds = JSON.parse(row.workspace_ids_json ?? "[]") as string[];
+      const expiresAt = now + (row.credential_ttl_ms ?? 0);
+      // The owner approved this pairing. If it offered an expired credential that is still
+      // eligible, that credential gets a new token and expiry, so its conversations stay with
+      // the device; otherwise the device gets a new credential.
+      const replaced = this.replaceableCredentialFor(row, now);
+      const credential = replaced
+        ? this.rotateCredentialToken(replaced, { expiresAt, previousTokenValidUntil: null, now, workspaceIds })
+        : this.createCredential({ name: row.client_name, workspaceIds, scopes: DL_CLIENT_SCOPES, expiresAt });
+      if (replaced) this.recordCredentialAudit(credential.id, "renewed_by_pairing", now, expiresAt);
       this.db.prepare("UPDATE aster_device_authorizations SET status = 'redeemed', credential_id = ? WHERE device_code_hash = ?")
         .run(credential.id, row.device_code_hash);
-      return { kind: "issued", credential };
+      return { kind: "issued", credential, renewed: replaced !== undefined };
     });
     return redeem.immediate();
   }
@@ -1045,8 +1250,11 @@ export function normalizeUserCode(code: string): string {
   return compact.length === 8 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
 }
 
-function deviceFromRow(row: DeviceRow): DlDeviceAuthorization {
-  return { userCode: row.user_code, clientName: row.client_name, status: row.status, createdAt: row.created_at, expiresAt: row.expires_at };
+/** Constant-time comparison of two hex SHA-256 digests. */
+function hashesEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a, "utf8");
+  const right = Buffer.from(b, "utf8");
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function cellMappingFromRow(row: Record<string, unknown>): DlCellMapping {

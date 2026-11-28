@@ -311,13 +311,13 @@ export function getOpenApiSpec(): string {
         get: {
           summary: "Authenticated dl server capabilities and health",
           security: [{ dlBearer: [] }],
-          responses: { "200": { description: "API version and supported capabilities; contains no host paths or secrets" }, "401": { description: "Invalid or expired credential" } },
+          responses: { "200": { description: "API version, supported capabilities, and credential {id, expiresAt} for the calling token; contains no host paths or secrets" }, "401": { description: "error.code credential_expired, credential_revoked, or invalid_credential" } },
         },
       },
       "/api/v1/auth/device": {
         post: {
           summary: "Start pairing a client with a device code (no credential required)",
-          requestBody: { content: { "application/json": { schema: { type: "object", properties: { clientName: { type: "string", maxLength: 60 } }, additionalProperties: false } } } },
+          requestBody: { content: { "application/json": { schema: { type: "object", properties: { clientName: { type: "string", maxLength: 60 }, replacesToken: { type: "string", description: "The device's expired (not revoked) credential token; once the owner approves, that credential is renewed instead of a new one being issued, keeping its conversations. Ignored if it doesn't qualify." } }, additionalProperties: false } } } },
           responses: { "200": { description: "deviceCode (keep secret), userCode to show, verificationUri/verificationUriComplete, expiresIn and interval in seconds" }, "400": { description: "Invalid client name" }, "429": { description: "Too many pairings waiting for approval" } },
         },
       },
@@ -326,6 +326,20 @@ export function getOpenApiSpec(): string {
           summary: "Poll a pairing; returns the client credential once after the owner approves",
           requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["deviceCode"], properties: { deviceCode: { type: "string" } } } } } },
           responses: { "200": { description: "{token, credentialId, name, workspaceIds, scopes, expiresAt}; the token is shown once" }, "400": { description: "authorization_pending, slow_down, access_denied, or expired_token" } },
+        },
+      },
+      "/api/v1/auth/renew": {
+        post: {
+          summary: "Exchange a valid, current credential for a new token and expiry on the same credential",
+          security: [{ dlBearer: [] }],
+          requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+          responses: {
+            "200": { description: "{token, credentialId, name, workspaceIds, scopes, expiresAt}; the new token is shown once, and the old token keeps working for 10 minutes" },
+            "401": { description: "error.code credential_expired, credential_revoked, or invalid_credential" },
+            "403": { description: "credential_not_renewable (the owner's browser credential)" },
+            "409": { description: "credential_already_renewed: the token was already replaced by a renewal" },
+            "429": { description: "slow_down (renewed under a minute ago) or rate_limited; see Retry-After" },
+          },
         },
       },
       "/api/v1/auth/approve": {

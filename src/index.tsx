@@ -414,7 +414,10 @@ dlPairCommand
     try {
       const pending = store.listPendingDeviceAuthorizations();
       if (pending.length === 0) console.log("No pairings waiting.");
-      for (const entry of pending) console.log(`${entry.userCode}  ${entry.clientName}  expires ${new Date(entry.expiresAt).toISOString()}`);
+      for (const entry of pending) {
+        const renews = entry.renewsCredentialName !== null ? `  (renews the expired credential "${entry.renewsCredentialName}")` : "";
+        console.log(`${entry.userCode}  ${entry.clientName}  expires ${new Date(entry.expiresAt).toISOString()}${renews}`);
+      }
     } finally {
       store.close();
     }
