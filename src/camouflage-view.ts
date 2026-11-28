@@ -125,7 +125,7 @@ import {
 import { humanizePhase } from "./ui/narrator.js";
 import { resumeHint } from "./interactive-resume.js";
 import { gpuDetection, qualifiesForPrivateModel, type DetectedGpu, type GpuDetection, type UnansweredTool } from "./gpu/detect.js";
-import { chatSetupOffered, handoffPath, modelUpResult, offeredAgents, requestAgent, requestChatUp, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
+import { apiSetupOffered, chatSetupOffered, handoffPath, modelUpResult, offeredAgents, requestAgent, requestApiUp, requestChatUp, requestModelUp, type ModelUpFailure } from "./gpu/handoff.js";
 import { dlInstallOption, takeDlInstallNotice, type DlInstallOption } from "./providers/dl-install-code.js";
 import { checkModelsEndpoint, normalizeBaseUrl, serverBaseUrl } from "./gpu/endpoint.js";
 import { detectedTelemetry, flushGpuTelemetry, gpuTelemetrySends, sendGpuTelemetry, type GpuErrorType, type GpuTelemetry } from "./gpu/telemetry.js";
@@ -173,7 +173,7 @@ import {
   AGENT_SUBTITLE,
   agentChoices,
   type AgentChoice,
-  TEAM_USE_CHOICES,
+  teamUseChoices,
   TEAM_USE_QUESTION,
   TEAM_USE_SUBTITLE,
   THIS_MACHINE_WITHOUT_DL,
@@ -300,7 +300,8 @@ export interface CamouflageSessionViewOpts {
 /** "setup-model-up": first run handed over to dl model up (gpu/handoff.ts); exit so dl can run it. */
 /** "setup-chat-up": after the model, the team chat was asked of dl (gpu/handoff.ts); exit so dl can set it up. */
 /** "setup-agent": another coding agent was picked for the model (gpu/handoff.ts); exit so dl can open it. */
-export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed" | "setup-model-up" | "setup-chat-up" | "setup-agent";
+/** "setup-api-up": after the model, the API endpoint was asked of dl (gpu/handoff.ts); exit so dl can turn it on. */
+export type CamouflageViewResult = "done" | "setup-cancelled" | "setup-failed" | "setup-model-up" | "setup-chat-up" | "setup-agent" | "setup-api-up";
 
 /**
  * The header's detail lines, kept nearly silent: the model (with the folder
@@ -521,6 +522,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   let setup: FirstRunOutcome | null = null;
   let chatUp = false;
   let otherAgent = false;
+  let apiUp = false;
   try {
     let cfg = opts.cfg;
     if (custom) {
@@ -550,6 +552,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
       const use = await Promise.race([view.teamUse(), beforeApp.then(() => "terminal" as const)]);
       if (use === "chat-up") chatUp = true;
       else if (use === "agent") otherAgent = true;
+      else if (use === "api-up") apiUp = true;
       else await Promise.race([opts.runApp(view, cfg), beforeApp]);
     }
   } finally {
@@ -567,6 +570,7 @@ export async function runCamouflageView(input: CamouflageViewOpts | CamouflageSe
   if (outcome?.kind === "model-up") return "setup-model-up";
   if (chatUp) return "setup-chat-up";
   if (otherAgent) return "setup-agent";
+  if (apiUp) return "setup-api-up";
   if (outcome?.kind === "cancelled") {
     process.stdout.write(`${onboardingCancelledMessage()}\n`);
     return "setup-cancelled";
@@ -1950,14 +1954,25 @@ export class View implements AppBridge {
    * After Terminal agent or Both, when dl offers other agents (DL_AGENTS): "Which coding
    * agent?" Autopilot (or Esc) goes on as before; another agent is handed to dl ("agent", or
    * with the chat after Both), which keeps the choice for the box and opens it on the model.
+   * When dl offers it too (DL_API_SETUP), a fourth answer, API endpoint, hands over to dl
+   * ("api-up"): it turns the model into an OpenAI-compatible API and prints how to use it.
    */
-  async teamUse(): Promise<"terminal" | "chat-up" | "agent"> {
+  async teamUse(): Promise<"terminal" | "chat-up" | "agent" | "api-up"> {
     const env = this.gpuCalls.env;
     const path = handoffPath(env);
     if (!path || !chatSetupOffered(env) || !takeTeamUseQuestion()) return "terminal";
-    const answer = await this.select(TEAM_USE_QUESTION, TEAM_USE_CHOICES.map((c) => ({ ...c })), undefined, TEAM_USE_SUBTITLE);
+    const answer = await this.select(TEAM_USE_QUESTION, teamUseChoices(apiSetupOffered(env)), undefined, TEAM_USE_SUBTITLE);
     // Esc: the terminal agent, as before (no more questions).
     if (answer === null) return "terminal";
+    if (answer === "api") {
+      try {
+        await requestApiUp(path);
+      } catch (e) {
+        this.cam.send("RuntimeError", { message: `Couldn't hand over to dl: ${(e as Error).message}. Run dl model endpoint in a terminal.`, severity: "error" });
+        return "terminal";
+      }
+      return "api-up";
+    }
     const agent = answer === "terminal" || answer === "both" ? await this.whichAgent() : "autopilot";
     if (answer === "terminal") {
       if (agent === "autopilot") return "terminal";
