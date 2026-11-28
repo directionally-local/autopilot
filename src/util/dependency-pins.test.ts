@@ -14,7 +14,7 @@ function readPackageJson(): { dependencies?: Record<string, string> } {
 }
 
 test("camouflage-tui is pinned to the exact audited version", () => {
-  assert.equal(readPackageJson().dependencies?.["camouflage-tui"], "2.13.3");
+  assert.equal(readPackageJson().dependencies?.["camouflage-tui"], "2.14.0");
 });
 
 test("camouflage-tui's declaration carries no range operator", () => {

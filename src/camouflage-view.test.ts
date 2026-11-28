@@ -796,7 +796,7 @@ describe("Camouflage lifecycle auto-settle", () => {
     view.dispose();
   });
 
-  it("no-ops when the open turn's SDK predates toolCallArgs (pinned 2.13.2)", () => {
+  it("no-ops when the open turn's SDK predates toolCallArgs", () => {
     const sent: Sent[] = [];
     const cam = attachLifecycle({ send: (type: string, payload: Record<string, unknown> = {}) => (sent.push({ type, payload }), true), on() { return this; }, close: async () => 0 });
     const open = cam.turn.bind(cam);
@@ -809,6 +809,21 @@ describe("Camouflage lifecycle auto-settle", () => {
     view.sync(baseSnapshot({ turnRunning: true, busy: true, events: [liveAssistant] }));
     assert.doesNotThrow(() => view.toolCallArgs('{"path":"src/a.ts"'));
     assert.ok(!sent.some((s) => s.type === "AssistantToolCallArgsDelta"));
+    view.dispose();
+  });
+
+  it("counts reasoning once, through its own delta, never a token count", async () => {
+    const { view, sent } = await fakeView({});
+    const thinking: ChatEvent = { kind: "assistant", key: "a1", id: 1, text: "", reasoning: "weighing the options", streaming: true };
+    view.sync(baseSnapshot({ turnRunning: true, busy: true, events: [thinking] }));
+    assert.ok(
+      sent.some((s) => s.type === "AssistantReasoningDelta" && s.payload.token === "weighing the options"),
+      "reasoning reaches the renderer as AssistantReasoningDelta",
+    );
+    assert.ok(
+      !sent.some((s) => s.type === "AssistantTokenCountDelta"),
+      "no count for reasoning the renderer already streams (it would double-count)",
+    );
     view.dispose();
   });
 });
